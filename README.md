@@ -1,6 +1,6 @@
 # Minimalist Alliance office
 
-The office is where Minimalist Alliance members work: a private set of cloud desktops, called desks, opened in a browser. Each desk is a small machine in the cloud that belongs to one member. The office shows all of a member's desks on one calm canvas, and each desk runs a few focused apps: a real Browser, Notebook, Files, an Agent, and Commons for guilds.
+The office is where Minimalist Alliance members work: a private set of cloud desktops, called desks, opened in a browser. Each desk is a private desktop in the cloud, walled off from every other. The office shows all of a member's desks on one calm canvas, and each desk runs a few focused apps: a real Browser, Notebook, Files, an Agent, and Commons for guilds.
 
 This repository holds the office web app, the desk's own software and its machine image, and the tools around them. The platform that runs accounts, billing and the hosted service lives elsewhere.
 
