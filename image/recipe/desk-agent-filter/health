@@ -1,0 +1,8 @@
+#!/bin/sh
+# desk-agent-filter's health: the unit runs and holds both ports, on TCP and on UDP. It doesn't connect, because nftables
+# lets only uid 1103 reach those ports, root included.
+set -u
+systemctl is-active --quiet desk-agent-filter.service || { echo "desk-agent-filter.service isn't active"; exit 1; }
+ss -Hltn 'sport = :14443' | grep -q . || { echo "nothing listens on TCP 14443"; exit 1; }
+ss -Hltn 'sport = :14053' | grep -q . || { echo "nothing listens on TCP 14053"; exit 1; }
+ss -Hlun 'sport = :14053' | grep -q . || { echo "nothing listens on UDP 14053"; exit 1; }

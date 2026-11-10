@@ -1,0 +1,66 @@
+/* The agent look: mark, icon picker and tone wheel. Colors are --ma-* properties; the tones themselves are inline styles from tones.ts. */
+.ag-look-mark {
+  display: inline-flex;
+  align-items: center;
+  justify-content: center;
+  flex: none;
+  box-sizing: border-box;
+}
+.ag-look-png {
+  display: block;
+}
+.ag-look-icons {
+  display: grid;
+  grid-template-columns: repeat(auto-fill, minmax(40px, 1fr));
+  gap: 6px;
+}
+.ag-look-icon {
+  display: inline-flex;
+  align-items: center;
+  justify-content: center;
+  height: 40px;
+  padding: 0;
+  border: 1px solid var(--ma-border-hairline);
+  border-radius: 10px;
+  background: transparent;
+  color: var(--ma-text-secondary);
+  cursor: pointer;
+}
+.ag-look-icon:hover {
+  background: var(--ma-surface-fill);
+}
+.ag-look-icon[aria-checked='true'] {
+  background: var(--ma-accent-subtle);
+  border-color: var(--ma-accent);
+  color: var(--ma-text-primary);
+}
+.ag-look-icon:focus-visible,
+.ag-look-tone:focus-visible {
+  outline: 2px solid var(--ma-focus-ring);
+  outline-offset: 2px;
+}
+.ag-look-wheel {
+  position: relative;
+  flex: none;
+}
+.ag-look-tone {
+  position: absolute;
+  display: inline-flex;
+  align-items: center;
+  justify-content: center;
+  padding: 0;
+  border: 0;
+  border-radius: 50%;
+  cursor: pointer;
+}
+.ag-look-tone[aria-checked='true'] {
+  box-shadow: 0 0 0 2px var(--ma-surface-window), 0 0 0 4px var(--ma-text-primary);
+}
+.ag-look-wheel-preview {
+  position: absolute;
+  inset: 0;
+  display: flex;
+  align-items: center;
+  justify-content: center;
+  pointer-events: none;
+}

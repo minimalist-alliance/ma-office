@@ -1,0 +1,420 @@
+#!/usr/bin/python3 -I
+"""desk-egress: the on-desk half of ADR 0036, as root.
+
+Sets the shaper on the desk's interface before desk-rtc and deskd start. Every 60 s it reads tc's byte counters, applies
+section 5's budgets, saves them in /data/desk-egress and puts the shaper back if it's gone. It never touches /data/browser.
+
+Its own failure must never cut a member off: a bad state file starts over, and no clamp outlives this process (the unit's
+ExecStopPost) or 10 failed ticks in a row. The kernel's ceilings stay either way, and the guard's stops stand behind them.
+
+  desk-egress            the daemon
+  desk-egress --check    exit 0 if the shaper is on
+  desk-egress --unclamp  put the classes back at their normal rates, once, if the shaper is on
+
+On a Guild Desk (/run/ma/guild) it adds a voice class, 1:30, sized to the instance's tier in /etc/ma/guild.conf, and the
+guild's budget replaces the member's stream steps and desk-rtc clamp: one day line on everything a member's meter counts
+(image/README.md, "Guild Desk"). A member's desk never reads that file, and its classes and budgets are as they were.
+"""
+import configparser
+import json
+import os
+import signal
+import socket
+import subprocess
+import sys
+import time
+
+GB = 10**9
+CONF = "/etc/ma/egress.conf"
+STATE = "/data/desk-egress/state.json"
+PROFILE = "/run/desk-egress/profile"
+TC = "/usr/sbin/tc"
+FAIL_OPEN_TICKS = 10
+PROFILE_HOLD_S = 3600  # A softer picture comes at once. A sharper one waits, so a total near a line can't keep pausing the picture.
+PROFILES = ("normal", "capped", "deep")
+SAVED_FIELDS = {"level": float, "slowed": bool, "day_deep": bool, "clamped": bool, "month": str, "month_bytes": int, "profile_since": float, "updated": float}
+# Section 5's numbers. /etc/ma/egress.conf overrides them, and a bad or missing one is the value here.
+DEFAULTS = {
+    "interface": "ens5", "tick_seconds": 60.0,
+    "stream_mbps": 60.0, "root_mbps": 2.0, "other_mbps": 100.0,
+    "bucket_gb": 30.0, "refill_mbps": 1.0, "reopen_gb": 1.0, "slowed_root_mbps": 0.25, "slowed_other_mbps": 0.75,
+    "capped_month_gb": 100.0, "capped_day_gb": 100.0, "deep_month_gb": 500.0, "deep_day_gb": 120.0, "deep_day_release_gb": 100.0,
+    "clamp_day_gb": 135.0, "clamp_day_release_gb": 120.0, "clamped_stream_mbps": 1.0,
+}
+# minor: what never changes, and the leaf. Rate equals ceiling, so nothing borrows. cburst too, because a class also needs the
+# ceiling's tokens to send, so without it the burst would be only tc's default.
+CLASSES = {
+    "10": ("burst 1mb cburst 1mb prio 0", "pfifo limit 1000"),
+    "15": ("prio 0", "fq_codel"),
+    "20": ("burst 256kb cburst 256kb prio 1", "fq_codel"),
+}
+# A Guild Desk's. desk-rtc's class carries every member's data there, not one member's video, so its leaf is fq_codel:
+# a member's bulk can't hold up another's small messages, and a full class drops from the bulk first rather than from
+# everyone behind one FIFO. Voice at the top priority, beside it, with a bucket that takes a whole round of 10 voices to
+# every member at once (at 200 members about 300 KB each 20 ms) and fq_codel, so one listener's queue can't hold up the
+# others and a ceiling that's reached drops rather than delays.
+GUILD_CLASSES = {**CLASSES, "10": ("burst 1mb cburst 1mb prio 0", "fq_codel"), "30": ("burst 1mb cburst 1mb prio 0", "fq_codel")}
+GUILD_FLAG = "/run/ma/guild"
+GUILD_CONF = "/etc/ma/guild.conf"
+PRODUCT = "/sys/devices/virtual/dmi/id/product_name"
+GUILD_DEFAULTS = {"voice_mbps_per_member": 0.8, "rtc_mbps_per_member": 0.75, "day_gb_per_member": 4.0, "day_release_gb_per_member": 3.5,
+                  "guarded_voice_mbps_per_member": 0.2, "guarded_rtc_mbps_per_member": 0.1,
+                  # Temporary (Security's NET031-1), until Platform's cost guard knows a Guild Desk: its 150 GB in 24 h
+                  # stop came before a 50- or 200-member guild's own line. 0 is no cap; missing or bad is these.
+                  "day_cap_gb": 120.0, "day_release_cap_gb": 105.0}
+GUILD_CAPS = ("day_cap_gb", "day_release_cap_gb")
+GUILD_TIERS = {"t4g.small": 25, "t4g.medium": 50, "c7g.xlarge": 200, "default": 200}
+
+
+def log(msg, level=6):
+    print(f"<{level}>desk-egress: {msg}", file=sys.stderr, flush=True)
+
+
+def load_conf(path=CONF):
+    cfg, p = dict(DEFAULTS), configparser.ConfigParser()
+    try:
+        p.read(path)
+        for key, value in p.items("egress"):
+            if key in cfg:
+                cfg[key] = value if key == "interface" else float(value)
+    except (configparser.Error, ValueError, OSError) as e:
+        log(f"{path}: {e}; using the rest of the defaults", 4)
+    return cfg
+
+
+def instance_type(path=PRODUCT):
+    try:
+        with open(path, encoding="ascii") as f:
+            return f.read().strip()
+    except (OSError, ValueError):
+        return ""
+
+
+def load_guild(cfg, path=GUILD_CONF, itype=None):
+    """A Guild Desk's settings on top of the member's: the tier's members, the voice class, the day line. A bad value is
+    its default, and an instance type the file doesn't list is its default tier."""
+    g, tiers, p = dict(GUILD_DEFAULTS), dict(GUILD_TIERS), configparser.ConfigParser()
+    try:
+        p.read(path)
+        for key, value in (p.items("egress") if p.has_section("egress") else []):
+            if key in g:
+                try:
+                    v = float(value)
+                    if key in GUILD_CAPS and not 0 <= v < float("inf"):
+                        raise ValueError(f"{value!r} isn't 0 or more")
+                    g[key] = v
+                except ValueError as e:
+                    log(f"{path}: {key}: {e}; using its default", 4)
+        for key, value in (p.items("tiers") if p.has_section("tiers") else []):
+            if value.isdigit() and 0 < int(value) <= 10000:
+                tiers[key] = int(value)
+    except (configparser.Error, OSError) as e:
+        log(f"{path}: {e}; using the defaults", 4)
+    itype = instance_type() if itype is None else itype
+    n = tiers.get(itype, tiers["default"])
+    rtc = max(cfg["stream_mbps"], n * g["rtc_mbps_per_member"])  # never under a member's desk's 60
+    # The members' line, then the temporary cap: at most day_cap_gb, released at most at day_release_cap_gb, never above
+    # the line it releases.
+    line, release = n * g["day_gb_per_member"], n * g["day_release_gb_per_member"]
+    day = min(line, g["day_cap_gb"]) if g["day_cap_gb"] > 0 else line
+    day_release = min(release, g["day_release_cap_gb"], day) if g["day_release_cap_gb"] > 0 else min(release, day)
+    return {**cfg, "guild": True, "instance_type": itype or "unknown", "members": n,
+            "voice_mbps": n * g["voice_mbps_per_member"], "guarded_voice_mbps": n * g["guarded_voice_mbps_per_member"],
+            "rtc_mbps": rtc, "guarded_rtc_mbps": min(rtc, n * g["guarded_rtc_mbps_per_member"]),
+            "guild_day_gb": day, "guild_day_release_gb": day_release, "guild_members_day_gb": line}
+
+
+def classes_for(cfg):
+    return GUILD_CLASSES if cfg.get("guild") else CLASSES
+
+
+class Budget:
+    """Layers 2 to 5, in bytes. It holds no I/O: it takes the clock and tc's counters, so the tests can run a month in a second."""
+
+    def __init__(self, cfg, now, saved=None, boot=""):
+        self.c = cfg
+        self.guild = bool(cfg.get("guild"))
+        self.level = cfg["bucket_gb"] * GB
+        self.slowed = self.day_deep = self.clamped = self.guarded = False
+        self.month, self.month_bytes, self.windows, self.last = "", 0, [], {}
+        self.profile, self.profile_since, self.updated = "normal", now, now
+        if saved:
+            try:
+                fresh = {k: kind(saved[k]) for k, kind in SAVED_FIELDS.items()}
+                fresh["windows"] = [[float(t), int(n)] for t, n in saved["windows"]]
+                fresh["last"] = {str(k): int(v) for k, v in saved["last"].items()} if saved.get("boot") == boot else {}  # A new boot's counters start at 0.
+                vars(self).update(fresh)
+                self.profile = saved["profile"] if saved["profile"] in PROFILES else "normal"
+                if self.guild:
+                    self.guarded = saved.get("guarded") is True
+            except (KeyError, TypeError, ValueError, AttributeError) as e:
+                log(f"bad state, starting over: {e!r}", 4)
+        if self.guild:  # No stream and no clamp on a Guild Desk: whatever a member's boot saved of them goes.
+            self.profile, self.day_deep, self.clamped = "normal", False, False
+
+    def tick(self, now, counters):
+        c, deltas = self.c, {}
+        for k, v in counters.items():
+            before = self.last.get(k, 0)
+            deltas[k] = v - before if v >= before else v  # A counter that went back is a new shaper.
+        self.last = dict(counters)
+        other = deltas.get("15", 0) + deltas.get("20", 0)
+        total = other + deltas.get("10", 0) + deltas.get("30", 0)  # 1:30 is only a Guild Desk's.
+        elapsed = max(0.0, now - self.updated)  # A clock that went back refills nothing.
+        self.updated = now
+        # Layer 2. The refill counts time the desk was stopped too.
+        cap = c["bucket_gb"] * GB
+        self.level = max(0.0, min(cap, self.level + elapsed * c["refill_mbps"] * 125000) - other)
+        self.slowed = self.level <= 0 or (self.slowed and self.level < c["reopen_gb"] * GB)
+        # The totals count every class, so the stream steps also pull back when other traffic is what's using the month.
+        month = time.strftime("%Y-%m", time.gmtime(now))
+        if month != self.month:
+            self.month, self.month_bytes = month, 0
+        self.month_bytes += total
+        slot = now - now % 300
+        if self.windows and self.windows[-1][0] == slot:
+            self.windows[-1][1] += total
+        else:
+            self.windows.append([slot, total])
+        self.windows = [w for w in self.windows if now - 86400 < w[0] <= now]
+        day = sum(w[1] for w in self.windows)
+        if self.guild:
+            # A Guild Desk's members are metered one by one, so the member's stream steps and clamp give way to one line
+            # for the guild: past it, voice and desk-rtc's class slow down until the 24 h total is under the release line.
+            self.guarded = day >= c["guild_day_gb"] * GB or (self.guarded and day >= c["guild_day_release_gb"] * GB)
+            return
+        # Layers 3 to 5.
+        self.day_deep = day >= c["deep_day_gb"] * GB or (self.day_deep and day >= c["deep_day_release_gb"] * GB)
+        self.clamped = day >= c["clamp_day_gb"] * GB or (self.clamped and day >= c["clamp_day_release_gb"] * GB)
+        if self.day_deep or self.month_bytes >= c["deep_month_gb"] * GB:
+            want = "deep"
+        elif day >= c["capped_day_gb"] * GB or self.month_bytes >= c["capped_month_gb"] * GB:
+            want = "capped"
+        else:
+            want = "normal"
+        softer = PROFILES.index(want) > PROFILES.index(self.profile)
+        if want != self.profile and (softer or now - self.profile_since >= PROFILE_HOLD_S):
+            self.profile, self.profile_since = want, now
+
+    def rates(self):
+        c = self.c
+        r = {"10": c["clamped_stream_mbps"] if self.clamped else c["stream_mbps"],
+             "15": c["slowed_root_mbps"] if self.slowed else c["root_mbps"],
+             "20": c["slowed_other_mbps"] if self.slowed else c["other_mbps"]}
+        if self.guild:
+            r["10"] = c["guarded_rtc_mbps"] if self.guarded else c["rtc_mbps"]
+            r["30"] = c["guarded_voice_mbps"] if self.guarded else c["voice_mbps"]
+        return r
+
+    def saved(self, boot):
+        s = {"v": 1, "boot": boot, "updated": self.updated, "last": self.last, "level": self.level, "slowed": self.slowed,
+             "month": self.month, "month_bytes": self.month_bytes, "windows": self.windows, "day_deep": self.day_deep,
+             "clamped": self.clamped, "profile": self.profile, "profile_since": self.profile_since}
+        if self.guild:
+            s["guarded"] = self.guarded
+        return s
+
+
+def normal_rates(cfg):
+    r = {"10": cfg["stream_mbps"], "15": cfg["root_mbps"], "20": cfg["other_mbps"]}
+    if cfg.get("guild"):
+        r["10"], r["30"] = cfg["rtc_mbps"], cfg["voice_mbps"]
+    return r
+
+
+class Shaper:
+    def __init__(self, cfg, run=subprocess.run):
+        self.cfg, self.run, self.spec = cfg, run, classes_for(cfg)
+
+    def tc(self, *args, stdin=None):
+        r = self.run([TC, *args], input=stdin, capture_output=True, text=True, timeout=10, check=False)
+        if r.returncode:
+            raise OSError(f"tc {' '.join(args[:3])}: {r.stderr.strip()[:200]}")
+        return r.stdout
+
+    @staticmethod
+    def class_line(dev, minor, mbps):
+        bits = int(mbps * 1e6)  # GUILD_CLASSES has every desk's classes as they are, and 1:30.
+        return f"class replace dev {dev} parent 1: classid 1:{minor} htb rate {bits}bit ceil {bits}bit {GUILD_CLASSES[minor][0]} quantum 60000"
+
+    def classes(self):
+        """Our classes as tc reports them, by minor. Empty if the shaper's gone."""
+        out = json.loads(self.tc("-j", "-s", "class", "show", "dev", self.cfg["interface"]) or "[]")
+        return {c["handle"].split(":")[1]: c for c in out if c.get("class") == "htb" and c.get("handle", "").startswith("1:")}
+
+    def apply(self, rates, have=None):
+        """Puts back only what differs. A restart must not reset the counters, and a change of rate loses no packet."""
+        dev, batch = self.cfg["interface"], []
+        have = self.classes() if have is None else have
+        # On a Guild Desk a leaf's kind is checked too: a shaper an older desk-egress put on (pfifo under 1:10) gets the
+        # Guild Desk's. A member's desk never reads the leaves, as before.
+        kinds = {}
+        if self.cfg.get("guild") and have:
+            kinds = {q.get("parent"): q.get("kind") for q in json.loads(self.tc("-j", "qdisc", "show", "dev", dev) or "[]")}
+        if len(have) < len(self.spec):
+            roots = json.loads(self.tc("-j", "qdisc", "show", "dev", dev, "root") or "[]")
+            if not any(q.get("kind") == "htb" and q.get("handle") == "1:" for q in roots):
+                batch.append(f"qdisc replace dev {dev} root handle 1: htb default 20")
+                have = {}
+                log(f"putting the shaper on {dev}", 5)
+        for minor, (_, leaf) in self.spec.items():
+            c = have.get(minor)
+            if not c or c.get("rate") != int(rates[minor] * 1e6) // 8:
+                batch.append(self.class_line(dev, minor, rates[minor]))
+            if not c or c.get("leaf") != f"0x{minor}":  # tc -j writes a leaf's handle as 0x15
+                batch.append(f"qdisc replace dev {dev} parent 1:{minor} handle {minor}: {leaf}")
+            elif kinds and kinds.get(f"1:{minor}") != leaf.split()[0]:
+                # tc won't change a qdisc's kind under the same handle ("Invalid qdisc name"), so the old leaf goes first.
+                batch += [f"qdisc del dev {dev} parent 1:{minor} handle {minor}:", f"qdisc replace dev {dev} parent 1:{minor} handle {minor}: {leaf}"]
+        if batch:
+            self.tc("-batch", "-", stdin="\n".join(batch) + "\n")
+
+    def unclamp(self):
+        """Normal rates with no read first, since reading may be what's broken. With no shaper on the interface this just fails."""
+        dev = self.cfg["interface"]
+        self.tc("-batch", "-", stdin="".join(self.class_line(dev, m, r) + "\n" for m, r in normal_rates(self.cfg).items()))
+
+
+def write_atomic(path, text):
+    tmp = path + ".tmp"
+    fd = os.open(tmp, os.O_WRONLY | os.O_CREAT | os.O_TRUNC, 0o644 if path == PROFILE else 0o600)
+    with os.fdopen(fd, "w", encoding="ascii") as f:
+        f.write(text)
+        f.flush()
+        os.fsync(f.fileno())
+    os.replace(tmp, path)
+
+
+def set_profile(profile, path=PROFILE, run=subprocess.run):
+    """Names the conf for desk-stream's run, and restarts it only if it's running and the profile changed."""
+    try:
+        with open(path, encoding="ascii") as f:
+            current = f.read().strip()
+    except OSError:
+        current = None
+    if current == profile:
+        return
+    write_atomic(path, profile + "\n")
+    if current is not None:
+        log(f"stream profile {current} to {profile}", 5)
+        run(["/usr/bin/systemctl", "--no-block", "try-restart", "desk-stream.service"], timeout=30, check=False, stdin=subprocess.DEVNULL)
+
+
+def step(budget, shaper, now):
+    """One tick: count, decide, act. Saving and the profile come after the rates, so neither can hold a rate back."""
+    have = shaper.classes()
+    before = (budget.slowed, budget.clamped, budget.guarded)
+    budget.tick(now, {m: c["stats"]["bytes"] for m, c in have.items() if m in shaper.spec})
+    shaper.apply(budget.rates(), have)
+    if before != (budget.slowed, budget.clamped, budget.guarded):
+        g = f" guarded={budget.guarded}" if budget.guild else ""
+        log(f"slowed={budget.slowed} clamped={budget.clamped}{g} bucket={budget.level / GB:.2f} GB month={budget.month_bytes / GB:.2f} GB", 5)
+
+
+def baseline(budget, shaper):
+    """With no counters saved from this boot, what the shaper has counted already is of unknown age: a state file that was lost
+    or couldn't be written, under a shaper that outlived its process. It starts from here rather than landing on the bucket in
+    one tick (on a lab box, 11.5 GB slowed it at once). A shaper this process has just put on counts from about 0, so a new
+    boot loses nothing, and a restart with this boot's state keeps counting what it missed."""
+    if not budget.last:
+        budget.last = {m: c["stats"]["bytes"] for m, c in shaper.classes().items() if m in shaper.spec}
+
+
+def guarded_tick(budget, shaper, now, failures, profile_path=PROFILE):
+    """Returns the count of failed ticks in a row. Nothing a tick can raise stops the daemon, and a clamp doesn't outlive 10 of them."""
+    try:
+        step(budget, shaper, now)
+        set_profile(budget.profile, profile_path)
+        return 0
+    except Exception as e:  # pylint: disable=broad-except
+        failures += 1
+        log(f"tick failed ({failures}): {e!r}", 3)
+        if failures == FAIL_OPEN_TICKS:
+            log("lifting any clamp until a tick works again", 3)
+            try:
+                shaper.unclamp()
+            except Exception as e2:  # pylint: disable=broad-except
+                log(f"couldn't: {e2!r}", 3)
+        return failures
+
+
+def save(budget, boot, path=STATE):
+    try:
+        write_atomic(path, json.dumps(budget.saved(boot), separators=(",", ":")))
+    except OSError as e:
+        log(f"can't save state, carrying on: {e}", 4)
+
+
+def notify(message):
+    path = os.environ.get("NOTIFY_SOCKET", "")
+    if path:
+        with socket.socket(socket.AF_UNIX, socket.SOCK_DGRAM) as s:
+            s.sendto(message, "\0" + path[1:] if path[0] == "@" else path)
+
+
+def daemon(cfg):
+    with open("/proc/sys/kernel/random/boot_id", encoding="ascii") as f:
+        boot = f.read().strip()
+    saved = None
+    try:
+        with open(STATE, encoding="ascii") as f:
+            saved = json.load(f)
+    except FileNotFoundError:
+        pass
+    except (OSError, ValueError) as e:
+        log(f"bad state file, starting over: {e}", 4)
+    budget, shaper = Budget(cfg, time.time(), saved, boot), Shaper(cfg)
+    if cfg.get("guild"):
+        log(f"Guild Desk: {cfg['instance_type']}, {cfg['members']} members: voice {cfg['voice_mbps']:g} Mbit, desk-rtc {cfg['rtc_mbps']:g} Mbit, day line "
+            f"{cfg['guild_day_gb']:g} GB"
+            + (f", capped from the members' {cfg['guild_members_day_gb']:g} until Platform's guard knows Guild Desks" if cfg["guild_day_gb"] < cfg["guild_members_day_gb"] else "")
+            + f" (under {cfg['guild_day_release_gb']:g} again: {cfg['guarded_voice_mbps']:g} Mbit voice, "
+            f"{cfg['guarded_rtc_mbps']:g} Mbit desk-rtc)", 5)
+    signal.signal(signal.SIGTERM, lambda *_: sys.exit(0))
+    # desk-rtc and deskd wait for READY or for this unit's failure, whichever comes first, and start either way.
+    try:
+        shaper.apply(budget.rates())
+        baseline(budget, shaper)
+        log("shaper on")
+    except Exception as e:  # pylint: disable=broad-except
+        log(f"no shaper yet, trying again every tick: {e}", 3)
+    try:
+        set_profile(budget.profile)
+    except OSError as e:
+        log(f"can't write the profile: {e}", 3)
+    notify(b"READY=1")
+    failures = 0
+    try:
+        while True:
+            time.sleep(cfg["tick_seconds"])
+            failures = guarded_tick(budget, shaper, time.time(), failures)
+            save(budget, boot)
+    finally:
+        try:  # A stop and wake keeps the last minute's bytes too.
+            step(budget, shaper, time.time())
+        except Exception as e:  # pylint: disable=broad-except
+            log(f"last tick failed: {e!r}", 4)
+        save(budget, boot)
+
+
+def main(argv):
+    cfg = load_conf()
+    if os.path.exists(GUILD_FLAG):
+        cfg = load_guild(cfg)
+    if argv[1:] == ["--check"]:
+        missing = [m for m in classes_for(cfg) if m not in Shaper(cfg).classes()]
+        if missing:
+            print(f"no shaper: classes {missing} are missing", file=sys.stderr)
+        return 1 if missing else 0
+    if argv[1:] == ["--unclamp"]:
+        try:
+            Shaper(cfg).unclamp()
+        except OSError:  # Root may have taken the shaper off on purpose.
+            pass
+        return 0
+    daemon(cfg)
+    return 0
+
+
+if __name__ == "__main__":
+    sys.exit(main(sys.argv))

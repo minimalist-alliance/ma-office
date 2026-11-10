@@ -1,0 +1,62 @@
+{
+  "name": "ma-desk-web",
+  "version": "0.1.0",
+  "private": true,
+  "description": "Minimalist Alliance Desk app: React + TypeScript + Konva, served from desk. hosts by the Platform loader.",
+  "type": "module",
+  "engines": {
+    "node": ">=24"
+  },
+  "scripts": {
+    "dev": "vite --port 5173 --strictPort",
+    "typecheck": "tsc --noEmit -p tsconfig.json",
+    "lint": "eslint . && node scripts/check-css-literals.mjs",
+    "test": "vitest run",
+    "build:release": "node scripts/build-release.mjs",
+    "build:e2e": "vite build --mode e2e --base /v/e2e/ --outDir dist/e2e --emptyOutDir",
+    "harness": "node harness/serve.mjs",
+    "e2e": "npm run build:release && npm run build:e2e && playwright test",
+    "perf": "npm run build:e2e && node tests/perf/perf.mjs",
+    "check": "npm run typecheck && npm run lint && npm run test && npm run e2e"
+  },
+  "dependencies": {
+    "@fontsource-variable/inter": "5.3.0",
+    "@fontsource-variable/nunito": "5.3.0",
+    "@fontsource/jost": "5.3.0",
+    "@hocuspocus/provider": "4.8.0",
+    "@minimalist-alliance/maia-avatar": "file:vendor/minimalist-alliance-maia-avatar-0.2.0-dance.1.tgz",
+    "@tiptap/core": "3.32.0",
+    "@tiptap/extension-collaboration": "3.32.0",
+    "@tiptap/extension-highlight": "3.32.0",
+    "@tiptap/extension-list": "3.32.0",
+    "@tiptap/extensions": "3.32.0",
+    "@tiptap/pm": "3.32.0",
+    "@tiptap/react": "3.32.0",
+    "@tiptap/starter-kit": "3.32.0",
+    "@tiptap/y-tiptap": "3.0.10",
+    "konva": "10.9.1",
+    "lib0": "0.2.119",
+    "perfect-freehand": "1.2.3",
+    "react": "19.3.1",
+    "react-dom": "19.3.1",
+    "react-konva": "19.3.2",
+    "y-protocols": "1.0.7",
+    "yjs": "13.6.33",
+    "zustand": "5.0.16"
+  },
+  "devDependencies": {
+    "@playwright/test": "1.64.1",
+    "@types/node": "24.19.2",
+    "@types/react": "19.3.0",
+    "@types/react-dom": "19.3.0",
+    "@vitejs/plugin-react": "6.2.1",
+    "axe-core": "4.14.0",
+    "eslint": "10.14.0",
+    "eslint-plugin-react-hooks": "7.1.1",
+    "fake-indexeddb": "6.2.6",
+    "typescript": "5.9.3",
+    "typescript-eslint": "8.72.1",
+    "vite": "8.3.5",
+    "vitest": "5.1.0"
+  }
+}

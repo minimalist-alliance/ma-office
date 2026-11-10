@@ -1,0 +1,162 @@
+/* The bandwidth circle (task 24). Every color is a token from tokens.ts, so Light, Dusk and Dark need nothing here. */
+
+/* Bottom right, level with the zoom control, which moves left to make room. */
+.bw {
+  position: absolute;
+  right: max(32px, env(safe-area-inset-right, 0px));
+  bottom: calc(16px + env(safe-area-inset-bottom, 0px));
+  z-index: 11;
+}
+.ma-shell:has(.bw) .bottombar {
+  padding-right: calc(max(32px, env(safe-area-inset-right, 0px)) + 52px);
+}
+
+.bw-btn {
+  display: grid;
+  place-items: center;
+  width: 44px;
+  height: 44px;
+  padding: 0;
+  border: 1px solid var(--ma-border);
+  border-radius: 999px;
+  background: var(--ma-surface-chrome);
+  color: var(--ma-text-primary);
+  -webkit-tap-highlight-color: transparent;
+}
+@media (hover: hover) {
+  .bw-btn:hover {
+    background: var(--ma-surface-fill);
+  }
+}
+.bw-btn:focus-visible {
+  outline: 2px solid var(--ma-focus-ring);
+  outline-offset: 2px;
+}
+
+.bw-ring {
+  display: block;
+  transform: rotate(-90deg);
+}
+.bw-ring circle {
+  fill: none;
+  stroke-width: 2.5;
+}
+.bw-track {
+  stroke: var(--ma-surface-fill-strong);
+}
+.bw-fill {
+  stroke: var(--ma-accent);
+  stroke-linecap: round;
+  transition: stroke-dasharray 400ms ease;
+}
+.bw-ring.warn .bw-fill {
+  stroke: var(--ma-status-warn);
+}
+
+.bw-panel {
+  position: absolute;
+  right: 0;
+  bottom: calc(100% + 8px);
+  display: grid;
+  gap: 12px;
+  width: min(280px, calc(100vw - 32px));
+  padding: 14px 16px;
+  border: 1px solid var(--ma-border);
+  border-radius: 14px;
+  background: var(--ma-surface-overlay);
+  color: var(--ma-text-primary);
+  box-shadow: var(--ma-elevation-menu);
+  font-size: 13px;
+  line-height: 18px;
+}
+.bw-title {
+  font-weight: 600;
+}
+.bw-row {
+  display: grid;
+  gap: 6px;
+}
+.bw-head {
+  display: flex;
+  justify-content: space-between;
+  gap: 8px;
+  color: var(--ma-text-secondary);
+}
+.bw-head b {
+  font-weight: 600;
+  color: var(--ma-text-primary);
+  font-variant-numeric: tabular-nums;
+}
+.bw-bar {
+  height: 6px;
+  border-radius: 3px;
+  background: var(--ma-surface-fill-strong);
+  overflow: hidden;
+}
+.bw-bar span {
+  display: block;
+  height: 100%;
+  border-radius: 3px;
+  background: var(--ma-accent);
+}
+.bw-bar.warn span {
+  background: var(--ma-status-warn);
+}
+.bw-reset,
+.bw-note {
+  font-size: 12px;
+  line-height: 16px;
+  color: var(--ma-text-tertiary);
+}
+.bw-line {
+  color: var(--ma-text-primary);
+}
+/* The paused window's lines: no word left alone on the last line. */
+.bw-paused h3,
+.bw-paused p {
+  text-wrap: balance;
+}
+/* A number stays with its unit, and a time with its AM or PM (Words.tsx). */
+.bw-nb {
+  white-space: nowrap;
+}
+
+/* Above the circle, clear of the bottom bar's centre notice. */
+.notice.bw-notice {
+  /* `.notice` is relative, which put this heads-up at (-right, -bottom), off the top left of the screen. */
+  position: absolute;
+  left: auto;
+  right: max(32px, env(safe-area-inset-right, 0px));
+  bottom: calc(76px + env(safe-area-inset-bottom, 0px));
+  transform: none;
+  max-width: min(340px, calc(100% - 32px));
+  text-wrap: pretty; /* no word alone on the last line ("keep / working.") */
+}
+
+@media (max-width: 599px) {
+  .bw,
+  .notice.bw-notice {
+    right: max(16px, env(safe-area-inset-right, 0px));
+  }
+  .ma-shell:has(.bw) .bottombar {
+    padding-right: calc(max(16px, env(safe-area-inset-right, 0px)) + 52px);
+  }
+}
+
+@media (prefers-reduced-motion: reduce) {
+  .bw-fill {
+    transition: none;
+  }
+}
+
+/* The data guard's words in the panel (ma-platform ADR 0110): the platform's message as given, set apart from the numbers. */
+.bw-guard {
+  display: grid;
+  gap: 6px;
+  padding: 10px 12px;
+  border: 1px solid var(--ma-status-warn);
+  border-radius: 10px;
+  background: var(--ma-surface-fill);
+  color: var(--ma-text-primary);
+  text-wrap: pretty;
+}

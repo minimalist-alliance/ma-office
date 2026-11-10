@@ -1,0 +1,68 @@
+# deskd's JVM flags: the image starts java @/app/jvm.options. The Dockerfile's training run uses this file too,
+# so the CDS archive matches what runs. Each comment is the reason for the flag below it.
+#
+# Worst case against --memory=512m (desk-runtime.md section 5), in MiB: heap 208, metaspace 64, code cache 32,
+# direct 32, CDS archives 40, JVM internals, stacks and libraries about 50: about 426, leaving room for SQLite.
+# Sizes are checked only on x86_64 so far (services/CLAUDE.md, Measuring); confirm them on c7g.large.
+
+# One GC thread and the least bookkeeping. With a heap this small, pauses stay short.
+-XX:+UseSerialGC
+# Starts small, because eden is a share of the heap and every eden page stays in RSS once touched.
+-Xms16m
+# Caps the heap, at a fifth over what deskd's own limits add up to: about 172 MiB. That's 4 sessions of 31.4 MiB, 8 MiB of
+# idempotency store, 9 MiB for the Browser, 16 MiB for the clipboard and 13.3 MiB for the Platform's price table.
+#
+# A session's 31.4 is 16.8 (8.5, plus 3.7 for replies queued on each of ctl and rpc when a client stops reading, plus 0.8
+# for 8 data.read transfers on bulk, each parked once 64 KiB of it waits for desk-rtc, with a frame in hand) and 14.6 once
+# it uses Notebook:
+# - 5.1 toward desk-notebook: one collab message of 4 MiB, held on its lane until it's written, from that same array,
+#   and 1.1 of JSON in the link's queue, past which a call is refused rather than queued.
+# - 4.2 toward the client: 4.1 of collab messages being read or waiting (CollabOut), and a frame in hand and 64 KiB for
+#   desk-rtc, as every DATA is one message to RtcClient, so it parks there. Frames are made one at a time (Frame.fragments).
+# - 5.3 for one JSON reply off the socket: 1.1 of bytes, 2.1 of text if it's past Latin-1, and 2.1 of Jackson's buffers.
+#
+# The Browser's 9 is one CDP message of 2 MiB chars while it's parsed, and 256 tabs of 2.3 KiB. The clipboard's 16 is 4
+# writes of 2 MiB, each a 1 MiB request and its text, one of them adding its 1 MB of UTF-8 and 1.3 MiB of parts, then 5 MiB
+# of reads: a get's 1 MB joined, its text decoded (2 MiB, as U+FFFD is past Latin-1), and the last read's text while its
+# replies are built. A read's reply waits in rpc's queue, counted above. Requests in flight beyond the clipboard's aren't
+# counted, and nor are replies waiting to become a RES (services/CLAUDE.md, Known gaps).
+#
+# The price table's 13.3 (ADR 0043) is the 1 MiB kept, which AgentPushes shares; a fetch's exact copy of 1 MiB and its
+# parse, 5.3 MiB measured for a 1 MiB table of short entries (3.3 for pricing.json's pretty-printed shape); and a push to
+# desk-agent at the same time: the table's text, 2 MiB past Latin-1, its JSON, 2 with escapes, and the frame's copy, 2.
+# A guild desk's run replaces this with heap-guild.options' -Xmx (a later -Xmx wins), sized by notebook/GuildLoadMain.
+-Xmx208m
+# Caps class metadata: about 2.5 MiB with the archives, 30 MiB with none, so losing them still fits.
+-XX:MaxMetaspaceSize=64m
+# Caps the part of metaspace holding class headers: about 1 MiB with the archives, 4.5 MiB with none.
+-XX:CompressedClassSpaceSize=16m
+# Caps compiled code, about 6 MiB after boot. If it ever fills, the JVM stops compiling and keeps running.
+-XX:ReservedCodeCacheSize=32m
+# Caps NIO's native buffers, used for socket I/O. An rtc.sock message is at most 64 KiB, and the link to desk-notebook
+# reads and writes no more than that at a time, however long its message is.
+-XX:MaxDirectMemorySize=32m
+# Stack limit for platform and carrier threads (arm64's default is 2 MiB). Only touched pages cost RSS.
+-Xss512k
+# C1 only: no C2 thread or its memory spikes. deskd moves small messages and has no hot loop that needs C2.
+-XX:TieredStopAtLevel=1
+# Dies rather than limping along half-broken: the unit restarts it and clients resume.
+-XX:+ExitOnOutOfMemoryError
+# No heap image on disk: it would hold keys (ADR 0040).
+-XX:-HeapDumpOnOutOfMemoryError
+# No core file on a crash, for the same reason.
+-XX:-CreateCoredumpOnCrash
+# Nothing can attach to the process and read its memory (ADR 0040).
+-XX:+DisableAttachMechanism
+# No file in /tmp and no sampling task waking the JVM 20 times a second.
+-XX:-UsePerfData
+# Uses the bean wiring generated at build time instead of working it out at each boot.
+-Dspring.aot.enabled=true
+# Holds deskd.version, from the Dockerfile's VERSION build arg. It overrides the value inside the jar.
+-Dspring.config.additional-location=optional:file:/app/deskd.properties
+# Uses the archive if it's valid, and otherwise just starts without it.
+-Xshare:auto
+# The AppCDS archive the Dockerfile trains, through a whole session: classes load from it mapped, parsed and verified.
+-XX:SharedArchiveFile=/app/deskd.jsa
+# A stale archive would warn on stdout at every start, and training lists every class it skips.
+-Xlog:cds=off
+-Xlog:cds+dynamic=off

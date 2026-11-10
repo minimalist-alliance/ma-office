@@ -1,0 +1,2308 @@
+/* Layout: a full-bleed pan-and-zoom canvas is the desktop; DOM chrome floats in its corners
+   and app windows sit in a screen-space layer over it. Ported from the prototype, on the
+   design's tokens and numbers (docs/desk-design.md 3.6, 3.12). Every color is a token. */
+:root {
+  --ma-font-ui: "Inter Variable", system-ui, -apple-system, "Segoe UI", Roboto, sans-serif;
+  --ma-cam-s: 1;
+  --ma-strip-inset: 0px;
+  accent-color: var(--ma-accent);
+}
+
+*,
+*::before,
+*::after {
+  box-sizing: border-box;
+}
+html,
+body,
+#ma-root {
+  height: 100%;
+}
+html,
+body {
+  overflow: hidden;
+}
+html {
+  background-color: var(--ma-surface-world-base);
+  color: var(--ma-text-primary); /* else the root keeps the color scheme's own pure black or white */
+}
+body {
+  margin: 0;
+  background-color: var(--ma-surface-world-base);
+  color: var(--ma-text-primary);
+  font-family: var(--ma-font-ui);
+  font-size: 14px;
+  line-height: 20px;
+  -webkit-font-smoothing: antialiased;
+  overscroll-behavior: none;
+}
+button,
+input,
+select,
+textarea {
+  font: inherit;
+  color: inherit;
+}
+button {
+  cursor: pointer;
+}
+h1,
+h2,
+h3,
+p {
+  margin: 0;
+}
+:focus-visible {
+  outline: 2px solid var(--ma-focus-ring);
+  outline-offset: 2px;
+}
+.sr-only {
+  position: absolute !important;
+  width: 1px;
+  height: 1px;
+  margin: -1px;
+  padding: 0;
+  overflow: hidden;
+  clip-path: inset(50%);
+  white-space: nowrap;
+  border: 0;
+}
+
+/* The theme crossfade: DOM and canvas together, 200 ms, nothing else animates (design 3.12). */
+::view-transition-old(root),
+::view-transition-new(root) {
+  animation-duration: 200ms;
+}
+
+/* ------------------------------------------------------------ shell */
+.ma-shell {
+  position: relative;
+  height: 100dvh;
+  overflow: hidden;
+}
+/* The soft ground gradient sits on its own compositor layer, rasterized once. As a plain body
+   background it cost about 15 fps of camera animation at 2560x1440, DPR 2, in software rendering. */
+.ma-shell::before {
+  content: "";
+  position: absolute;
+  inset: 0;
+  background-image: radial-gradient(ellipse 120% 95% at 50% 26%, var(--ma-surface-world-hi) 0%, var(--ma-surface-world-base) 55%, var(--ma-surface-world-lo) 100%);
+  will-change: transform;
+  pointer-events: none;
+}
+.flat-ground .ma-shell::before {
+  display: none;
+}
+.canvas-wrap {
+  position: absolute;
+  inset: 0;
+  touch-action: none;
+  -webkit-user-select: none;
+  user-select: none;
+  -webkit-tap-highlight-color: transparent;
+}
+/* A press focuses it, so its single keys work (useKeyboard). The canvas draws its own rings, so this one draws none. */
+.canvas-wrap:focus {
+  outline: none;
+}
+
+/* ------------------------------------------------------------ proxy layer */
+.proxy-layer {
+  position: absolute;
+  top: 0;
+  left: 0;
+  width: 0;
+  height: 0;
+  transform-origin: 0 0;
+  pointer-events: none;
+}
+.proxy {
+  --ma-ring-w: 2px;
+  /* Its corner on screen, which the ring follows 2 px out. */
+  --ma-proxy-r: calc(18px * var(--ma-cam-s));
+  position: absolute;
+  padding: 0;
+  border: 0;
+  border-radius: 18px;
+  background: none;
+  pointer-events: none;
+}
+.proxy-strip {
+  --ma-proxy-r: 8px;
+  border-radius: calc(8px / var(--ma-cam-s));
+}
+.proxy:focus {
+  outline: none;
+}
+/* The ring is the chrome's, 2 px with a 2 px gap on screen, at any zoom. This layer is in world units under the
+   camera's scale, and a border or outline is rounded down to whole device pixels before that scale applies, so a
+   `2px / s` outline drew 1.75 px on a desk at 175 %. So the ring is a box the size of the proxy on screen plus the
+   gap, drawn unscaled and scaled back by 1 / s. It's only on the focused proxy, and it follows the camera as the
+   layer does: at rest, and during a move while it has focus. */
+.proxy:focus-visible::after {
+  content: "";
+  position: absolute;
+  left: calc((-2px - var(--ma-ring-w)) / var(--ma-cam-s));
+  top: calc((-2px - var(--ma-ring-w)) / var(--ma-cam-s));
+  box-sizing: border-box;
+  width: calc(100% * var(--ma-cam-s) + 4px + 2 * var(--ma-ring-w));
+  height: calc(100% * var(--ma-cam-s) + 4px + 2 * var(--ma-ring-w));
+  border: var(--ma-ring-w) solid var(--ma-focus-ring);
+  border-radius: calc(var(--ma-proxy-r) + 2px + var(--ma-ring-w));
+  transform: scale(calc(1 / var(--ma-cam-s)));
+  transform-origin: 0 0;
+  pointer-events: none;
+}
+.proxy.editing:focus-visible::after {
+  --ma-ring-w: 3px;
+  border-style: dashed;
+}
+
+/* ------------------------------------------------------------ top bar */
+.topbar {
+  position: absolute;
+  top: 0;
+  left: 0;
+  right: 0;
+  display: flex;
+  flex-wrap: wrap;
+  align-items: center;
+  justify-content: space-between;
+  gap: 12px;
+  padding-block: 16px 12px;
+  padding-left: max(32px, env(safe-area-inset-left, 0px));
+  padding-right: max(32px, env(safe-area-inset-right, 0px));
+  pointer-events: none;
+  z-index: 12; /* over the bottom bar (10) and the bandwidth circle (11): its account menu can reach down that far */
+}
+/* With a popover open, such as the account menu, the bar is over every window (their layer is 20) and Maia's open panel
+   (25): the member just asked for it, and a window under it mustn't take its clicks. Shut, the bar stays under windows,
+   which are the member's work. */
+.topbar:has(.menu) {
+  z-index: 30;
+}
+.topbar > * {
+  pointer-events: auto;
+}
+.home-mark {
+  display: flex;
+  margin: 0;
+  line-height: 0;
+}
+.home-mark-btn {
+  padding: 0;
+  border: 0;
+  border-radius: 8px;
+  background: none;
+  line-height: 0;
+  cursor: pointer;
+}
+.home-mark-img {
+  display: block;
+}
+.home-mark-img.on-dark,
+:root[data-theme='dusk'] .home-mark-img.on-light,
+:root[data-theme='dark'] .home-mark-img.on-light {
+  display: none;
+}
+:root[data-theme='dusk'] .home-mark-img.on-dark,
+:root[data-theme='dark'] .home-mark-img.on-dark {
+  display: block;
+}
+.top-actions {
+  display: flex;
+  align-items: center;
+  gap: 8px;
+}
+@media (max-width: 599px) {
+  /* A phone: with several desks the scope switch and the buttons don't fit one row, so they wrap, from the right. */
+  .top-actions {
+    flex-wrap: wrap;
+    justify-content: flex-end;
+  }
+}
+
+.segmented {
+  display: inline-flex;
+  align-items: stretch;
+  padding: 3px;
+  gap: 2px;
+  border-radius: 999px;
+  background: var(--ma-switcher-track);
+}
+.segmented button {
+  display: inline-flex;
+  align-items: center;
+  justify-content: center;
+  gap: 6px;
+  border: 1px solid transparent;
+  border-radius: 999px;
+  background: transparent;
+  padding: 5px 16px;
+  font-size: 15px;
+  line-height: 20px;
+  font-weight: 500;
+  color: var(--ma-switcher-text);
+  white-space: nowrap;
+}
+.segmented button:hover {
+  background: var(--ma-surface-fill);
+}
+.segmented button.on {
+  background: var(--ma-switcher-selected);
+  border-color: var(--ma-border-strong);
+  font-weight: 600;
+}
+.segmented.theme-switch {
+  display: flex;
+}
+.segmented.theme-switch button {
+  flex: 1;
+  padding: 4px 8px;
+  font-size: 13px;
+}
+
+.icon-btn {
+  display: inline-grid;
+  place-items: center;
+  width: 38px;
+  height: 38px;
+  padding: 0;
+  border: 1px solid var(--ma-border);
+  border-radius: 999px;
+  background: var(--ma-surface-window);
+  color: var(--ma-text-primary);
+}
+.icon-btn:hover:not(:disabled) {
+  background: var(--ma-surface-fill);
+}
+.icon-btn:disabled {
+  opacity: 0.35;
+  cursor: default;
+}
+.icon-btn.chrome {
+  background: var(--ma-surface-chrome);
+}
+.icon-btn.chrome.on {
+  background: var(--ma-surface-fill-strong);
+}
+.icon-btn.sm {
+  width: 30px;
+  height: 30px;
+  border-color: transparent;
+  background: transparent;
+  color: var(--ma-text-secondary);
+}
+.icon {
+  flex: none;
+  display: block;
+}
+.app-glyph {
+  flex: none;
+  fill: none;
+}
+
+/* ------------------------------------------------------------ bottom bar */
+.bottombar {
+  position: absolute;
+  left: 0;
+  right: 0;
+  bottom: 0;
+  display: grid;
+  grid-template-columns: 1fr auto 1fr;
+  align-items: center;
+  gap: 12px;
+  padding-block: 12px calc(16px + env(safe-area-inset-bottom, 0px));
+  padding-left: max(32px, env(safe-area-inset-left, 0px));
+  padding-right: max(32px, env(safe-area-inset-right, 0px));
+  pointer-events: none;
+  z-index: 10;
+}
+.bottombar > * {
+  pointer-events: auto;
+}
+.hints {
+  justify-self: start;
+  /* One line, always: at 1024 px with several desks it wrapped to two. Too long for its column, it ends in an ellipsis
+     rather than push the desk switch, which `min-width: 0` stops it doing. */
+  min-width: 0;
+  max-width: 100%;
+  overflow: hidden;
+  white-space: nowrap;
+  text-overflow: ellipsis;
+  padding: 6px 14px;
+  border-radius: 999px;
+  background: var(--ma-surface-chrome);
+  font-size: 13px;
+  line-height: 18px;
+  color: var(--ma-text-secondary);
+  pointer-events: none;
+}
+.desk-nav,
+.zoom-ctl {
+  display: flex;
+  align-items: center;
+  gap: 4px;
+  padding: 3px; /* 4 px with its 1 px ring, so the ring moves nothing in the bars */
+  border: 1px solid var(--ma-border);
+  border-radius: 999px;
+  background: var(--ma-surface-chrome);
+}
+.desk-nav .icon-btn,
+.zoom-ctl .icon-btn {
+  width: 34px;
+  height: 34px;
+  border: 0;
+  background: transparent;
+}
+.desk-nav .icon-btn:hover,
+.zoom-ctl .icon-btn:hover {
+  background: var(--ma-surface-fill);
+}
+/* In their own columns, so they stay put when the hints hide under 1024 px: they used to slide one column left. */
+.desk-nav {
+  grid-column: 2;
+  justify-self: center;
+}
+.desk-nav-label {
+  display: grid;
+  min-width: 112px;
+  text-align: center;
+  font-size: 14px;
+  line-height: 1.2;
+}
+.desk-nav-label small {
+  font-size: 11px;
+  color: var(--ma-text-tertiary);
+  font-variant-numeric: tabular-nums;
+}
+.zoom-ctl {
+  grid-column: 3;
+  justify-self: end;
+}
+.zoom-label {
+  min-width: 48px;
+  text-align: center;
+  font-size: 13px;
+  color: var(--ma-text-secondary);
+  font-variant-numeric: tabular-nums;
+}
+
+/* ------------------------------------------------------------ notices */
+/* A stack just above the bottom bar, out of the flow: no control moves or hides for a notice. It has no z-index and no
+   transform, so each notice keeps its own place among the layers. Only the notices take pointer input. */
+.notices {
+  position: absolute;
+  left: 0;
+  right: 0;
+  bottom: calc(76px + env(safe-area-inset-bottom, 0px));
+  display: flex;
+  flex-direction: column;
+  align-items: center;
+  gap: 8px;
+  pointer-events: none;
+}
+.notice {
+  position: relative;
+  max-width: min(460px, calc(100% - 32px));
+  padding: 10px 16px;
+  border-radius: 12px;
+  background: var(--ma-surface-overlay);
+  border: 1px solid var(--ma-border);
+  color: var(--ma-text-primary);
+  font-size: 13px;
+  box-shadow: var(--ma-elevation-menu);
+  pointer-events: auto;
+  z-index: 60;
+}
+/* A new release shipped (chrome/NewVersion.tsx): one quiet line, the member's own Reload, and a way to put it away.
+   It stays until then, so it sits under the top bar's menu, windows and menus, and never covers what's in use; it
+   comes up over a window only while it has focus. 36 px tall, so it ends where a fit desk's margin begins on a wide
+   screen (chromeInsets and fitMargin in canvas/controller.ts). */
+.notice.new-version {
+  display: flex;
+  align-items: center;
+  gap: 4px;
+  padding: 3px 3px 3px 14px;
+  border-radius: 999px;
+  color: var(--ma-text-secondary);
+  line-height: 18px;
+  z-index: 9;
+}
+.notice.new-version:focus-within {
+  z-index: 61;
+}
+.new-version-text {
+  min-width: 0;
+  margin-right: 6px;
+}
+.new-version-reload {
+  flex: none;
+  height: 28px;
+  padding: 0 12px;
+  border: 0;
+  border-radius: 999px;
+  background: var(--ma-surface-sunken);
+  color: var(--ma-text-primary);
+  font: inherit;
+  font-weight: 600;
+  cursor: pointer;
+}
+.new-version-reload:hover {
+  background: var(--ma-surface-fill-strong);
+}
+.icon-btn.sm.new-version-dismiss {
+  flex: none;
+  width: 28px;
+  height: 28px;
+}
+@media (max-width: 599px) {
+  /* One line on a phone: Reload says the rest. */
+  .new-version-tail {
+    display: none;
+  }
+}
+
+/* A desk on the member's own computer started (chrome/BootNotices.tsx): one quiet line each, put away by the member.
+   Same shape as the new-version notice, so it never covers what's in use. */
+.notice.boot-notice {
+  display: flex;
+  align-items: center;
+  gap: 4px;
+  padding: 3px 3px 3px 14px;
+  border-radius: 999px;
+  color: var(--ma-text-secondary);
+  line-height: 18px;
+  z-index: 9;
+}
+.notice.boot-notice:focus-within {
+  z-index: 61;
+}
+.boot-notice-text {
+  min-width: 0;
+  margin-right: 6px;
+}
+.icon-btn.sm.boot-notice-dismiss {
+  flex: none;
+  width: 28px;
+  height: 28px;
+}
+@media (max-width: 599px) {
+  .boot-notice-tail {
+    display: none;
+  }
+}
+
+/* A desk that can't open (contract 0.3.11): one standing notice under the top bar, whatever else shows below. */
+.office-notice {
+  position: absolute;
+  left: 50%;
+  top: calc(72px + env(safe-area-inset-top, 0px));
+  transform: translateX(-50%);
+  display: grid;
+  gap: 4px;
+  max-width: min(460px, calc(100% - 32px));
+  padding: 10px 16px;
+  border-radius: 12px;
+  background: var(--ma-surface-overlay);
+  border: 1px solid var(--ma-border);
+  color: var(--ma-text-primary);
+  font-size: 13px;
+  text-align: center;
+  box-shadow: var(--ma-elevation-menu);
+  z-index: 9;
+}
+.closed-link {
+  color: var(--ma-text-link);
+  text-decoration: underline;
+  text-underline-offset: 2px;
+}
+
+/* ------------------------------------------------------------ a desk's context menu */
+.desk-menu-away {
+  position: fixed;
+  inset: 0;
+  z-index: 39;
+}
+.menu.desk-menu {
+  position: fixed;
+  right: auto;
+  width: 220px;
+  padding: 6px;
+  border-radius: 12px;
+}
+.menu.desk-menu:focus {
+  outline: none;
+}
+.menu.desk-menu .menu-item {
+  padding: 8px 10px;
+  line-height: 24px;
+}
+.menu.desk-menu .menu-item:focus-visible {
+  outline: 2px solid var(--ma-focus-ring);
+  outline-offset: -2px;
+}
+.menu.desk-menu .menu-item:disabled {
+  color: var(--ma-text-disabled);
+}
+/* The desk's kind, whatever its name (task 45): "Personal desk". */
+.desk-menu-head {
+  padding: 6px 10px 4px;
+  font-size: 12px;
+  line-height: 18px;
+  color: var(--ma-text-tertiary);
+}
+/* "Desk style" (the owner's desk textures): a row of swatches under the menu's items, each the style as a desk at 100 %
+   has it. The checked one has a ring in the accent, a shape as well as a color. The row is DeskMenu's STYLE_H tall. */
+.desk-style {
+  margin-top: 6px;
+  padding: 8px 10px 6px;
+  border-top: 1px solid var(--ma-border-hairline);
+}
+.desk-style-head {
+  display: flex;
+  justify-content: space-between;
+  align-items: baseline;
+  margin-bottom: 8px;
+  font-size: 12px;
+  line-height: 18px;
+  color: var(--ma-text-tertiary);
+}
+.desk-style-saved {
+  color: var(--ma-text-secondary);
+}
+.desk-style-row {
+  display: flex;
+  flex-wrap: nowrap;
+  gap: 12px;
+  padding: 4px;
+}
+.desk-style-swatch {
+  width: 26px;
+  height: 26px;
+  padding: 0;
+  border: 0;
+  border-radius: 8px;
+  background-repeat: repeat;
+  background-position: 0 0;
+  /* Its edge inside, so a swatch as light as the menu still has one. */
+  box-shadow: inset 0 0 0 1px var(--ma-border);
+  cursor: pointer;
+}
+.desk-style-swatch[aria-checked='true'] {
+  box-shadow: inset 0 0 0 1px var(--ma-border), 0 0 0 2px var(--ma-surface-overlay), 0 0 0 4px var(--ma-accent);
+}
+.desk-style-swatch:focus {
+  outline: none;
+}
+.desk-style-swatch:focus-visible {
+  outline: 2px solid var(--ma-focus-ring);
+  outline-offset: 5px;
+}
+@media (forced-colors: active) {
+  .desk-style-swatch {
+    border: 1px solid CanvasText;
+  }
+  .desk-style-swatch[aria-checked='true'] {
+    outline: 3px solid Highlight;
+    outline-offset: 2px;
+  }
+}
+
+/* ------------------------------------------------------------ renaming a desk (task 45) */
+/* The etched name becomes this field, in the same place: centred under the desk, in the strip, in the name's own type. */
+.rename-field {
+  position: fixed;
+  left: 0;
+  top: 0;
+  z-index: 40;
+  display: flex;
+  flex-direction: column;
+  align-items: center;
+  gap: 6px;
+  will-change: transform;
+}
+.rename-field input {
+  box-sizing: border-box;
+  height: 30px;
+  padding: 0 10px;
+  border: 1px solid var(--ma-border-strong);
+  border-radius: 8px;
+  background: var(--ma-surface-overlay);
+  color: var(--ma-text-primary);
+  font-family: Jost, var(--ma-font-ui);
+  font-size: 14px;
+  font-weight: 600;
+  letter-spacing: 0.16em;
+  text-align: center;
+  text-transform: uppercase;
+  box-shadow: var(--ma-elevation-menu);
+}
+.rename-field input:focus {
+  outline: 2px solid var(--ma-focus-ring);
+  outline-offset: 1px;
+}
+.rename-field input[aria-invalid='true'] {
+  border-color: var(--ma-status-error);
+}
+.rename-error {
+  max-width: 280px;
+  padding: 6px 10px;
+  border: 1px solid var(--ma-border);
+  border-radius: 8px;
+  background: var(--ma-surface-overlay);
+  box-shadow: var(--ma-elevation-menu);
+  color: var(--ma-text-primary);
+  font-size: 13px;
+  line-height: 18px;
+  text-align: center;
+}
+
+/* ------------------------------------------------------------ a desk's hidden apps (ADR 0064) */
+.menu.desk-menu.hidden-list {
+  width: 188px;
+  /* Six rows of 40, with the menu's padding and border, and then it scrolls. */
+  max-height: calc(6 * 40px + 2 * 6px + 2px);
+}
+.menu.desk-menu .hidden-list-item {
+  display: flex;
+  align-items: center;
+  gap: 10px;
+  height: 40px;
+}
+.hidden-list-glyph {
+  flex: none;
+  width: 24px;
+  height: 24px;
+}
+.hidden-ring {
+  position: absolute;
+  border-radius: 18px;
+  outline: calc(3px / var(--ma-cam-s)) solid var(--ma-focus-ring);
+  outline-offset: calc(2px / var(--ma-cam-s));
+  pointer-events: none;
+  animation: hidden-ring 600ms ease-out both;
+}
+@keyframes hidden-ring {
+  0% {
+    opacity: 0;
+    transform: scale(1.14);
+  }
+  25% {
+    opacity: 1;
+    transform: scale(1);
+  }
+  70% {
+    opacity: 1;
+  }
+  100% {
+    opacity: 0;
+    transform: scale(1);
+  }
+}
+@media (prefers-reduced-motion: reduce) {
+  .hidden-ring {
+    animation: none;
+  }
+}
+
+/* ------------------------------------------------------------ account menu */
+.menu-wrap {
+  position: relative;
+}
+.menu {
+  position: absolute;
+  right: 0;
+  top: calc(100% + 8px);
+  width: min(320px, calc(100vw - 32px));
+  max-height: calc(100dvh - 90px);
+  overflow-y: auto;
+  padding: 12px;
+  border: 1px solid var(--ma-border);
+  border-radius: 16px;
+  background: var(--ma-surface-overlay);
+  box-shadow: var(--ma-elevation-menu);
+  z-index: 40;
+}
+.menu-who {
+  padding: 0 6px 8px;
+  font-size: 14px;
+  font-weight: 600;
+}
+/* The member at the top of the menu: their 40 px avatar, their name and their tier's name. */
+.menu-me {
+  display: flex;
+  align-items: center;
+  gap: 12px;
+  padding: 2px 6px 12px;
+}
+.menu-me-text {
+  min-width: 0;
+}
+.menu-me .menu-who {
+  padding: 0;
+  overflow-wrap: anywhere;
+}
+.menu-tier {
+  font-size: 13px;
+  line-height: 18px;
+  color: var(--ma-text-secondary);
+}
+
+/* ------------------------------------------------------------ the member's avatar (task 45) */
+/* The Product Designer's spec (design-drafts/badges, spec.json): a circle of D px with up to two initials on one of six
+   tints, and option 1's seal at the lower right, cut out of the circle by a gap so it reads on any surface. */
+.avatar {
+  position: relative;
+  flex: none;
+  display: block;
+  width: var(--av-d);
+  height: var(--av-d);
+  overflow: visible; /* the seal may pass the box by up to 2.25 px */
+}
+.avatar.s32 {
+  --av-d: 32px;
+  --av-font: 12.5px;
+  --av-weight: 750;
+  --seal-d: 12px;
+  --seal-gap: 1.5px;
+  --seal-c: 27.6px;
+}
+.avatar.s40 {
+  --av-d: 40px;
+  --av-font: 15.5px;
+  --av-weight: 700;
+  --seal-d: 14px;
+  --seal-gap: 1.75px;
+  --seal-c: 34.4px;
+}
+.avatar-face {
+  display: grid;
+  place-items: center;
+  width: 100%;
+  height: 100%;
+  border-radius: 50%;
+  background: linear-gradient(var(--av-top), var(--av-bottom));
+  box-shadow: inset 0 0 0 1px var(--ma-avatar-hairline);
+  color: var(--av-ink);
+  font-size: var(--av-font);
+  font-weight: var(--av-weight);
+  line-height: 1;
+  letter-spacing: 0.01em;
+  white-space: nowrap;
+  user-select: none;
+}
+/* The initials are a picture, not text: see Avatar.tsx. */
+.avatar-face::before {
+  content: attr(data-initials);
+}
+/* The cut-out: a mask's alpha, not a color. Transparent inside the seal and its gap, opaque everywhere else. */
+.avatar.has-seal .avatar-face {
+  -webkit-mask: radial-gradient(circle at var(--seal-c) var(--seal-c), transparent calc(var(--seal-d) / 2 + var(--seal-gap)), black calc(var(--seal-d) / 2 + var(--seal-gap) + 0.5px));
+  mask: radial-gradient(circle at var(--seal-c) var(--seal-c), transparent calc(var(--seal-d) / 2 + var(--seal-gap)), black calc(var(--seal-d) / 2 + var(--seal-gap) + 0.5px));
+}
+.avatar[data-hue='blue'] { --av-top: var(--ma-avatar-blue-top); --av-bottom: var(--ma-avatar-blue-bottom); --av-ink: var(--ma-avatar-blue-ink); }
+.avatar[data-hue='green'] { --av-top: var(--ma-avatar-green-top); --av-bottom: var(--ma-avatar-green-bottom); --av-ink: var(--ma-avatar-green-ink); }
+.avatar[data-hue='amber'] { --av-top: var(--ma-avatar-amber-top); --av-bottom: var(--ma-avatar-amber-bottom); --av-ink: var(--ma-avatar-amber-ink); }
+.avatar[data-hue='rose'] { --av-top: var(--ma-avatar-rose-top); --av-bottom: var(--ma-avatar-rose-bottom); --av-ink: var(--ma-avatar-rose-ink); }
+.avatar[data-hue='violet'] { --av-top: var(--ma-avatar-violet-top); --av-bottom: var(--ma-avatar-violet-bottom); --av-ink: var(--ma-avatar-violet-ink); }
+.avatar[data-hue='slate'] { --av-top: var(--ma-avatar-slate-top); --av-bottom: var(--ma-avatar-slate-bottom); --av-ink: var(--ma-avatar-slate-ink); }
+.avatar-seal {
+  position: absolute;
+  left: calc(var(--seal-c) - var(--seal-d) / 2);
+  top: calc(var(--seal-c) - var(--seal-d) / 2);
+  width: var(--seal-d);
+  height: var(--seal-d);
+  border-radius: 50%;
+}
+/* The mark is the spec's own file, drawn in its token's color through a mask, so it's never redrawn or recolored here. */
+.avatar-seal::after {
+  content: '';
+  position: absolute;
+  inset: 0;
+  background: var(--seal-mark);
+  -webkit-mask: var(--seal-glyph) center / 100% 100% no-repeat;
+  mask: var(--seal-glyph) center / 100% 100% no-repeat;
+}
+.avatar-seal.officer {
+  --seal-mark: var(--ma-seal-officer-mark);
+  --seal-glyph: url('../assets/badges/chevron.svg');
+  background: var(--ma-seal-officer-fill);
+  box-shadow: inset 0 0 0 1.25px var(--ma-seal-officer-line);
+}
+.avatar-seal.lead {
+  --seal-mark: var(--ma-seal-lead-mark);
+  --seal-glyph: url('../assets/badges/star.svg');
+  background: linear-gradient(var(--ma-seal-lead-top), var(--ma-seal-lead-bottom));
+}
+/* The account button holds the 32 px avatar in its 38 px ring. */
+.icon-btn.account-btn {
+  overflow: visible;
+}
+.menu-label {
+  padding: 4px 6px;
+  font-size: 13px;
+  line-height: 18px;
+  color: var(--ma-text-tertiary);
+}
+.menu-item {
+  display: block;
+  width: 100%;
+  padding: 10px 6px;
+  border: 0;
+  border-radius: 10px;
+  background: none;
+  text-align: left;
+  font-size: 14px;
+}
+.menu-item:hover:not(:disabled):not([aria-disabled='true']) {
+  background: var(--ma-surface-sunken);
+}
+/* A sign-out on its way: both buttons wait, quieter. "Sign out everywhere" is aria-disabled, so it keeps focus. */
+.menu-item:disabled,
+.menu-item[aria-disabled='true'] {
+  cursor: default;
+  color: var(--ma-text-secondary);
+}
+/* "We couldn't sign you out everywhere": under its button, in the menu's own words size. */
+.menu-failed {
+  padding: 2px 6px 6px;
+  color: var(--ma-text-primary);
+}
+a.menu-item {
+  color: inherit;
+  text-decoration: none;
+}
+.menu-disclosure {
+  display: flex;
+  align-items: center;
+  justify-content: space-between;
+  color: inherit;
+}
+.menu-disclosure .icon {
+  color: var(--ma-text-tertiary);
+}
+/* "About this desk", the owner's only, open: the desk's rows and the app's version, spaced as the shortcuts are. */
+.about-panel {
+  display: grid;
+  gap: 8px;
+  padding: 4px 0 6px;
+}
+.shortcuts {
+  display: grid;
+  gap: 8px;
+  /* Room above for the disclosure's ring, which sits 2 px outside it. */
+  padding: 4px 0 6px;
+}
+/* One row a key, so a screen reader hears each pair together: the grid is the rows', not the list's. */
+.shortcuts .about {
+  grid-template-columns: 1fr;
+  gap: 4px;
+}
+.about-row {
+  display: grid;
+  grid-template-columns: 76px 1fr;
+  gap: 12px;
+}
+.shortcuts kbd {
+  font: inherit;
+  color: var(--ma-text-primary);
+  white-space: pre;
+}
+.menu-sep {
+  height: 1px;
+  margin: 8px 0;
+  background: var(--ma-border);
+}
+.about-line {
+  padding: 0 6px;
+  font-size: 13px;
+  line-height: 18px;
+  color: var(--ma-text-secondary);
+}
+.about-version {
+  margin-top: 4px;
+  color: var(--ma-text-tertiary);
+}
+.about {
+  display: grid;
+  grid-template-columns: auto 1fr;
+  gap: 2px 12px;
+  margin: 0;
+  padding: 0 6px;
+  font-size: 13px;
+  line-height: 18px;
+}
+.about dt {
+  color: var(--ma-text-tertiary);
+}
+.about dd {
+  margin: 0;
+  color: var(--ma-text-secondary);
+  font-variant-numeric: tabular-nums;
+  overflow-wrap: anywhere;
+}
+.switch-row {
+  position: relative;
+  display: flex;
+  align-items: center;
+  gap: 12px;
+  padding: 10px 6px;
+  cursor: pointer;
+}
+.switch-text {
+  flex: 1;
+  display: grid;
+  gap: 2px;
+  font-size: 14px;
+}
+.switch-text small {
+  font-size: 12px;
+  line-height: 16px;
+  color: var(--ma-text-tertiary);
+}
+.switch-row input {
+  position: absolute;
+  opacity: 0;
+  width: 1px;
+  height: 1px;
+}
+.switch {
+  position: relative;
+  flex: none;
+  width: 38px;
+  height: 22px;
+  border-radius: 11px;
+  background: var(--ma-surface-fill);
+  border: 1px solid var(--ma-border-strong);
+}
+.switch::after {
+  content: "";
+  position: absolute;
+  top: 2px;
+  left: 2px;
+  width: 16px;
+  height: 16px;
+  border-radius: 50%;
+  background: var(--ma-text-secondary);
+}
+.switch-row input:checked + .switch {
+  background: var(--ma-accent);
+  border-color: var(--ma-accent);
+}
+.switch-row input:checked + .switch::after {
+  transform: translateX(16px);
+  background: var(--ma-text-on-accent);
+}
+.switch-row input:focus-visible + .switch {
+  outline: 2px solid var(--ma-focus-ring);
+  outline-offset: 2px;
+}
+
+/* ------------------------------------------------------------ buttons */
+.btn {
+  display: inline-flex;
+  align-items: center;
+  justify-content: center;
+  gap: 6px;
+  height: 40px;
+  padding: 0 16px;
+  border: 1px solid var(--ma-border-strong);
+  border-radius: 12px;
+  background: var(--ma-surface-window);
+  color: var(--ma-text-primary);
+  font-size: 14px;
+  font-weight: 500;
+  text-decoration: none;
+  white-space: nowrap;
+}
+.btn:hover:not(:disabled) {
+  background: var(--ma-surface-sunken);
+}
+.btn.primary {
+  background: var(--ma-accent);
+  border-color: var(--ma-accent);
+  color: var(--ma-text-on-accent);
+}
+.btn.primary:hover:not(:disabled) {
+  background: var(--ma-accent-hover);
+  border-color: var(--ma-accent-hover);
+}
+.btn:disabled {
+  opacity: 0.45;
+  cursor: default;
+}
+
+/* ------------------------------------------------------------ windows */
+.window-layer {
+  position: absolute;
+  inset: 0;
+  z-index: 20;
+  pointer-events: none;
+}
+.window-layer > * {
+  pointer-events: auto;
+}
+.window-layer.shielded .ma-window {
+  filter: blur(14px);
+}
+.window-scrim {
+  position: absolute;
+  inset: 0;
+  background: var(--ma-surface-scrim);
+}
+.ma-window {
+  position: absolute;
+  display: flex;
+  flex-direction: column;
+  overflow: hidden;
+  border-radius: 16px;
+  background: var(--ma-surface-window);
+  box-shadow: var(--ma-elevation-menu);
+}
+.ma-window:focus {
+  outline: none;
+}
+.ma-window.active {
+  box-shadow: var(--ma-elevation-window);
+}
+.ma-window.parked {
+  display: none;
+}
+.ma-window.full {
+  top: 72px;
+  left: 12px;
+  right: 12px;
+  bottom: 12px;
+  box-shadow: var(--ma-elevation-window);
+}
+.window-head {
+  flex: none;
+  display: flex;
+  align-items: center;
+  gap: 10px;
+  height: 44px;
+  padding: 0 8px 0 14px;
+  border-bottom: 1px solid var(--ma-border);
+  -webkit-user-select: none;
+  user-select: none;
+  touch-action: none;
+}
+.window-title {
+  display: flex;
+  align-items: baseline;
+  gap: 8px;
+  flex: 1;
+  min-width: 0;
+  font-size: 14px;
+  line-height: 20px;
+  font-weight: 600;
+  color: var(--ma-text-tertiary);
+  white-space: nowrap;
+}
+.ma-window.active .window-title {
+  color: var(--ma-text-primary);
+}
+.window-desk {
+  font-size: 13px;
+  font-weight: 400;
+  color: var(--ma-text-tertiary);
+}
+.window-controls {
+  display: flex;
+  align-items: center;
+  gap: 2px;
+}
+.window-back {
+  display: none;
+  padding: 4px;
+  border: 0;
+  background: none;
+}
+.window-body {
+  flex: 1;
+  min-height: 0;
+  display: flex;
+  overflow: auto;
+}
+.window-edge {
+  position: absolute;
+  touch-action: none;
+}
+.window-edge.n, .window-edge.s { left: 12px; right: 12px; height: 6px; cursor: ns-resize; }
+.window-edge.e, .window-edge.w { top: 12px; bottom: 12px; width: 6px; cursor: ew-resize; }
+.window-edge.n { top: 0; }
+.window-edge.s { bottom: 0; }
+.window-edge.e { right: 0; }
+.window-edge.w { left: 0; }
+.window-edge.ne, .window-edge.nw, .window-edge.se, .window-edge.sw { width: 14px; height: 14px; }
+.window-edge.ne { top: 0; right: 0; cursor: nesw-resize; }
+.window-edge.nw { top: 0; left: 0; cursor: nwse-resize; }
+.window-edge.se { bottom: 0; right: 0; cursor: nwse-resize; }
+.window-edge.sw { bottom: 0; left: 0; cursor: nesw-resize; }
+
+.empty-app {
+  margin: auto;
+  max-width: 400px;
+  padding: 32px;
+  text-align: center;
+}
+.empty-app h3 {
+  font-size: 16px;
+  line-height: 24px;
+  font-weight: 600;
+}
+.empty-app p {
+  margin-top: 8px;
+  color: var(--ma-text-secondary);
+}
+.empty-app .empty-note {
+  font-size: 13px;
+  line-height: 18px;
+  color: var(--ma-text-tertiary);
+}
+
+/* ------------------------------------------------------------ notebook */
+.nbw {
+  position: relative;
+  flex: 1;
+  min-width: 0;
+  min-height: 0;
+  display: flex;
+  flex-direction: column;
+}
+.nbw > .ma-nb {
+  flex: 1;
+  height: auto;
+}
+.nbw-line {
+  flex: none;
+  display: flex;
+  align-items: center;
+  justify-content: center;
+  gap: 12px;
+  min-height: 36px;
+  padding: 6px 14px;
+  border-top: 1px solid var(--ma-border);
+  font-size: 13px;
+  line-height: 18px;
+  text-align: center;
+  color: var(--ma-text-secondary);
+}
+
+/* ------------------------------------------------------------ browser */
+.br {
+  flex: 1;
+  min-width: 0;
+  min-height: 0;
+  display: flex;
+  flex-direction: column;
+}
+.br-chrome {
+  flex: none;
+  border-bottom: 1px solid var(--ma-border);
+}
+.br-tabs {
+  display: flex;
+  align-items: center;
+  gap: 2px;
+  min-height: 34px;
+  padding: 4px 8px 0;
+  overflow-x: auto;
+  scrollbar-width: none;
+}
+.br-tab {
+  flex: 0 1 200px;
+  display: flex;
+  align-items: center;
+  min-width: 96px;
+  height: 30px;
+  padding-right: 4px;
+  border: 1px solid transparent; /* every tab the same size, so the selected one's edge moves nothing */
+  border-radius: 8px;
+  color: var(--ma-text-secondary);
+}
+.br-tab:hover {
+  background: var(--ma-surface-fill);
+}
+/* The fill alone is 1.3:1 on the window. The edge is what shows which tab is selected: border.strong on surface.window
+   is 3.7:1 in Light, 3.4:1 in Dusk and Dark (browser.chrome.shell.spec.ts measures it). */
+.br-tab.active {
+  border-color: var(--ma-border-strong);
+  background: var(--ma-surface-fill-strong);
+  color: var(--ma-text-primary);
+}
+.br-tab-title {
+  flex: 1;
+  min-width: 0;
+  height: 100%;
+  padding: 0 8px;
+  border: 0;
+  background: none;
+  color: inherit;
+  font-size: 12.5px;
+  text-align: left;
+  white-space: nowrap;
+  overflow: hidden;
+  text-overflow: ellipsis;
+}
+.br-tab.loading .br-tab-title {
+  animation: br-loading 1.2s ease-in-out infinite alternate;
+}
+@keyframes br-loading {
+  to {
+    opacity: 0.55;
+  }
+}
+.br-tab-close {
+  flex: none;
+  display: grid;
+  place-items: center;
+  width: 20px;
+  height: 20px;
+  padding: 0;
+  border: 0;
+  border-radius: 6px;
+  background: none;
+  color: var(--ma-text-tertiary);
+}
+.br-tab-close:hover:not(:disabled) {
+  background: var(--ma-surface-fill);
+  color: var(--ma-text-primary);
+}
+.br-tab-new {
+  flex: none;
+}
+.br-bar {
+  display: flex;
+  align-items: center;
+  gap: 4px;
+  padding: 6px 10px;
+}
+.address {
+  flex: 1;
+  min-width: 0;
+  display: flex;
+  align-items: center;
+  height: 32px;
+  margin-left: 4px;
+  padding: 0 12px;
+  border-radius: 10px;
+  background: var(--ma-surface-fill);
+}
+.address:focus-within {
+  outline: 2px solid var(--ma-focus-ring);
+}
+.address input {
+  flex: 1;
+  min-width: 0;
+  border: 0;
+  background: transparent;
+  color: var(--ma-text-primary);
+  font-size: 13.5px;
+  outline: none;
+}
+.address input::placeholder {
+  color: var(--ma-text-tertiary);
+}
+/* The simplified view's switch (task 47): two words right of the address, per site (the Product Designer's spec, 7). */
+.br-mode {
+  flex: none;
+  display: inline-flex;
+  gap: 2px;
+  margin-left: 6px;
+  padding: 2px;
+  border-radius: 999px;
+  background: var(--ma-switcher-track);
+}
+.br-mode button {
+  height: 26px;
+  padding: 0 12px;
+  border: 1px solid transparent;
+  border-radius: 999px;
+  background: none;
+  color: var(--ma-text-secondary);
+  font: inherit;
+  font-size: 13px;
+  font-weight: 600;
+  white-space: nowrap;
+  cursor: pointer;
+}
+.br-mode button.on {
+  /* border.strong: a fill alone was 1.3:1 on the track (the spec's section 12). */
+  border-color: var(--ma-border-strong);
+  background: var(--ma-surface-window);
+  color: var(--ma-text-primary);
+  font-weight: 700;
+  cursor: default;
+}
+.br-mode button:hover:not(.on):not([aria-disabled='true']) {
+  color: var(--ma-text-primary);
+}
+.br-mode button[aria-disabled='true'] {
+  color: var(--ma-text-disabled);
+  cursor: default;
+}
+.br-mode button:focus-visible {
+  outline: 2px solid var(--ma-focus-ring);
+  outline-offset: 2px;
+}
+/* Its one line, in the note slot: only when the page chose for the member, and why. The slot is always there, empty. */
+.br-line {
+  display: inline-flex;
+  align-items: center;
+  max-width: 46%;
+}
+.br-line.empty {
+  margin: 0;
+}
+.br-line-in {
+  display: inline-flex;
+  align-items: center;
+  gap: 6px;
+  min-width: 0;
+}
+.br-line .icon {
+  flex: none;
+  color: var(--ma-glyph-soft);
+}
+.br-line-text {
+  overflow: hidden;
+  text-overflow: ellipsis;
+}
+.br-line-action {
+  flex: none;
+  padding: 0;
+  border: 0;
+  background: none;
+  color: var(--ma-text-link);
+  font: inherit;
+  cursor: pointer;
+}
+.br-line-action:hover {
+  text-decoration: underline;
+}
+.br-line-action:focus-visible {
+  outline: 2px solid var(--ma-focus-ring);
+  outline-offset: 2px;
+  border-radius: 3px;
+}
+@media (max-width: 640px) {
+  .br-mode button {
+    padding: 0 9px;
+    font-size: 12.5px;
+  }
+  /* Narrow: the icon and the action show; the words stay for screen readers. */
+  .br-line-text {
+    position: absolute;
+    width: 1px;
+    height: 1px;
+    overflow: hidden;
+    clip-path: inset(50%);
+    white-space: nowrap;
+  }
+}
+.br-note {
+  flex: none;
+  max-width: 40%;
+  margin-left: 6px;
+  font-size: 12.5px;
+  color: var(--ma-text-tertiary);
+  white-space: nowrap;
+  overflow: hidden;
+  text-overflow: ellipsis;
+}
+.br-note-action {
+  flex: none;
+  padding: 2px 6px;
+  border: 0;
+  border-radius: 6px;
+  background: none;
+  color: var(--ma-text-link);
+  font-size: 12.5px;
+}
+.br-note-action:hover {
+  background: var(--ma-surface-fill);
+}
+.br-view {
+  position: relative;
+  flex: 1;
+  min-height: 0;
+  background: var(--ma-surface-sunken);
+}
+.br-surface {
+  position: absolute;
+  inset: 0;
+}
+/* The way to tell where typing goes. */
+.br-surface:focus-within {
+  outline: 2px solid var(--ma-focus-ring);
+  outline-offset: -2px;
+}
+.br-keys {
+  position: absolute;
+  top: 0;
+  left: 0;
+  width: 1px;
+  height: 1px;
+  padding: 0;
+  border: 0;
+  outline: none;
+  opacity: 0;
+  resize: none;
+  pointer-events: none;
+}
+.br-video {
+  display: block;
+  width: 100%;
+  height: 100%;
+  object-fit: contain;
+  cursor: default;
+  touch-action: manipulation;
+}
+.br-held {
+  position: absolute;
+  inset: 0;
+  width: 100%;
+  height: 100%;
+  object-fit: contain;
+}
+/* A blur over moving video is a blur per frame, so under the shield the picture simply isn't drawn. */
+.window-layer.shielded .br-video {
+  visibility: hidden;
+}
+.br-panel {
+  position: absolute;
+  inset: 0;
+  display: grid;
+  place-items: center;
+  padding: 24px;
+  overflow: auto;
+  background: var(--ma-surface-window);
+  text-align: center;
+}
+.br-panel.over-picture {
+  background: var(--ma-surface-scrim);
+}
+.br-panel.delayed {
+  animation: br-appear 160ms linear 300ms both;
+}
+@keyframes br-appear {
+  from {
+    opacity: 0;
+  }
+}
+.br-panel-body {
+  display: grid;
+  justify-items: center;
+  gap: 10px;
+  max-width: 400px;
+  padding: 24px;
+  border-radius: 14px;
+  background: var(--ma-surface-window);
+}
+.br-panel-body h3 {
+  font-size: 16px;
+  line-height: 24px;
+  font-weight: 600;
+}
+.br-panel-body p {
+  color: var(--ma-text-secondary);
+}
+.br-panel-body .empty-note {
+  font-size: 13px;
+  line-height: 18px;
+  color: var(--ma-text-tertiary);
+}
+.br-steps {
+  display: grid;
+  grid-template-columns: repeat(4, 56px);
+  gap: 4px;
+}
+.br-steps span {
+  height: 4px;
+  border-radius: 2px;
+  background: var(--ma-surface-fill-strong);
+}
+.br-steps span.on {
+  background: var(--ma-accent);
+}
+.br-muted {
+  position: absolute;
+  right: 10px;
+  bottom: 10px;
+  display: grid;
+  place-items: center;
+  width: 28px;
+  height: 28px;
+  border-radius: 999px;
+  background: var(--ma-surface-window);
+  color: var(--ma-text-tertiary);
+}
+@media (prefers-reduced-motion: reduce) {
+  .br-panel.delayed,
+  .br-tab.loading .br-tab-title {
+    animation: none;
+  }
+  /* A thaw is about a tenth of a second: still no fade, but no flash of "Resuming…" either. */
+  .br-panel.delayed[data-panel='resuming'] {
+    animation: br-appear 0s linear 300ms both;
+  }
+}
+
+/* ------------------------------------------------------------ calm screens */
+.calm-screen {
+  position: relative;
+  display: grid;
+  place-items: center;
+  height: 100dvh;
+  padding: 16px;
+  background-image: radial-gradient(ellipse 120% 95% at 50% 26%, var(--ma-surface-world-hi) 0%, var(--ma-surface-world-base) 55%, var(--ma-surface-world-lo) 100%);
+}
+.calm-card {
+  width: min(420px, 100%);
+  padding: 32px;
+  border-radius: 22px;
+  background: var(--ma-surface-panel);
+  box-shadow: var(--ma-elevation-panel);
+}
+.calm-brand {
+  font-size: 13px;
+  line-height: 18px;
+  color: var(--ma-text-tertiary);
+}
+.calm-card h1 {
+  margin-top: 4px;
+  font-size: 24px;
+  line-height: 32px;
+  font-weight: 400;
+}
+.calm-card p:not(.calm-brand) {
+  margin-top: 12px;
+  color: var(--ma-text-secondary);
+}
+.calm-actions {
+  display: flex;
+  flex-wrap: wrap;
+  gap: 8px;
+  margin-top: 20px;
+}
+/* ------------------------------------------------------------ the office's notice */
+/* chrome/CalmScreen.tsx DeskNotice: the membership cards, no desk yet, and can't reach. The Look in the membership card
+   proposal: today's panel, centered over the empty canvas with the top bar still there, no scrim, nothing blocked.
+   Centered on the screen, its height is held clear of the top bar by the same margin below, and a screen too short
+   for it scrolls the card rather than run it under the bar. */
+.desk-notice {
+  position: absolute;
+  top: 50%;
+  left: 50%;
+  transform: translate(-50%, -50%);
+  display: flex;
+  flex-direction: column;
+  align-items: center;
+  width: min(440px, calc(100% - 32px));
+  max-height: calc(100% - 2 * (72px + env(safe-area-inset-top, 0px)));
+  overflow-y: auto;
+  padding: 28px;
+  border-radius: 22px;
+  background: var(--ma-surface-panel);
+  /* The ring: in Dusk the panel is 1.05:1 on the canvas and its own hairline is too faint for a dim screen. A border,
+     not a second shadow, because an elevation token can be empty, and `none` can't join a list. */
+  border: 1px solid var(--ma-border);
+  box-shadow: var(--ma-elevation-panel);
+  text-align: center;
+  z-index: 5;
+  animation: desk-notice-in 160ms ease-out;
+}
+@keyframes desk-notice-in {
+  from {
+    opacity: 0;
+    translate: 0 4px;
+  }
+}
+@keyframes desk-notice-fade {
+  from {
+    opacity: 0;
+  }
+}
+@media (prefers-reduced-motion: reduce) {
+  .desk-notice {
+    animation-name: desk-notice-fade;
+  }
+}
+/* Small desk tiles, two on A and E and one on a teen's card: what a membership gives, etched like a desk's own name. */
+.desk-notice-pics {
+  display: flex;
+  gap: 12px;
+  margin-bottom: 20px;
+}
+.desk-notice-pic {
+  display: grid;
+  place-items: center;
+  width: 120px;
+  height: 52px;
+  border-radius: 10px;
+  border: 1px solid var(--ma-border-hairline); /* A picture of a desk panel, which has the hairline. The full ring reads as a button. */
+  background: var(--ma-surface-tile);
+  box-shadow: var(--ma-elevation-tile); /* none in Dusk, where the ring alone sets the tile off */
+}
+.desk-notice-etch {
+  font-family: Jost, var(--ma-font-ui);
+  font-weight: 600;
+  font-size: 12px;
+  line-height: 16px;
+  letter-spacing: 0.16em;
+  text-transform: uppercase;
+  color: var(--ma-etch-fill);
+  text-shadow: 0 -1px 0 var(--ma-etch-wall), 0 1px 0 var(--ma-etch-highlight);
+}
+@media (prefers-contrast: more) {
+  .desk-notice-etch {
+    color: var(--ma-text-secondary);
+    text-shadow: none;
+  }
+}
+.desk-notice h2 {
+  font-size: 20px;
+  line-height: 28px;
+  font-weight: 600;
+  color: var(--ma-text-primary);
+}
+.desk-notice p {
+  max-width: 60ch;
+  margin-top: 8px;
+  font-size: 14px;
+  line-height: 22px;
+  color: var(--ma-text-secondary);
+}
+/* A teen's two cards are a line or two: no word left alone on the last line. */
+.desk-notice[data-card='T'] p,
+.desk-notice[data-card='P'] p,
+.desk-notice[data-card='P'] h2 {
+  text-wrap: balance;
+}
+/* Dates are the one emphasis (cards C and D). */
+.desk-notice p b {
+  font-weight: 700;
+  color: var(--ma-text-primary);
+}
+/* A link inside a line of text is underlined, so it's never told apart by color alone (WCAG 1.4.1). */
+.desk-notice p a {
+  color: var(--ma-text-link);
+  text-underline-offset: 2px;
+}
+.desk-notice .btn {
+  height: 36px;
+  min-width: 160px;
+  margin-top: 20px;
+}
+.desk-notice .desk-notice-soon {
+  margin-top: 20px;
+}
+.desk-notice-link {
+  display: inline-flex;
+  align-items: center;
+  min-height: 20px;
+  margin-top: 12px;
+  font-size: 14px;
+  line-height: 20px;
+  color: var(--ma-text-link);
+  text-decoration: none;
+}
+.desk-notice-link:hover,
+.desk-notice-link:focus-visible {
+  text-decoration: underline;
+}
+.desk-notice .desk-notice-alliance {
+  align-self: stretch;
+  max-width: none;
+  margin-top: 20px;
+  padding-top: 16px;
+  border-top: 1px solid var(--ma-border-hairline);
+  font-size: 13px;
+  line-height: 20px;
+  color: var(--ma-text-tertiary);
+}
+@media (max-width: 599px) {
+  .desk-notice {
+    width: calc(100% - 32px);
+    max-height: calc(100% - 2 * (64px + env(safe-area-inset-top, 0px)));
+    padding: 20px;
+  }
+  .desk-notice-pic {
+    width: 96px;
+    height: 44px;
+  }
+  .desk-notice h2 {
+    font-size: 18px;
+    line-height: 26px;
+  }
+  .desk-notice .btn {
+    width: 100%;
+    height: 44px;
+    min-width: 0;
+  }
+  .desk-notice-link {
+    min-height: 44px;
+    margin-top: 0;
+  }
+}
+/* A short screen, such as a phone on its side or 400% zoom: centered in all the room under the top bar, scrolling if
+   need be. The bar is 64 px or less there, and 16 px stay free below. */
+@media (max-height: 480px) {
+  .desk-notice {
+    top: calc(50% + 24px);
+    max-height: calc(100% - 80px);
+  }
+}
+
+/* ------------------------------------------------------------ small screens */
+/* The scope switch's four segments are about 305 px, more than a 320 px screen leaves them (288), so it reached the edge. */
+@media (max-width: 359px) {
+  .segmented.scope button {
+    padding-inline: 12px;
+  }
+}
+/* Where the hints' column is too short for all of them (about 1110 px with four desks and the bandwidth circle), the
+   desk switch's own arrows say what "← → switch desks" says. A keyboard move or resize leaves out "shift 40" there
+   too, beside the desk switch: in full it's 349 px against the column's 344 at 1024 px, and its ellipsis cut
+   "esc restores". With one desk the column has room, so it stays. */
+@media (max-width: 1279px) {
+  .hint-switch,
+  .bottombar:has(.desk-nav) .hint-shift {
+    display: none;
+  }
+}
+@media (max-width: 1023px) {
+  .hide-narrow {
+    display: none;
+  }
+  .hints {
+    display: none;
+  }
+}
+@media (max-width: 599px) {
+  .topbar {
+    padding-block: 8px;
+    padding-left: max(16px, env(safe-area-inset-left, 0px));
+    padding-right: max(16px, env(safe-area-inset-right, 0px));
+  }
+  /* With several desks the switch and the zoom don't fit one row (at 375 px with four, Fit ran off the edge), so the
+     switch takes a row of its own, above the zoom, which stays level with the bandwidth circle. One desk: as before. */
+  .bottombar {
+    grid-template-columns: minmax(0, 1fr);
+    justify-items: center;
+    row-gap: 8px;
+    padding-left: max(16px, env(safe-area-inset-left, 0px));
+    padding-right: max(16px, env(safe-area-inset-right, 0px));
+  }
+  .bottombar > span:empty {
+    display: none;
+  }
+  .desk-nav,
+  .zoom-ctl {
+    grid-column: 1;
+    justify-self: center;
+  }
+  /* And the notices, Support Maia's bubble and her sheet start above that row, as they did above the one row. */
+  .ma-shell:has(.desk-nav) .notices,
+  .ma-shell:has(.desk-nav) .notice.bw-notice {
+    bottom: calc(126px + env(safe-area-inset-bottom, 0px));
+  }
+  .ma-shell:has(.desk-nav) .maia {
+    bottom: calc(122px + env(safe-area-inset-bottom, 0px));
+  }
+  .ma-shell:has(.desk-nav) .maia-panel {
+    bottom: calc(198px + env(safe-area-inset-bottom, 0px));
+  }
+  /* Here the top bar can take three rows (the mark, the scope switch, then the buttons, at 375 px with four desks),
+     so the notice starts under all of them. */
+  .office-notice {
+    top: calc(148px + env(safe-area-inset-top, 0px));
+  }
+  /* Phones: a window is a full-screen sheet with a back chevron. */
+  .ma-window.full {
+    top: 0;
+    left: 0;
+    right: 0;
+    bottom: 0;
+    border-radius: 0;
+    padding-top: env(safe-area-inset-top, 0px);
+    padding-bottom: env(safe-area-inset-bottom, 0px);
+  }
+  .window-back {
+    display: inline-grid;
+    place-items: center;
+  }
+  .hide-phone {
+    display: none;
+  }
+}
+
+/* ------------------------------------------------------------ agent's host (the app's own CSS is agent/src/ui/agent.css) */
+.agent-host {
+  position: relative;
+  flex: 1;
+  min-width: 0;
+  min-height: 0;
+  display: flex;
+  flex-direction: column;
+}
+.agent-app-host {
+  flex: 1;
+  min-height: 0;
+  display: flex;
+}
+.agent-blip {
+  padding: 6px 16px;
+  background: var(--ma-surface-sunken);
+  color: var(--ma-text-secondary);
+  font-size: 13px;
+  line-height: 18px;
+  text-align: center;
+}
+
+/* ------------------------------------------------------------ files' host (the app's own CSS is apps/files/files.css) */
+.files-host {
+  position: relative;
+  flex: 1;
+  min-width: 0;
+  min-height: 0;
+  display: flex;
+  flex-direction: column;
+}
+.files-app-host {
+  flex: 1;
+  min-height: 0;
+  display: flex;
+}
+.files-app-host[data-dim='true'] {
+  opacity: 0.55;
+}
+/* ------------------------------------------------------------ a Guild Desk (task 48, src/guild/) */
+/* Every window on a Guild Desk: the app as on any desk, with the Agent's one quiet line above it. */
+.guild-app {
+  position: relative;
+  flex: 1;
+  min-width: 0;
+  min-height: 0;
+  display: flex;
+  flex-direction: column;
+}
+.guild-app-body {
+  position: relative;
+  flex: 1;
+  min-height: 0;
+  display: flex;
+}
+.guild-quiet {
+  flex: none;
+  display: flex;
+  align-items: center;
+  justify-content: center;
+  flex-wrap: wrap;
+  gap: 4px 12px;
+  padding: 7px 16px;
+  border-bottom: 1px solid var(--ma-border-hairline);
+  background: var(--ma-surface-sunken);
+  color: var(--ma-text-secondary);
+  font-size: 13px;
+  line-height: 18px;
+  text-align: center;
+}
+.link-btn {
+  padding: 0;
+  border: 0;
+  background: none;
+  color: var(--ma-text-link);
+  font: inherit;
+  text-decoration: underline;
+  text-underline-offset: 2px;
+  cursor: pointer;
+}
+.link-btn:focus-visible {
+  outline: 2px solid var(--ma-focus-ring);
+  outline-offset: 2px;
+  border-radius: 4px;
+}
+
+/* Commons in its window: it fills it, and brings its own chrome under `.ma-cm`. */
+.cmw {
+  position: relative;
+  flex: 1;
+  min-width: 0;
+  min-height: 0;
+  display: flex;
+  flex-direction: column;
+}
+.cmw-host,
+.cmw-body {
+  position: relative;
+  flex: 1;
+  min-height: 0;
+  display: flex;
+}
+.cmw-body > * {
+  flex: 1;
+  min-width: 0;
+}
+
+/* "Here now" over the guild Notebook: who else has these pages open. */
+.nb-here {
+  flex: none;
+  display: flex;
+  align-items: center;
+  gap: 8px;
+  min-height: 30px;
+  padding: 6px 16px;
+  border-bottom: 1px solid var(--ma-border-hairline);
+  background: var(--ma-surface-sunken);
+  color: var(--ma-text-secondary);
+  font-size: 12px;
+  line-height: 16px;
+}
+.nb-here-text {
+  min-width: 0;
+  overflow: hidden;
+  white-space: nowrap;
+  text-overflow: ellipsis;
+}
+.nb-here-dot {
+  flex: none;
+  width: 7px;
+  height: 7px;
+  border-radius: 50%;
+  background: var(--ma-status-online);
+}
+
+/* The privacy line, once, and a guild the member is no longer in: notices in the shell's stack. */
+.notice.guild-privacy,
+.notice.guild-removed-notice {
+  display: flex;
+  align-items: center;
+  gap: 10px;
+  max-width: min(560px, calc(100% - 32px));
+  padding: 8px 8px 8px 16px;
+  color: var(--ma-text-secondary);
+  line-height: 18px;
+}
+.guild-privacy-text {
+  min-width: 0;
+}
+.icon-btn.sm.guild-privacy-dismiss {
+  flex: none;
+  width: 28px;
+  height: 28px;
+}
+.guild-name {
+  color: var(--ma-text-primary);
+  font-weight: 600;
+}
+
+/* The guild's sheet and a link's choice of desk: over the windows, with the office dimmed behind. */
+.guild-modal-away {
+  position: fixed;
+  inset: 0;
+  z-index: 45;
+  display: grid;
+  place-items: center;
+  padding: 16px;
+  background: var(--ma-surface-scrim);
+}
+.guild-modal {
+  width: min(520px, 100%);
+  max-height: calc(100dvh - 32px);
+  overflow: auto;
+  padding: 24px;
+  border: 1px solid var(--ma-border);
+  border-radius: 18px;
+  background: var(--ma-surface-window);
+  color: var(--ma-text-primary);
+  box-shadow: var(--ma-elevation-window);
+}
+.guild-modal:focus {
+  outline: none;
+}
+.guild-modal h2 {
+  font-size: 17px;
+  line-height: 24px;
+  font-weight: 600;
+}
+.guild-link-url {
+  margin-top: 10px;
+  padding: 8px 12px;
+  border-radius: 10px;
+  background: var(--ma-surface-sunken);
+  color: var(--ma-text-primary);
+  font-size: 13px;
+  line-height: 18px;
+  overflow-wrap: anywhere;
+}
+.guild-quiet-note {
+  margin-top: 8px;
+  color: var(--ma-text-tertiary);
+  font-size: 13px;
+  line-height: 18px;
+}
+.guild-modal-actions {
+  display: flex;
+  flex-wrap: wrap;
+  justify-content: flex-end;
+  gap: 8px;
+  margin-top: 18px;
+}
+.guild-modal-actions .guild-quiet-note {
+  flex-basis: 100%;
+  margin: 0;
+}
+
+.guild-modal.guild-sheet {
+  width: min(640px, 100%);
+  padding: 0;
+}
+.guild-sheet-head {
+  position: sticky;
+  top: 0;
+  z-index: 1;
+  display: flex;
+  align-items: center;
+  justify-content: space-between;
+  gap: 12px;
+  padding: 18px 16px 12px 24px;
+  background: var(--ma-surface-window);
+}
+.guild-sheet-head h2 {
+  display: grid;
+}
+.guild-sheet-guild {
+  color: var(--ma-text-tertiary);
+  font-size: 12px;
+  line-height: 16px;
+  font-weight: 500;
+  letter-spacing: 0.04em;
+  text-transform: uppercase;
+}
+.guild-tabs {
+  display: flex;
+  gap: 4px;
+  margin: 0 24px;
+  padding: 3px;
+  width: fit-content;
+  border-radius: 10px;
+  background: var(--ma-switcher-track);
+}
+.guild-tab {
+  height: 30px;
+  padding: 0 14px;
+  border: 0;
+  border-radius: 8px;
+  background: none;
+  color: var(--ma-text-secondary);
+  font: inherit;
+  font-size: 13px;
+  font-weight: 500;
+  cursor: pointer;
+}
+.guild-tab.on {
+  background: var(--ma-surface-window);
+  color: var(--ma-switcher-text);
+  box-shadow: var(--ma-elevation-tile);
+}
+.guild-tab:focus-visible {
+  outline: 2px solid var(--ma-focus-ring);
+  outline-offset: 1px;
+}
+.guild-sheet-body {
+  padding: 16px 24px 24px;
+}
+.guild-sheet-empty {
+  display: grid;
+  justify-items: center;
+  gap: 12px;
+  padding: 32px 0;
+  color: var(--ma-text-secondary);
+  text-align: center;
+}
+.guild-fields {
+  margin: 0 0 18px;
+  padding: 0;
+  border: 0;
+}
+.guild-fields legend {
+  padding: 0;
+  font-size: 14px;
+  font-weight: 600;
+}
+.guild-fields > .guild-quiet-note {
+  margin: 2px 0 8px;
+}
+.guild-field {
+  display: grid;
+  grid-template-columns: 1fr 132px;
+  align-items: center;
+  gap: 4px 16px;
+  padding: 7px 6px;
+  border-top: 1px solid var(--ma-border-hairline);
+}
+.guild-field-label {
+  font-size: 14px;
+}
+.guild-field-input {
+  display: flex;
+  align-items: center;
+  gap: 4px;
+  height: 36px;
+  padding: 0 10px;
+  border: 1px solid var(--ma-border-strong);
+  border-radius: 10px;
+  background: var(--ma-surface-window);
+  color: var(--ma-text-secondary);
+}
+.guild-field-input:focus-within {
+  outline: 2px solid var(--ma-focus-ring);
+  outline-offset: 1px;
+}
+.guild-field-input input {
+  min-width: 0;
+  width: 100%;
+  border: 0;
+  background: none;
+  color: var(--ma-text-primary);
+  font: inherit;
+  font-size: 14px;
+  font-variant-numeric: tabular-nums;
+  text-align: right;
+  outline: none;
+}
+.guild-field-problem,
+.guild-field-hint {
+  grid-column: 1 / -1;
+  font-size: 12px;
+  line-height: 16px;
+  text-align: right;
+}
+.guild-field-problem {
+  color: var(--ma-text-danger);
+}
+.guild-field-hint {
+  color: var(--ma-text-tertiary);
+}
+.guild-sheet-foot {
+  position: sticky;
+  bottom: -24px;
+  display: flex;
+  align-items: center;
+  justify-content: flex-end;
+  gap: 12px;
+  margin: 0 -24px -24px;
+  padding: 12px 24px 20px;
+  background: var(--ma-surface-window);
+  border-top: 1px solid var(--ma-border-hairline);
+}
+.guild-sheet-line {
+  color: var(--ma-text-secondary);
+  font-size: 13px;
+}
+.guild-usage-totals {
+  display: grid;
+  grid-template-columns: 1fr 1fr;
+  gap: 12px;
+  margin-bottom: 16px;
+}
+.guild-usage-totals > div {
+  display: grid;
+  gap: 2px;
+  padding: 12px 14px;
+  border-radius: 12px;
+  background: var(--ma-surface-sunken);
+}
+.guild-usage-k {
+  color: var(--ma-text-tertiary);
+  font-size: 12px;
+  line-height: 16px;
+}
+.guild-usage-v {
+  font-size: 22px;
+  line-height: 28px;
+  font-weight: 600;
+  font-variant-numeric: tabular-nums;
+}
+.guild-usage-s {
+  color: var(--ma-text-tertiary);
+  font-size: 12px;
+  font-variant-numeric: tabular-nums;
+}
+.guild-usage-table {
+  width: 100%;
+  border-collapse: collapse;
+  font-size: 14px;
+  font-variant-numeric: tabular-nums;
+}
+.guild-usage-table th,
+.guild-usage-table td {
+  padding: 9px 6px;
+  border-top: 1px solid var(--ma-border-hairline);
+  text-align: left;
+  font-weight: 400;
+  vertical-align: middle;
+}
+.guild-usage-table thead th {
+  border-top: 0;
+  color: var(--ma-text-tertiary);
+  font-size: 12px;
+  font-weight: 500;
+}
+.guild-usage-table tbody th {
+  font-weight: 500;
+}
+.guild-usage-month {
+  display: block;
+}
+.guild-usage-bar {
+  display: block;
+  height: 4px;
+  margin-top: 5px;
+  border-radius: 2px;
+  background: var(--ma-surface-fill);
+  overflow: hidden;
+}
+.guild-usage-bar > span {
+  display: block;
+  height: 100%;
+  border-radius: 2px;
+  background: var(--ma-accent);
+}
+.guild-usage-bar > span.full {
+  background: var(--ma-status-warn);
+}
+@media (max-width: 599px) {
+  .guild-field {
+    grid-template-columns: 1fr 112px;
+  }
+  .guild-sheet-head,
+  .guild-sheet-body {
+    padding-left: 16px;
+    padding-right: 16px;
+  }
+  .guild-tabs {
+    margin: 0 16px;
+  }
+}
+/* The same guild limits, as the Agent window's "Guild limits" on a Guild Desk: no sheet edges to reach for. */
+.ag-drawer .guild-sheet-foot {
+  position: static;
+  margin: 8px 0 0;
+  padding: 12px 0 0;
+  background: none;
+}
+
+/* The data guard's refusal in a window or over the office (ma-platform ADR 0110): the platform's words, as given. */
+.data-guard {
+  display: grid;
+  gap: 8px;
+  max-width: 44ch;
+  text-wrap: pretty;
+}
+.office-notice .data-guard {
+  max-width: none;
+}

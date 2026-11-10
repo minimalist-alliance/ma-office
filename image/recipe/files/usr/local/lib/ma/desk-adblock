@@ -1,0 +1,570 @@
+#!/usr/bin/python3 -I
+"""desk-adblock: the desk Browser's ad and tracker blocker, and a member's per-site off switch for it (ADR 0076).
+
+The blocker is the image's own extension, built from uBlock Origin Lite's pinned lists (image/recipe/adblock), network rules
+only, force-installed from /usr/share/ma/adblock by /etc/chromium/policies/managed/ma-adblock.json. This writes that policy
+from the image's template /etc/ma/chromium-adblock.json, the sites where the member turned blocking off, and the kill
+switch. deskd (uid 1100) owns the list, /data/desk/adblock-off, and can't write /etc, so this root helper turns it into the
+policy. The extension keeps the policy in effect by itself (it listens for Chromium's managed storage changing).
+
+  desk-adblock render   before every start of Chromium (desk-browser.service, ExecStartPre=-+), so a restart, a crash restart
+                        and the first start on a new root all take the list from /data, a list emptied by a clear of
+                        history included
+  desk-adblock apply    on demand (desk-adblock.service, which deskd starts through units.sock, and the Platform with the
+                        kill switch): render, have the running Chromium read its policy now, and wait until the blocker's
+                        own rules show it
+
+The list is an attacker's input to a root process (uid 1100 can write /data/desk), so it's read as desk-browser-policy reads
+the band: the directory with O_DIRECTORY|O_NOFOLLOW, the file relative to it with O_NOFOLLOW|O_NONBLOCK, and only a regular
+file of at most 64 KiB. One site per line: a lowercase ASCII hostname (an IDN as its xn-- form), at least two labels, no
+port, path, scheme or wildcard, LF after each. A line that isn't one is dropped; a file that can't be read counts as empty.
+Either way the blocking stays on, which is the safe side here. It logs counts and reasons, never a site.
+
+The kill switch is /data/.ma-adblock-off, a regular file root owns (uid 1100 can't make one there): while it's there the
+blocker blocks nothing and stays installed. The Platform sets it with "touch" and this "apply", and takes it away the same
+way. The policy is root:kiosk 0640: Chromium (kiosk) reads it, and no other user on the desk can see the list.
+
+apply speaks CDP to Chromium as uid 1100 (deskd's), after it has written the policy as root. Exit 0: in effect, or nothing
+to do now (Chromium isn't running, or the blocker isn't installed yet), so it applies at the next start or install. 1: the
+policy couldn't be written. 2: Chromium is running with the blocker, and the blocker didn't show the list in time.
+"""
+import base64
+import json
+import os
+import re
+import socket
+import stat
+import struct
+import sys
+import time
+import urllib.request
+
+LIST_DIR = "/data/desk"
+LIST_FILE = "adblock-off"
+KILL_DIR = "/data"
+KILL_FILE = ".ma-adblock-off"
+TEMPLATE = "/etc/ma/chromium-adblock.json"
+POLICY = "/etc/chromium/policies/managed/ma-adblock.json"
+UPDATE_URL = "file:///usr/share/ma/adblock/update.xml"
+PROFILE_EXTENSIONS = "/data/browser/profile/Default/Extensions"
+OWNER = (0, 0)
+KILL_OWNER = 0
+POLICY_GID = 1102     # kiosk, Chromium's group
+MAX_LIST = 64 << 10
+MAX_SITES = 1000
+MAX_TEMPLATE = 64 << 10
+DESK_UID = 1100
+CDP = "http://127.0.0.1:9222"
+APPLY_SECONDS = 20
+STEP_SECONDS = 4      # one CDP call has its own limit: one left unanswered costs a new connection, not the apply
+RELOAD_EVERY = 5      # ask Chromium to read its policy again this often while the rules don't show it
+STEADY_SECONDS = 1.5  # the rules have to read the same this long before it counts
+LABEL = r"[a-z0-9](?:[a-z0-9-]{0,61}[a-z0-9])?"
+HOST = re.compile(r"\A(?=.{1,253}\Z)%s(?:\.%s)+\Z" % (LABEL, LABEL))
+
+
+def log(line):
+    print(f"desk-adblock: {line}", file=sys.stderr, flush=True)
+
+
+# ---- the list and the kill switch ---------------------------------------------------------------------------------------
+
+def read_list():
+    """(bytes or None, why): the list file's bytes, or None when it can't be read safely. why is safe to log."""
+    try:
+        dir_fd = os.open(LIST_DIR, os.O_RDONLY | os.O_DIRECTORY | os.O_NOFOLLOW)
+    except OSError as e:
+        return None, f"no list directory ({e.strerror})"
+    try:
+        fd = os.open(LIST_FILE, os.O_RDONLY | os.O_NOFOLLOW | os.O_NONBLOCK, dir_fd=dir_fd)
+    except FileNotFoundError:
+        return b"", "no list"
+    except OSError as e:
+        return None, f"can't open the list ({e.strerror})"
+    finally:
+        os.close(dir_fd)
+    try:
+        st = os.fstat(fd)
+        if not stat.S_ISREG(st.st_mode):
+            return None, "the list isn't a regular file"
+        if st.st_size > MAX_LIST:
+            return None, "the list is too large"
+        data = b""
+        while len(data) <= MAX_LIST:
+            chunk = os.read(fd, MAX_LIST + 1 - len(data))
+            if not chunk:
+                break
+            data += chunk
+    except OSError as e:
+        return None, f"can't read the list ({e.strerror})"
+    finally:
+        os.close(fd)
+    if len(data) > MAX_LIST:
+        return None, "the list is too large"
+    return data, "list read"
+
+
+def valid_site(s):
+    """A hostname with two labels or more, and not an address (an all-digit last label). verify.sh uses *.localhost names."""
+    return bool(HOST.match(s)) and not s.rsplit(".", 1)[1].isdigit()
+
+
+def parse_sites(data):
+    """(sites in file order without repeats, lines dropped). Only whole LF-terminated lines count."""
+    sites, seen, dropped = [], set(), 0
+    if not data:
+        return sites, 0
+    lines = data.split(b"\n")
+    tail = lines.pop()  # what follows the last LF: empty for a well-formed file
+    if tail:
+        dropped += 1
+    for raw in lines:
+        if not raw:
+            continue
+        try:
+            s = raw.decode("ascii")
+        except UnicodeDecodeError:
+            dropped += 1
+            continue
+        if not valid_site(s):
+            dropped += 1
+            continue
+        if s in seen:
+            continue
+        if len(sites) >= MAX_SITES:
+            dropped += 1
+            continue
+        seen.add(s)
+        sites.append(s)
+    return sites, dropped
+
+
+# ---- the policy ---------------------------------------------------------------------------------------------------------
+
+def killed():
+    """Whether the kill switch is set: a regular file, root's, at /data/.ma-adblock-off, read without following a link."""
+    try:
+        dir_fd = os.open(KILL_DIR, os.O_RDONLY | os.O_DIRECTORY | os.O_NOFOLLOW)
+    except OSError:
+        return False
+    try:
+        st = os.stat(KILL_FILE, dir_fd=dir_fd, follow_symlinks=False)
+    except FileNotFoundError:
+        return False
+    except OSError:
+        log("the kill switch can't be read, so blocking stays on")
+        return False
+    finally:
+        os.close(dir_fd)
+    if not stat.S_ISREG(st.st_mode) or st.st_uid != KILL_OWNER:
+        log("the kill switch isn't a regular file root owns, so blocking stays on")
+        return False
+    return True   # set
+
+
+# ---- the policy ---------------------------------------------------------------------------------------------------------
+
+def read_template():
+    """(the image's policy, the blocker's id), checked: root's alone, a JSON object that force-installs exactly one
+    extension from the image's own update manifest, and holds its settings."""
+    fd = os.open(TEMPLATE, os.O_RDONLY | os.O_NOFOLLOW | os.O_NONBLOCK)
+    try:
+        st = os.fstat(fd)
+        if not stat.S_ISREG(st.st_mode) or (st.st_uid, st.st_gid) != OWNER or st.st_mode & 0o022 or st.st_size > MAX_TEMPLATE:
+            raise ValueError("the template isn't a regular file only root can write")
+        data = os.read(fd, MAX_TEMPLATE + 1)
+    finally:
+        os.close(fd)
+    try:
+        policy = json.loads(data)
+    except ValueError:
+        raise ValueError("the template isn't JSON") from None
+    if not isinstance(policy, dict):
+        raise ValueError("the template isn't a JSON object")
+    es = policy.get("ExtensionSettings")
+    if not isinstance(es, dict) or len(es) != 1:
+        raise ValueError("the template doesn't force-install exactly one extension")
+    (ext_id, e), = es.items()
+    if not (re.fullmatch(r"[a-p]{32}", ext_id) and isinstance(e, dict) and e.get("installation_mode") == "force_installed"
+            and e.get("update_url") == UPDATE_URL and e.get("override_update_url") is True):
+        raise ValueError("the template doesn't force-install the image's blocker from its own manifest")
+    ext = policy.get("3rdparty", {}).get("extensions", {}).get(ext_id) if isinstance(policy.get("3rdparty"), dict) else None
+    if not isinstance(ext, dict):
+        raise ValueError("the template has no settings for the blocker")
+    return policy, ext_id
+
+
+def policy_for(template, ext_id, sites, off):
+    policy = json.loads(json.dumps(template))
+    policy["3rdparty"]["extensions"][ext_id]["noFiltering"] = list(sites)
+    policy["3rdparty"]["extensions"][ext_id]["off"] = bool(off)
+    return (json.dumps(policy, indent=1, sort_keys=True) + "\n").encode()
+
+
+def current_sites():
+    """The off list in the policy Chromium has now, for the log's count of sites turned on again."""
+    try:
+        with open(POLICY, "rb") as f:
+            p = json.loads(f.read(MAX_TEMPLATE * 2))
+        (ext_id,) = p["ExtensionSettings"]
+        got = p["3rdparty"]["extensions"][ext_id].get("noFiltering", [])
+        return [s for s in got if isinstance(s, str)]
+    except (OSError, ValueError, KeyError, TypeError, AttributeError):
+        return []
+
+
+def drop_temp(temp):
+    try:
+        os.unlink(temp)
+    except FileNotFoundError:
+        pass
+
+
+def write_policy(data):
+    """Temp file in the same directory, then rename, so Chromium's directory never holds a partial policy under that name."""
+    temp = os.path.join(os.path.dirname(POLICY), "." + os.path.basename(POLICY) + ".tmp")
+    drop_temp(temp)
+    fd = os.open(temp, os.O_WRONLY | os.O_CREAT | os.O_EXCL | os.O_NOFOLLOW, 0o644)
+    try:
+        os.fchown(fd, OWNER[0], POLICY_GID)
+        os.fchmod(fd, 0o640)
+        if os.write(fd, data) != len(data):
+            raise OSError("short write")
+        os.fsync(fd)
+    except BaseException:
+        os.close(fd)
+        drop_temp(temp)
+        raise
+    os.close(fd)
+    os.rename(temp, POLICY)
+    dir_fd = os.open(os.path.dirname(POLICY), os.O_RDONLY | os.O_DIRECTORY)
+    try:
+        os.fsync(dir_fd)
+    finally:
+        os.close(dir_fd)
+
+
+def render():
+    """(sites, off, ok, the blocker's id or None). On failure the policy already there stays, so blocking stays as it was."""
+    data, why = read_list()
+    if data is None:
+        sites, dropped = [], 0
+        log(f"blocking on everywhere: {why}")
+    else:
+        sites, dropped = parse_sites(data)
+    off = killed()
+    try:
+        template, ext_id = read_template()
+        write_policy(policy_for(template, ext_id, sites, off))
+    except (OSError, ValueError) as e:
+        log(f"POLICY NOT WRITTEN, the one there stays: {getattr(e, 'strerror', None) or e}")
+        return sites, off, False, None
+    log(f"policy written: blocking off on {len(sites)} site(s)" + (f", {dropped} line(s) dropped" if dropped else "")
+        + (", KILL SWITCH SET: blocking nothing" if off else ""))
+    return sites, off, True, ext_id
+
+
+# ---- CDP, as deskd --------------------------------------------------------------------------------------------------------
+
+class WS:
+    """Just enough of RFC 6455 for CDP over loopback, as verify.sh's. Every read and the whole call are bounded."""
+
+    def __init__(self, url, deadline):
+        hostport, path = url[len("ws://"):].split("/", 1)
+        host, port = hostport.split(":")
+        if host not in ("127.0.0.1", "localhost"):
+            raise OSError("not a loopback debugging address")
+        self.deadline = deadline
+        self.limit = deadline
+        self.s = socket.create_connection(("127.0.0.1", int(port)), 5)
+        self.n = 0
+        self.buf = b""
+        key = base64.b64encode(os.urandom(16)).decode()
+        self.s.sendall((f"GET /{path} HTTP/1.1\r\nHost: {hostport}\r\nUpgrade: websocket\r\nConnection: Upgrade\r\n"
+                        f"Sec-WebSocket-Key: {key}\r\nSec-WebSocket-Version: 13\r\n\r\n").encode())
+        while b"\r\n\r\n" not in self.buf:
+            self.buf += self._recv()
+            if len(self.buf) > 16384:
+                raise OSError("no handshake")
+        head, self.buf = self.buf.split(b"\r\n\r\n", 1)
+        if b" 101 " not in head.split(b"\r\n")[0]:
+            raise OSError("handshake refused")
+
+    def _recv(self):
+        left = min(self.deadline, self.limit) - time.monotonic()
+        if left <= 0:
+            raise TimeoutError("out of time")
+        self.s.settimeout(left)
+        d = self.s.recv(1 << 16)
+        if not d:
+            raise EOFError
+        return d
+
+    def _read(self, n):
+        while len(self.buf) < n:
+            self.buf += self._recv()
+        out, self.buf = self.buf[:n], self.buf[n:]
+        return out
+
+    def _message(self):
+        msg = b""
+        while True:
+            b0, b1 = self._read(2)
+            ln = b1 & 0x7F
+            if ln == 126:
+                ln = struct.unpack(">H", self._read(2))[0]
+            elif ln == 127:
+                ln = struct.unpack(">Q", self._read(8))[0]
+            if ln > 16 << 20:
+                raise OSError("message too large")
+            if b1 & 0x80:
+                self._read(4)
+            data = self._read(ln)
+            op = b0 & 0x0F
+            if op == 8:
+                raise EOFError
+            if op in (9, 10):
+                continue
+            msg += data
+            if b0 & 0x80:
+                return msg
+
+    def call(self, method, session=None, **params):
+        """One call, answered within STEP_SECONDS. A late answer to an earlier call is skipped by its id."""
+        self.limit = min(self.deadline, time.monotonic() + STEP_SECONDS)
+        self.n += 1
+        m = {"id": self.n, "method": method, "params": params}
+        if session:
+            m["sessionId"] = session
+        data = json.dumps(m).encode()
+        mask = os.urandom(4)
+        n = len(data)
+        hdr = bytes([0x81, 0x80 | n]) if n < 126 else bytes([0x81, 0x80 | 126]) + struct.pack(">H", n)
+        self.s.sendall(hdr + mask + bytes(b ^ mask[k % 4] for k, b in enumerate(data)))
+        while True:
+            r = json.loads(self._message())
+            if r.get("id") == self.n:
+                if "error" in r:
+                    raise RuntimeError(f"{method}: {str(r['error'].get('message'))[:120]}")
+                return r.get("result", {})
+
+    def value(self, expr, session):
+        r = self.call("Runtime.evaluate", session=session, expression=expr, returnByValue=True, awaitPromise=True)
+        if "exceptionDetails" in r:
+            raise RuntimeError("evaluation failed")
+        return r.get("result", {}).get("value")
+
+    def close(self):
+        try:
+            self.s.close()
+        except OSError:
+            pass
+
+
+def browser(deadline):
+    """The browser's CDP connection, or None when Chromium isn't listening."""
+    try:
+        with urllib.request.urlopen(CDP + "/json/version", timeout=3) as r:
+            url = json.loads(r.read(65536))["webSocketDebuggerUrl"]
+    except (OSError, ValueError, KeyError):
+        return None
+    return WS(url, deadline)
+
+
+def wait_value(b, session, expr, want, seconds):
+    end = time.monotonic() + seconds
+    while time.monotonic() < end:
+        try:
+            if b.value(expr, session) == want:
+                return True
+        except RuntimeError:
+            pass
+        time.sleep(0.05)
+    return False
+
+
+def open_page(b, opened, url):
+    """A page for one of Chromium's own pages, chrome://policy or chrome://extensions, hidden: no tab, so nothing a member
+    sees, nothing deskd lists, nothing session restore brings back (background tabs did all three on the first test bake's
+    lab box). Made at its URL and never navigated: a hidden page navigated from one to the other lost its session. A
+    Chromium without hidden targets gets a background tab. chrome:// pages never reach history. Its id goes in opened at
+    once, so a connection that drops before the page is used still has it closed. Returns its session."""
+    try:
+        tid = b.call("Target.createTarget", url=url, hidden=True)["targetId"]
+    except RuntimeError:
+        tid = b.call("Target.createTarget", url=url, background=True)["targetId"]
+    opened.append(tid)
+    return b.call("Target.attachToTarget", targetId=tid, flatten=True)["sessionId"]
+
+
+def target_ids():
+    """The ids of every target Chromium lists, over HTTP, or None if it can't say."""
+    try:
+        with urllib.request.urlopen(f"{CDP}/json/list", timeout=3) as r:
+            return {t["id"] for t in json.loads(r.read(4 << 20))}
+    except (OSError, ValueError, KeyError, TypeError):
+        return None
+
+
+def close_tabs(opened):
+    """Close every page this run opened, over HTTP, which needs no CDP connection, and wait up to 3 s until they're gone,
+    so a stop of the Browser right after this answers can't keep one. Only these: a chrome://policy page that someone
+    else opened (verify.sh's, a member's) isn't this run's to close."""
+    ids = set(opened)
+    opened.clear()
+    for tid in ids:
+        try:
+            with urllib.request.urlopen(f"{CDP}/json/close/{tid}", timeout=3) as r:
+                r.read(4096)
+        except OSError:
+            pass
+    end = time.monotonic() + 3
+    while ids and time.monotonic() < end:
+        now = target_ids()
+        if now is None or not (ids & now):
+            break
+        time.sleep(0.1)
+
+
+def reload_policies(b, pol):
+    """Chromium reads its policy files again now (its own watcher takes about 5 s), through chrome://policy. The blocker
+    hears of the change from Chromium itself."""
+    if not wait_value(b, pol, "typeof chrome.send", "function", 5):
+        raise RuntimeError("chrome://policy didn't load")
+    b.value("chrome.send('reloadPolicies'), 1", pol)
+
+
+def wake(b, s, ext_id):
+    """The blocker's worker sleeps when idle and nothing at a start wakes it, so its state can't be read until it runs."""
+    try:
+        b.call("ServiceWorker.enable", session=s)
+        b.call("ServiceWorker.startWorker", session=s, scopeURL=f"chrome-extension://{ext_id}/")
+    except RuntimeError:
+        pass
+
+
+def state_expr(ext_id):
+    return ("Promise.all([chrome.storage.managed.get(null), chrome.storage.local.get('applied'),"
+            " chrome.declarativeNetRequest.getDynamicRules(), chrome.declarativeNetRequest.getEnabledRulesets()])"
+            ".then(([m, a, d, e]) => ({given: m.noFiltering || [], killed: m.off === true, applied: a.applied || null,"
+            " through: [...new Set(d.flatMap(r => r.condition.requestDomains || r.condition.initiatorDomains || []))],"
+            " enabled: e, all: chrome.runtime.getManifest().declarative_net_request.rule_resources.map(r => r.id)}))")
+
+
+def blocker_state(b, ext_id):
+    """What the blocker was given, what it says it applied, and what its rules do, from its service worker, or None while
+    it isn't running. Reaching the worker needs DeveloperToolsAvailability 1, which the template sets (ADR 0076)."""
+    for t in b.call("Target.getTargets")["targetInfos"]:
+        if t.get("type") == "service_worker" and t.get("url", "").startswith(f"chrome-extension://{ext_id}/"):
+            s = b.call("Target.attachToTarget", targetId=t["targetId"], flatten=True)["sessionId"]
+            try:
+                v = b.value(state_expr(ext_id), s)
+            finally:
+                try:
+                    b.call("Target.detachFromTarget", sessionId=s)
+                except (OSError, RuntimeError):
+                    pass
+            if isinstance(v, dict) and isinstance(v.get("through"), list) and isinstance(v.get("enabled"), list):
+                return v
+    return None
+
+
+def in_effect(state, sites, off):
+    """Chromium gave the blocker exactly the list and the switch, it says it applied them, and its rules let exactly those
+    sites through, with every list on, or none when the kill switch is set."""
+    if not isinstance(state, dict):
+        return False
+    applied = state.get("applied") or {}
+    lists = set(state.get("enabled") or [])
+    return (state.get("given") == list(sites) and state.get("killed") is bool(off)
+            and applied.get("sites") == list(sites) and applied.get("off") is bool(off)
+            and set(state.get("through") or []) == set(sites)
+            and (not lists if off else lists == set(state.get("all") or ["-"])))
+
+
+def apply_live(ext_id, sites, off, removed):
+    """Have Chromium read the policy, then read the blocker's state until it shows it, steady for STEADY_SECONDS. A call
+    that isn't answered, or a connection that drops, costs a new connection, not the apply."""
+    deadline = time.monotonic() + APPLY_SECONDS
+    try:
+        b = browser(deadline)
+    except OSError as e:
+        log(f"Chromium's debugging port didn't answer ({e}); the policy applies at its next start")
+        return 0
+    if b is None:
+        log("Chromium isn't running; the policy applies at its next start")
+        return 0
+    pol = None
+    opened = []
+    asked, errors, last_error, held = None, 0, None, None
+    try:
+        while time.monotonic() < deadline:
+            try:
+                if b is None:
+                    b = browser(deadline)
+                    if b is None:
+                        raise OSError("Chromium's debugging port went away")
+                if pol is None:
+                    pol = open_page(b, opened, "chrome://policy")
+                if asked is None or time.monotonic() - asked >= RELOAD_EVERY:
+                    reload_policies(b, pol)
+                    asked = time.monotonic()
+                st = blocker_state(b, ext_id)
+                if st is None:
+                    wake(b, pol, ext_id)
+                if in_effect(st, sites, off):
+                    held = held or time.monotonic()
+                    if time.monotonic() - held >= STEADY_SECONDS:
+                        why = f", {errors} retried call(s), last {type(last_error).__name__}: {str(last_error)[:60]}" if errors else ""
+                        log(f"in effect: blocking off on {len(sites)} site(s), on again on {len(removed)}"
+                            + (", kill switch set" if off else "") + why)
+                        return 0
+                else:
+                    held = None
+            except (OSError, EOFError, RuntimeError, ValueError, KeyError) as e:
+                errors, last_error, held = errors + 1, e, None
+                if b is not None:
+                    b.close()
+                b = pol = None
+                close_tabs(opened)
+            time.sleep(0.25)
+        why = f"; last error {type(last_error).__name__}: {str(last_error)[:80]}" if last_error else ""
+        log(f"NOT CONFIRMED: the blocker didn't show the policy within {APPLY_SECONDS} s ({errors} retried call(s){why});"
+            " it's written, so it applies at the next start")
+        return 2
+    finally:
+        if b is not None:
+            b.close()
+        close_tabs(opened)
+
+
+def become_desk():
+    os.setgroups([])
+    os.setresgid(DESK_UID, DESK_UID, DESK_UID)
+    os.setresuid(DESK_UID, DESK_UID, DESK_UID)
+
+
+def main(argv):
+    mode = argv[1] if len(argv) > 1 else ""
+    if mode == "render":
+        return 0 if render()[2] else 1
+    if mode == "apply":
+        before = current_sites()
+        sites, off, ok, ext_id = render()
+        if not ok:
+            return 1
+        removed = sorted(set(before) - set(sites))
+        # As root, before dropping to uid 1100: whether the profile holds the blocker yet (its directory, nothing in it).
+        installed = os.path.isdir(os.path.join(PROFILE_EXTENSIONS, ext_id))
+        if os.geteuid() == 0:
+            become_desk()
+        if not installed:
+            log("the blocker isn't installed yet; the policy applies when it is")
+            return 0
+        return apply_live(ext_id, sites, off, removed)
+    print("usage: desk-adblock render|apply", file=sys.stderr)
+    return 64
+
+
+if __name__ == "__main__":
+    sys.exit(main(sys.argv))

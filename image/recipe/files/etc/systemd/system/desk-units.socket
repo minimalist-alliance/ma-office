@@ -1,0 +1,13 @@
+[Unit]
+Description=Unit control for deskd (desk-runtime.md section 8.3)
+
+[Socket]
+ListenStream=/run/desk/units.sock
+SocketUser=desk
+SocketGroup=desk
+SocketMode=0600
+Accept=yes
+MaxConnections=8
+
+[Install]
+WantedBy=sockets.target

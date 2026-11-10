@@ -1,0 +1,9 @@
+#!/bin/sh
+# ExecStartPre of ma-selfhost.service, as root. The metadata address goes on lo, where only this machine can reach it,
+# and nftables.conf already lets only root and deskd (1100) connect to it. The state directory is the service's own.
+# RuntimeDirectory (/run/ma-selfhost) exists by now.
+set -eu
+ip addr replace 169.254.169.254/32 dev lo
+install -d -o selfhost -g selfhost -m 0700 /data/selfhost
+# desk-rtc's DTLS fingerprint, for ma-selfhost to sign (ma-selfhost-dtls). desk-rtc's start writes it again.
+/usr/local/lib/ma/selfhost/ma-selfhost-dtls || true

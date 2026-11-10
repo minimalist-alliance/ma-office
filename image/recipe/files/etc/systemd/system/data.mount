@@ -1,0 +1,14 @@
+[Unit]
+Description=Desk data volume (/data, label ma-data)
+Requires=desk-firstboot.service
+After=desk-firstboot.service
+Before=local-fs.target
+
+[Mount]
+What=/dev/disk/by-label/ma-data
+Where=/data
+Type=ext4
+Options=noatime,nodev,nosuid
+
+[Install]
+WantedBy=local-fs.target

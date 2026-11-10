@@ -1,0 +1,165 @@
+#!/usr/bin/python3 -I
+"""desk-kind: reads the desk's kind once per boot, as root, and writes the answer for systemd (image/README.md, "Guild Desk").
+
+Platform's provisioner launches a Guild Desk with the EC2 tag DeskKind=guild and instance metadata tags on. This reads that
+tag over IMDSv2 and writes /run/ma/desk-kind: "guild\n" when the tag is exactly "guild", else "member\n". That file is the
+desk's one answer (desk-runtime.md section 3.1, the Security Analyst's GDS-5): deskd reads it rather than IMDS, so the two
+can't disagree, and everything that depends on the kind starts after this. On a Guild Desk it
+also writes /run/ma/guild, the file the units' conditions test: with it the Browser's units are skipped, and
+desk-guild-net and commons-server run.
+
+Fail safe: only an exact "guild" makes a Guild Desk. No tag, metadata tags off, IMDS not answering, any error, or a value in
+another case or with a space is a member's desk with its Browser, and the journal says why. A member must never lose their
+Browser to a bad read. /run/ma/guild is written last on a Guild Desk and removed first otherwise, so whoever sees it can
+trust it.
+
+Runs once a boot from desk-kind.service. A restart reads the tag again, but units already started or skipped stay so.
+"""
+import contextlib
+import os
+import sys
+import time
+import urllib.error
+import urllib.request
+
+IMDS = "http://169.254.169.254/latest"
+OUT_DIR = "/run/ma"  # /run/ma/desk-kind and /run/ma/guild; tests move it
+TAG = "DeskKind"
+GUILD = "guild"
+MEMBER = "member"
+# IMDS answers in milliseconds once the interface is up. If it doesn't, desk-kind asks again with backoff (0.5 s, doubling
+# to 4 s) and the desk boots as a member's after this long (the Security Analyst's GDS-5: bounded, then a normal desk).
+DEADLINE_S = 30
+TIMEOUT_S = 2
+RETRY_S = 0.5
+RETRY_MAX_S = 4
+MAX_BODY = 256
+SLEEP = time.sleep
+CLOCK = time.monotonic
+OPENER = urllib.request.build_opener(urllib.request.ProxyHandler({}))
+
+
+def paths():
+    return os.path.join(OUT_DIR, "desk-kind"), os.path.join(OUT_DIR, "guild")
+
+
+def log(prio, msg):
+    # stderr is the journal; "<n>" sets the priority (sd-daemon(3)).
+    print(f"<{prio}>desk-kind: {msg}", file=sys.stderr, flush=True)
+
+
+class NoAnswer(Exception):
+    pass
+
+
+def call(method, path, headers):
+    """(HTTP status, body) from IMDS. NoAnswer when there's no HTTP answer at all."""
+    req = urllib.request.Request(IMDS + path, method=method, headers=headers)
+    try:
+        with OPENER.open(req, timeout=TIMEOUT_S) as r:
+            return r.status, r.read(MAX_BODY + 1)
+    except urllib.error.HTTPError as e:
+        return e.code, b""
+    except (OSError, ValueError) as e:  # URLError, timeouts, refused, unreachable
+        raise NoAnswer(f"{type(e).__name__}: {getattr(e, 'reason', e)}") from None
+
+
+def read_once():
+    """(kind, reason) when IMDS gave a final answer, or None and why it should be asked again."""
+    st, token = call("PUT", "/api/token", {"X-aws-ec2-metadata-token-ttl-seconds": "60"})
+    if st != 200 or not token or len(token) > MAX_BODY:
+        return None, f"token: HTTP {st}"
+    auth = {"X-aws-ec2-metadata-token": token.decode("ascii", "replace")}
+    st, body = call("GET", f"/meta-data/tags/instance/{TAG}", auth)
+    if st == 200:
+        if body == GUILD.encode():
+            return (GUILD, f"{TAG}={GUILD}"), None
+        shown = body[:64].decode("utf-8", "backslashreplace")
+        return (MEMBER, f"{TAG} is {shown!r}, not exactly {GUILD!r}"), None
+    if st == 404:
+        # Either no such tag, or instance metadata tags are off: the listing tells which. Both are a member's desk.
+        lst, _ = call("GET", "/meta-data/tags/instance", auth)
+        if lst == 404:
+            return (MEMBER, "instance metadata tags are off at launch, so no DeskKind can be read"), None
+        if lst == 200:
+            return (MEMBER, f"no {TAG} tag"), None
+        return (MEMBER, f"no {TAG} tag (the tag list said HTTP {lst})"), None
+    return None, f"{TAG}: HTTP {st}"
+
+
+def read_kind():
+    """(kind, reason, final). Never raises: anything unexpected is a member's desk."""
+    end = CLOCK() + DEADLINE_S
+    why, tries, delay = "no try", 0, RETRY_S
+    while True:
+        tries += 1
+        try:
+            answer, why = read_once()
+            if answer:
+                return answer[0], answer[1], True
+        except NoAnswer as e:
+            why = f"no answer from IMDS ({e})"
+        except Exception as e:  # noqa: BLE001 - fail safe, whatever it was
+            return MEMBER, f"error reading the tag: {type(e).__name__}", False
+        if CLOCK() + delay >= end:
+            return MEMBER, f"IMDS gave no usable answer in {DEADLINE_S} s ({tries} tries; last: {why})", False
+        SLEEP(delay)
+        delay = min(delay * 2, RETRY_MAX_S)
+
+
+def write_atomic(path, text):
+    tmp = path + ".tmp"
+    fd = os.open(tmp, os.O_WRONLY | os.O_CREAT | os.O_TRUNC | os.O_NOFOLLOW | os.O_CLOEXEC, 0o644)
+    try:
+        os.write(fd, text.encode())
+        os.fchmod(fd, 0o644)
+    finally:
+        os.close(fd)
+    os.replace(tmp, path)
+
+
+def unlink(path):
+    try:
+        os.unlink(path)
+    except FileNotFoundError:
+        pass
+
+
+def write(kind):
+    kind_file, flag = paths()
+    if kind == GUILD:
+        write_atomic(kind_file, GUILD + "\n")
+        write_atomic(flag, f"{TAG}={GUILD}\n")
+    else:
+        unlink(flag)
+        write_atomic(kind_file, MEMBER + "\n")
+
+
+def main():
+    t0 = CLOCK()
+    kind, reason, final = read_kind()
+    try:
+        write(kind)
+    except Exception as e:  # noqa: BLE001
+        # Whatever happened, no flag may be left: without it this is a member's desk, and the answer says so if it can.
+        kind_file, flag = paths()
+        try:
+            unlink(flag)
+        except OSError as e2:
+            log(2, f"could not write the answer ({type(e).__name__}: {e}) nor remove {flag} ({e2})")
+            return 1
+        try:
+            write_atomic(kind_file, MEMBER + "\n")
+        except OSError:
+            with contextlib.suppress(OSError):
+                unlink(kind_file)
+        log(3, f"could not write the answer ({type(e).__name__}: {e}); no {flag}, so a member's desk")
+        return 1
+    ms = (CLOCK() - t0) * 1000
+    # notice for a Guild Desk, info for a member's desk with a normal answer, warning when the read itself went wrong.
+    log(5 if kind == GUILD else 6 if final else 4, f"{kind} ({reason}) in {ms:.0f} ms")
+    return 0
+
+
+if __name__ == "__main__":
+    sys.exit(main())

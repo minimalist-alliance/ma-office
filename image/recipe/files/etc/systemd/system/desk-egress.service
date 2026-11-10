@@ -1,0 +1,38 @@
+[Unit]
+Description=desk-egress (the outbound shaper and its budgets, ADR 0036)
+ConditionPathExists=/opt/ma/desk-egress/current/run
+# Its state is on /data, but a missing /data must not stop the shaper: Wants, and it carries on with no saved state.
+Wants=desk-datadirs.service network-online.target
+After=desk-datadirs.service network-online.target nftables.service
+# It reads /run/ma/guild once, at start, for a Guild Desk's voice class (image/README.md, "Guild Desk"). desk-rtc and deskd
+# wait for desk-kind already, so on a member's desk this orders it later and delays nothing.
+After=desk-kind.service
+Before=desk-rtc.service deskd.service
+StartLimitIntervalSec=0
+
+[Service]
+Type=notify
+NotifyAccess=main
+Environment=RELEASE_DIR=/opt/ma/desk-egress/current
+ExecStart=/opt/ma/desk-egress/current/run
+# No clamp outlives the process. The ceilings stay.
+ExecStopPost=-/opt/ma/desk-egress/current/desk-egress --unclamp
+Restart=always
+RestartSec=10
+# desk-rtc and deskd wait for this unit, so a hang can only delay them this long.
+TimeoutStartSec=15
+TimeoutStopSec=15
+RuntimeDirectory=desk-egress
+RuntimeDirectoryMode=0755
+RuntimeDirectoryPreserve=yes
+MemoryMax=64M
+CapabilityBoundingSet=CAP_NET_ADMIN
+NoNewPrivileges=yes
+ProtectSystem=strict
+ProtectHome=yes
+PrivateTmp=yes
+ReadWritePaths=-/data/desk-egress
+InaccessiblePaths=-/data/browser
+
+[Install]
+WantedBy=multi-user.target

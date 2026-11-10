@@ -1,0 +1,1140 @@
+#!/usr/bin/python3 -I
+"""desk-stream: captures :99 and the Pulse sink, encodes once, and writes RTP to desk-rtc.
+
+desk-runtime.md section 8.2. Unix stream socket; RFC 4571 frames out, ASCII commands in. Python only sets
+the pipeline up, takes commands and, twice a second, reads two counters for the contention control (ADR 0073). Every
+packet moves on GStreamer's own native threads. From 0.3.3 it also runs the sound branch only while something plays.
+
+Encoder settings live only in stream.conf.
+"""
+import argparse
+import configparser
+import json
+import os
+import re
+import signal
+import socket
+import subprocess
+import sys
+import threading
+import time
+
+import gi
+
+gi.require_version("Gst", "1.0")
+gi.require_version("GLib", "2.0")
+from gi.repository import GLib, Gst  # noqa: E402
+
+PT_H264 = 96
+PT_OPUS = 111
+CONNECT_WAIT_S = 15
+SEND_BUFFER = 1 << 20
+
+# Quality levels (ADR 0039, stream-quality.md section 5), in their wire order, and each [level.*] key's range: x264enc's own
+# property ranges, and max-height 0 (the screen's size) or a real picture height.
+LEVELS = ("low", "medium", "high", "max")
+LEVEL_KEYS = {"max-height": (0, 4320), "quantizer": (0, 50), "bitrate": (1, 2048000), "vbv-buf-capacity": (0, 10000)}
+# x264enc properties a level sets. With pass=qual they are x264's crf, vbv-maxrate (= bitrate) and vbv-bufsize (= bitrate x
+# vbv-buf-capacity / 1000). quantizer isn't mutable while playing (GStreamer 1.26.2: only bitrate and vbv-buf-capacity are,
+# and a quantizer set in PAUSED or PLAYING is dropped with only a debug warning), so a level reopens the encoder instead
+# (reopen_encoder). The x264 line's option-string can't fight them: x264enc applies these properties after it whenever it
+# opens, so its vbv-maxrate and vbv-bufsize never win (bitrate=2500 with option-string vbv-maxrate=8000 opens at 2500 and 375).
+ENCODER_KEYS = ("quantizer", "bitrate", "vbv-buf-capacity")
+# Only with levels: between convert and the one-frame queue, so a scaled picture is what the encoder and the queue see. At a
+# full-size level the size filter is ANY and videoscale is in passthrough, costing nothing. bilinear on one thread is the
+# cheapest scaler that keeps text readable at Low's 1080 to 720 (1.5x: every source pixel still counts, which nearest-neighbour
+# doesn't do). 1920x1080 NV12 to 1280x720 on one EPYC 7402 core: bilinear 1.4 ms a frame, bilinear2 2.0, 4-tap 2.5,
+# nearest 0.5. n-threads=2 saved only 0.3 ms of wall time for 0.4 ms more CPU, and a 2-vCPU desk has no idle core for it while
+# x264enc's two threads and Chromium run. It sits on the capture thread, ahead of the encoder, which has 2.25x fewer pixels at 720.
+# videocrop heads the chain for islands (ADR 0075, "crop" below): with nothing to crop it's in passthrough, costing nothing.
+SCALE = "videocrop name=crop ! videoscale name=scale method=bilinear n-threads=1 add-borders=false ! capsfilter name=size"
+
+# Contention control (ADR 0073, lever 3): when this desk's stream can't hold its frame rate because the machine is busy, it
+# steps down a ladder, and climbs back when there's room again. Each step is (most lines, quantizer added, most frames a
+# second): resolution first, then quality, and 30 fps only last, so motion never goes under 30. "fps" is the owner's option,
+# off by default: 30 fps first, at full size, then resolution, then quality.
+LADDERS = {
+    "scale": ((0, 0, 60), (900, 0, 60), (720, 0, 60), (540, 0, 60), (540, 4, 60), (540, 4, 30)),
+    "fps": ((0, 0, 60), (0, 0, 30), (900, 0, 30), (720, 0, 30), (540, 0, 30), (540, 4, 30)),
+}
+ADAPT_WINDOW_MS = 500
+FLOOR_FPS = 30  # the owner: "Its okay if sometimes people get less than 60. Below 30 is unacceptable."
+CLIMB_ROOM = 0.9  # a climb's predicted mean latency, as a share of the step above's frame interval
+
+# Islands (ADR 0075, desk-runtime.md 8.2 and 8.8): "crop X Y W H OUTW OUTH" makes the one encoder send only that rectangle of
+# the screen, scaled to fit OUTW x OUTH (aspect kept, never up), at its full frame rate, with the sound unchanged; "crop none"
+# is the whole screen again. videocrop and the size filter change in the running pipeline: a new picture size costs the one
+# keyframe x264enc starts again on, and a rectangle that only moved costs nothing but the next frame.
+CROP_MIN = 32  # pixels: the least an island's rectangle and its picture may be on a side
+CROP_MAX = 16384
+
+# x264 options for one machine only (0.3.3, ADR 0073 addendum): [video]'s x264-<machine> (os.uname's, e.g. aarch64) is added to
+# the x264 line's option-string there and nowhere else. One release serves arm64 cloud desks and amd64 self-hosted ones, and
+# asm=NEON, which saves about a fifth of x264's CPU on Graviton for the same bytes, names a CPU x264 doesn't know on x86_64.
+X264_OPTIONS = re.compile(r"[A-Za-z0-9_.,=:+-]+")
+
+# Sound only while something plays (0.3.3, ADR 0073 addendum): with [audio] gate = sink-input, the sound branch runs only while
+# the desk's Pulse server has a playback stream (a sink-input: Chromium opens one while a page makes sound, closes it about 10 s
+# after it stops, and keeps one while an AudioContext runs), and stops gate-tail-ms after the last one goes. Capturing the null
+# sink's monitor all the time kept Pulse and desk-stream waking every 5 ms to send silence: about 6 points of a core on an idle
+# desk. gate = always is 0.3.2's. desk-stream watches with pactl (pulseaudio-utils, which desk-audio.service needs too); if it
+# can't, sound runs all the time, as before, and it tries again.
+GATE_MODES = ("always", "sink-input")
+# What a shut gate stops ([audio] gate-stops). sending (the default): a valve ahead of the encoder drops the sound, so nothing is
+# converted, encoded, payloaded or sent, and desk-rtc forwards nothing; the capture stays connected exactly as before 0.3.3, so
+# PulseAudio's sink and its clock are never touched and a sound starts as soon as it would have. capture: the whole branch stops
+# too, which also saves the capture's wakeups, but needs gate-start's handling of the null sink below, and was found to leave
+# the sink and its monitor at different rates (ADR 0073 addendum): off until the image fixes the sink's rate.
+GATE_STOPS = ("sending", "capture")
+PACTL = "/usr/bin/pactl"
+GATE_RETRY_S = (2, 60)  # first and longest wait before watching again after pactl stopped
+SINK_INPUT_EVENT = re.compile(r"^Event '(new|remove)' on sink-input #(\d+)$")
+# How a start meets the null sink ([audio] gate-start). With nothing recording its monitor, PulseAudio's null sink renders up to
+# 2 s ahead and sleeps that long, and a new client doesn't wake it: measured, a page's first sound reached a capture that had
+# just started 17 to 1982 ms later (p50 946, 12 cold starts). And a stream that starts uncorked has its first buffer rendered
+# the moment it appears, before any capture can connect: an AudioContext's first 25 ms were lost.
+#   hold: while the desk is quiet (no sink-input, the tail over, the capture off), the sink is suspended, which costs nothing and
+#     keeps a new stream's sound waiting in that stream. On the stream's arrival the capture starts and, once it's connected, the
+#     sink resumes from now: the sound flows at once and from its first sample. A stream that comes while the picture isn't live
+#     resumes the sink at once. desk-stream resumes the sink when it starts and when it stops.
+#   restart: the sink is left running, and suspended and resumed straight after each start, once the capture is connected.
+#   none: the sink is left alone.
+# A page's stream is kept through a suspend (Chromium's streams don't ask to fail on one) and only waits a moment.
+GATE_STARTS = ("hold", "restart", "none")
+NO_STREAM = 0xFFFFFFFF
+CONNECT_POLL_MS, CONNECT_WAIT_MS = 2, 1000
+SINK_NAME = re.compile(r"[A-Za-z0-9_.:-]{1,64}")
+
+
+def log(*a):
+    print("desk-stream:", *a, file=sys.stderr, flush=True)
+
+
+def connect(path):
+    """desk-rtc listens from boot, so a wait here is only a desk-rtc restart."""
+    end = time.monotonic() + CONNECT_WAIT_S
+    while True:
+        s = socket.socket(socket.AF_UNIX, socket.SOCK_STREAM)
+        try:
+            s.connect(path)
+        except OSError as e:
+            s.close()
+            if time.monotonic() > end:
+                raise SystemExit(f"desk-stream: can't reach {path}: {e}")
+            time.sleep(0.2)
+            continue
+        s.setsockopt(socket.SOL_SOCKET, socket.SO_SNDBUF, SEND_BUFFER)
+        return s
+
+
+def read_levels(cfg):
+    """stream.conf's [level.<name>] sections, as {name: {key: int}}. A bad section is logged and skipped."""
+    levels = {}
+    for section in cfg.sections():
+        if not section.startswith("level."):
+            continue
+        name = section[len("level."):]
+        try:
+            if name not in LEVELS:
+                raise ValueError(f"{name!r} isn't one of {', '.join(LEVELS)}")
+            values = {}
+            for key, (lo, hi) in LEVEL_KEYS.items():
+                if key not in cfg[section]:
+                    raise ValueError(f"{key} is missing")
+                text = cfg[section][key].split("#", 1)[0].strip()  # The contract's example has comments after its values.
+                value = int(text)
+                if not lo <= value <= hi or (key == "max-height" and 0 < value < 16):
+                    raise ValueError(f"{key} = {value} is out of range")
+                values[key] = value
+        except ValueError as e:
+            log(f"[{section}] skipped: {e}")
+            continue
+        levels[name] = values
+    return levels
+
+
+def fit(width, height, max_height):
+    """The picture size for a level: the screen scaled to fit max_height lines, aspect kept, never up. Both dimensions are
+    rounded down to even, which NV12 and x264 need. Not to 8 or 16: x264 pads to whole macroblocks and crops in the SPS anyway,
+    and 1920x1080 and 1280x800 screens give 1280x720 and 1152x720, already multiples of 16. Returns None for the screen's own size."""
+    if max_height == 0 or max_height >= height:
+        return None
+    h = max_height & ~1
+    return (width * h // height) & ~1, h
+
+
+def parse_crop(text):
+    """A crop command's arguments (ADR 0075): "X Y W H OUTW OUTH", the island's rectangle on the screen and the most its picture
+    may be, all in pixels, or "none". Returns the six numbers, or None for none. ValueError for anything else."""
+    if text.strip() == "none":
+        return None
+    parts = text.split()
+    if len(parts) != 6 or not all(p.isascii() and p.isdigit() for p in parts):
+        raise ValueError("it takes X Y W H OUTW OUTH, whole numbers, or none")
+    x, y, w, h, out_w, out_h = (int(p) for p in parts)
+    if x >= CROP_MAX or y >= CROP_MAX or not all(CROP_MIN <= v <= CROP_MAX for v in (w, h, out_w, out_h)):
+        raise ValueError(f"X and Y are under {CROP_MAX}, and W, H, OUTW and OUTH {CROP_MIN} to {CROP_MAX}")
+    return x, y, w, h, out_w, out_h
+
+
+def clip_crop(x, y, w, h, screen_w, screen_h):
+    """The rectangle videocrop gets: inside the screen, on even pixels (NV12's chroma is 2x2), and at least CROP_MIN a side,
+    as near the asked one as that allows. A rectangle partly off the screen keeps its part on it. Returns (x, y, w, h)."""
+    def span(start, length, size):
+        size &= ~1
+        lo = min(start & ~1, size - CROP_MIN)
+        hi = min(size, start + length)
+        if hi - lo < CROP_MIN:
+            hi = lo + CROP_MIN
+        return lo, (hi - lo) & ~1
+    (left, width), (top, height) = span(x, w, screen_w), span(y, h, screen_h)
+    return left, top, width, height
+
+
+def island_size(w, h, out_w, out_h, max_height=0):
+    """An island's picture: its w x h rectangle scaled to fit out_w x out_h, aspect kept, never up, and to max_height lines if a
+    level or a contention step asks for fewer. Even sizes, and at least CROP_MIN a side where the rectangle has that much."""
+    scale = min(1.0, out_w / w, out_h / h)
+    if max_height and h * scale > max_height:
+        scale = max_height / h
+    return max(min(w, CROP_MIN), int(w * scale + 1e-6)) & ~1, max(min(h, CROP_MIN), int(h * scale + 1e-6)) & ~1
+
+
+def adapt_enabled(cfg):
+    return cfg.getboolean("adapt", "enabled", fallback=False)
+
+
+def capture_lines(v, have_deskcap=None):
+    """[video]'s capture and convert, or its fallback-capture and fallback-convert (0.2.4's ximagesrc and yuvconv) when
+    capture names deskcap and deskcap won't load: a release on another architecture, or a plugin the GStreamer can't open.
+    The stream then costs what 0.2.4's did, and works."""
+    capture, convert = v["capture"], v.get("convert", "").strip()
+    if have_deskcap is None:
+        have_deskcap = Gst.ElementFactory.find("deskcap") is not None
+    if capture.split()[0] == "deskcap" and not have_deskcap and v.get("fallback-capture"):
+        log("deskcap won't load here: the fallback capture runs, at 0.2.4's cost")
+        return v["fallback-capture"], v.get("fallback-convert", "").strip()
+    return capture, convert
+
+
+def x264_line(v, machine=None):
+    """[video]'s x264 line, with x264-<machine>'s options added to its option-string on that machine only (or a new
+    option-string if the line has none). Options that aren't a plain x264 key=value list are logged and left out."""
+    line = v["x264"].strip()
+    machine = machine or os.uname().machine
+    extra = v.get(f"x264-{machine}", "").split("#", 1)[0].strip()
+    if not extra:
+        return line
+    if not X264_OPTIONS.fullmatch(extra):
+        log(f"[video] x264-{machine} = {extra!r} isn't an x264 option list: left out")
+        return line
+    parts = line.split()
+    for i, part in enumerate(parts):
+        if part.startswith("option-string="):
+            value = part[len("option-string="):]
+            quote = value[:1] if value[:1] in "\"'" and value[-1:] == value[:1] and len(value) > 1 else ""
+            inner = value[1:-1] if quote else value
+            parts[i] = f"option-string={quote}{inner + ':' if inner else ''}{extra}{quote}"
+            return " ".join(parts)
+    return f"{line} option-string={extra}"
+
+
+def pipeline_string(cfg, fd, levels=None):
+    v = cfg["video"]
+    scale = f" ! {SCALE}" if levels or adapt_enabled(cfg) else ""
+    # deskcap converts as it captures, so a conf with it needs no convert line (ADR 0073).
+    capture, convert = capture_lines(v)
+    convert = f" ! {convert}" if convert else ""
+    # framemeter ships with deskcap (gst-plugins/): capture-to-encoded latency, for the contention control.
+    meter = " ! framemeter name=meter" if Gst.ElementFactory.find("framemeter") else ""
+    parts = [
+        f"funnel name=mux ! fdsink name=out fd={fd} sync=false async=false",
+        f"{capture}{convert}{scale}"
+        " ! queue max-size-buffers=1 max-size-time=0 max-size-bytes=0 leaky=downstream"
+        f" ! x264enc name=encoder {x264_line(v)}{meter} ! {v['caps']}"
+        f" ! rtph264pay pt={PT_H264} timestamp-offset=0 {v['rtp']} ! rtpstreampay ! mux.",
+    ]
+    if cfg.getboolean("audio", "enabled", fallback=True):
+        a = cfg["audio"]
+        # soundframe names the branch's last element: the gate (SoundGate) finds the rest of the branch upstream of it.
+        # soundvalve: a gate that stops only the sending (SoundGate) shuts it while the desk is quiet. Sticky events still pass, so
+        # the encoder is ready when it opens.
+        valve = " ! valve name=soundvalve drop=true drop-mode=forward-sticky-events" if gate_mode(cfg) == "sink-input" and gate_stops(cfg) == "sending" else ""
+        parts.append(
+            f"{a['capture']}{valve} ! audioconvert ! audioresample ! audio/x-raw,rate=48000,channels=2"
+            f" ! {a['encoder']} ! rtpopuspay pt={PT_OPUS} timestamp-offset=0 ! rtpstreampay name=soundframe ! mux."
+        )
+    return " ".join(parts)
+
+
+def gate_stops(cfg):
+    """[audio] gate-stops: sending (the default) or capture. Anything else is sending, logged."""
+    stops = cfg.get("audio", "gate-stops", fallback="sending").split("#", 1)[0].strip()
+    if stops not in GATE_STOPS:
+        log(f"[audio] gate-stops {stops!r} isn't one of {', '.join(GATE_STOPS)}: sending")
+        return "sending"
+    return stops
+
+
+def gate_mode(cfg):
+    """[audio] gate: sink-input (sound only while something plays) or always. Anything else is always, logged."""
+    mode = cfg.get("audio", "gate", fallback="always").split("#", 1)[0].strip()
+    if mode not in GATE_MODES:
+        log(f"[audio] gate {mode!r} isn't one of {', '.join(GATE_MODES)}: always")
+        return "always"
+    return mode
+
+
+def sink_input_event(line):
+    """("new" or "remove", index) for a `pactl subscribe` line about a sink-input, or None for anything else."""
+    m = SINK_INPUT_EVENT.match(line.strip())
+    return (m.group(1), int(m.group(2))) if m else None
+
+
+def sink_inputs(text):
+    """The sink-input indices in `pactl list short sink-inputs`' output: a number, a tab, then the rest, one a line."""
+    out = set()
+    for line in text.splitlines():
+        first = line.split("\t", 1)[0].strip()
+        if first.isascii() and first.isdigit():
+            out.add(int(first))
+    return out
+
+
+def upstream_chain(last):
+    """The elements from the source down to `last`, following each one's first sink pad upstream: a branch with no fork."""
+    chain, el = [last], last
+    while True:
+        it, pad = el.iterate_sink_pads(), None
+        res, item = it.next()
+        if res == Gst.IteratorResult.OK:
+            pad = item
+        peer = pad.get_peer() if pad else None
+        if peer is None:
+            return chain[::-1]
+        el = peer.get_parent_element()
+        chain.append(el)
+
+
+def pressure_file():
+    """cpu.pressure (PSI) of the cgroup holding desk-stream's own: system.slice on a desk VM, the desk's own on a shared host.
+    Its "some" line is the share of time something in it waited for a CPU. None where the kernel or the mount has none."""
+    try:
+        with open("/proc/self/cgroup") as fh:
+            for line in fh:
+                if line.startswith("0::"):
+                    parent = os.path.dirname(line.strip()[3:].rstrip("/")) or "/"
+                    path = os.path.normpath(f"/sys/fs/cgroup/{parent}/cpu.pressure")
+                    with open(path):
+                        return path
+    except OSError:
+        pass
+    return None
+
+
+def pressure_total(path):
+    """Microseconds something in that cgroup has waited for a CPU, since boot."""
+    try:
+        with open(path) as fh:
+            for line in fh:
+                if line.startswith("some "):
+                    return int(line.rsplit("total=", 1)[1])
+    except (OSError, ValueError, IndexError):
+        pass
+    return None
+
+
+def find_factory(pipeline, factory):
+    """The pipeline's first element made by that factory, or None."""
+    it = pipeline.iterate_recurse()
+    while True:
+        res, elem = it.next()
+        if res == Gst.IteratorResult.OK:
+            if elem.get_factory() and elem.get_factory().get_name() == factory:
+                return elem
+        elif res == Gst.IteratorResult.RESYNC:
+            it.resync()
+        else:
+            return None
+
+
+def struct_dict(st):
+    """A Gst.Structure of counters as a dict."""
+    out = {}
+    if st is None:
+        return out
+    for i in range(st.n_fields()):
+        name = st.nth_field_name(i)
+        out[name] = st.get_value(name)
+    return out
+
+
+def write_stats(path, obj):
+    """The latest counters, replaced whole twice a second, for measurement ([stats] path; off unless a conf names one)."""
+    tmp = f"{path}.tmp"
+    try:
+        with open(tmp, "w") as fh:
+            json.dump(obj, fh)
+        os.replace(tmp, path)
+    except OSError as e:
+        log(f"stats: {e}")
+
+
+def percentile_ms(hist, p):
+    """The upper bound, in ms, of the framemeter bucket holding the p-th percentile of a window's latencies, or None."""
+    total = sum(n for _, n in hist)
+    if not total:
+        return None
+    seen = 0
+    for bound, n in hist:
+        seen += n
+        if seen >= total * p / 100:
+            return bound
+    return hist[-1][0]
+
+
+class Adapter:
+    """Lever 3 (ADR 0073): holds the frame rate when the machine is busy, per desk, with no host coordination.
+
+    Every window (ADAPT_WINDOW_MS) it looks at what deskcap sent, what came out of the encoder, and the CPU pressure of
+    the desk's cgroup. In a window with motion, the stream is over its budget when the encoder drops frames (the leaky queue
+    ahead of it), when capture starts late (more than a frame interval after the damage), or when capture to encoded takes
+    over 1.5 frame intervals at p75. The desk is starved when its cgroup waited for a CPU for pressure-high percent of the
+    window or more while fewer frames changed than 90% of the step's frame rate: desk-stream's weight (400) keeps the
+    encoder ahead of Chromium, so on a busy machine it's the page that slows first (shared-hosts test 3), and the CPU the
+    stream gives back goes to the page. Two such windows in a row step down. It climbs one step after a hold (5 s, doubling
+    up to 60 s each time a climb is followed by a fall within 10 s) once 3 s of motion at this step predict the next one up
+    fits with room: mean latency, scaled by the step's pixels or frame rate, under 0.9 of its frame interval, nothing
+    dropped, almost nothing late, and pressure under pressure-low percent. A still screen tells it nothing, so it stays.
+    The prediction is high on purpose: it scales the capture's fixed cost too. A climb back to the screen's own size
+    predicts this step's own mean, because videoscale, which it drops, costs more than the extra pixels (1080p60 video:
+    6.5 ms at 1080 lines, 9.2 to 10.2 at 900 with the scaler). 0.3.0 scaled that mean too, under 0.75 of the interval,
+    and stayed at 900 lines on an idle machine.
+    In scale order the 30 fps step is a last resort: it's taken only while fewer than 30 frames a second get through,
+    because a stream already holding 30 or more at the smallest picture would only lose frames to it (measured: 31 fps
+    capped against 48 uncapped). The owner's fps order caps first, by choice."""
+
+    def __init__(self, stream, cfg):
+        self.stream = stream
+        order = cfg.get("adapt", "order", fallback="scale").strip()
+        if order not in LADDERS:
+            log(f"[adapt] order {order!r} isn't one of {', '.join(LADDERS)}: scale")
+            order = "scale"
+        self.order = order
+        self.ladder = LADDERS[order]
+        self.pressure_high = cfg.getfloat("adapt", "pressure-high", fallback=40.0)
+        self.pressure_low = cfg.getfloat("adapt", "pressure-low", fallback=15.0)
+        self.psi = pressure_file()
+        self.psi_prev = None
+        self.last_pressure = None
+        self.step = 0
+        self.prev = None
+        self.over = 0
+        self.good = 0
+        self.settle = 0
+        self.hold_s = 5.0
+        self.changed_at = time.monotonic()
+        self.went_up_at = None
+        log(f"adapt: on, order {order}, pressure from {self.psi or 'nowhere: the pipeline alone decides'}")
+
+    def pixels(self, step):
+        """The share of the screen's pixels a step encodes, for predicting the cost of the step above."""
+        lines = self.ladder[step][0]
+        screen = self.stream.screen
+        level_lines = self.stream.levels[self.stream.level]["max-height"] if self.stream.level else 0
+        height = screen[1] if screen else 1080
+        caps = [x for x in (lines, level_lines) if x]
+        h = min([height] + caps)
+        return (h / height) ** 2
+
+    def pressure(self):
+        """The window's CPU pressure on the desk's cgroup, in percent, or None."""
+        if not self.psi:
+            return None
+        now, total = time.monotonic(), pressure_total(self.psi)
+        prev, self.psi_prev = self.psi_prev, (now, total)
+        if prev is None or total is None or prev[1] is None or now <= prev[0]:
+            return None
+        return min(100.0, 100 * (total - prev[1]) / 1e6 / (now - prev[0]))
+
+    def tick(self, cap, meter):
+        pressure = self.last_pressure = self.pressure()
+        prev, self.prev = self.prev, (cap, meter, time.monotonic())
+        if prev is None or not cap or not meter:
+            return
+        if self.settle:  # a step just changed: its keyframe and new size aren't a measure of anything
+            self.settle -= 1
+            return
+        pc, pm, t_prev = prev
+        window_s = max(0.1, time.monotonic() - t_prev)
+        fps = self.ladder[self.step][2]
+        interval_ms = 1000 / fps
+        frames_in = cap["frames"] - pc["frames"]
+        changed = cap["changed"] - pc["changed"]
+        late = cap["late"] - pc["late"]
+        frames_out = meter["frames"] - pm["frames"]
+        dropped = max(0, frames_in - frames_out - 2)  # up to two in flight at a window's edge
+        hist = [(int(k[2:]) or 1000, meter[k] - pm[k]) for k in meter if k.startswith("le")]
+        hist.sort()
+        p75 = percentile_ms(hist, 75)
+        lat_n = meter.get("frames", 0) - pm.get("frames", 0)
+        mean_ms = (meter.get("latency-sum-us", 0) - pm.get("latency-sum-us", 0)) / 1000 / lat_n if lat_n > 0 else p75
+        motion = changed >= max(6, 0.2 * fps * ADAPT_WINDOW_MS / 1000)
+        if not motion or p75 is None:
+            return
+        over = dropped > 0.1 * frames_in or late > 0.25 * changed or p75 > 1.5 * interval_ms
+        starved = pressure is not None and pressure >= self.pressure_high and changed / window_s < 0.9 * fps
+        now = time.monotonic()
+        if over or starved:
+            self.good = 0
+            self.over += 1
+            nxt = self.step + 1
+            caps_fps = nxt < len(self.ladder) and self.ladder[nxt][2] < fps
+            holding = changed / window_s >= FLOOR_FPS
+            if self.over >= 2 and nxt < len(self.ladder) and not (caps_fps and self.order == "scale" and holding):
+                if self.went_up_at and now - self.went_up_at < 10:
+                    self.hold_s = min(60.0, self.hold_s * 2)
+                psi = "" if pressure is None else f", pressure {pressure:.0f}%"
+                self.move(nxt, f"p75 {p75} ms, {dropped} of {frames_in} dropped, {late} of {changed} late, "
+                                         f"{changed / window_s:.0f} changed a second{psi}")
+            return
+        self.over = 0
+        if self.step == 0:
+            return
+        up = self.step - 1
+        # The climb predicts from the window's mean latency: the histogram's buckets are too coarse to scale (a p75 of "8 ms
+        # or less" at 720 lines predicted exactly the 12.5 ms limit at 900, and the stream stayed at 720 on an idle machine).
+        if self.ladder[up][2] != fps:
+            predicted = mean_ms  # the same work a frame, which has to fit the shorter interval
+        elif self.pixels(up) >= 1.0 > self.pixels(self.step):
+            # Back to the screen's own size, videoscale drops out of the pipeline, and it costs more than the pixels it
+            # saves: 1080p60 video measured 6.5 ms at 1080 lines and 9.2 to 10.2 at 900 with the scaler. So this step's
+            # own mean is the (still high) prediction, not a scaled one, which left the stream at 900 lines on a slower box.
+            predicted = mean_ms
+        else:
+            predicted = mean_ms * self.pixels(up) / max(self.pixels(self.step), 1e-6)
+        if self.ladder[up][2] == fps and self.ladder[up][1] < self.ladder[self.step][1]:
+            predicted *= 1.15  # a lower quantizer codes more
+        room = (predicted < CLIMB_ROOM * 1000 / self.ladder[up][2] and dropped == 0 and late <= 0.05 * changed
+                and (pressure is None or pressure < self.pressure_low))
+        self.good = self.good + 1 if room else 0
+        if now - self.changed_at > 60:
+            self.hold_s = 5.0
+        if self.good >= 6 and now - self.changed_at >= self.hold_s:
+            psi = "" if pressure is None else f", pressure {pressure:.0f}%"
+            self.move(up, f"mean {mean_ms:.1f} ms predicts {predicted:.1f} ms at the step above{psi}")
+            self.went_up_at = now
+
+    def move(self, step, why):
+        self.step = step
+        self.over = self.good = 0
+        self.settle = 2
+        self.changed_at = time.monotonic()
+        lines, q_add, fps = self.ladder[step]
+        if self.stream.capture:
+            self.stream.capture.set_property("max-fps", fps)
+        _values, size = self.stream.apply()
+        log(f"adapt: step {step} ({size}, quantizer +{q_add}, {fps} fps): {why}")
+
+
+class SoundGate:
+    """Sound only while something plays (0.3.3; [audio] gate = sink-input, ADR 0073 addendum).
+
+    Sound flows only while the desk's Pulse server has a sink-input, plus gate-tail-ms after the last one goes.
+    gate-stops = sending: the valve after the capture drops the sound while the gate is shut; everything else runs with the
+    pipeline as before 0.3.3. One encoder frame (10 ms) from before a shut may come first after it opens, stamped then: desk-rtc
+    drops it if it's over 2 s old, and a browser drops it as late otherwise.
+    gate-stops = capture: the sound branch (pulsesrc to its rtpstreampay) has its state locked, so the pipeline's own changes
+    leave it alone, and it runs only while the stream is live and the gate is open.
+    `pactl subscribe` says when sink-inputs come and go, and `pactl list short sink-inputs` gives the ones already there. The
+    branch starts downstream first and stops source first, from NULL each time, so the encoder holds nothing from before and no
+    stale packet follows a start. Its timestamps stay capture time on CLOCK_MONOTONIC (ADR 0037): the pipeline's clock, base
+    time 0. A client's jitter buffer treats the gap as silence, as with Opus DTX, and desk-rtc keeps a clocked track's offset.
+    If pactl can't run or stops, the branch runs as it always did (gate open) and the watch starts again after a wait."""
+
+    def __init__(self, stream, cfg, last):
+        self.stream = stream
+        self.branch = upstream_chain(last)  # source first
+        self.tail_ms = max(0, cfg.getint("audio", "gate-tail-ms", fallback=3000))
+        self.valve = stream.pipeline.get_by_name("soundvalve")  # gate-stops = sending; None for capture
+        start = cfg.get("audio", "gate-start", fallback="restart").split("#", 1)[0].strip()
+        if start not in GATE_STARTS:
+            log(f"[audio] gate-start {start!r} isn't one of {', '.join(GATE_STARTS)}: restart")
+            start = "restart"
+        self.sink = self.sink_of(self.branch[0]) if start != "none" and not self.valve else None
+        self.hold_quiet = start == "hold" and self.sink is not None
+        self.held = False  # the sink suspended by this gate while quiet
+        self.restarted_at = None
+        self.inputs = set()
+        self.tail = None  # GLib source id while the tail after the last sink-input runs
+        self.running = False
+        self.watching = False
+        self.proc = None
+        self.watch = None
+        self.buf = b""
+        self.retry_s = GATE_RETRY_S[0]
+        self.why = None
+        self.asked_at = None
+        if self.valve:
+            log(f"sound: sent only while something plays (tail {self.tail_ms} ms; the capture runs as before)")
+        else:
+            for el in self.branch:
+                el.set_locked_state(True)
+            log(f"sound: captured only while something plays ({len(self.branch)} elements, tail {self.tail_ms} ms, "
+                f"sink {self.sink or 'left alone'}{', held while quiet' if self.hold_quiet else ''})")
+
+    def start(self):
+        if self.sink:
+            self.suspend(False, wait=True)  # one this gate held may outlive a process that was killed
+        self.spawn()
+        self.update("start")
+
+    def wanted(self):
+        return not self.watching or bool(self.inputs) or self.tail is not None
+
+    def update(self, why):
+        if self.valve:
+            want = self.wanted()
+            if want != self.running:
+                self.running = want
+                if want:
+                    self.why, self.asked_at, self.restarted_at = why, time.monotonic(), None
+                    self.valve.get_static_pad("src").add_probe(Gst.PadProbeType.BUFFER, self.on_first_buffer)
+                self.valve.set_property("drop", not want)
+                if not want:
+                    log(f"sound: off ({why})")
+            return
+        want = self.stream.live and self.wanted()
+        if want and not self.running:
+            self.open(why)
+        elif not want and self.running:
+            self.close_branch(why)
+        if self.held and not self.running and self.wanted():
+            self.suspend(False)  # a stream while the picture isn't live, or no watch: its sound plays on the desk at once
+            self.held = False
+        elif self.hold_quiet and not self.held and not self.running and not self.wanted():
+            self.suspend(True)
+            self.held = True
+
+    def suspend(self, on, wait=False, restart=False):
+        """pactl suspend-sink: on, off, or both in a row (restart). Off always runs, so the sink is never left suspended by a
+        failed first call. In the background unless wait (start and stop), reaped by the main loop."""
+        cmd = f'{PACTL} suspend-sink "$1" 1; exec {PACTL} suspend-sink "$1" 0' if restart else f'exec {PACTL} suspend-sink "$1" {int(on)}'
+        try:
+            child = subprocess.Popen(["/bin/sh", "-c", cmd, "sh", self.sink], stdin=subprocess.DEVNULL, stdout=subprocess.DEVNULL,
+                                     stderr=subprocess.DEVNULL, env=dict(os.environ, LC_ALL="C"))
+        except OSError as e:
+            log(f"sound: can't reach the sink: {e}")
+            return
+        if wait:
+            try:
+                child.wait(timeout=2)
+            except subprocess.TimeoutExpired:
+                child.kill()
+                child.wait()
+        else:
+            GLib.child_watch_add(GLib.PRIORITY_DEFAULT, child.pid, lambda *_: None)
+
+    @staticmethod
+    def sink_of(src):
+        """The Pulse sink whose monitor the capture records (desk.monitor: desk), or None if it isn't a sink's monitor."""
+        try:
+            device = src.get_property("device") or ""
+        except TypeError:
+            return None
+        name = device[:-len(".monitor")] if device.endswith(".monitor") else ""
+        return name if SINK_NAME.fullmatch(name) else None
+
+    def connected(self, src, waited_ms):
+        """The main loop, every CONNECT_POLL_MS from a start: once the capture's stream is connected, the sink resumes from now
+        (held) or is suspended and resumed (restart), so it renders from now into the capture. After CONNECT_WAIT_MS it resumes
+        anyway, so a held sink never keeps a page waiting."""
+        if src is not self.branch[0] or not self.running:
+            return GLib.SOURCE_REMOVE  # closed again first: update() already resumed a held sink if anything wants it
+        try:
+            index = src.get_property("source-output-index")
+        except TypeError:
+            index = None
+        if index == NO_STREAM and waited_ms[0] < CONNECT_WAIT_MS:
+            waited_ms[0] += CONNECT_POLL_MS
+            return GLib.SOURCE_CONTINUE
+        if index == NO_STREAM:
+            log("sound: the capture didn't connect within a second")
+        if self.held:
+            self.suspend(False)
+            self.held = False
+        elif index not in (None, NO_STREAM):
+            self.suspend(True, restart=True)
+        self.restarted_at = time.monotonic()
+        return GLib.SOURCE_REMOVE
+
+    def open(self, why):
+        clock = self.stream.pipeline.get_clock() or Gst.SystemClock.obtain()
+        self.why, self.asked_at = why, time.monotonic()
+        src = self.branch[0].get_static_pad("src")
+        if src:
+            src.add_probe(Gst.PadProbeType.BUFFER, self.on_first_buffer)
+        for el in reversed(self.branch):  # downstream first: nothing pushes into an element that isn't playing
+            el.set_clock(clock)
+            el.set_base_time(self.stream.pipeline.get_base_time())
+            if el.set_state(Gst.State.PLAYING) == Gst.StateChangeReturn.FAILURE:
+                log(f"sound: {el.get_name()} wouldn't start")  # its error on the bus ends the process; systemd restarts it
+        self.running = True
+        self.restarted_at = None
+        if self.sink:
+            GLib.timeout_add(CONNECT_POLL_MS, self.connected, self.branch[0], [0])
+
+    def on_first_buffer(self, _pad, info):
+        """The capture thread: the first sound after a start, for the log (how long Pulse took to give it)."""
+        ms = (time.monotonic() - self.asked_at) * 1000 if self.asked_at else -1
+        lag = (Gst.SystemClock.obtain().get_time() - info.get_buffer().pts) / 1e6 if info.get_buffer().pts != Gst.CLOCK_TIME_NONE else -1
+        restart = f", the sink resumed from now at {(self.restarted_at - self.asked_at) * 1000:.0f} ms" if self.restarted_at and self.asked_at else ""
+        GLib.idle_add(log, f"sound: on ({self.why}), first samples {ms:.0f} ms after{restart}, stamped {lag:.0f} ms before they arrived")
+        return Gst.PadProbeReturn.REMOVE
+
+    def close_branch(self, why):
+        for el in self.branch:  # the source first: it's the branch's only thread
+            el.set_state(Gst.State.NULL)
+        self.running = False
+        log(f"sound: off ({why})")
+
+    def spawn(self):
+        self.watching = False
+        try:
+            self.proc = subprocess.Popen([PACTL, "subscribe"], stdin=subprocess.DEVNULL, stdout=subprocess.PIPE,
+                                         stderr=subprocess.DEVNULL, env=dict(os.environ, LC_ALL="C"))
+        except OSError as e:
+            log(f"sound: can't watch for streams ({e}): it runs all the time until it can")
+            self.later()
+            return
+        self.buf = b""
+        self.watch = GLib.io_add_watch(self.proc.stdout.fileno(), GLib.PRIORITY_DEFAULT, GLib.IO_IN | GLib.IO_HUP | GLib.IO_ERR,
+                                       self.on_events)
+        self.watching = self.resync()
+        # pactl may not have subscribed yet when the list ran: a second look a moment later finds a stream that came between.
+        GLib.timeout_add(1000, self.second_look, self.proc)
+
+    def second_look(self, proc):
+        if proc is self.proc and self.resync():
+            self.watching = True
+            self.update("a second look")
+        return GLib.SOURCE_REMOVE
+
+    def later(self):
+        GLib.timeout_add_seconds(self.retry_s, lambda: (self.spawn(), self.update("watching again"), False)[-1])
+        self.retry_s = min(GATE_RETRY_S[1], self.retry_s * 2)
+
+    def resync(self):
+        """The sink-inputs there now, from pactl list. False if it can't say."""
+        try:
+            out = subprocess.run([PACTL, "list", "short", "sink-inputs"], stdin=subprocess.DEVNULL, capture_output=True,
+                                 timeout=2, env=dict(os.environ, LC_ALL="C"))
+        except (OSError, subprocess.TimeoutExpired) as e:
+            log(f"sound: can't list streams: {e}")
+            return False
+        if out.returncode != 0:
+            log(f"sound: can't list streams: pactl exited {out.returncode}")
+            return False
+        self.inputs = sink_inputs(out.stdout.decode("ascii", "replace"))
+        if self.inputs:
+            self.cancel_tail()
+        return True
+
+    def on_events(self, fd, _cond):
+        try:
+            data = os.read(fd, 4096)
+        except OSError:
+            data = b""
+        if not data:
+            return self.ended()
+        self.buf += data
+        while b"\n" in self.buf:
+            line, self.buf = self.buf.split(b"\n", 1)
+            ev = sink_input_event(line.decode("ascii", "replace"))
+            if not ev:
+                continue
+            kind, index = ev
+            if kind == "new":
+                self.inputs.add(index)
+                self.cancel_tail()
+                self.update(f"stream #{index}")
+            elif index in self.inputs:
+                self.inputs.discard(index)
+                if not self.inputs and self.tail is None:
+                    self.tail = GLib.timeout_add(self.tail_ms, self.on_tail)
+        self.retry_s = GATE_RETRY_S[0]
+        return GLib.SOURCE_CONTINUE
+
+    def cancel_tail(self):
+        if self.tail is not None:
+            GLib.source_remove(self.tail)
+            self.tail = None
+
+    def on_tail(self):
+        self.tail = None
+        self.update(f"no stream for {self.tail_ms / 1000:g} s")
+        return GLib.SOURCE_REMOVE
+
+    def ended(self):
+        log("sound: pactl stopped watching: sound runs all the time until it's back")
+        self.watch = None
+        if self.proc:
+            self.proc.stdout.close()
+            self.proc.wait()
+            self.proc = None
+        self.watching = False
+        self.update("not watching")
+        self.later()
+        return GLib.SOURCE_REMOVE
+
+    def stop(self):
+        """At exit: the branch to NULL (the pipeline won't take it there), the sink resumed, and the watch ended."""
+        if self.running and not self.valve:
+            self.close_branch("exit")
+        if self.sink:
+            self.suspend(False, wait=True)
+            self.held = False
+        if self.proc:
+            if self.watch is not None:
+                GLib.source_remove(self.watch)
+                self.watch = None
+            self.proc.terminate()
+            try:
+                self.proc.wait(timeout=2)
+            except subprocess.TimeoutExpired:
+                self.proc.kill()
+                self.proc.wait()
+            self.proc.stdout.close()
+            self.proc = None
+
+
+class Stream:
+    def __init__(self, cfg, sock):
+        self.sock = sock
+        self.loop = GLib.MainLoop()
+        self.exit_code = 0
+        self.live = False
+        self.buf = b""
+        self.levels = read_levels(cfg)
+        self.level = None  # No level line yet: [video]'s x264 line runs.
+        self.levels_ignored = False
+        text = pipeline_string(cfg, sock.fileno(), self.levels)
+        log("pipeline:", text)
+        self.pipeline = Gst.parse_launch(text)
+        # The system clock, not Pulse's: video pacing mustn't depend on a null sink.
+        self.pipeline.use_clock(Gst.SystemClock.obtain())
+        # Running time is CLOCK_MONOTONIC itself: base time 0, and no start time, so a pause and resume don't move it. With the
+        # payloaders' timestamp-offset=0, every RTP timestamp is its capture instant in the track's clock rate, on one clock for
+        # sound and picture. desk-rtc reads the same clock to send sender reports that a browser can line the tracks up by
+        # (desk-runtime.md 8.2, ADR 0037). desk-rtc keeps a viewer's timeline steady by itself either way.
+        self.pipeline.set_start_time(Gst.CLOCK_TIME_NONE)
+        self.pipeline.set_base_time(0)
+        self.encoder = self.pipeline.get_by_name("encoder")
+        # deskcap (ADR 0073) sends a frame only when the screen changes, so a keyframe asked for on a still screen needs it
+        # to send one: keyframe() tells it to.
+        self.capture = find_factory(self.pipeline, "deskcap")
+        self.meter = self.pipeline.get_by_name("meter")
+        # Without a level, the encoder runs [video]'s x264 line: these are its values, for the contention control's steps.
+        self.base_values = {key: self.encoder.get_property(key) for key in ENCODER_KEYS}
+        # Levels only. The screen's size comes from the caps reaching videoscale, which the source sends once it's warm. A level
+        # picked before that is sized as they go by, so the first frame is already the right size.
+        self.size = self.pipeline.get_by_name("size")
+        self.screen = None  # (width, height, pixel-aspect-ratio)
+        self.size_lock = threading.Lock()  # The main loop and the capture thread both set the size.
+        # Islands (ADR 0075): videocrop heads the scale chain, so the screen's caps are read ahead of it, and the size filter
+        # follows the caps reaching videoscale, which are the crop's: no frame is scaled to another rectangle's shape.
+        self.crop_el = self.pipeline.get_by_name("crop")
+        self.crop = None  # the crop command in effect, (x, y, w, h, out_w, out_h), or None for the whole screen
+        self.picture = None  # (width, height) of the frames reaching videoscale
+        self.crop_ignored = False
+        self.island_desc = None
+        if self.size:
+            pad = (self.crop_el or self.pipeline.get_by_name("scale")).get_static_pad("sink")
+            pad.add_probe(Gst.PadProbeType.EVENT_DOWNSTREAM, self.on_screen_caps)
+            if self.crop_el:
+                pad = self.pipeline.get_by_name("scale").get_static_pad("sink")
+                pad.add_probe(Gst.PadProbeType.EVENT_DOWNSTREAM, self.on_picture_caps)
+        self.adapt = Adapter(self, cfg) if adapt_enabled(cfg) and self.size else None
+        last = self.pipeline.get_by_name("soundframe")
+        self.gate = SoundGate(self, cfg, last) if last and gate_mode(cfg) == "sink-input" else None
+        self.stats_path = cfg.get("stats", "path", fallback="").strip() or None
+        if self.adapt or self.stats_path:
+            GLib.timeout_add(ADAPT_WINDOW_MS, self.on_tick)
+        bus = self.pipeline.get_bus()
+        bus.add_signal_watch()
+        bus.connect("message::error", self.on_error)
+        bus.connect("message::eos", self.on_eos)
+
+    def start(self):
+        # Warm: built, encoder initialized, nothing captured until resume (section 8.4, B13).
+        if self.pipeline.set_state(Gst.State.PAUSED) == Gst.StateChangeReturn.FAILURE:
+            msg = self.pipeline.get_bus().pop_filtered(Gst.MessageType.ERROR)
+            why = msg.parse_error()[0].message if msg else "no reason given"
+            raise SystemExit(f"desk-stream: the pipeline wouldn't start: {why}")
+        GLib.io_add_watch(self.sock.fileno(), GLib.PRIORITY_HIGH, GLib.IO_IN | GLib.IO_HUP | GLib.IO_ERR, self.on_cmd)
+        for sig in (signal.SIGTERM, signal.SIGINT):
+            GLib.unix_signal_add(GLib.PRIORITY_DEFAULT, sig, self.quit, 0)
+        if self.gate:
+            self.gate.start()
+        log("warm")
+        self.loop.run()
+        if self.gate:
+            self.gate.stop()
+        self.pipeline.set_state(Gst.State.NULL)
+        return self.exit_code
+
+    def quit(self, code):
+        self.exit_code = code
+        self.loop.quit()
+        return GLib.SOURCE_REMOVE
+
+    def on_error(self, _bus, msg):
+        err, debug = msg.parse_error()
+        log("error:", err.message, debug or "")
+        self.quit(1)
+
+    def on_eos(self, _bus, _msg):
+        log("unexpected end of stream")
+        self.quit(1)
+
+    def keyframe(self):
+        s = Gst.Structure.new_from_string("GstForceKeyUnit, all-headers=(boolean)true")
+        self.encoder.send_event(Gst.Event.new_custom(Gst.EventType.CUSTOM_UPSTREAM, s))
+        if self.capture:
+            self.capture.emit("refresh")  # the next frame goes now, the screen changed or not, and it's this keyframe
+
+    def on_tick(self):
+        """Every ADAPT_WINDOW_MS on the main loop: the contention control, and the stats file if the conf names one."""
+        cap = struct_dict(self.capture.get_property("stats")) if self.capture else {}
+        meter = struct_dict(self.meter.get_property("stats")) if self.meter else {}
+        if self.adapt and self.live:
+            self.adapt.tick(cap, meter)
+        if self.stats_path:
+            write_stats(self.stats_path, {"t": time.monotonic(), "live": self.live, "level": self.level,
+                                          "step": self.adapt.step if self.adapt else None,
+                                          "pressure": self.adapt.last_pressure if self.adapt else None, "deskcap": cap, "meter": meter,
+                                          "crop": self.crop, "sound": self.gate.running if self.gate else None})
+        return GLib.SOURCE_CONTINUE
+
+    def on_cmd(self, _fd, _cond):
+        try:
+            data = self.sock.recv(4096)
+        except OSError:
+            data = b""
+        if not data:
+            log("desk-rtc went away")  # systemd restarts us, and we reconnect
+            self.quit(1)
+            return GLib.SOURCE_REMOVE
+        self.buf += data
+        while b"\n" in self.buf:
+            line, self.buf = self.buf.split(b"\n", 1)
+            self.command(line.decode("ascii", "replace"))
+        return GLib.SOURCE_CONTINUE
+
+    def command(self, cmd):
+        if cmd == "keyframe":
+            self.keyframe()
+        elif cmd == "resume" and not self.live:
+            self.live = True
+            self.keyframe()
+            self.pipeline.set_state(Gst.State.PLAYING)
+            log("live")
+            if self.gate:
+                self.gate.update("live")
+        elif cmd == "pause" and self.live:
+            self.live = False
+            if self.gate:
+                self.gate.update("warm")
+            self.pipeline.set_state(Gst.State.PAUSED)
+            log("warm")
+        elif cmd.split(" ", 1)[0] == "level":
+            self.set_level(cmd[len("level "):])
+        elif cmd.split(" ", 1)[0] == "crop":
+            self.set_crop(cmd[len("crop "):])
+        elif cmd not in ("resume", "pause"):
+            log("unknown command:", cmd)
+
+    def set_level(self, name):
+        """stream-quality.md section 5, in the running pipeline, warm or live. Costs one keyframe."""
+        if not self.levels:
+            if not self.levels_ignored:
+                log(f"level {name}: this stream.conf has no levels, so level lines are ignored")
+                self.levels_ignored = True
+            return
+        if name not in self.levels:
+            log(f"unknown level: {name}")
+            return
+        if name == self.level:
+            return
+        self.level = name
+        values, size = self.apply()
+        log(f"level {name}: {size} q{values['quantizer']} {values['bitrate']} kbit/s")
+
+    def effective(self):
+        """The encoder values and most lines in effect: the level's (or the x264 line's), then the contention step's."""
+        values = dict(self.levels[self.level]) if self.level else dict(self.base_values, **{"max-height": 0})
+        if self.adapt:
+            lines, q_add, _fps = self.adapt.ladder[self.adapt.step]
+            if lines and (values["max-height"] == 0 or lines < values["max-height"]):
+                values["max-height"] = lines
+            values["quantizer"] = min(LEVEL_KEYS["quantizer"][1], values["quantizer"] + q_add)
+        return values
+
+    def apply(self):
+        """Puts effective() into the running pipeline, warm or live: the encoder's values, then the size. Costs one keyframe."""
+        values = self.effective()
+        if any(self.encoder.get_property(key) != values[key] for key in ENCODER_KEYS):
+            self.reopen_encoder(values)
+        with self.size_lock:
+            size = self.apply_size()
+        # A reopened encoder starts on a keyframe with SPS and PPS anyway, so this is usually that same frame.
+        self.keyframe()
+        return values, size
+
+    def reopen_encoder(self, values):
+        """Sets a level's encoder values in READY, the only state x264enc takes a quantizer in. Only the encoder goes there and
+        back, between two frames: the same element, pipeline, payloader and clock. It starts again on a keyframe with SPS and
+        PPS, as it does for a new size, and costs about one frame. The IDLE probe runs this at once if the queue isn't pushing
+        a frame (the main loop), or straight after it (the queue's thread), and holds the queue's next push until it's done."""
+        def reopen(queue_src, _info):
+            sink = self.encoder.get_static_pad("sink")
+            queue_src.unlink(sink)  # Linking again makes the queue send stream-start, caps and segment again.
+            self.encoder.set_state(Gst.State.READY)
+            for key in ENCODER_KEYS:
+                self.encoder.set_property(key, values[key])
+            queue_src.link(sink)
+            self.encoder.sync_state_with_parent()
+            return Gst.PadProbeReturn.REMOVE
+
+        self.encoder.get_static_pad("sink").get_peer().add_probe(Gst.PadProbeType.IDLE, reopen)
+
+    def apply_size(self, now=False):
+        """Points the crop and the size filter at the island, level and step in effect, if they changed, and says what that
+        is. Hold size_lock. now: on the capture thread, ahead of videocrop, so the crop can be set straight away."""
+        max_height = self.effective()["max-height"]
+        if self.screen is None:
+            # The source hasn't sent caps yet: on_screen_caps sizes it when it does.
+            if self.crop:
+                return "an island, once the screen's size is known"
+            return f"fits {max_height} lines" if max_height else "full size"
+        width, height, par = self.screen
+        picture = (width, height)
+        if self.crop_el:
+            box = clip_crop(*self.crop[:4], width, height) if self.crop else (0, 0, width, height)
+            self.set_crop_props(box, now)
+            picture = box[2:]
+        size = self.target_size(picture)
+        # The size filter changes here only if frames of this picture's size already reach videoscale. Otherwise the crop is
+        # still on its way, and on_picture_caps sets the filter ahead of its first frame.
+        if self.picture in (None, picture):
+            self.set_size_caps(size)
+        if self.crop:
+            return "{}x{} of {}x{}+{}+{}".format(*(size or picture), box[2], box[3], box[0], box[1])
+        return "{}x{}".format(*(size or self.screen[:2]))
+
+    def target_size(self, picture):
+        """The picture size the encoder should get from frames of this size, or None for theirs: the island's box, or the
+        level's and step's lines. Hold size_lock."""
+        max_height = self.effective()["max-height"]
+        if self.crop:
+            size = island_size(*picture, self.crop[4], self.crop[5], max_height)
+            return None if size == tuple(picture) else size
+        return fit(*picture, max_height)
+
+    def set_size_caps(self, size):
+        """The size filter, for a picture size or None (whatever arrives). Hold size_lock."""
+        par = self.screen[2] if self.screen and not self.crop else "1/1"
+        if size:
+            caps = Gst.Caps.from_string(f"video/x-raw,width={size[0]},height={size[1]},pixel-aspect-ratio={par}")
+        else:
+            caps = Gst.Caps.new_any()  # videoscale passes the frames through.
+        if not caps.is_equal(self.size.get_property("caps")):
+            self.size.set_property("caps", caps)  # videoscale renegotiates on its next frame, and x264enc reopens.
+
+    def set_crop_props(self, box, now):
+        """videocrop's four margins for box (x, y, w, h), all set between two frames: at once on the capture thread, else by an
+        IDLE probe ahead of videocrop, which runs at once if no frame is passing, or straight after the one that is."""
+        sw, sh = self.screen[:2]
+        values = {"left": box[0], "top": box[1], "right": sw - box[0] - box[2], "bottom": sh - box[1] - box[3]}
+
+        def put(_pad=None, _info=None):
+            for key, value in values.items():
+                if self.crop_el.get_property(key) != value:
+                    self.crop_el.set_property(key, value)
+            return Gst.PadProbeReturn.REMOVE
+
+        if now:
+            put()
+        else:
+            self.crop_el.get_static_pad("sink").get_peer().add_probe(Gst.PadProbeType.IDLE, put)
+
+    def set_crop(self, text):
+        """desk-runtime.md 8.2's crop command (ADR 0075), warm or live. A new picture size costs the one keyframe x264enc
+        starts again on; a rectangle that only moved, nothing but its next frame. Either way that frame goes now."""
+        if not self.crop_el:
+            if not self.crop_ignored:
+                log(f"crop {text}: this stream.conf has no scale chain, so crop lines are ignored")
+                self.crop_ignored = True
+            return
+        try:
+            crop = parse_crop(text)
+        except ValueError as e:
+            log(f"crop {text}: {e}")
+            return
+        if crop == self.crop:
+            return
+        self.crop = crop
+        with self.size_lock:
+            desc = self.apply_size()
+        if self.capture:
+            self.capture.emit("refresh")  # deskcap sends a frame on a still screen too
+        # A moving island sends a crop each frame it moves: only a new picture size, or the start or end of one, is logged.
+        what = "whole screen" if crop is None else desc.split(" of ", 1)[0]
+        if what != self.island_desc:
+            log(f"crop: {desc}" if crop else "crop: none, the whole screen")
+            self.island_desc = what
+
+    def on_screen_caps(self, _pad, info):
+        """Capture thread: the screen's caps, ahead of videocrop (or videoscale), on the first frame and if the screen ever
+        changes."""
+        event = info.get_event()
+        if event.type == Gst.EventType.CAPS:
+            s = event.parse_caps().get_structure(0)
+            par = s.get_fraction("pixel-aspect-ratio")
+            screen = (s.get_int("width")[1], s.get_int("height")[1], f"{par[1]}/{par[2]}" if par[0] else "1/1")
+            with self.size_lock:
+                if screen != self.screen:
+                    self.screen = screen
+                    size = self.apply_size(now=True)
+                    if self.level or self.crop:
+                        log(f"screen {screen[0]}x{screen[1]}: {'the island' if self.crop else 'level ' + self.level} is {size}")
+        return Gst.PadProbeReturn.OK
+
+    def on_picture_caps(self, _pad, info):
+        """Capture thread: caps for the frames reaching videoscale, which are the crop's (ADR 0075). The size filter is set
+        for them here, ahead of their first frame, so a new crop and its picture size always arrive together."""
+        event = info.get_event()
+        if event.type == Gst.EventType.CAPS:
+            s = event.parse_caps().get_structure(0)
+            picture = (s.get_int("width")[1], s.get_int("height")[1])
+            with self.size_lock:
+                self.picture = picture
+                if self.screen:
+                    self.set_size_caps(self.target_size(picture))
+        return Gst.PadProbeReturn.OK
+
+
+def main():
+    ap = argparse.ArgumentParser()
+    ap.add_argument("--config", required=True)
+    ap.add_argument("--socket", default="/run/desk-media/stream.sock")
+    a = ap.parse_args()
+    cfg = configparser.ConfigParser(interpolation=None)
+    if not cfg.read(a.config):
+        raise SystemExit(f"desk-stream: can't read {a.config}")
+    Gst.init(None)
+    return Stream(cfg, connect(a.socket)).start()
+
+
+if __name__ == "__main__":
+    sys.exit(main())

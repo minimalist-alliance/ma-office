@@ -1,0 +1,3 @@
+# Build context of the services' Dockerfiles. Local build output must not reach the image's own build.
+**/target
+scripts

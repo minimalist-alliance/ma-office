@@ -1,0 +1,6 @@
+# A guild desk's heap, after jvm.options, whose -Xmx this replaces (the later one wins). run chooses it by the desk's kind.
+# Measured by notebook/GuildLoadMain: 600 member sessions (200 members, 3 each) with live collab and commons relays,
+# a subscription and refresh cycles. Heap after GC was about 40 MiB; with all 600 moving a 64 KiB message each way on both
+# relays at once, 128m was the least that finished (96m ran out), and 128 plus 30% is 166, so 168m. Non-heap is
+# jvm.options', and the container (run) has 400m: this heap, metaspace 64, code cache 32, direct 32 and the rest, 386 at worst.
+-Xmx168m

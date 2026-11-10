@@ -1,0 +1,32 @@
+<?xml version="1.0" encoding="UTF-8"?>
+<project xmlns="http://maven.apache.org/POM/4.0.0"
+         xmlns:xsi="http://www.w3.org/2001/XMLSchema-instance"
+         xsi:schemaLocation="http://maven.apache.org/POM/4.0.0 https://maven.apache.org/xsd/maven-4.0.0.xsd">
+  <modelVersion>4.0.0</modelVersion>
+
+  <parent>
+    <groupId>org.springframework.boot</groupId>
+    <artifactId>spring-boot-starter-parent</artifactId>
+    <version>4.1.2</version>
+    <relativePath/>
+  </parent>
+
+  <groupId>com.minimalistalliance.desk</groupId>
+  <artifactId>desk-services</artifactId>
+  <version>0.1.0-SNAPSHOT</version>
+  <packaging>pom</packaging>
+  <name>Desk services</name>
+
+  <modules>
+    <module>deskd</module>
+    <module>desk-agent</module>
+  </modules>
+
+  <properties>
+    <java.version>21</java.version>
+    <nimbus-jose-jwt.version>10.10</nimbus-jose-jwt.version>
+    <java-websocket.version>1.6.0</java-websocket.version>
+    <!-- Test JVMs only. The build machine's 2 cores are shared by every session. -->
+    <argLine>-XX:+UseSerialGC -XX:TieredStopAtLevel=1</argLine>
+  </properties>
+</project>

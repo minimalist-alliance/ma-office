@@ -1,0 +1,1434 @@
+/* Commons. Every color is a token: the Desk app's --ma-* (web/src/theme/tokens.ts) or Commons'
+   own --ma-cm-* (src/theme/tokens.ts). Everything is under .ma-cm, so nothing leaks into the app. */
+
+.ma-cm {
+  --ma-cm-radius: 12px;
+  --ma-cm-gap: 12px;
+  position: relative;
+  width: 100%;
+  height: 100%;
+  overflow: hidden;
+  background: var(--ma-surface-window);
+  color: var(--ma-text-primary);
+  font-family: var(--ma-font-ui);
+  font-size: 13px;
+  line-height: 18px;
+  outline: none;
+  user-select: none;
+  -webkit-user-select: none;
+  /* Sized by its window, not the page: the narrow rules below are container queries. */
+  container: ma-cm / size;
+  contain: strict;
+  display: flex;
+}
+/* The board and its floating chrome, between the channels and the chat. Its own container, so the chrome's
+   narrow rules follow the space the board has. */
+.ma-cm-stage {
+  position: relative;
+  flex: 1 1 auto;
+  min-width: 0;
+  height: 100%;
+  overflow: hidden;
+  container: ma-cm-stage / size;
+}
+.ma-cm *,
+.ma-cm *::before,
+.ma-cm *::after {
+  box-sizing: border-box;
+}
+/* :where() keeps this reset at an element's weight, so a class's own color and weight win (Join's
+   text-on-accent, a button's 600). As `.ma-cm button` it outranked them. */
+:where(.ma-cm) button {
+  font: inherit;
+  color: inherit;
+  margin: 0;
+}
+
+/* ------------------------------------------------------------ board */
+.ma-cm-board {
+  position: absolute;
+  inset: 0;
+  outline: none;
+  touch-action: none;
+}
+.ma-cm-canvas {
+  position: absolute;
+  inset: 0;
+  display: block;
+}
+.ma-cm-over {
+  cursor: crosshair;
+}
+.ma-cm-board[data-tool="select"] .ma-cm-over {
+  cursor: default;
+}
+.ma-cm-board[data-tool="hand"] .ma-cm-over,
+.ma-cm-board[data-readonly="1"] .ma-cm-over,
+.ma-cm-board[data-space="1"] .ma-cm-over {
+  cursor: grab;
+}
+.ma-cm-board[data-panning="1"] .ma-cm-over {
+  cursor: grabbing;
+}
+.ma-cm-board[data-tool="text"] .ma-cm-over {
+  cursor: text;
+}
+.ma-cm-cursors {
+  position: absolute;
+  inset: 0;
+  pointer-events: none;
+  overflow: hidden;
+}
+.ma-cm-cursor {
+  position: absolute;
+  left: 0;
+  top: 0;
+  will-change: transform;
+  color: var(--ma-cm-c);
+}
+.ma-cm-cursor svg {
+  position: absolute;
+  left: -1px;
+  top: -1px;
+  fill: currentColor;
+  stroke: var(--ma-surface-window);
+  stroke-width: 1.2;
+  stroke-linejoin: round;
+}
+.ma-cm-cursor span {
+  position: absolute;
+  left: 13px;
+  top: 15px;
+  padding: 1px 7px;
+  border-radius: 9px;
+  background: var(--ma-cm-c);
+  color: var(--ma-cm-member-fg);
+  font-size: 11px;
+  line-height: 16px;
+  font-weight: 600;
+  white-space: nowrap;
+  max-width: 160px;
+  overflow: hidden;
+  text-overflow: ellipsis;
+}
+
+/* The text and note editors sit over the board at the item's place and the camera's scale. */
+.ma-cm-editor {
+  position: absolute;
+  left: 0;
+  top: 0;
+  transform-origin: 0 0;
+  margin: 0;
+  border: 0;
+  outline: none;
+  resize: none;
+  overflow: hidden;
+  background: transparent;
+  font-family: var(--ma-font-ui);
+  font-weight: 500;
+  white-space: pre;
+  user-select: text;
+  -webkit-user-select: text;
+}
+.ma-cm-editor-t {
+  padding: 0;
+  color: var(--ma-cm-ink);
+  caret-color: var(--ma-accent);
+}
+.ma-cm-editor-n {
+  padding: 16px;
+  border-radius: 6px;
+  white-space: pre-wrap;
+  background: var(--ma-cm-note);
+  color: var(--ma-cm-note-text);
+  font-size: 16px;
+  line-height: 22px;
+  box-shadow: 0 0 0 2px var(--ma-accent);
+}
+
+/* ------------------------------------------------------------ floating chrome */
+.ma-cm-top,
+.ma-cm-rail,
+.ma-cm-zoom,
+.ma-cm-roombar,
+.ma-cm-menu,
+.ma-cm-banner {
+  position: absolute;
+  z-index: 2;
+}
+/* Open menus sit over the rest of the chrome. */
+.ma-cm-top,
+.ma-cm-people {
+  z-index: 3;
+}
+.ma-cm-chip,
+.ma-cm-rail,
+.ma-cm-zoom,
+.ma-cm-roombar,
+.ma-cm-menu,
+.ma-cm-banner {
+  background: var(--ma-surface-chrome);
+  border: 1px solid var(--ma-border-hairline);
+  box-shadow: var(--ma-elevation-menu);
+  border-radius: var(--ma-cm-radius);
+}
+
+.ma-cm-top {
+  left: var(--ma-cm-gap);
+  top: var(--ma-cm-gap);
+  max-width: calc(100% - 2 * var(--ma-cm-gap));
+}
+.ma-cm-chipwrap {
+  position: relative;
+}
+.ma-cm-chip {
+  display: flex;
+  align-items: center;
+  gap: 2px;
+  height: 40px;
+  padding: 4px;
+}
+.ma-cm-chip-main {
+  display: flex;
+  align-items: center;
+  gap: 8px;
+  height: 32px;
+  padding: 0 6px 0 8px;
+  border: 0;
+  border-radius: 8px;
+  background: transparent;
+  color: var(--ma-text-primary);
+  min-width: 0;
+}
+.ma-cm-chip-main svg {
+  color: var(--ma-glyph);
+  flex: none;
+}
+.ma-cm-chip-main:hover {
+  background: var(--ma-surface-fill);
+}
+.ma-cm-chip-name {
+  font-weight: 600;
+  max-width: 260px;
+  overflow: hidden;
+  text-overflow: ellipsis;
+  white-space: nowrap;
+}
+.ma-cm-chip-state {
+  padding: 0 10px 0 6px;
+  color: var(--ma-text-tertiary);
+  font-size: 12px;
+}
+.ma-cm-chip-save {
+  height: 28px;
+  margin-left: 4px;
+  padding: 0 12px;
+  border: 1px solid var(--ma-border);
+  border-radius: 7px;
+  background: transparent;
+  color: var(--ma-text-primary);
+  font-weight: 600;
+}
+.ma-cm-chip-save:hover {
+  background: var(--ma-surface-fill);
+}
+.ma-cm-nameform {
+  display: flex;
+}
+.ma-cm-nameinput {
+  width: 260px;
+  height: 32px;
+  padding: 0 10px;
+  border: 1px solid var(--ma-accent);
+  border-radius: 8px;
+  background: var(--ma-surface-sunken);
+  color: var(--ma-text-primary);
+  font: inherit;
+  font-weight: 600;
+  outline: none;
+  user-select: text;
+}
+.ma-cm-nameinput::placeholder {
+  color: var(--ma-text-tertiary);
+  font-weight: 500;
+}
+.ma-cm-muted {
+  color: var(--ma-text-tertiary);
+}
+
+/* Notices sit above the room bar, clear of the board's name and the tools. */
+.ma-cm-banner {
+  left: 50%;
+  bottom: calc(var(--ma-cm-gap) + 60px);
+  transform: translateX(-50%);
+  max-width: calc(100cqw - 2 * var(--ma-cm-gap));
+  overflow: hidden;
+  text-overflow: ellipsis;
+  padding: 9px 16px;
+  color: var(--ma-text-secondary);
+  white-space: nowrap;
+  animation: ma-cm-in 160ms ease-out;
+}
+@keyframes ma-cm-in {
+  from {
+    opacity: 0;
+    transform: translate(-50%, 4px);
+  }
+}
+
+/* Tool rail, left. */
+.ma-cm-rail {
+  left: var(--ma-cm-gap);
+  top: 50%;
+  transform: translateY(-50%);
+  display: flex;
+  flex-direction: column;
+  align-items: center;
+  gap: 2px;
+  padding: 4px;
+}
+.ma-cm-sep {
+  width: 20px;
+  height: 1px;
+  margin: 4px 0;
+  background: var(--ma-border);
+  flex: none;
+}
+.ma-cm-icon {
+  display: inline-grid;
+  place-items: center;
+  width: 32px;
+  height: 32px;
+  padding: 0;
+  border: 0;
+  border-radius: 8px;
+  background: transparent;
+  color: var(--ma-glyph);
+  flex: none;
+  position: relative;
+}
+.ma-cm-icon:hover {
+  background: var(--ma-surface-fill);
+  color: var(--ma-text-primary);
+}
+.ma-cm-icon[aria-pressed="true"] {
+  background: var(--ma-accent-subtle);
+  color: var(--ma-accent);
+}
+.ma-cm-icon:disabled {
+  color: var(--ma-text-disabled);
+  background: transparent;
+  cursor: default;
+}
+.ma-cm-icon-sm {
+  width: 26px;
+  height: 26px;
+  border-radius: 6px;
+}
+.ma-cm-icon-lg {
+  width: 36px;
+  height: 36px;
+}
+.ma-cm-roombar .ma-cm-icon[data-state="off"] {
+  background: var(--ma-surface-fill);
+  color: var(--ma-status-error);
+}
+.ma-cm-stylewrap {
+  position: relative;
+  display: flex;
+  flex-direction: column;
+  align-items: center;
+}
+.ma-cm-dot {
+  width: 16px;
+  height: 16px;
+  border-radius: 50%;
+  background: var(--ma-cm-sw);
+  box-shadow: inset 0 0 0 1px var(--ma-border);
+}
+.ma-cm-style {
+  left: calc(100% + 12px);
+  top: 50%;
+  transform: translateY(-50%);
+  display: flex;
+  flex-direction: column;
+  gap: 4px;
+  padding: 6px;
+  max-height: none;
+}
+.ma-cm-swatches,
+.ma-cm-sizes {
+  display: flex;
+  gap: 2px;
+}
+.ma-cm-sizes {
+  padding-top: 4px;
+  border-top: 1px solid var(--ma-border-hairline);
+}
+.ma-cm-swatch,
+.ma-cm-size {
+  display: grid;
+  place-items: center;
+  width: 32px;
+  height: 32px;
+  padding: 0;
+  border: 0;
+  border-radius: 8px;
+  background: transparent;
+  position: relative;
+}
+.ma-cm-swatch::before {
+  content: "";
+  width: 18px;
+  height: 18px;
+  border-radius: 50%;
+  background: var(--ma-cm-sw);
+  box-shadow: inset 0 0 0 1px var(--ma-border-hairline);
+}
+.ma-cm-swatch:hover,
+.ma-cm-size:hover {
+  background: var(--ma-surface-fill);
+}
+.ma-cm-swatch[aria-checked="true"]::before {
+  box-shadow:
+    0 0 0 2px var(--ma-surface-chrome),
+    0 0 0 3.5px var(--ma-accent);
+}
+.ma-cm-size span {
+  border-radius: 50%;
+  background: var(--ma-glyph);
+}
+.ma-cm-size[aria-checked="true"] {
+  background: var(--ma-accent-subtle);
+}
+.ma-cm-size[aria-checked="true"] span {
+  background: var(--ma-accent);
+}
+
+/* Zoom, top right (the room bar has the bottom, and the chat sits to the right). */
+.ma-cm-zoom {
+  position: relative;
+  display: flex;
+  align-items: center;
+  gap: 2px;
+  padding: 4px;
+}
+.ma-cm-zoom-level {
+  min-width: 48px;
+  height: 32px;
+  padding: 0 4px;
+  border: 0;
+  border-radius: 8px;
+  background: transparent;
+  color: var(--ma-text-secondary);
+  font-size: 12px;
+  font-variant-numeric: tabular-nums;
+  position: relative;
+}
+.ma-cm-zoom-level:hover {
+  background: var(--ma-surface-fill);
+}
+
+/* Room bar, bottom centre. */
+.ma-cm-roombar {
+  left: 50%;
+  bottom: var(--ma-cm-gap);
+  transform: translateX(-50%);
+  display: flex;
+  align-items: center;
+  gap: 4px;
+  height: 48px;
+  padding: 0 6px;
+  border-radius: 24px;
+  white-space: nowrap;
+}
+.ma-cm-people-btn {
+  display: flex;
+  align-items: center;
+  gap: 10px;
+  height: 36px;
+  padding: 0 12px 0 4px;
+  border: 0;
+  border-radius: 18px;
+  background: transparent;
+  color: var(--ma-text-secondary);
+}
+.ma-cm-people-btn:hover {
+  background: var(--ma-surface-fill);
+}
+.ma-cm-count {
+  font-size: 13px;
+}
+.ma-cm-stack {
+  display: flex;
+  gap: 4px;
+  padding-left: 2px;
+}
+.ma-cm-stack:empty {
+  display: none;
+}
+.ma-cm-avatar {
+  position: relative;
+  display: inline-grid;
+  place-items: center;
+  flex: none;
+  border-radius: 50%;
+  background: var(--ma-cm-c);
+  color: var(--ma-cm-member-fg);
+  font-size: 11px;
+  font-weight: 650;
+  letter-spacing: 0.02em;
+  transition: box-shadow 120ms ease-out;
+}
+.ma-cm-avatar[data-speaking="1"] {
+  box-shadow:
+    0 0 0 2px var(--ma-surface-chrome),
+    0 0 0 4px var(--ma-status-online);
+}
+.ma-cm-avatar-more {
+  width: 28px;
+  height: 28px;
+  background: var(--ma-surface-fill-strong);
+  color: var(--ma-text-secondary);
+}
+.ma-cm-avatar-muted {
+  position: absolute;
+  right: -4px;
+  bottom: -4px;
+  display: grid;
+  place-items: center;
+  width: 15px;
+  height: 15px;
+  border-radius: 50%;
+  background: var(--ma-surface-chrome);
+  color: var(--ma-status-error);
+}
+.ma-cm-avatar-muted svg {
+  width: 11px;
+  height: 11px;
+}
+
+.ma-cm-btn {
+  display: inline-flex;
+  align-items: center;
+  gap: 6px;
+  height: 32px;
+  padding: 0 14px;
+  border: 0;
+  border-radius: 8px;
+  font-weight: 600;
+  white-space: nowrap;
+}
+.ma-cm-btn svg {
+  width: 16px;
+  height: 16px;
+}
+.ma-cm-btn-join {
+  height: 36px;
+  padding: 0 22px;
+  border-radius: 18px;
+  background: var(--ma-accent);
+  color: var(--ma-text-on-accent);
+}
+.ma-cm-btn-join:hover {
+  background: var(--ma-accent-hover);
+}
+.ma-cm-btn-join:active {
+  background: var(--ma-accent-pressed);
+}
+.ma-cm-btn-join:disabled {
+  background: var(--ma-surface-fill);
+  color: var(--ma-text-disabled);
+  cursor: default;
+}
+.ma-cm-btn-leave {
+  height: 36px;
+  margin-left: 2px;
+  padding: 0 16px 0 12px;
+  border-radius: 18px;
+  background: var(--ma-surface-fill);
+  color: var(--ma-text-primary);
+}
+.ma-cm-btn-leave:hover {
+  background: var(--ma-surface-fill-strong);
+}
+.ma-cm-btn-quiet {
+  height: 28px;
+  padding: 0 10px;
+  background: transparent;
+  color: var(--ma-text-primary);
+}
+.ma-cm-btn-quiet:hover {
+  background: var(--ma-surface-fill);
+}
+.ma-cm-btn-danger {
+  height: 26px;
+  padding: 0 10px;
+  background: var(--ma-status-error);
+  color: var(--ma-text-on-accent);
+}
+
+/* Menus: boards list (top left) and people (right). */
+.ma-cm-menu {
+  padding: 6px;
+  overflow-y: auto;
+  user-select: none;
+}
+.ma-cm-boards {
+  left: 0;
+  top: 46px;
+  width: 340px;
+  max-width: calc(100cqw - 24px);
+  max-height: calc(100cqh - 120px);
+}
+/* People open above the room bar that opens them. */
+.ma-cm-people {
+  left: 50%;
+  bottom: calc(var(--ma-cm-gap) + 60px);
+  transform: translateX(-50%);
+  width: 280px;
+  max-width: calc(100cqw - 24px);
+  max-height: calc(100cqh - 132px);
+}
+.ma-cm-menu-head {
+  display: flex;
+  align-items: center;
+  justify-content: space-between;
+  height: 36px;
+  padding: 0 4px 0 10px;
+  font-weight: 600;
+}
+.ma-cm-menu-sub {
+  padding: 10px 10px 4px;
+  color: var(--ma-text-tertiary);
+  font-size: 12px;
+  font-weight: 600;
+}
+.ma-cm-menu-foot {
+  margin: 6px 10px 6px;
+  color: var(--ma-text-tertiary);
+  font-size: 12px;
+  line-height: 17px;
+  white-space: normal;
+}
+.ma-cm-boardlist,
+.ma-cm-peoplelist {
+  list-style: none;
+  margin: 0;
+  padding: 0;
+}
+.ma-cm-boardlist li {
+  position: relative;
+  display: flex;
+  align-items: center;
+  border-radius: 8px;
+}
+.ma-cm-boardlist li:hover,
+.ma-cm-boardlist li[data-active="1"] {
+  background: var(--ma-surface-fill);
+}
+.ma-cm-boardrow {
+  flex: 1;
+  min-width: 0;
+  display: flex;
+  flex-direction: column;
+  align-items: flex-start;
+  gap: 1px;
+  padding: 8px 10px;
+  border: 0;
+  background: transparent;
+  text-align: left;
+}
+.ma-cm-boardrow:disabled {
+  cursor: default;
+}
+.ma-cm-boardrow-name {
+  max-width: 100%;
+  overflow: hidden;
+  text-overflow: ellipsis;
+  white-space: nowrap;
+  font-weight: 600;
+}
+.ma-cm-boardrow-meta {
+  color: var(--ma-text-tertiary);
+  font-size: 12px;
+}
+.ma-cm-rowactions,
+.ma-cm-confirm {
+  display: flex;
+  gap: 2px;
+  padding-right: 6px;
+}
+.ma-cm-rowactions {
+  opacity: 0;
+}
+.ma-cm-boardlist li:hover .ma-cm-rowactions,
+.ma-cm-boardlist li:focus-within .ma-cm-rowactions {
+  opacity: 1;
+}
+.ma-cm-peoplelist li {
+  display: flex;
+  align-items: center;
+  gap: 10px;
+  height: 40px;
+  padding: 0 10px;
+  border-radius: 8px;
+}
+.ma-cm-peoplelist-dim .ma-cm-avatar {
+  opacity: 0.6;
+}
+.ma-cm-peoplelist-dim .ma-cm-person {
+  color: var(--ma-text-secondary);
+}
+.ma-cm-person {
+  flex: 1;
+  min-width: 0;
+  overflow: hidden;
+  text-overflow: ellipsis;
+  white-space: nowrap;
+}
+.ma-cm-person-state {
+  color: var(--ma-status-error);
+  display: grid;
+}
+.ma-cm-person-state svg {
+  width: 16px;
+  height: 16px;
+}
+
+/* Tooltips: the label and its key, after a short hover. */
+.ma-cm [data-tip]:hover::after,
+.ma-cm [data-tip]:focus-visible::after {
+  content: attr(data-tip);
+  position: absolute;
+  z-index: 5;
+  padding: 4px 8px;
+  border-radius: 6px;
+  background: var(--ma-surface-overlay);
+  color: var(--ma-text-primary);
+  box-shadow: var(--ma-elevation-menu);
+  border: 1px solid var(--ma-border-hairline);
+  font-size: 12px;
+  font-weight: 500;
+  line-height: 16px;
+  white-space: pre;
+  pointer-events: none;
+  animation: ma-cm-tip 120ms ease-out 400ms both;
+}
+.ma-cm-rail [data-tip]:hover::after,
+.ma-cm-rail [data-tip]:focus-visible::after {
+  left: calc(100% + 10px);
+  top: 50%;
+  transform: translateY(-50%);
+}
+.ma-cm-roombar [data-tip]:hover::after,
+.ma-cm-roombar [data-tip]:focus-visible::after {
+  bottom: calc(100% + 10px);
+  left: 50%;
+  transform: translateX(-50%);
+}
+.ma-cm-zoom [data-tip]:hover::after,
+.ma-cm-zoom [data-tip]:focus-visible::after {
+  top: calc(100% + 10px);
+  left: 50%;
+  transform: translateX(-50%);
+}
+.ma-cm-zoom [data-tip]:last-child:hover::after {
+  left: auto;
+  right: 0;
+  transform: none;
+}
+.ma-cm-chip [data-tip]:hover::after,
+.ma-cm-boards [data-tip]:hover::after {
+  top: calc(100% + 8px);
+  left: 0;
+}
+.ma-cm-style [data-tip]:hover::after {
+  top: calc(100% + 6px);
+  left: 50%;
+  transform: translateX(-50%);
+}
+@keyframes ma-cm-tip {
+  from {
+    opacity: 0;
+  }
+}
+
+.ma-cm button:focus-visible,
+.ma-cm input:focus-visible {
+  outline: 2px solid var(--ma-focus-ring);
+  outline-offset: 1px;
+}
+/* The board takes focus for its keys on every click; a ring around the whole board would only distract. */
+.ma-cm-board:focus {
+  outline: none;
+}
+
+/* Voice that can't get through: a calm line above the room bar, with Retry. */
+.ma-cm-voiceline {
+  position: absolute;
+  z-index: 2;
+  left: 50%;
+  bottom: calc(var(--ma-cm-gap) + 60px);
+  transform: translateX(-50%);
+  display: flex;
+  align-items: center;
+  gap: 8px;
+  max-width: calc(100cqw - 2 * var(--ma-cm-gap));
+  padding: 6px 6px 6px 16px;
+  border: 1px solid var(--ma-border-hairline);
+  border-radius: var(--ma-cm-radius);
+  background: var(--ma-surface-chrome);
+  box-shadow: var(--ma-elevation-menu);
+  color: var(--ma-text-secondary);
+  white-space: normal;
+}
+
+/* ------------------------------------------------------------ channels, left */
+.ma-cm-side {
+  position: relative;
+  flex: none;
+  width: 232px;
+  height: 100%;
+  display: flex;
+  flex-direction: column;
+  background: var(--ma-surface-chrome);
+  border-right: 1px solid var(--ma-border-hairline);
+  z-index: 4;
+}
+.ma-cm-side-head {
+  display: flex;
+  align-items: center;
+  gap: 6px;
+  height: 52px;
+  padding: 0 8px 0 16px;
+  border-bottom: 1px solid var(--ma-border-hairline);
+  flex: none;
+}
+.ma-cm-side-title {
+  flex: 1;
+  min-width: 0;
+  overflow: hidden;
+  text-overflow: ellipsis;
+  white-space: nowrap;
+  font-size: 14px;
+  font-weight: 650;
+}
+.ma-cm-side-sub {
+  display: flex;
+  align-items: center;
+  justify-content: space-between;
+  height: 36px;
+  padding: 8px 8px 0 16px;
+  color: var(--ma-text-tertiary);
+  font-size: 12px;
+  font-weight: 600;
+  flex: none;
+}
+.ma-cm-chanlist {
+  list-style: none;
+  margin: 0;
+  padding: 4px 8px 8px;
+  overflow-y: auto;
+  flex: 1;
+}
+.ma-cm-chan {
+  position: relative;
+  margin-bottom: 2px;
+}
+.ma-cm-chan-line {
+  position: relative;
+  display: flex;
+  align-items: center;
+  border-radius: 8px;
+}
+.ma-cm-chan-line:hover {
+  background: var(--ma-surface-fill);
+}
+.ma-cm-chan[data-here="1"] > .ma-cm-chan-line {
+  background: var(--ma-accent-subtle);
+}
+.ma-cm-chan-btn {
+  flex: 1;
+  min-width: 0;
+  display: flex;
+  align-items: center;
+  gap: 6px;
+  height: 32px;
+  padding: 0 8px;
+  border: 0;
+  border-radius: 8px;
+  background: transparent;
+  color: var(--ma-text-secondary);
+  text-align: left;
+}
+.ma-cm-chan-btn svg {
+  flex: none;
+  color: var(--ma-glyph);
+}
+.ma-cm-chan[data-here="1"] .ma-cm-chan-btn,
+.ma-cm-chan[data-unread="1"] .ma-cm-chan-btn {
+  color: var(--ma-text-primary);
+  font-weight: 600;
+}
+.ma-cm-chan[data-here="1"] .ma-cm-chan-btn svg {
+  color: var(--ma-accent);
+}
+.ma-cm-chan-name {
+  flex: 1;
+  min-width: 0;
+  overflow: hidden;
+  text-overflow: ellipsis;
+  white-space: nowrap;
+}
+.ma-cm-unread {
+  width: 8px;
+  height: 8px;
+  border-radius: 50%;
+  background: var(--ma-accent);
+  flex: none;
+}
+.ma-cm-chan-count {
+  min-width: 18px;
+  height: 18px;
+  padding: 0 5px;
+  border-radius: 9px;
+  background: var(--ma-surface-fill-strong);
+  color: var(--ma-text-secondary);
+  font-size: 11px;
+  font-weight: 600;
+  line-height: 18px;
+  text-align: center;
+  flex: none;
+}
+.ma-cm-chan .ma-cm-rowactions {
+  position: absolute;
+  right: 4px;
+  top: 3px;
+  padding: 0;
+  background: inherit;
+}
+.ma-cm-chan-line:hover .ma-cm-rowactions,
+.ma-cm-chan-line:focus-within .ma-cm-rowactions {
+  opacity: 1;
+}
+.ma-cm-chan-line:hover .ma-cm-chan-count,
+.ma-cm-chan-line:focus-within .ma-cm-chan-count {
+  visibility: hidden;
+}
+.ma-cm-chan-form {
+  display: flex;
+  align-items: center;
+  gap: 6px;
+  height: 32px;
+  padding: 0 4px 0 8px;
+  color: var(--ma-glyph);
+}
+.ma-cm-chan-input {
+  flex: 1;
+  min-width: 0;
+  height: 28px;
+  padding: 0 8px;
+  border: 1px solid var(--ma-accent);
+  border-radius: 6px;
+  background: var(--ma-surface-sunken);
+  color: var(--ma-text-primary);
+  font: inherit;
+  outline: none;
+  user-select: text;
+}
+.ma-cm-chan-input::placeholder {
+  color: var(--ma-text-tertiary);
+}
+.ma-cm-chan-confirm {
+  display: flex;
+  flex-direction: column;
+  gap: 6px;
+  margin: 4px 0 6px;
+  padding: 8px 10px;
+  border-radius: 8px;
+  background: var(--ma-surface-fill);
+  font-size: 12px;
+  line-height: 16px;
+  white-space: normal;
+}
+.ma-cm-chan-confirm .ma-cm-confirm {
+  padding: 0;
+}
+.ma-cm-chan-voice {
+  list-style: none;
+  margin: 2px 0 6px;
+  padding: 0 0 0 26px;
+}
+.ma-cm-chan-voice li {
+  display: flex;
+  align-items: center;
+  gap: 8px;
+  height: 26px;
+  padding-right: 6px;
+  color: var(--ma-text-secondary);
+  font-size: 12px;
+}
+.ma-cm-chan-voice .ma-cm-avatar[data-speaking="1"] {
+  box-shadow:
+    0 0 0 2px var(--ma-surface-chrome),
+    0 0 0 3.5px var(--ma-status-online);
+}
+.ma-cm-chan-person {
+  min-width: 0;
+  overflow: hidden;
+  text-overflow: ellipsis;
+  white-space: nowrap;
+}
+.ma-cm-chan-voice .ma-cm-person-state {
+  margin-left: auto;
+}
+.ma-cm-chan-voice .ma-cm-person-state svg {
+  width: 14px;
+  height: 14px;
+}
+.ma-cm-chan-more,
+.ma-cm-chan-looking {
+  padding-left: 34px;
+  color: var(--ma-text-tertiary);
+  font-size: 12px;
+  line-height: 20px;
+}
+.ma-cm-chan-voice .ma-cm-chan-more {
+  padding-left: 28px;
+}
+.ma-cm-side-foot {
+  position: relative;
+  display: flex;
+  align-items: center;
+  justify-content: space-between;
+  height: 44px;
+  padding: 0 8px 0 16px;
+  border-top: 1px solid var(--ma-border-hairline);
+  font-size: 12px;
+  flex: none;
+}
+.ma-cm-settings {
+  left: 8px;
+  bottom: calc(100% + 6px);
+  width: 300px;
+  z-index: 6;
+}
+.ma-cm-setting {
+  display: flex;
+  align-items: center;
+  justify-content: space-between;
+  gap: 12px;
+  padding: 8px 10px;
+}
+.ma-cm-setting-name {
+  display: block;
+  font-weight: 600;
+}
+.ma-cm-setting-note {
+  display: block;
+  color: var(--ma-text-tertiary);
+  font-size: 12px;
+  line-height: 16px;
+  white-space: normal;
+}
+.ma-cm-switch {
+  appearance: none;
+  position: relative;
+  width: 34px;
+  height: 20px;
+  margin: 0;
+  border-radius: 10px;
+  background: var(--ma-surface-fill-strong);
+  flex: none;
+  transition: background 120ms ease-out;
+}
+.ma-cm-switch::after {
+  content: "";
+  position: absolute;
+  left: 2px;
+  top: 2px;
+  width: 16px;
+  height: 16px;
+  border-radius: 50%;
+  background: var(--ma-surface-chrome);
+  box-shadow: var(--ma-elevation-menu);
+  transition: transform 120ms ease-out;
+}
+.ma-cm-switch:checked {
+  background: var(--ma-accent);
+}
+.ma-cm-switch:checked::after {
+  transform: translateX(14px);
+}
+.ma-cm-switch:disabled {
+  opacity: 0.5;
+}
+.ma-cm-stepper {
+  display: flex;
+  align-items: center;
+  gap: 2px;
+  flex: none;
+}
+.ma-cm-stepper-n {
+  min-width: 24px;
+  text-align: center;
+  font-weight: 600;
+  font-variant-numeric: tabular-nums;
+}
+
+/* The tier's seal beside a name: the Desk app's seal tokens and marks. */
+.ma-cm-seal {
+  display: inline-grid;
+  place-items: center;
+  flex: none;
+  border-radius: 50%;
+  vertical-align: -2px;
+}
+.ma-cm-seal svg {
+  width: 100%;
+  height: 100%;
+}
+.ma-cm-seal-officer {
+  background: var(--ma-seal-officer-fill);
+  box-shadow: inset 0 0 0 1.25px var(--ma-seal-officer-line);
+  color: var(--ma-seal-officer-mark);
+}
+.ma-cm-seal-lead {
+  background: linear-gradient(var(--ma-seal-lead-top), var(--ma-seal-lead-bottom));
+  color: var(--ma-seal-lead-mark);
+}
+.ma-cm-peoplelist .ma-cm-seal {
+  margin-left: -4px;
+}
+
+/* ------------------------------------------------------------ chat, right */
+.ma-cm-chat {
+  position: relative;
+  flex: none;
+  width: 340px;
+  height: 100%;
+  display: flex;
+  flex-direction: column;
+  background: var(--ma-surface-chrome);
+  border-left: 1px solid var(--ma-border-hairline);
+  z-index: 4;
+  user-select: text;
+  -webkit-user-select: text;
+}
+.ma-cm-chat-head {
+  display: flex;
+  align-items: center;
+  gap: 6px;
+  height: 52px;
+  padding: 0 8px 0 14px;
+  border-bottom: 1px solid var(--ma-border-hairline);
+  flex: none;
+  color: var(--ma-glyph);
+  user-select: none;
+}
+.ma-cm-chat-title {
+  flex: 1;
+  min-width: 0;
+  overflow: hidden;
+  text-overflow: ellipsis;
+  white-space: nowrap;
+  color: var(--ma-text-primary);
+  font-size: 14px;
+  font-weight: 650;
+}
+.ma-cm-chat-list {
+  flex: 1;
+  overflow-y: auto;
+  padding: 8px 0 12px;
+  overscroll-behavior: contain;
+}
+.ma-cm-chat-start {
+  margin: 8px 16px 12px;
+  color: var(--ma-text-tertiary);
+  font-size: 12px;
+  line-height: 17px;
+}
+.ma-cm-chat-older {
+  display: block;
+  margin: 4px auto 8px;
+  padding: 4px 10px;
+  border: 0;
+  border-radius: 6px;
+  background: transparent;
+  color: var(--ma-text-secondary);
+  font-size: 12px;
+}
+.ma-cm-chat-older:hover {
+  background: var(--ma-surface-fill);
+}
+.ma-cm-msg {
+  position: relative;
+  display: flex;
+  gap: 10px;
+  padding: 2px 14px 2px 52px;
+}
+.ma-cm-msg[data-head="1"] {
+  margin-top: 10px;
+  padding-left: 14px;
+}
+.ma-cm-msg:hover {
+  background: var(--ma-surface-fill);
+}
+.ma-cm-msg-avatar {
+  width: 28px;
+  height: 28px;
+  margin-top: 2px;
+}
+.ma-cm-msg-body {
+  flex: 1;
+  min-width: 0;
+}
+.ma-cm-msg-meta {
+  display: flex;
+  align-items: center;
+  gap: 6px;
+  height: 18px;
+}
+.ma-cm-msg-name {
+  font-weight: 650;
+  overflow: hidden;
+  text-overflow: ellipsis;
+  white-space: nowrap;
+}
+.ma-cm-msg-time {
+  color: var(--ma-text-tertiary);
+  font-size: 11px;
+  white-space: nowrap;
+}
+.ma-cm-msg-text {
+  margin: 0;
+  white-space: pre-wrap;
+  overflow-wrap: anywhere;
+  line-height: 19px;
+}
+.ma-cm-msg-text a {
+  color: var(--ma-accent);
+  text-decoration: underline;
+  text-underline-offset: 2px;
+}
+.ma-cm-msg-edited {
+  color: var(--ma-text-tertiary);
+  font-size: 11px;
+}
+.ma-cm-msg[data-pending="1"] .ma-cm-msg-text {
+  color: var(--ma-text-tertiary);
+}
+.ma-cm-msg-state {
+  display: block;
+  color: var(--ma-text-tertiary);
+  font-size: 11px;
+  line-height: 16px;
+}
+.ma-cm-msg-failed {
+  color: var(--ma-status-error);
+}
+.ma-cm-link {
+  padding: 0;
+  border: 0;
+  background: transparent;
+  color: var(--ma-accent);
+  font: inherit;
+  font-weight: 600;
+  text-decoration: underline;
+}
+.ma-cm-msg-actions {
+  position: absolute;
+  right: 10px;
+  top: -12px;
+  display: flex;
+  gap: 2px;
+  padding: 2px;
+  border: 1px solid var(--ma-border-hairline);
+  border-radius: 8px;
+  background: var(--ma-surface-chrome);
+  box-shadow: var(--ma-elevation-menu);
+  opacity: 0;
+  pointer-events: none;
+  user-select: none;
+}
+.ma-cm-msg:hover .ma-cm-msg-actions,
+.ma-cm-msg:focus-within .ma-cm-msg-actions {
+  opacity: 1;
+  pointer-events: auto;
+}
+.ma-cm-msg-actions [data-tip]:hover::after {
+  bottom: calc(100% + 6px);
+  left: 50%;
+  transform: translateX(-50%);
+}
+.ma-cm-msg-confirm {
+  display: flex;
+  flex-wrap: wrap;
+  align-items: center;
+  gap: 6px;
+  margin-top: 4px;
+  font-size: 12px;
+}
+.ma-cm-msg-edit textarea,
+.ma-cm-composer-input {
+  width: 100%;
+  resize: none;
+  border: 1px solid var(--ma-border);
+  border-radius: 8px;
+  background: var(--ma-surface-sunken);
+  color: var(--ma-text-primary);
+  font: inherit;
+  line-height: 19px;
+  outline: none;
+  user-select: text;
+}
+.ma-cm-msg-edit textarea {
+  padding: 6px 8px;
+  border-color: var(--ma-accent);
+}
+.ma-cm-msg-hint {
+  color: var(--ma-text-tertiary);
+  font-size: 11px;
+}
+.ma-cm-composer {
+  position: relative;
+  display: flex;
+  align-items: flex-end;
+  gap: 6px;
+  padding: 10px 10px 12px 14px;
+  border-top: 1px solid var(--ma-border-hairline);
+  flex: none;
+}
+.ma-cm-composer-input {
+  flex: 1;
+  min-height: 36px;
+  padding: 8px 10px;
+}
+.ma-cm-composer-input:focus {
+  border-color: var(--ma-accent);
+}
+.ma-cm-composer-input::placeholder {
+  color: var(--ma-text-tertiary);
+}
+.ma-cm-composer .ma-cm-icon {
+  margin-bottom: 2px;
+}
+.ma-cm-composer .ma-cm-icon:not(:disabled) {
+  color: var(--ma-accent);
+}
+.ma-cm-composer-left {
+  position: absolute;
+  right: 54px;
+  bottom: 18px;
+  color: var(--ma-text-tertiary);
+  font-size: 11px;
+  font-variant-numeric: tabular-nums;
+}
+.ma-cm-composer-left[data-over="1"] {
+  color: var(--ma-status-error);
+}
+.ma-cm-composer [data-tip]:hover::after {
+  bottom: calc(100% + 6px);
+  right: 0;
+}
+.ma-cm-chat-head [data-tip]:hover::after,
+.ma-cm-side [data-tip]:hover::after {
+  top: calc(100% + 6px);
+  right: 0;
+}
+.ma-cm-side-foot [data-tip]:hover::after {
+  top: auto;
+  bottom: calc(100% + 6px);
+}
+
+/* Buttons that float on the board: show the channels or the chat when they're hidden. */
+.ma-cm-top {
+  display: flex;
+  gap: 8px;
+}
+.ma-cm-float {
+  width: 40px;
+  height: 40px;
+  border: 1px solid var(--ma-border-hairline);
+  border-radius: var(--ma-cm-radius);
+  background: var(--ma-surface-chrome);
+  box-shadow: var(--ma-elevation-menu);
+}
+.ma-cm-float[data-unread="1"]::before {
+  content: "";
+  position: absolute;
+  right: 6px;
+  top: 6px;
+  width: 7px;
+  height: 7px;
+  border-radius: 50%;
+  background: var(--ma-accent);
+}
+.ma-cm-topright {
+  position: absolute;
+  z-index: 2;
+  right: var(--ma-cm-gap);
+  top: var(--ma-cm-gap);
+  display: flex;
+  gap: 8px;
+}
+.ma-cm-topright [data-tip]:hover::after,
+.ma-cm-top .ma-cm-float[data-tip]:hover::after {
+  top: calc(100% + 8px);
+  right: 0;
+}
+.ma-cm-top .ma-cm-float[data-tip]:hover::after {
+  right: auto;
+  left: 0;
+}
+
+/* A narrower window: the chat lies over the board's right edge, then the channels over its left. */
+@container ma-cm (max-width: 1040px) {
+  .ma-cm-chat {
+    position: absolute;
+    right: 0;
+    top: 0;
+    bottom: 0;
+    width: min(340px, 86cqw);
+    box-shadow: var(--ma-elevation-menu);
+  }
+}
+@container ma-cm (max-width: 700px) {
+  .ma-cm-side {
+    position: absolute;
+    left: 0;
+    top: 0;
+    bottom: 0;
+    width: min(232px, 80cqw);
+    box-shadow: var(--ma-elevation-menu);
+  }
+}
+
+/* Narrow windows: the room bar keeps its buttons, the zoom keeps only its level. */
+@container (max-width: 560px) {
+  .ma-cm-zoom .ma-cm-icon:not(:last-child) {
+    display: none;
+  }
+  .ma-cm-count {
+    display: none;
+  }
+  .ma-cm-roombar {
+    left: var(--ma-cm-gap);
+    transform: none;
+  }
+  .ma-cm-chip-name {
+    max-width: 140px;
+  }
+}
+
+@media (prefers-reduced-motion: reduce) {
+  .ma-cm-banner,
+  .ma-cm [data-tip]:hover::after {
+    animation: none;
+  }
+  .ma-cm-switch,
+  .ma-cm-switch::after {
+    transition: none;
+  }
+}

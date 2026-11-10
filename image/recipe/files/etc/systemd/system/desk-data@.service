@@ -1,0 +1,42 @@
+[Unit]
+Description=One read-only data request from deskd
+CollectMode=inactive-or-failed
+RequiresMountsFor=/data
+
+[Service]
+ExecStart=/usr/local/lib/ma/desk-data
+StandardInput=socket
+StandardOutput=journal
+StandardError=journal
+# A data.read is one connection for the whole file. 12 h is a 20 GB file at 4 Mbit/s; a reader resumes from its
+# offset after anything that ends one.
+RuntimeMaxSec=12h
+NoNewPrivileges=yes
+ProtectSystem=strict
+ReadOnlyPaths=/data
+# The one place it writes: its scratch copies of SQLite databases. "-" so a /data without it still answers
+# parts, manifest and plain reads (SQLite reads then say failed) instead of failing to start at all.
+ReadWritePaths=-/data/.ma-export-tmp
+ProtectHome=yes
+PrivateTmp=yes
+PrivateNetwork=yes
+RestrictAddressFamilies=AF_UNIX
+# Root only to read files that aren't its own (the Browser's 0600, apps' 0700): no other capability.
+CapabilityBoundingSet=CAP_DAC_READ_SEARCH
+PrivateDevices=yes
+ProtectKernelTunables=yes
+ProtectKernelModules=yes
+ProtectKernelLogs=yes
+ProtectControlGroups=yes
+ProtectClock=yes
+ProtectHostname=yes
+RestrictNamespaces=yes
+RestrictSUIDSGID=yes
+LockPersonality=yes
+SystemCallArchitectures=native
+UMask=0077
+# Behind the member's own work (design: never sluggish).
+Nice=10
+IOSchedulingClass=best-effort
+IOSchedulingPriority=7
+MemoryMax=512M

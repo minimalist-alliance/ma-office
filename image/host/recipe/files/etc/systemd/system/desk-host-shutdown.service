@@ -1,0 +1,15 @@
+[Unit]
+Description=desk-host: every desk stopped as a stop does, before the host goes down (ADR 0072 section 7, IN-09)
+Requires=desk-host-boot.service
+After=desk-host-boot.service network-online.target nftables.service
+Wants=network-online.target
+
+[Service]
+Type=oneshot
+RemainAfterExit=yes
+ExecStart=/bin/true
+ExecStop=/usr/local/lib/desk-host/desk-host stop-all
+TimeoutStopSec=300
+
+[Install]
+WantedBy=multi-user.target

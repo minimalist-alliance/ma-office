@@ -1,0 +1,22 @@
+#!/bin/sh
+# ma-selfhost's commands, run as its own user so the desk's key stays that user's. selfhost/README.md.
+# `port` is root's: it changes desk-rtc's config and the firewall (ma-selfhost-port).
+[ "$(id -u)" = 0 ] || { echo "ma-selfhost: run it as root (sudo ma-selfhost $*)" >&2; exit 1; }
+# One live boot per desk: when Minimalist Alliance already has another copy of this desk online, deskd's hello is refused
+# (409 boot_in_use) and deskd's log says so. Say it plainly. Prints nothing when the latest hello wasn't refused.
+boot_in_use_note() {
+  journalctl -u deskd --since "-10min" --no-pager -o cat 2>/dev/null | grep -E 'hello (refused|accepted)' | tail -n 1 | grep -q 'boot_in_use' || return 0
+  echo "note:     This desk is already running somewhere else. Only one copy of a desk can run at a time."
+  echo "          Stop the other copy, or wait about 3 minutes after it stops, and this one starts by itself."
+  echo "          If you didn't start another copy, remove this desk in your office and pair it again."
+}
+case "${1:-}" in
+  boot-note) boot_in_use_note; exit 0 ;;
+  port) shift; exec /usr/local/lib/ma/selfhost/ma-selfhost-port "$@" ;;
+  status)
+    setpriv --reuid=selfhost --regid=selfhost --init-groups /usr/local/lib/ma/selfhost/ma-selfhost "$@"; rc=$?
+    echo "port:     $(/usr/local/lib/ma/selfhost/ma-selfhost-port 2>&1)"
+    boot_in_use_note
+    exit "$rc" ;;
+esac
+exec setpriv --reuid=selfhost --regid=selfhost --init-groups /usr/local/lib/ma/selfhost/ma-selfhost "$@"

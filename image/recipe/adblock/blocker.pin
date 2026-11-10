@@ -1,0 +1,6 @@
+# The lists the desk's blocker is built from (ADR 0076): uBlock Origin Lite's release for Chromium, by version and hash.
+# Changing it is a reviewed diff: bump all three, run build-blocker.py --diff against the old one, read what changed,
+# then bake and run verify.sh (its cookie and storage check runs on every version before it ships).
+version=2026.1103.1743
+url=https://github.com/uBlockOrigin/uBOL-home/releases/download/2026.1103.1743/uBOLite_2026.1103.1743.chromium.zip
+sha256=79236476535b63706749e088e0ce99bb31d3d2ff15fabb4d7e990be23d6e4613

@@ -1,0 +1,13 @@
+[Unit]
+Description=Desk batches for deskd: offer, status and hold (desk-runtime.md section 6.1)
+
+[Socket]
+ListenStream=/run/desk/batch.sock
+SocketUser=desk
+SocketGroup=desk
+SocketMode=0600
+Accept=yes
+MaxConnections=4
+
+[Install]
+WantedBy=sockets.target

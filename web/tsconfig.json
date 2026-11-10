@@ -1,0 +1,30 @@
+{
+  "compilerOptions": {
+    "target": "ES2022",
+    "lib": ["ES2023", "DOM", "DOM.Iterable"],
+    "module": "ESNext",
+    "moduleResolution": "bundler",
+    "jsx": "react-jsx",
+    "strict": true,
+    "noUncheckedIndexedAccess": true,
+    "noUnusedLocals": true,
+    "noUnusedParameters": true,
+    "noFallthroughCasesInSwitch": true,
+    "noPropertyAccessFromIndexSignature": true,
+    "exactOptionalPropertyTypes": false,
+    "allowImportingTsExtensions": true,
+    "isolatedModules": true,
+    "skipLibCheck": true,
+    "noEmit": true,
+    "types": ["vite/client", "node"],
+    // Commons (`apps/commons/web/src`) is imported as source from outside this package, so its bare imports resolve here.
+    "paths": {
+      "react": ["./node_modules/@types/react"],
+      "react/*": ["./node_modules/@types/react/*"],
+      "yjs": ["./node_modules/yjs"],
+      "perfect-freehand": ["./node_modules/perfect-freehand"],
+      "vite": ["./node_modules/vite/dist/node/index.d.ts"]
+    }
+  },
+  "include": ["src", "notebook/src", "vite-plugins", "vite.config.ts", "playwright.config.ts", "tests"]
+}

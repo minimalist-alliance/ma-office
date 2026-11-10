@@ -1,0 +1,86 @@
+[Unit]
+Description=commons-server (Commons on a guild desk: the room link from deskd's socket, boards, chat and voice)
+# The Guild Engineer's apps/commons/deploy/commons-server.service (main 4eb00473), with the image's changes,
+# each marked "Image:" below (image/README.md, "Guild Desk"). The release (run, health, address, commons-server.env and the binary)
+# is apps/commons/release.sh's, installed by ma-update; with none installed the unit is skipped.
+ConditionPathExists=/opt/ma/commons-server/current/run
+# Image: only on a Guild Desk. desk-kind.service writes /run/ma/guild at boot for an exact DeskKind=guild; the image can't
+# enable a unit by kind, since every desk boots the same AMI.
+ConditionPathExists=/run/ma/guild
+# Image: commons-data.service makes /data/guild/commons first. An ExecStartPre=+ can't: systemd 257 sets up the unit's mount
+# namespace for it too, and a ReadWritePaths= or BindPaths= whose path isn't there fails it at step NAMESPACE (the first test
+# bake). /run/desk-commons comes from tmpfiles.d/desk-commons.conf, on every desk, for the same reason.
+Requires=desk-datadirs.service commons-data.service
+After=desk-datadirs.service commons-data.service network-online.target commons-server-address.service
+Wants=network-online.target commons-server-address.service
+# Image: after the flag, the voice ports (desk-guild-net) and the shaper, which it only Wants (ADR 0036), as desk-rtc does.
+After=desk-kind.service desk-guild-net.service desk-egress.service
+Wants=desk-kind.service desk-guild-net.service desk-egress.service
+# Image: it keeps trying for as long as it takes.
+StartLimitIntervalSec=0
+# deskd connects to commons.sock with backoff, and its health never needs this unit, so neither waits for the other.
+
+[Service]
+User=commons
+Group=commons
+UMask=0077
+# The socket's directory is 2750 commons:desk, as /run/desk-notebook is: deskd (uid 1100, group desk) reaches
+# commons.sock (0660) by group desk, and commons stays out of group desk, which would open rtc.sock to it. Commons also
+# checks the peer is uid 1100 by SO_PEERCRED.
+Environment=RELEASE_DIR=/opt/ma/commons-server/current
+EnvironmentFile=/opt/ma/commons-server/current/commons-server.env
+# This desk's own settings, if any (TURN's ports and certificate, a fixed public address): key=value lines, root-owned.
+EnvironmentFile=-/etc/ma/commons-server.env
+ExecStart=/opt/ma/commons-server/current/run
+# SIGTERM flushes and syncs every board and chat thread, then exits: a few hundred ms.
+TimeoutStopSec=20
+Restart=always
+RestartSec=2
+# Every port is above 1024 (443 is desk-rtc's, which relays to 127.0.0.1:8799), so no capability at all.
+CapabilityBoundingSet=
+AmbientCapabilities=
+NoNewPrivileges=yes
+ProtectSystem=strict
+ProtectHome=yes
+PrivateTmp=yes
+PrivateDevices=yes
+ProtectKernelTunables=yes
+ProtectKernelModules=yes
+ProtectControlGroups=yes
+# AF_NETLINK: Pion lists the interfaces. Without a capability it can't change any.
+RestrictAddressFamilies=AF_UNIX AF_INET AF_INET6 AF_NETLINK
+# No instance metadata service (Security's GDS-4): its public address comes from commons-server-address.service. The
+# rest stays open on purpose: members' browsers send voice from anywhere, and Commons answers them where they are. Its
+# other listeners are loopback only (the relay socket is a Unix socket; 8790 and desk-rtc's relay on 8799 are bound to
+# 127.0.0.1), and the image's nftables keeps 8799 to desk-rtc (GDS-3).
+IPAddressDeny=169.254.169.254 fd00:ec2::254
+RestrictNamespaces=yes
+LockPersonality=yes
+MemoryDenyWriteExecute=yes
+SystemCallArchitectures=native
+ReadWritePaths=/data/guild/commons /run/desk-commons
+# Image: the rest of the walls the other desk services get (desk-agent-filter's), less PrivateUsers=, since Commons must
+# see deskd's real uid by SO_PEERCRED. /data/guild/commons is all it sees of /data: never /data/browser (ADR 0035), never
+# another service's state.
+TemporaryFileSystem=/data:ro
+BindPaths=/data/guild/commons
+ProtectKernelLogs=yes
+ProtectClock=yes
+ProtectHostname=yes
+ProtectProc=invisible
+ProcSubset=pid
+RestrictRealtime=yes
+RestrictSUIDSGID=yes
+RemoveIPC=yes
+SystemCallFilter=@system-service
+SystemCallFilter=~@privileged @resources @mount @debug @obsolete @cpu-emulation @raw-io @reboot @swap @clock @module
+SystemCallErrorNumber=EPERM
+TasksMax=256
+# MA_APP_MEMORY_MAX (the env file) sets Go's soft limit to 90% of it; this is the hard ceiling above that. The load
+# test had 200 members at 151 MiB; boards are held in memory, so an old guild with many big boards needs more.
+MemoryMax=1G
+CPUWeight=400
+LimitNOFILE=65536
+
+[Install]
+WantedBy=multi-user.target

@@ -1,0 +1,11 @@
+[Unit]
+Description=desk-batch tick: a pending batch or Debian's updates, while the desk is idle
+
+[Timer]
+OnBootSec=2min
+OnUnitInactiveSec=5min
+AccuracySec=30s
+RandomizedDelaySec=20s
+
+[Install]
+WantedBy=timers.target

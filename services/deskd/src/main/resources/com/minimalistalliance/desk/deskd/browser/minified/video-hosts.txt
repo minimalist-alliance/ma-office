@@ -1,0 +1,21 @@
+# Players whose frames show as a video island, rather than as another site's frame. A host is on the list if it is an
+# entry or under one.
+youtube.com
+youtube-nocookie.com
+player.vimeo.com
+dailymotion.com
+player.twitch.tv
+clips.twitch.tv
+loom.com
+wistia.net
+wistia.com
+players.brightcove.net
+embed.ted.com
+streamable.com
+jwplayer.com
+jwplatform.com
+rumble.com
+tiktok.com
+open.spotify.com
+w.soundcloud.com
+bandcamp.com

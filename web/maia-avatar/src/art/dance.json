@@ -1,0 +1,1 @@
+{"channels":["x","y","rot","sq","spin","yaw","sag","bend","curl","lag","tip","shut","open","squint","tilt","dy","gx","gy","wink"],"flips":["x","rot","sag","bend","lag","gx"],"bodyOmega":30,"leadS":0.06,"fadeS":0.35,"autoSquash":0.75,"squashMax":0.22,"spinDrag":0.1,"spinDragBack":0.03,"spinDragMax":50,"spinAt":[515,515],"yawAxis":500,"yawDepth":0.45,"winkSide":1}

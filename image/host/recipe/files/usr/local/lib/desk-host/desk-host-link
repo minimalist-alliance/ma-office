@@ -1,0 +1,541 @@
+#!/usr/bin/python3 -I
+"""desk-host-link: the shared host's one outbound link to Platform (ma-platform contract shared-host.md sections 3 to 5;
+ADR 0072 section 7 and Platform's side P5, IN-03). Root, as desk-host-link.service, after desk-host-boot.service.
+
+- POST /v1/host/hello at every boot, and again whenever a report's reply says hello_required: this instance's ID, the
+  boot's ID, DesksPerHost and HostingVersion (the first boot's, hosting.json). The reply's slots name each slot's private
+  and public address, fixed for the host's life (PF-01); they stay in /run/desk-host/link/hello.json (no secrets).
+- POST /v1/host/report every reportSeconds and at once on any change, from `desk-host report` (polled every 5 s), with
+  the boot's ID and a sequence number. Orders ride the reply and each runs once per order ID, until another order for
+  the slot is done (a wake after a stop at the same epoch repeats the first start's ID), in a worker per slot:
+    prepare_slot {k, epoch}           desk-host prepare k   (only when DeskSlot<k> is empty at that epoch)
+    start_slot   {k, deskId, epoch}   slot-session, the slot's stand-in, then desk-host up k deskId --class <the tag's>
+                                      --public <hello's> (the class is the tag's sixth field, standard when it has none)
+    stop_slot    {k, deskId, epoch}   desk-host stop k      (only when the slot runs that desk at that epoch), stand-in off
+  A start is refused unless the slot's tag names that desk at that epoch and its addresses are the hello's; desk-host up
+  then checks the volume's serial and IMDS's association of the public address too. An order that failed is tried again
+  no sooner than its backoff; one that succeeded never again.
+- POST /v1/host/slot-session for each running slot at its start and every refreshAfterSeconds; the answer goes to that
+  slot's metadata stand-in (standin.py) and nowhere else: never to a disk, never to another slot.
+- With no hello yet this boot, every slot with no root is prepared in turn once the first hello succeeds (a new host's
+  first prepare reads its template from a lazily loaded snapshot: 103 s on the test host, 16 to 30 s after).
+- Signed SigV4 (service execute-api) with the instance role's credentials from IMDS (sigv4.py). The API's base URL is the
+  env's: LINK_API_staging or LINK_API_prod in desk-host.conf, chosen by the instance's Env tag. LINK_API overrides it for a
+  test host's fake Platform on the loopback only (http://127.0.0.1:<port>), never anywhere else.
+- Errors back off (5 s doubling to 5 minutes; a host Platform doesn't know, 5 minutes). It logs slot numbers, epochs,
+  operations and HTTP statuses: never a desk ID, a member's ID, a credential or a reply's body. desk-host's own output for
+  each operation goes to /var/log/desk-host/link-<k>.log (root only).
+
+Python 3 standard library only. DESK_HOST_LINK_* variables move its files, commands and addresses for the tests
+(image/host/tests/test_link.py); the unit sets none.
+"""
+import datetime
+import json
+import os
+import random
+import re
+import subprocess
+import sys
+import threading
+import time
+import urllib.error
+import urllib.parse
+import urllib.request
+
+sys.dont_write_bytecode = True   # nothing written beside the host's own code
+sys.path.insert(0, os.path.dirname(os.path.abspath(__file__)))
+import hostmeta  # noqa: E402
+import sigv4  # noqa: E402
+import standin  # noqa: E402
+
+E = os.environ.get
+CONF = E("DESK_HOST_LINK_CONF", "/etc/desk-host/desk-host.conf")
+RUN = E("DESK_HOST_LINK_RUN", "/run/desk-host/link")
+LOGDIR = E("DESK_HOST_LINK_LOGDIR", "/var/log/desk-host")
+DESK_HOST = E("DESK_HOST_LINK_CMD", "/usr/local/lib/desk-host/desk-host").split()
+BOOT_ID_FILE = E("DESK_HOST_LINK_BOOT_ID", "/proc/sys/kernel/random/boot_id")
+SLOT_NET = E("DESK_HOST_LINK_SLOT_NET", "10.98.{k}")   # the host's end .1 and the desk's .2 of slot k's veth
+POLL = float(E("DESK_HOST_LINK_POLL", "5"))
+BACKOFF_MIN, BACKOFF_MAX = float(E("DESK_HOST_LINK_BACKOFF_MIN", "5")), float(E("DESK_HOST_LINK_BACKOFF_MAX", "300"))
+ORDER_RETRY = float(E("DESK_HOST_LINK_ORDER_RETRY", "60"))
+REFRESH_MIN = float(E("DESK_HOST_LINK_REFRESH_MIN", "30"))   # the shortest refreshAfterSeconds the link honours
+REPORT_MIN = float(E("DESK_HOST_LINK_REPORT_MIN", "5"))       # and the shortest reportSeconds
+TIMEOUTS = {"prepare": 900, "up": 1200, "stop": 400, "report": 60}
+OPS = ("prepare_slot", "start_slot", "stop_slot")
+UP = ("starting", "running", "stopping")
+LOCAL_TEST_API = re.compile(r"http://127\.0\.0\.1:\d{2,5}")
+# A test host's fake Platform on the loopback, when the instance has no role: a fixed, public, useless key, so the fake can
+# still check every signature. Only ever sent to LOCAL_TEST_API.
+LOCAL_TEST_KEY = ("AKIDDESKHOSTLINKTEST", "desk-host-link-local-test-secret", None)
+
+
+def log(msg):
+    print(f"desk-host-link: {msg}", flush=True)
+
+
+def conf():
+    out = {}
+    try:
+        for line in open(CONF):
+            line = line.strip()
+            if line and not line.startswith("#") and "=" in line:
+                k, v = line.split("=", 1)
+                out[k.strip()] = v.strip().strip('"')
+    except OSError:
+        pass
+    return out
+
+
+class ApiError(Exception):
+    def __init__(self, status, code):
+        super().__init__(f"HTTP {status} {code}")
+        self.status, self.code = status, code
+
+
+class Credentials:
+    """The instance role's credentials from IMDS, fetched again 10 minutes before they expire."""
+
+    def __init__(self, imds, test_key=False):
+        self.imds, self.test_key = imds, test_key
+        self.value, self.expires = None, 0.0
+
+    def get(self):
+        if self.value and time.time() < self.expires - 600:
+            return self.value
+        role = (self.imds.get("meta-data/iam/security-credentials/") or "").strip().splitlines()
+        if not role:
+            if self.test_key:
+                return LOCAL_TEST_KEY
+            raise ApiError(0, "no_instance_role")
+        body = self.imds.get("meta-data/iam/security-credentials/" + role[0].strip())
+        try:
+            j = json.loads(body or "")
+            exp = datetime.datetime.strptime(j["Expiration"], "%Y-%m-%dT%H:%M:%SZ").replace(tzinfo=datetime.timezone.utc).timestamp()
+            if j.get("Code") != "Success":
+                raise ValueError
+            self.value, self.expires = (j["AccessKeyId"], j["SecretAccessKey"], j["Token"]), exp
+        except (ValueError, KeyError, TypeError):
+            raise ApiError(0, "role_credentials_unreadable") from None
+        return self.value
+
+
+class Api:
+    def __init__(self, base, creds, region):
+        self.base, self.creds, self.region = base.rstrip("/"), creds, region
+        self.opener = urllib.request.build_opener(urllib.request.ProxyHandler({}))
+
+    def post(self, path, body):
+        data = json.dumps(body, separators=(",", ":")).encode()
+        url = self.base + path
+        ak, sk, tok = self.creds.get()
+        h = sigv4.sign("POST", url, {"content-type": "application/json"}, data, "execute-api", self.region, ak, sk, tok)
+        req = urllib.request.Request(url, data=data, method="POST", headers=h)
+        try:
+            with self.opener.open(req, timeout=20) as r:
+                return json.loads(r.read(1 << 20) or b"{}")
+        except urllib.error.HTTPError as e:
+            code = "http_error"
+            try:
+                code = str(json.loads(e.read(65536)).get("error", {}).get("code", code))[:64]
+            except (ValueError, AttributeError, OSError):
+                pass
+            raise ApiError(e.code, code) from None
+        except (OSError, ValueError) as e:
+            raise ApiError(0, type(e).__name__) from None
+
+
+def valid_order(o, n):
+    """The order, or None for anything that isn't exactly one of the contract's three."""
+    if not isinstance(o, dict) or o.get("op") not in OPS:
+        return None
+    k, epoch = o.get("k"), o.get("epoch")
+    if not (isinstance(k, int) and not isinstance(k, bool) and 1 <= k <= n and isinstance(epoch, int) and not isinstance(epoch, bool) and 0 <= epoch <= 999_999_999):
+        return None
+    if o.get("id") != f"{o['op']}:{k}:{epoch}":
+        return None
+    if o["op"] != "prepare_slot" and not hostmeta.is_desk_id(o.get("deskId")):
+        return None
+    return o
+
+
+def valid_session(r, k, epoch, desk, public):
+    """slot-session's 200, checked against what the link asked for and the hello said; None if anything is off."""
+    try:
+        c = r["credentials"]
+        ok = (r["deskId"] == desk and r["epoch"] == epoch and r["publicIp"] == public and isinstance(r["userId"], str) and r["userId"]
+              and isinstance(r["deskKind"], str) and r["deskKind"] and r["env"] in ("staging", "prod")
+              and all(isinstance(c[x], str) and c[x] for x in ("accessKeyId", "secretAccessKey", "sessionToken", "expiration")))
+        refresh = r.get("refreshAfterSeconds", 600)
+        if not ok or not isinstance(refresh, int) or isinstance(refresh, bool):
+            return None
+        return min(max(refresh, REFRESH_MIN), 840)   # well inside the credentials' 15 minutes
+    except (KeyError, TypeError):
+        return None
+
+
+class Link:
+    def __init__(self, imds=None):
+        self.c = conf()
+        self.imds = imds or hostmeta.Imds()
+        self.units = hostmeta.desks_per_host()   # the host's size in standard desks: the hello's desksPerHost
+        self.n = hostmeta.slots_per_host()       # its slots, DeskSlot1 to DeskSlot<n> (SlotsPerHost; DesksPerHost when there's none)
+        h = json.load(open(hostmeta.HOSTING))
+        hv = str(h.get("hostingVersion", ""))
+        self.hosting_version = int(hv) if hv.isdigit() else None
+        self.instance_id = (self.imds.get("meta-data/instance-id") or "").strip()
+        if not hostmeta.INSTANCE_ID.fullmatch(self.instance_id):
+            raise SystemExit("desk-host-link: no instance ID from IMDS")
+        self.region = (self.imds.get("meta-data/placement/region") or "us-east-1").strip()
+        env = (self.imds.get("meta-data/tags/instance/Env") or "").strip()
+        base, test = self.c.get("LINK_API", ""), False
+        if base:
+            if not LOCAL_TEST_API.fullmatch(base):
+                raise SystemExit("desk-host-link: LINK_API may only name a fake Platform on the loopback (http://127.0.0.1:<port>)")
+            test = True
+        else:
+            if env not in ("staging", "prod"):
+                raise SystemExit("desk-host-link: the instance's Env tag is neither staging nor prod")
+            base = self.c.get(f"LINK_API_{env}", "")
+            if not re.fullmatch(r"https://[a-z0-9.-]+", base):
+                raise SystemExit(f"desk-host-link: no https LINK_API_{env} in desk-host.conf")
+        self.api = Api(base, Credentials(self.imds, test_key=test), self.region)
+        self.port = int(self.c.get("STANDIN_PORT", "9254"))
+        self.prepare_empty = self.c.get("LINK_PREPARE_EMPTY", "1") == "1"
+        self.boot_id = open(BOOT_ID_FILE).read().strip()
+        self.lock = threading.Lock()
+        self.wake = threading.Event()
+        self.hello_slots = None
+        self.report_seconds = 30
+        self.seq = 0
+        self.done, self.failed, self.busy = set(), {}, set()
+        self.standins, self.sessions = {}, {}
+        self.session_retry = {}
+        self.last_sent, self.last = None, None
+        self.boot_prepare_tried = set()
+        self.boot_preparing = False
+        self.bad_seen = set()
+        os.makedirs(RUN, mode=0o700, exist_ok=True)
+        os.makedirs(LOGDIR, mode=0o755, exist_ok=True)
+        log(f"for {env or 'a test fake'}, {self.n} slots")
+
+    # ---------- desk-host ----------
+
+    def desk_host(self, k, op, *args):
+        t0 = time.monotonic()
+        with open(os.path.join(LOGDIR, f"link-{k}.log"), "a") as out:
+            os.fchmod(out.fileno(), 0o600)
+            out.write(f"--- {datetime.datetime.now(datetime.timezone.utc):%FT%TZ} desk-host {op} {k}\n")
+            out.flush()
+            try:
+                r = subprocess.run([*DESK_HOST, op, str(k), *args], stdin=subprocess.DEVNULL, stdout=out, stderr=out, timeout=TIMEOUTS[op])
+                rc = r.returncode
+            except subprocess.TimeoutExpired:
+                rc = 124
+        return rc, time.monotonic() - t0
+
+    def report_now(self):
+        r = subprocess.run([*DESK_HOST, "report"], stdin=subprocess.DEVNULL, capture_output=True, text=True, timeout=TIMEOUTS["report"])
+        if r.returncode != 0:
+            raise RuntimeError(f"desk-host report exited {r.returncode}")
+        rep = json.loads(r.stdout.strip().splitlines()[-1])
+        if not isinstance(rep.get("slots"), list):
+            raise RuntimeError("desk-host report has no slots")
+        return rep
+
+    def slot(self, k):
+        if self.last:
+            for s in self.last["slots"]:
+                if s.get("k") == k:
+                    return s
+        return None
+
+    # ---------- hello ----------
+
+    def hello(self):
+        body = {"instanceId": self.instance_id, "bootId": self.boot_id, "desksPerHost": self.units}
+        if self.hosting_version is not None:
+            body["hostingVersion"] = self.hosting_version
+        r = self.api.post("/v1/host/hello", body)
+        slots = {}
+        for s in r.get("slots") or []:
+            if isinstance(s, dict) and isinstance(s.get("k"), int) and 1 <= s["k"] <= self.n:
+                if hostmeta.is_ipv4(s.get("privateIp")) and hostmeta.is_ipv4(s.get("publicIp")) and hostmeta.ALLOCATION_ID.fullmatch(str(s.get("allocationId"))):
+                    slots[s["k"]] = {"privateIp": s["privateIp"], "publicIp": s["publicIp"], "allocationId": s["allocationId"]}
+        if r.get("hostId") != self.instance_id:
+            raise ApiError(200, "hello_for_another_host")
+        if r.get("desksPerHost") != self.units:
+            log(f"hello: Platform records DesksPerHost {r.get('desksPerHost')}, this host's first boot {self.units}: this host's kept")
+        rs = r.get("reportSeconds")
+        self.report_seconds = rs if isinstance(rs, int) and REPORT_MIN <= rs <= 600 else 30
+        with self.lock:
+            self.hello_slots = slots
+        tmp = os.path.join(RUN, "hello.json.tmp")
+        with open(tmp, "w") as f:
+            os.fchmod(f.fileno(), 0o600)
+            json.dump({"bootId": self.boot_id, "reportSeconds": self.report_seconds, "slots": {str(k): v for k, v in sorted(slots.items())}}, f)
+        os.replace(tmp, os.path.join(RUN, "hello.json"))
+        log(f"hello: {len(slots)} slots named, report every {self.report_seconds} s")
+
+    # ---------- report ----------
+
+    def send_report(self, rep):
+        with self.lock:
+            self.seq += 1
+            seq = self.seq
+        body = {"bootId": self.boot_id, "seq": seq, "slots": rep["slots"]}
+        if isinstance(rep.get("conntrack"), dict):
+            body["conntrack"] = rep["conntrack"]
+        r = self.api.post("/v1/host/report", body)
+        rs = r.get("reportSeconds")
+        if isinstance(rs, int) and REPORT_MIN <= rs <= 600:
+            self.report_seconds = rs
+        if "hello_required" in (r.get("actions") or []):
+            log("report: hello required")
+            with self.lock:
+                self.hello_slots = None
+            return
+        for o in r.get("orders") or []:
+            self.dispatch(o)
+
+    def dispatch(self, raw):
+        o = valid_order(raw, self.n)
+        if o is None:
+            seen = json.dumps(raw, sort_keys=True, default=str)[:512]
+            if seen not in self.bad_seen and len(self.bad_seen) < 256:   # once each, not at every report
+                self.bad_seen.add(seen)
+                log("report: an order that isn't one of the contract's, ignored")
+            return
+        oid, k = o["id"], o["k"]
+        with self.lock:
+            if oid in self.done or k in self.busy or self.failed.get(oid, 0) > time.monotonic():
+                return
+            self.busy.add(k)
+        threading.Thread(target=self.work, args=(o,), daemon=True).start()
+
+    def work(self, o):
+        k, oid, ok = o["k"], o["id"], False
+        try:
+            ok = {"prepare_slot": self.do_prepare, "start_slot": self.do_start, "stop_slot": self.do_stop}[o["op"]](o)
+        except Exception as e:  # noqa: BLE001 - one order's failure never stops the link
+            log(f"slot {k}: {o['op']} epoch {o['epoch']}: {type(e).__name__}")
+        with self.lock:
+            self.busy.discard(k)
+            if ok:
+                # Once per order ID while it stands: a later order done for the slot ends it, so a wake after a stop at the
+                # same epoch (the same start_slot ID as the first start) runs again
+                self.done = {x for x in self.done if x.split(":")[1] != str(k)} | {oid}
+                self.failed.pop(oid, None)
+            else:
+                self.failed[oid] = time.monotonic() + ORDER_RETRY
+        self.wake.set()
+
+    def tag(self, k):
+        try:
+            return hostmeta.parse_slot_tag(self.imds.get(f"meta-data/tags/instance/DeskSlot{k}"))
+        except hostmeta.ImdsError:
+            return None
+
+    def write_fault(self, k, code):
+        """What the report carries for a slot the link kept down (report.py reads /run/desk-host/fault/<k>)."""
+        try:
+            d = os.path.join(os.path.dirname(RUN.rstrip("/")), "fault")
+            os.makedirs(d, mode=0o700, exist_ok=True)
+            with open(os.path.join(d, str(k)), "w") as f:
+                f.write(code + "\n")
+        except OSError:
+            pass
+
+    def do_prepare(self, o):
+        k, epoch = o["k"], o["epoch"]
+        t = self.tag(k)
+        s = self.slot(k)
+        if t is None or t["deskId"] is not None or t["epoch"] != epoch or (s and s.get("state") in UP):
+            log(f"slot {k}: prepare_slot epoch {epoch} refused: the slot's tag or state isn't an empty slot at that epoch")
+            return False
+        rc, dt = self.desk_host(k, "prepare")
+        log(f"slot {k}: prepare_slot epoch {epoch}: {'done' if rc == 0 else f'failed ({rc})'} in {dt:.0f} s")
+        return rc == 0
+
+    def do_start(self, o):
+        k, epoch, desk = o["k"], o["epoch"], o["deskId"]
+        s = self.slot(k)
+        if s and s.get("state") == "running" and s.get("deskId") == desk and s.get("epoch") == epoch:
+            return k in self.sessions or self.fetch_session(k, epoch, desk)   # already up: only its stand-in, if missing
+        t = self.tag(k)
+        with self.lock:
+            h = (self.hello_slots or {}).get(k)
+        if t is None or t["deskId"] != desk or t["epoch"] != epoch:
+            log(f"slot {k}: start_slot epoch {epoch} refused: DeskSlot{k} doesn't name that desk at that epoch")
+            return False
+        if h is None or h["privateIp"] != t["privateIp"] or h["allocationId"] != t["allocationId"]:
+            log(f"slot {k}: start_slot epoch {epoch} refused: the slot's addresses aren't the hello's")
+            self.write_fault(k, "address_mismatch")
+            return False
+        if not self.fetch_session(k, epoch, desk):
+            return False
+        rc, dt = self.desk_host(k, "up", desk, "--class", t["class"], "--public", h["publicIp"])
+        if rc != 0:
+            try:   # an up the link didn't see finish (a restart under it) may have started the very desk: then keep serving it
+                now = next((x for x in self.report_now()["slots"] if x.get("k") == k), {})
+                if now.get("state") == "running" and now.get("deskId") == desk and now.get("epoch") == epoch:
+                    log(f"slot {k}: start_slot epoch {epoch}: already up")
+                    return True
+            except (RuntimeError, ValueError, OSError, subprocess.SubprocessError):
+                pass
+            log(f"slot {k}: start_slot epoch {epoch}: desk-host up failed ({rc}) in {dt:.0f} s; slot kept down")
+            self.drop_standin(k)
+            return False
+        log(f"slot {k}: start_slot epoch {epoch}: up in {dt:.0f} s")
+        return True
+
+    def do_stop(self, o):
+        k, epoch, desk = o["k"], o["epoch"], o["deskId"]
+        s = self.slot(k)
+        if s and s.get("state") in UP and s.get("deskId") == desk and s.get("epoch") == epoch:
+            rc, dt = self.desk_host(k, "stop")
+            log(f"slot {k}: stop_slot epoch {epoch} ({o.get('reason') if o.get('reason') in ('idle', 'member', 'admin', 'export_ended', 'hello_timeout', 'hold', 'placement', 'stopped') else 'other'}): "
+                f"{'stopped' if rc == 0 else f'failed ({rc})'} in {dt:.0f} s")
+            if rc != 0:
+                return False
+        self.drop_standin(k)
+        return True
+
+    # ---------- slot sessions and the stand-ins ----------
+
+    def fetch_session(self, k, epoch, desk):
+        with self.lock:
+            h = (self.hello_slots or {}).get(k)
+        if h is None:
+            return False
+        try:
+            r = self.api.post("/v1/host/slot-session", {"slot": k, "epoch": epoch})
+        except ApiError as e:
+            log(f"slot {k}: slot-session epoch {epoch}: {e}")
+            if e.status in (403, 409):
+                self.drop_standin(k)
+            return False
+        refresh = valid_session(r, k, epoch, desk, h["publicIp"])
+        if refresh is None:
+            log(f"slot {k}: slot-session epoch {epoch}: the reply isn't this slot's placement; nothing served")
+            self.drop_standin(k)
+            return False
+        net = SLOT_NET.format(k=k)
+        with self.lock:
+            si = self.standins.get(k)
+            if si is None:
+                si = self.standins[k] = standin.StandIn(k, f"{net}.1", self.port, f"{net}.2", self.region)
+            si.start()
+            si.set_session(r)
+            self.sessions[k] = {"epoch": epoch, "deskId": desk, "refresh_at": time.monotonic() + refresh}
+        return True
+
+    def drop_standin(self, k):
+        with self.lock:
+            si = self.standins.pop(k, None)
+            self.sessions.pop(k, None)
+        if si is not None:
+            si.stop()
+
+    def tend_sessions(self):
+        now = time.monotonic()
+        for k in range(1, self.n + 1):
+            s = self.slot(k)
+            with self.lock:
+                busy = k in self.busy
+                sess = self.sessions.get(k)
+                retry_at = self.session_retry.get(k, 0)
+            if busy:
+                continue
+            up = s is not None and s.get("state") in UP and hostmeta.is_desk_id(s.get("deskId"))
+            if sess and (not up or s.get("deskId") != sess["deskId"] or s.get("epoch") != sess["epoch"]):
+                self.drop_standin(k)   # the slot's desk stopped or isn't the session's
+                continue
+            due = (sess and sess["refresh_at"] <= now) or (up and not sess)   # a refresh, or a link restarted under a running desk
+            if due and retry_at <= now and self.hello_slots is not None:
+                if not self.fetch_session(k, s["epoch"], s["deskId"]):
+                    with self.lock:
+                        self.session_retry[k] = now + 30
+                else:
+                    with self.lock:
+                        self.session_retry.pop(k, None)
+
+    def boot_prepare(self):
+        """Every slot with no root, prepared in turn after the first hello (a new host's slots, before Platform needs them)."""
+        if not self.prepare_empty or self.hello_slots is None or not self.last:
+            return
+        for s in self.last["slots"]:
+            k = s.get("k")
+            if s.get("state") == "empty" and k not in self.boot_prepare_tried:
+                with self.lock:
+                    if self.boot_preparing or k in self.busy:
+                        return
+                    self.boot_preparing = True
+                    self.busy.add(k)
+                    self.boot_prepare_tried.add(k)
+                threading.Thread(target=self.boot_prepare_one, args=(k,), daemon=True).start()
+                return
+
+    def boot_prepare_one(self, k):
+        try:
+            rc, dt = self.desk_host(k, "prepare")
+            log(f"slot {k}: prepared at boot: {'done' if rc == 0 else f'failed ({rc})'} in {dt:.0f} s")
+        finally:
+            with self.lock:
+                self.busy.discard(k)
+                self.boot_preparing = False
+            self.wake.set()
+
+    # ---------- the loop ----------
+
+    def run(self, until=None):
+        backoff = BACKOFF_MIN
+        next_report = 0.0
+        next_poll = 0.0
+        while until is None or not until():
+            now = time.monotonic()
+            try:
+                if self.hello_slots is None:
+                    self.hello()
+                    next_report = 0.0
+                if now >= next_poll or self.wake.is_set():
+                    self.wake.clear()
+                    rep = self.report_now()
+                    self.last = rep
+                    next_poll = now + POLL
+                    key = [(s.get("k"), s.get("state"), s.get("deskId"), s.get("epoch"), s.get("fault")) for s in rep["slots"]]
+                    if key != self.last_sent or now >= next_report:
+                        self.send_report(rep)
+                        self.last_sent = key
+                        next_report = now + self.report_seconds
+                self.tend_sessions()
+                self.boot_prepare()
+                backoff = BACKOFF_MIN
+            except ApiError as e:
+                wait = BACKOFF_MAX if (e.status == 403 and e.code == "host_mismatch") else backoff
+                log(f"{'hello' if self.hello_slots is None else 'report'}: {e}; next try in {wait:.0f} s")
+                self.wake.wait(wait * (0.8 + 0.4 * random.random()))
+                backoff = min(backoff * 2, BACKOFF_MAX)
+                continue
+            except (RuntimeError, ValueError, OSError, subprocess.SubprocessError) as e:
+                log(f"desk-host report: {type(e).__name__}; next try in {backoff:.0f} s")
+                self.wake.wait(backoff)
+                backoff = min(backoff * 2, BACKOFF_MAX)
+                continue
+            self.wake.wait(max(0.05, min(next_poll, next_report) - time.monotonic()))
+
+
+def main():
+    if os.geteuid() != 0 and not os.environ.get("DESK_HOST_LINK_RUN"):
+        raise SystemExit("desk-host-link: root only")
+    while True:
+        try:
+            link = Link()
+            break
+        except hostmeta.ImdsError as e:
+            log(f"IMDS: {e}; next try in 10 s")
+            time.sleep(10)
+    link.run()
+
+
+if __name__ == "__main__":
+    main()

@@ -1,0 +1,29 @@
+[Unit]
+Description=Read what the Browser loads, once per root (spikes/first-open/README.md)
+ConditionPathExists=/usr/local/share/ma/preread.list
+ConditionPathExists=!/var/lib/desk-preread/done
+# Started once /data has its mount, so that InaccessiblePaths really covers it, and once Docker is up, which is the last of
+# the boot's own slow reads on a fresh root. Nothing waits for this unit. A Browser opened while it reads still got its
+# page in under 6 s on a never-read root, against 19 s without it (spikes/first-open/README.md).
+After=data.mount docker.service
+
+[Service]
+Type=exec
+ExecStart=/usr/local/lib/ma/desk-preread
+DynamicUser=yes
+StateDirectory=desk-preread
+# The page cache it fills is free to go. It must not take CPU from anything else. The root's I/O scheduler is "none", so
+# there's no I/O priority to set: the limit is desk-preread's 16 readers.
+Nice=19
+CPUWeight=idle
+NoNewPrivileges=yes
+ProtectSystem=strict
+ProtectHome=yes
+PrivateTmp=yes
+PrivateNetwork=yes
+InaccessiblePaths=-/data
+RestrictAddressFamilies=AF_UNIX
+CapabilityBoundingSet=
+
+[Install]
+WantedBy=multi-user.target

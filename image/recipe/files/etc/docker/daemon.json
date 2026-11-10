@@ -1,0 +1,6 @@
+{
+  "iptables": false,
+  "ip6tables": false,
+  "log-driver": "journald",
+  "live-restore": true
+}

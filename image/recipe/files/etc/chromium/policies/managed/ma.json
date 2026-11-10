@@ -1,0 +1,20 @@
+{
+  "RestoreOnStartup": 1,
+  "AudioCaptureAllowed": false,
+  "VideoCaptureAllowed": false,
+  "DownloadDirectory": "/data/browser/downloads",
+  "PromptForDownloadLocation": false,
+  "URLBlocklist": [
+    "office.minimalistalliance.com",
+    "desk.minimalistalliance.com",
+    "api.minimalistalliance.com",
+    "auth.minimalistalliance.com",
+    "gw.minimalistalliance.com"
+  ],
+  "DefaultBrowserSettingEnabled": false,
+  "BrowserSignin": 0,
+  "SyncDisabled": true,
+  "MetricsReportingEnabled": false,
+  "BackgroundModeEnabled": false,
+  "HomepageLocation": "file:///usr/local/share/ma/home.html"
+}

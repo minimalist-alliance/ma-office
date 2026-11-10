@@ -1,0 +1,67 @@
+#!/bin/bash
+# desk-guild-net: the Guild Desk's own nftables rules, and nothing on any other desk (image/README.md, "Guild Desk").
+#
+# With /run/ma/guild (desk-kind.service writes it only for an exact DeskKind=guild), it puts these rules in table inet ma:
+# - input, appended: inbound UDP to 8791 up to 8790 + N, N the cores this process may run on (what Go's runtime.NumCPU()
+#   gives commons-server), at most 8, as commons-server binds them. Nothing for TCP: the room link is a Unix socket, and
+#   TCP and UDP 443 are already open, for desk-rtc, on every desk.
+# - output, first: a new TCP connection to commons-server's loopback HTTP port, 127.0.0.1:8790 or [::1]:8790, is refused to
+#   every uid but root and commons (1110). The room link is the Unix socket; this keeps members' agents (uid 1103 may reach
+#   loopback) and everything else off Commons' local port if a release ever listens there (the Security Analyst's bar).
+#   First, because the chain accepts uid 1103's loopback traffic further down. A refusal matches a new connection only, as
+#   for 9222.
+# - output, first: Commons' relayed voice ICE on 127.0.0.1:8799 (UDP, and TCP for ICE-TCP), which desk-rtc forwards from
+#   443 (sub/guild-rtc-443), is refused to every uid but rtc (1101), on [::1] too. No other uid, agent above all, may
+#   speak to it. Commons' answers leave from 8799, so they don't match. Never opened from outside: input's policy is drop,
+#   and the voice range stops at 8798.
+# - classify, appended: Commons' voice from its ports, and the RTP and RTCP desk-rtc relays for it out of UDP 443, go to
+#   desk-egress's voice class 1:30 rather than the default class and desk-rtc's. A Guild Desk's own desk-rtc sessions
+#   carry data only (no track is offered), so from UDP 443 a first byte of 128 to 191, RTP or RTCP by RFC 7983, can only
+#   be relayed voice; STUN and DTLS (0 to 3, 20 to 63) stay in 1:10. ICE-TCP's relayed voice stays in 1:10: a TCP
+#   segment's first byte isn't a packet's. Labels only, as the chain is.
+# Without the flag it does nothing at all, so a member's desk keeps exactly the ruleset nftables.conf loads. No per-network
+# limits on TCP 443 (Security's NET031-3: they counted bare SYNs, so forged ones could shut a member's network out); a
+# ma-guild-tcp-limits rule an earlier version left is deleted like any other copy.
+#
+# Runs as root from desk-guild-net.service at boot, after desk-kind, and from nftables.service after each of its starts and
+# reloads (nftables.service.d/desk-guild-net.conf), since nftables.conf's "flush ruleset" takes the rules away. Each rule
+# carries a ma-guild- comment, and every copy is deleted in the same nft transaction that adds them, so a second run changes
+# nothing. Test hooks (root only): MA_GUILD_FLAG, MA_NFT, MA_NPROC.
+set -euo pipefail
+FLAG=${MA_GUILD_FLAG:-/run/ma/guild}
+NFT=${MA_NFT:-/usr/sbin/nft}
+NPROC=${MA_NPROC:-/usr/bin/nproc}
+VOICE=ma-guild-commons-voice
+LOCAL=ma-guild-commons-local
+RELAY=ma-guild-commons-relay
+CLASS=ma-guild-voice-class
+RTC_UID=1101
+BASE=8791
+MAX_PORTS=8
+COMMONS_UID=1110
+
+[ -e "$FLAG" ] || { echo "desk-guild-net: not a Guild Desk, nothing to open"; exit 0; }
+n=$("$NPROC")
+[[ $n =~ ^[0-9]+$ ]] && [ "$n" -ge 1 ] || { echo "desk-guild-net: can't count the cores ($n)" >&2; exit 1; }
+[ "$n" -le "$MAX_PORTS" ] || n=$MAX_PORTS
+last=$((BASE + n - 1))
+if [ "$n" = 1 ]; then ports=$BASE; else ports=$BASE-$last; fi
+# Every copy already there, by chain and handle. The table is nftables.conf's: if it's missing, the ruleset isn't loaded,
+# and this fails.
+listing=$("$NFT" -a list table inet ma)
+old=$(awk '
+  $1 == "chain" { chain = $2 }
+  /comment "ma-guild-[a-z-]*" # handle [0-9]+$/ && match($0, /# handle [0-9]+$/) { print chain, substr($0, RSTART + 9) }' <<<"$listing")
+{
+  while read -r chain h; do [ -n "$chain" ] && echo "delete rule inet ma $chain handle $h"; done <<<"$old"
+  echo "add rule inet ma input udp dport $ports accept comment \"$VOICE\""
+  echo "insert rule inet ma output ip daddr 127.0.0.1 tcp dport 8790 meta skuid != { 0, $COMMONS_UID } tcp flags & (syn | ack) == syn reject with tcp reset comment \"$LOCAL\""
+  echo "insert rule inet ma output ip6 daddr ::1 tcp dport 8790 meta skuid != { 0, $COMMONS_UID } tcp flags & (syn | ack) == syn reject with tcp reset comment \"$LOCAL\""
+  for a in "ip daddr 127.0.0.1" "ip6 daddr ::1"; do
+    echo "insert rule inet ma output $a tcp dport 8799 meta skuid != $RTC_UID tcp flags & (syn | ack) == syn reject with tcp reset comment \"$RELAY\""
+    echo "insert rule inet ma output $a udp dport 8799 meta skuid != $RTC_UID reject with icmpx type admin-prohibited comment \"$RELAY\""
+  done
+  echo "add rule inet ma classify meta skuid $COMMONS_UID udp sport $ports meta priority set 1:30 comment \"$CLASS\""
+  echo "add rule inet ma classify meta skuid $RTC_UID udp sport 443 @th,64,8 & 0xc0 == 0x80 meta priority set 1:30 comment \"$CLASS\""
+} | "$NFT" -f -
+echo "desk-guild-net: inbound UDP $ports open for commons-server ($n of $("$NPROC") cores), loopback TCP 8790 closed to all but root and commons, loopback 8799 to all but rtc, voice to class 1:30; $(grep -c . <<<"$old") old rules replaced"

@@ -1,0 +1,145 @@
+#!/bin/bash
+# Find the data volume and format it ONLY if it is provably blank. This path can destroy a member's
+# data, so every doubt means: do nothing, log loudly, exit 1 (data.mount, desk-datadirs, deskd and
+# desk-rtc then do not start and the desk fails visibly).
+#
+# "Blank" means ALL of:
+#   - the device reads cleanly (read errors or a device that is not ready are never "blank")
+#   - blkid -p exits 2 ("nothing found") on two probes a few seconds apart; any other failure retries, then refuses
+#   - wipefs sees no signature and there are no partitions
+#   - no ext4 superblock magic (0xEF53 at byte 56) at any standard backup location (1K, 2K and 4K blocks,
+#     groups 1, 3, 5, 7, 9), so a damaged primary superblock is not mistaken for a blank disk
+# Fresh EBS volumes are NOT zero-filled (we saw random bytes at offset 4096), so content alone is no reason to refuse.
+#
+# Test hooks: MA_DATA_DEVICE, MA_DATA_LABEL, MA_READY_WAIT (s), MA_PROBE_RETRIES, MA_PROBE_GAP (s).
+set -uo pipefail
+LABEL="${MA_DATA_LABEL:-ma-data}"
+READY_WAIT="${MA_READY_WAIT:-120}"
+PROBE_RETRIES="${MA_PROBE_RETRIES:-6}"
+PROBE_GAP="${MA_PROBE_GAP:-5}"
+log() { echo "desk-firstboot: $*"; }
+refuse() {
+  local m="desk-firstboot: REFUSING TO FORMAT, data volume left untouched: $*"
+  echo "$m" >&2
+  logger -p user.crit -t desk-firstboot "$m" 2>/dev/null || true
+  echo "$m" > /dev/console 2>/dev/null || true
+  exit 1
+}
+
+dev="${MA_DATA_DEVICE:-}"
+rootdisk=""
+if [ -z "$dev" ]; then
+  # Never pick a disk by its nvme number (they swap after a root replacement). Exclude the disk that
+  # holds the mounted /, and require exactly one other EBS disk.
+  rootsrc=$(findmnt -n -o SOURCE /) || refuse "cannot find the root device"
+  rootpk=$(lsblk -no PKNAME "$rootsrc" | head -1)
+  [ -n "$rootpk" ] || rootpk=$(basename "$rootsrc")
+  rootdisk="/dev/$rootpk"
+  cands=()
+  for _ in $(seq 1 90); do
+    mapfile -t cands < <(lsblk -dnpo NAME,TYPE | awk '$2=="disk"{print $1}' \
+      | grep -E '/dev/(nvme[0-9]+n[0-9]+|xvd[a-z]+|sd[a-z]+)$' | grep -v -x "$rootdisk" || true)
+    [ "${#cands[@]}" -ge 1 ] && break
+    sleep 2
+  done
+  [ "${#cands[@]}" -eq 1 ] || refuse "expected exactly one non-root disk, found ${#cands[@]} (${cands[*]:-none}); root is $rootdisk"
+  dev="${cands[0]}"
+fi
+log "data device: $dev (root disk: ${rootdisk:-n/a})"
+# On NVMe, confirm it is an EBS volume attached as sdf/xvdf when the mapping is readable.
+if [ -z "${MA_DATA_DEVICE:-}" ] && [[ $dev == /dev/nvme* ]]; then
+  model=$(cat "/sys/block/$(basename "$dev")/device/model" 2>/dev/null | sed 's/ *$//')
+  [ -z "$model" ] || [ "$model" = "Amazon Elastic Block Store" ] || refuse "$dev is '$model', not an EBS volume"
+  if command -v nvme >/dev/null; then
+    map=$(nvme id-ctrl -b "$dev" 2>/dev/null | dd bs=1 skip=3072 count=32 2>/dev/null | tr -d '\0 ' | sed 's#^/dev/##')
+    log "device mapping of $dev: '${map:-unreadable}'"
+    case "$map" in ""|sdf|xvdf) ;; *) refuse "$dev is attached as '$map', expected sdf" ;; esac
+  fi
+fi
+
+# 1. The device must be a block device that reads cleanly: first MiB, last 4 KiB.
+ready=0 size=0
+end=$((SECONDS + READY_WAIT))
+while :; do
+  if [ -b "$dev" ] && size=$(blockdev --getsize64 "$dev" 2>/dev/null) && [ "${size:-0}" -ge 67108864 ] \
+     && dd if="$dev" of=/dev/null bs=1M count=1 iflag=direct 2>/dev/null \
+     && dd if="$dev" of=/dev/null bs=4096 skip=$((size / 4096 - 1)) count=1 iflag=direct 2>/dev/null; then
+    ready=1; break
+  fi
+  [ "$SECONDS" -ge "$end" ] && break
+  sleep 2
+done
+[ "$ready" = 1 ] || refuse "$dev is missing, too small or not reading cleanly after ${READY_WAIT}s (a read error is never 'blank')"
+
+# 2. blkid -p: 0 = something found, 2 = nothing found, anything else = error (retry, then refuse).
+probe() { # sets PROBE_RC and PROBE_OUT
+  local i
+  for i in $(seq 1 "$PROBE_RETRIES"); do
+    PROBE_OUT=$(blkid -p -o export "$dev" 2>&1); PROBE_RC=$?
+    case $PROBE_RC in 0|2) return 0 ;; esac
+    log "blkid -p failed with exit $PROBE_RC ($PROBE_OUT), retry $i/$PROBE_RETRIES"
+    sleep "$PROBE_GAP"
+  done
+  refuse "blkid -p keeps failing on $dev (exit $PROBE_RC): $PROBE_OUT"
+}
+probe
+if [ "$PROBE_RC" = 0 ]; then
+  fstype=$(sed -n 's/^TYPE=//p' <<<"$PROBE_OUT")
+  label=$(sed -n 's/^LABEL=//p' <<<"$PROBE_OUT")
+  if [ "$fstype" = ext4 ] && [ "$label" = "$LABEL" ]; then
+    log "found existing $fstype filesystem labelled '$label': NOT formatting"
+    exit 0
+  fi
+  refuse "$dev already has content: type='${fstype:-none}' label='$label' ($(tr '\n' ' ' <<<"$PROBE_OUT"))"
+fi
+
+# 3. Looks blank. Confirm it twice, and with the other tools.
+sleep "$PROBE_GAP"
+probe
+[ "$PROBE_RC" = 2 ] || refuse "$dev changed between probes"
+sigs=$(wipefs --no-act "$dev" 2>&1) || refuse "wipefs failed on $dev: $sigs"
+[ -z "$sigs" ] || refuse "$dev has signatures: $sigs"
+parts=$(lsblk -nro NAME "$dev" 2>&1) || refuse "lsblk failed on $dev"
+[ -z "$(tail -n +2 <<<"$parts")" ] || refuse "$dev has partitions"
+
+# 4. ext4 backup superblocks. Byte offsets of the start of group g's backup (g = 1,3,5,7,9):
+#    4K blocks: g*32768*4096 | 2K blocks: g*16384*2048 | 1K blocks: (g*8192+1)*1024. Magic 0xEF53 at +56.
+for g in 1 3 5 7 9; do
+  for off in $((g * 134217728)) $((g * 33554432)) $(((g * 8192 + 1) * 1024)); do
+    [ $((off + 4096)) -le "$size" ] || continue
+    sec=$(dd if="$dev" bs=512 skip=$((off / 512)) count=1 iflag=direct 2>/dev/null | od -An -tx1 -j56 -N2 | tr -d ' \n')
+    bytes=$sec
+    [ "${#bytes}" = 4 ] || refuse "cannot read $dev at byte $((off + 56)) (read error is never 'blank')"
+    [ "$bytes" = 53ef ] || continue
+    # Magic hit. Fresh encrypted EBS volumes are full of pseudo-random bytes (we measured it), so a
+    # 2-byte match alone would wrongly refuse about 1 blank volume in 1,400 (45 places x 2^-16).
+    # Real backup superblocks also pass these field checks; random noise essentially never does.
+    f=$(dd if="$dev" bs=512 skip=$((off / 512)) count=1 iflag=direct 2>/dev/null | od -An -tu4 -w4 -v | tr -s ' \n' ' ')
+    set -- $f   # u32 words 0..127 of the superblock sector
+    inodes=${1:-0}; bpg=${9:-0}; logbs=${7:-99}; revw=${20:-99}
+    if [ "$inodes" -gt 0 ] && [ "$bpg" -gt 0 ] && [ "$logbs" -le 6 ] && [ "$revw" -le 1 ]; then
+      refuse "ext4 backup superblock found at byte $off on $dev (inodes=$inodes blocks/group=$bpg log_block_size=$logbs): this is a damaged filesystem, not a blank volume"
+    fi
+    log "0xEF53 at byte $((off + 56)) but the superblock fields are not plausible (inodes=$inodes blocks/group=$bpg log_block_size=$logbs rev=$revw): treating it as noise"
+  done
+done
+
+log "$dev is blank (nothing found twice, no signatures, no partitions, no backup superblocks): creating ext4 labelled '$LABEL'"
+mkfs.ext4 -q -L "$LABEL" -m 1 "$dev" || refuse "mkfs failed on $dev"
+# ADR 0035: a format means an empty browser for the member, so it leaves a record on the volume itself, which outlives
+# the root and the journal. desk-datadirs copies it to /data/desk/volume.json for deskd's heartbeat. Never fails the boot.
+volid=$(exec 2>/dev/null; tr -d ' ' < "/sys/block/$(basename "$(readlink -f "$dev")")/device/serial"); case "$volid" in vol-*) ;; vol*) volid="vol-${volid#vol}" ;; *) volid=unknown ;; esac
+at=$(date -u +%FT%TZ); img=$(sed -n 's/^version=//p' /etc/ma-release 2>/dev/null)
+logger -p user.crit -t desk-firstboot "FORMATTED a blank data volume: $dev volume $volid at $at image ${img:-unknown}" 2>/dev/null || true
+if mnt=$(mktemp -d /run/ma-firstboot.XXXXXX) && mount -o nosuid,nodev,noexec "$dev" "$mnt"; then
+  printf '{"volumeId":"%s","formattedAt":"%s","image":"%s"}\n' "$volid" "$at" "${img:-unknown}" > "$mnt/.ma-volume" && chmod 0644 "$mnt/.ma-volume" && sync || log "could not write the format record"
+  umount "$mnt" || log "could not unmount $mnt"
+  rmdir "$mnt" 2>/dev/null
+else
+  log "could not mount $dev to write the format record"
+fi
+udevadm settle || true
+udevadm trigger --subsystem-match=block --action=change || true
+udevadm settle || true
+for _ in $(seq 1 30); do [ -e "/dev/disk/by-label/$LABEL" ] && break; sleep 1; done
+log "formatted $dev"

@@ -1,0 +1,477 @@
+#!/bin/bash
+# desk-host: the shared host's slots (ADR 0072 sections 1, 3, 5 to 8 and 10). Root only. From the wall test's desks.sh
+# (spikes/shared-host-wall/wall/, runs 1 and 2), as the shared-host image (image/host/) installs it.
+#   desk-host prepare <k>                  a fresh root from the template and the release store ("fresh" record)
+#   desk-host up <k> <deskId> [<vol-id>] [<class> | --class <class>] --public <address>
+#                                          start a desk on slot k: DeskSlot<k> must name it (and the volume, if given), and
+#                                          IMDS must associate <address> (the slot's public address, from the link's hello)
+#                                          with the tag's private address. The class is the tag's sixth field unless given.
+#   desk-host class <k> [<class>]          a running desk's size class, changed live (from DeskSlot<k> if not given)
+#   desk-host stop <k> | stop-all          signals only: deskd's sandbox, then the desk (its init closes Chromium), then the rest
+#   desk-host reset <k> | leftovers <k> | state | report | check | ctlimit <k> <desk n> <host n>
+# Platform drives a host through desk-host-link (ma-platform contract shared-host.md): prepare_slot, start_slot and
+# stop_slot run prepare, up and stop; report is what each report carries (report.py). A slot's new class (an upgrade in
+# place, the contract's set_class) maps to class, which the link doesn't run yet: a test harness calls it by hand.
+#
+# The slot tag (contract section 2, PF-01): DeskSlot<k> = <deskId|->/<volumeId|->/<privateIp>/<allocationId>/<epoch>[/<class>],
+# read strictly (hostmeta.py; the class only one classes.conf names, missing means standard); anything else means nothing. Slot k's address is the tag's privateIp on whichever interface carries
+# it (slotnet.py; under PF-03 the slots' interface, not the host's own), never the k-th address; the slot's packets are
+# routed out of that interface. A desk's packets meet its slot's source check before any flow (IN-09); then its bytes out
+# and in are counted per veth, every packet of every flow (desk_est, ADR 0072 section 8), from 0 at each start. A desk reaches
+# 169.254.169.254 only as its own stand-in in desk-host-link (IN-03): TCP 80 from the slot's address DNATed to
+# 10.98.<k>.1:STANDIN_PORT, nothing else.
+#
+# What each part answers (ADR 0072 section 15):
+# - WALL-02: nothing runs inside a desk. up is runc create, the desk's network set from the host with the host's own ip and
+#   nft (entering only the network namespace, before any desk process has run), mounts.py's moves, then runc start. A stop is
+#   runc kill TERM. No exec, chroot or nsenter into a desk's user, mount or PID namespace.
+# - WALL-03, RC-01: the host writes nothing in a desk's root or volume after it has run (but the format record on a blank
+#   volume, through mounts.py). What it gives a desk goes in /run/desk-host/<k>, read-only in the desk. Every runc input is the
+#   host's: roots from the template and the release store, namespace files bound at create, /run shares on a fresh tmpfs, /data
+#   clones resolved without links. The desk's firewall comes from the template, never the slot's copy.
+# - WALL-04, RC-03: a host-owned record binds a slot's root to one desk ("fresh" or "desk"); a start claims a fresh root or
+#   wakes its own, anything else is prepared again first. Every stop resets all the slot's state outside its root, and a start
+#   refuses a slot where any remains. One prepare or start per slot at a time (a per-slot lock, WALL-04's race), and a prepare
+#   refuses a slot whose desk is still there.
+# - WALL-05: the volume by NVMe serial, idmapped fsmount (mounts.py), never attached in the host's namespace.
+# - WALL-07, IN-06, RC-04: the desk's share (cpu.weight, memory.max, pids.max), its memory rule (memory.swap.max 2 GiB,
+#   memory.zswap.max 1,000 MiB, memory.zswap.writeback 0: compressed in its own cap, never written to the swap file; the
+#   proposal that replaces swap 0), io.max on both its devices summing to 0.8 of the instance's EBS baseline, a project quota,
+#   connection limits inside the desk and on the host.
+# - Size classes (ADR 0072, "Container sizes by tier"): each value above is one standard desk's, and a slot's class
+#   (/etc/desk-host/classes.conf, classes.py) multiplies it. A start or a raise is admitted only while the desks' memory.max and
+#   disk shares, as the kernel holds them, stay within DesksPerHost standard desks' (one host-wide lock), so a desk's peak never
+#   reaches another's memory. A class change on a running desk writes its cgroup in place: nothing restarts.
+# - WALL-10, IN-05: one AppArmor profile per slot; the host drops desk traffic to the VPC and link-local ranges but the
+#   resolver, to every host port but the fixtures a test host names, and every IPv6 packet from a desk (IPv6 is off on both
+#   ends of its veth as well).
+set -euo pipefail
+umask 022
+LIB=/usr/local/lib/desk-host
+SVCS="desk-rtc deskd desk-agent desk-notebook desk-stream desk-data"
+DH=/srv/desk-host; T=$DH/template; S=$DH/slots; REC=/var/lib/desk-host/slots; CGR=/sys/fs/cgroup/desk-host; RUN=/run/desk-host
+log() { echo "[desk-host $(date -u +%T)] $*"; }
+mb() { awk -v b="$1" 'BEGIN {printf "%.1f", b / 1e6}'; }
+die() { echo "desk-host: $*" >&2; exit 1; }
+[ "$(id -u)" = 0 ] || die "root only"
+conf() { sed -n "s/^$1=//p" /etc/desk-host/desk-host.conf 2>/dev/null | tail -1 | tr -d '"'; }
+CT_DESK=$(conf CT_DESK); CT_DESK=${CT_DESK:-4096}
+CT_HOST=$(conf CT_HOST); CT_HOST=${CT_HOST:-4608}
+QUOTA_HEAD_MB=$(conf QUOTA_HEAD_MB); QUOTA_HEAD_MB=${QUOTA_HEAD_MB:-1024}
+QUOTA_HEAD_INODES=$(conf QUOTA_HEAD_INODES); QUOTA_HEAD_INODES=${QUOTA_HEAD_INODES:-50000}
+IO_SPLIT=$(conf IO_SPLIT); IO_SPLIT=${IO_SPLIT:-40,10,25,25}   # percent of a desk's disk share: root reads, root writes, volume reads, volume writes
+ADDR_MODE=$(conf ADDR_MODE); ADDR_MODE=${ADDR_MODE:-slot-ip}             # slot-ip (443 on the slot's own address) or port (4430+k)
+HOST_PORTS=$(conf HOST_PORTS)                                            # host ports a desk may reach on its veth: a test host's fixtures
+STANDIN_PORT=$(conf STANDIN_PORT); STANDIN_PORT=${STANDIN_PORT:-9254}    # each slot's metadata stand-in (desk-host-link), on 10.98.<k>.1
+TEST=0; [ -f /etc/desk-host/test.conf ] && [ -d /var/lib/desk-host/test ] && TEST=1
+
+imds() {
+  local tok; tok=$(curl -fsS -m 3 -X PUT -H 'X-aws-ec2-metadata-token-ttl-seconds: 60' http://169.254.169.254/latest/api/token) || return 1
+  curl -fsS -m 3 -H "X-aws-ec2-metadata-token: $tok" "http://169.254.169.254/latest/$1"
+}
+# the slots a host has (Platform's SlotsPerHost; DesksPerHost when there's none, so a 0.1.4 host is unchanged)
+slots_per_host() { python3 -I -c 'import json; h = json.load(open("/var/lib/desk-host/hosting.json")); print(h.get("slotsPerHost") or h["desksPerHost"])'; }
+itype() { imds meta-data/instance-type 2>/dev/null || echo unknown; }
+
+dev_for_vol() { local want=${1/-/} c; for c in /sys/class/nvme/nvme*; do [ "$(tr -d ' ' < "$c/serial")" = "$want" ] && { echo "/dev/$(basename "$c")n1"; return 0; }; done; return 1; }
+# What the report says of a slot while up or stop runs (starting, stopping), and why up last kept it down (report.py)
+op_mark() { install -d -m 700 $RUN/op; echo "$2" > "$RUN/op/$1"; }
+op_clear() { rm -f "$RUN/op/$1"; }
+fault() { install -d -m 700 $RUN/fault; echo "$2" > "$RUN/fault/$1"; }
+record_desk() { python3 -I -c 'import json,sys; print(json.load(open(sys.argv[1])).get("deskId") or "none")' "$REC/$1.json" 2>/dev/null || echo none; }
+record_state() { python3 -I -c 'import json,sys; r=json.load(open(sys.argv[1])); print(r.get("state","desk"), r.get("template","-"))' "$REC/$1.json" 2>/dev/null || echo "none -"; }
+template_id() { head -1 $T/.complete; }
+write_record() {   # write_record <k> <fresh|desk> <deskId or "">: a temp file, then a rename, so a crash leaves the old one or none
+  python3 -I -c 'import json,sys; json.dump({"slot": int(sys.argv[1]), "state": sys.argv[2], "deskId": sys.argv[3] or None, "template": sys.argv[4], "at": sys.argv[5]}, open(sys.argv[6], "w"))' \
+    "$1" "$2" "$3" "$(template_id)" "$(date -u +%FT%TZ)" "${REC:?}/$1.json.tmp"
+  chmod 600 "${REC:?}/$1.json.tmp"; mv "${REC:?}/$1.json.tmp" "${REC:?}/$1.json"
+}
+valid_slot() { [[ $1 =~ ^[0-9]{1,2}$ ]] && [ "$1" -ge 1 ] && [ "$1" -le "$(slots_per_host)" ] || die "no slot $1 (slots $(slots_per_host))"; }
+
+# WALL-04's race: one prepare, start or stop of a slot at a time. A background prepare and a start of the same slot can't
+# interleave: the second waits for the first, then reads the record the first left.
+lock_slot() {
+  install -d -m 700 $RUN/lock
+  exec 9>"$RUN/lock/$1"
+  if ! flock -n 9; then log "slot $1: waiting for the slot's lock (another prepare, start or stop is running)"; flock -w "${LOCK_WAIT:-900}" 9 || die "slot $1: lock not had in ${LOCK_WAIT:-900} s"; fi
+}
+
+# prepare <k>: a fresh root from the template and the services' releases from the store, swapped in by rename; then a
+# "fresh" record. Fails closed. No record while the root is in between; CRASH_AT=copy|rename stops it there (a test hook).
+# Admission: one start's or class change's check and cgroup write at a time on the whole host, so two slots can't both see room
+# that only one has. Held only around classes.py admit and the cgroup's limits.
+lock_admit() { install -d -m 700 $RUN/lock; exec 8>"$RUN/lock/admit"; flock -w 120 8 || die "the host's admission lock not had in 120 s"; }
+unlock_admit() { exec 8>&-; }
+
+prepare() {
+  local k=${1:?} base=$((100000 + $1 * 65536)) proj=$((1000 + $1)) new old t0 svc; t0=$(date +%s)
+  new=${S:?}/.$k.new.$$; old=${S:?}/.$k.old.$$
+  [ -f $T/.complete ] || { echo "no template" >&2; return 1; }
+  local left; left=$(leftovers "$k"); [ -z "$left" ] || { echo "slot $k: refused, a desk's state is still there: $left" >&2; return 1; }
+  rm -f "${REC:?}/$k.json"
+  local stale n=0; for stale in "${S:?}"/.$k.new.* "${S:?}"/.$k.old.*; do [ -d "$stale" ] && { rm -rf --one-file-system "${stale:?}"; n=$((n + 1)); }; done
+  [ "$n" = 0 ] || log "slot $k: removed $n tree(s) a crashed prepare left"
+  mkdir -m 711 "$new" && mkdir "$new/rootfs" "$new/rel" "$new/svc" && chmod 711 "$new/rel" "$new/svc" || return 1
+  tar -C $T -cf - . | tar -C "$new/rootfs" -xpf - --numeric-owner || { echo "slot $k: copying the template failed" >&2; return 1; }
+  python3 -I $LIB/shift.py "$new/rootfs" "$base" >/dev/null || return 1
+  echo "desk-$k" > "$new/rootfs/etc/hostname" || return 1
+  # the project ID on every directory (inherited, +P) and regular file (links and sockets can't carry one), checked
+  find "$new/rootfs" -xdev -type d -print0 | xargs -0 -r chattr +P -p "$proj" || { echo "slot $k: project ID on directories failed" >&2; return 1; }
+  find "$new/rootfs" -xdev -type f -print0 | xargs -0 -r chattr -p "$proj" || { echo "slot $k: project ID on files failed" >&2; return 1; }
+  [ "$(lsattr -pd "$new/rootfs" | awk '{print $1}')" = "$proj" ] || { echo "slot $k: project ID not on the root" >&2; return 1; }
+  for svc in deskd desk-agent desk-notebook desk-rtc desk-stream; do   # RC-01: the host's own store, never the desk's /opt/ma
+    cp -a "$DH/releases/$svc/current/." "$new/rel/$svc" || { echo "slot $k: copying $svc's release failed" >&2; return 1; }
+  done
+  sed -n 's/^version=/DESKD_IMAGE_VERSION=/p' $T/etc/ma-release > "$new/rel/deskd/version.env" || return 1
+  [ "${CRASH_AT:-}" = copy ] && { log "slot $k: CRASH_AT=copy, stopping after the copy"; kill -9 $$; }
+  local used inodes; read -r used inodes <<<"$(du -s --block-size=1K "$new/rootfs" | cut -f1) $(find "$new/rootfs" -xdev | wc -l)"
+  setquota -P "$proj" 0 $((used + QUOTA_HEAD_MB * 1024)) 0 $((inodes + QUOTA_HEAD_INODES)) $DH || return 1
+  if [ -d "$S/$k" ]; then mv "$S/$k" "$old" || return 1; fi
+  mv "$new" "$S/$k" || return 1
+  [ "${CRASH_AT:-}" = rename ] && { log "slot $k: CRASH_AT=rename, stopping after the rename"; kill -9 $$; }
+  [ -d "$old" ] && rm -rf --one-file-system "${old:?}"
+  write_record "$k" fresh ""
+  log "slot $k: prepared fresh from the template ($(template_id)) and the release store in $(( $(date +%s) - t0 )) s; quota $((used / 1024 + QUOTA_HEAD_MB)) MiB, $((inodes + QUOTA_HEAD_INODES)) inodes"
+}
+
+nft_slot_reset() {
+  local k=$1 c
+  for c in src_$k slot_$k ct_$k in_$k fwdin_$k est_$k; do nft list chain inet host $c >/dev/null 2>&1 && nft flush chain inet host $c || nft add chain inet host $c; done
+  for c in pre_$k post_$k; do nft list chain ip host_nat $c >/dev/null 2>&1 && nft flush chain ip host_nat $c || nft add chain ip host_nat $c; done
+  local n   # the slot's byte counters: out_<k> (what the desk sends) and rx_<k> (what it receives); each start counts from 0 (ADR 0072 section 8)
+  for n in out_$k rx_$k; do nft list counters table inet host 2>/dev/null | grep -q "counter $n " && nft reset counter inet host $n >/dev/null || nft add counter inet host $n; done
+  nft list chain inet host desk_src | grep -qE "jump src_$k\$" || nft add rule inet host desk_src iifname "dhv$k" jump src_$k
+  nft list chain inet host desk_est | grep -q "iifname \"dhv$k\" jump est_$k$" || nft add rule inet host desk_est iifname "dhv$k" jump est_$k
+  nft list chain inet host desk_est | grep -q "oifname \"dhv$k\" jump est_$k$" || nft add rule inet host desk_est oifname "dhv$k" jump est_$k
+  nft list chain inet host desk_fwd | grep -qE "jump slot_$k\$" || nft add rule inet host desk_fwd iifname "dhv$k" jump slot_$k
+  nft list chain inet host desk_fwd | grep -qE "jump fwdin_$k\$" || nft add rule inet host desk_fwd oifname "dhv$k" jump fwdin_$k
+  nft list chain inet host desk_in | grep -qE "jump in_$k\$" || nft add rule inet host desk_in iifname "dhv$k" jump in_$k
+  nft list chain ip host_nat pre | grep -qE "jump pre_$k\$" || nft add rule ip host_nat pre jump pre_$k
+  nft list chain ip host_nat post | grep -qE "jump post_$k\$" || nft add rule ip host_nat post jump post_$k
+}
+
+ct_rules() {   # IN-06: the host side (the authority) and inside the desk's namespace (the desk can't change it)
+  local k=$1 cd=$2 ch=$3
+  nft flush chain inet host ct_$k
+  nft add rule inet host ct_$k ct state new ct count over "$ch" counter reject with icmpx type admin-prohibited
+  nsenter --net=$RUN/ns/$k/net nft flush chain inet deskhost conns    # the namespace's host-owned bind (RC-01)
+  nsenter --net=$RUN/ns/$k/net nft add rule inet deskhost conns oif != "lo" ct state new ct count over "$cd" counter drop
+}
+
+pid_of() { runc state "$1" 2>/dev/null | python3 -I -c 'import json,sys; print(json.load(sys.stdin)["pid"])'; }
+bind_ns() {   # bind_ns <pid> <expected cgroup> <ns name> <file>: right after runc create, from the pid runc just named
+  local pid=$1 want=$2 n=$3 f=$4
+  grep -qx "0::$want" /proc/$pid/cgroup || { echo "pid $pid isn't in $want" >&2; return 1; }
+  : > "$f"; mount --bind "/proc/$pid/ns/$n" "$f"
+}
+
+leftovers() {   # RC-03: anything of slot k outside its root; empty when the slot is clean
+  local k=$1 out="" c
+  for c in $(runc list -q 2>/dev/null | grep -E "^dh-(desk|svc)-$k(-|$)" || true); do out+=" container:$c"; done
+  [ -e "$CGR/desk-$k" ] && out+=" cgroup:$(find "$CGR/desk-$k" -mindepth 0 -type d | wc -l)-dirs"
+  [ -e "$RUN/$k" ] && out+=" run-dir"
+  mountpoint -q "$RUN/share/$k" 2>/dev/null && out+=" share-tmpfs"
+  [ -e "$RUN/ns/$k" ] && out+=" ns-binds"
+  for c in src_$k slot_$k ct_$k in_$k fwdin_$k est_$k; do nft list chain inet host $c >/dev/null 2>&1 && out+=" nft:$c"; done
+  for c in pre_$k post_$k; do nft list chain ip host_nat $c >/dev/null 2>&1 && out+=" nft:$c"; done
+  [ -z "$(ip rule show iif dhv$k 2>/dev/null)" ] || out+=" ip-rule"
+  [ "$(conntrack -L -s 10.98.$k.2 2>/dev/null | wc -l)" = 0 ] || out+=" conntrack"
+  ip link show dhv$k >/dev/null 2>&1 && out+=" veth"
+  grep -q "^desk-host-$k " /sys/kernel/security/apparmor/profiles 2>/dev/null && out+=" apparmor"
+  echo "${out# }"
+}
+
+reset_slot() {   # RC-03: every per-slot state outside the root, depth first; the root and its record stay
+  local k=${1:?} c f h
+  for c in $(runc list -q 2>/dev/null | grep -E "^dh-(desk|svc)-$k(-|$)" || true); do runc kill "$c" KILL 2>/dev/null || true; runc delete -f "$c" 2>/dev/null || true; done
+  if [ -d "$CGR/desk-$k" ]; then
+    echo 0 > "$CGR/desk-$k/cgroup.freeze" 2>/dev/null || true
+    echo 1 > "$CGR/desk-$k/cgroup.kill" 2>/dev/null || true; sleep 0.5
+    find "$CGR/desk-$k" -depth -type d -exec rmdir {} \; 2>/dev/null || true
+  fi
+  if [ -d "$RUN/ns/$k" ]; then for f in $RUN/ns/$k/*; do umount "$f" 2>/dev/null || true; done; rm -rf "${RUN:?}/ns/${k:?}"; fi
+  mountpoint -q "$RUN/share/$k" 2>/dev/null && umount -l "$RUN/share/$k"
+  rmdir "$RUN/share/$k" "$RUN/priv-$k" 2>/dev/null || true
+  rm -rf "${RUN:?}/${k:?}" "${RUN:?}/${k:?}.mounts.json" "${RUN:?}/slotstate/${k:?}.json"
+  for c in slot_$k fwdin_$k; do for h in $(nft -a list chain inet host desk_fwd 2>/dev/null | grep "jump $c " | sed 's/.*# handle //'); do nft delete rule inet host desk_fwd handle "$h"; done; done
+  for h in $(nft -a list chain inet host desk_src 2>/dev/null | grep "jump src_$k " | sed 's/.*# handle //'); do nft delete rule inet host desk_src handle "$h"; done
+  for h in $(nft -a list chain inet host desk_est 2>/dev/null | grep "jump est_$k " | sed 's/.*# handle //'); do nft delete rule inet host desk_est handle "$h"; done
+  for h in $(nft -a list chain inet host desk_in 2>/dev/null | grep "jump in_$k " | sed 's/.*# handle //'); do nft delete rule inet host desk_in handle "$h"; done
+  for c in pre post; do for h in $(nft -a list chain ip host_nat $c 2>/dev/null | grep "jump ${c}_$k " | sed 's/.*# handle //'); do nft delete rule ip host_nat $c handle "$h"; done; done
+  for c in src_$k slot_$k ct_$k in_$k fwdin_$k est_$k; do nft delete chain inet host $c 2>/dev/null || true; done
+  for c in pre_$k post_$k; do nft delete chain ip host_nat $c 2>/dev/null || true; done
+  while ip rule del iif dhv$k 2>/dev/null; do :; done; ip route flush table $((1000 + k)) 2>/dev/null || true
+  conntrack -D -s 10.98.$k.2 >/dev/null 2>&1 || true; conntrack -D -d 10.98.$k.2 >/dev/null 2>&1 || true
+  ip link del dhv$k 2>/dev/null || true
+  if [ -f /etc/apparmor.d/desk-host-$k ]; then apparmor_parser -R /etc/apparmor.d/desk-host-$k 2>/dev/null || true; rm -f "/etc/apparmor.d/desk-host-${k:?}"; fi
+  return 0   # a slot already clean is a reset that worked (0.1.3 returned 1 here when the profile was already gone)
+}
+
+# RC-04: a desk's disk share is 0.8 of the instance's EBS baseline (bytes and IOPS) divided by DesksPerHost, times its class's
+# `disk`. io.max caps reads and writes on each device separately, so the share is split four ways (IO_SPLIT: its root's reads
+# and writes on the slot store, its volume's reads and writes), and a desk at every cap at once uses exactly its share: six
+# standard desks, 0.8 of the baseline. The baselines are EC2's for ma-platform's allow-list (classes.py); an unknown type gets
+# the smallest. classes.py values prints them with the rest, in up_one's order.
+class_values() { python3 -I $LIB/classes.py values "$1" "$2"; }
+# write_cpu <cgroup> <weight>: 0 is cpu.idle (the class's cpu 0: only CPU no other desk wants); otherwise cpu.idle 0, then the
+# weight (the kernel refuses cpu.weight while cpu.idle is 1, and clearing cpu.idle resets it to 100)
+write_cpu() { if [ "$2" = 0 ]; then echo 1 > "$1/cpu.idle"; else echo 0 > "$1/cpu.idle"; echo "$2" > "$1/cpu.weight"; fi; }
+cpu_is() { [ "$1" = 0 ] && echo "cpu.idle" || echo "cpu.weight $1"; }
+write_limits() {   # write_limits <k> <class> <values...> <vol dev>: the class's values into desk-<k> (host-owned)
+  local k=$1 name=$2 w m sw zw p rrb rri rwb rwi vrb vri vwb vwi dev cg=$CGR/desk-$1; shift 2
+  read -r w m sw zw p rrb rri rwb rwi vrb vri vwb vwi dev <<<"$*"
+  write_cpu "$cg" "$w"; echo "$m" > "$cg/memory.max"; echo "$p" > "$cg/pids.max"
+  echo "$sw" > "$cg/memory.swap.max"; echo "$zw" > "$cg/memory.zswap.max"; echo 0 > "$cg/memory.zswap.writeback"
+  echo "$(findmnt -no MAJ:MIN $DH) rbps=$rrb wbps=$rwb riops=$rri wiops=$rwi" > "$cg/io.max"
+  echo "$(lsblk -no MAJ:MIN "$dev" | head -1 | tr -d ' ') rbps=$vrb wbps=$vwb riops=$vri wiops=$vwi" > "$cg/io.max"
+}
+write_class() {   # write_class <k> <class> <type> [<pending memory.max>]: the host's record, read-only in the desk at /run/desk-host
+  python3 -I -c 'import json, sys, time
+v = json.loads(sys.argv[2]); v["at"] = time.strftime("%FT%TZ", time.gmtime()); v["pending"] = {"memory.max": int(sys.argv[3])} if sys.argv[3] else None
+json.dump(v, open(sys.argv[1], "w"))' "$RUN/$1/class.json.tmp" "$(python3 -I $LIB/classes.py json "$2" "$3")" "${4:-}"
+  mv "$RUN/$1/class.json.tmp" "$RUN/$1/class.json"
+}
+
+# slot_tag <k>: "<deskId|-> <vol|-> <class>" from Platform's DeskSlot<k> (0.1.4's 2 fields, the contract's 5, or 6 with the class);
+# nothing when there's no tag or it doesn't parse exactly
+slot_tag() { local tag; tag=$(imds "meta-data/tags/instance/DeskSlot$1" 2>/dev/null) || return 1; python3 -I $LIB/classes.py tag "$tag"; }
+
+up_one() {
+  local k=$1 desk=$2 vol=${3:-} pub=${4:-} cls=${5:-} base=$((100000 + $1 * 65536)) cg=$CGR/desk-$1 veth=dhv$1 ip dev ifc gw mac epoch tcls res state tmpl left pid svc spid refused n port memcap
+  local ty vals
+  [[ $desk =~ ^d-[a-z0-9]{6,40}$ ]] || { echo "bad desk ID" >&2; return 1; }
+  [ -z "$vol" ] || [[ $vol =~ ^vol-[0-9a-f]{8,17}$ ]] || { echo "bad volume ID" >&2; return 1; }
+  # DeskSlot<k>, strictly: it names this desk (and this volume, if given); the slot's address and its interface; IMDS's
+  # association of the slot's public address with it (PF-01). Any of them off keeps the slot down, with the fault reported.
+  res=$(python3 -I $LIB/slotnet.py resolve "$k" "$desk" "${vol:--}" "${pub:--}" "$ADDR_MODE") || {
+    [[ $res == "fault "* ]] && fault "$k" "$(cut -d' ' -f2 <<<"$res")"
+    echo "slot $k: refused: $(cut -d' ' -f3- <<<"$res")" >&2; return 1; }
+  read -r epoch vol ip ifc gw mac tcls <<<"$res"
+  cls=${cls:-$tcls}   # the slot's size class: as given (--class, or after the volume), else the tag's (standard when it has none)
+  ty=$(itype)
+  vals=$(class_values "$cls" "$ty") || { echo "slot $k: class $cls refused (not in /etc/desk-host/classes.conf, or the table is bad)" >&2; return 1; }
+  dev=$(dev_for_vol "$vol") || { fault "$k" volume_absent; echo "slot $k: its volume isn't attached (by its NVMe serial)" >&2; return 1; }
+  if [ "$ADDR_MODE" = port ]; then port=$((4430 + k)); else port=443; fi
+  $LIB/desk-host-check --quick >/dev/null || { echo "slot $k: the host's own checks fail (desk-host check): refused" >&2; return 1; }
+  left=$(leftovers "$k"); [ -z "$left" ] || { echo "slot $k: refused, the last desk's state remains: $left" >&2; return 1; }
+  read -r state tmpl <<<"$(record_state "$k")"
+  if [ "$state" = desk ] && [ "$(record_desk "$k")" = "$desk" ] && [ -d "$S/$k/rootfs" ]; then log "slot $k: record names $desk, its root kept (a wake)"
+  elif [ "$state" = fresh ] && [ "$tmpl" = "$(template_id)" ] && [ -d "$S/$k/rootfs" ]; then write_record "$k" desk "$desk"; log "slot $k: claimed a fresh root for $desk"
+  else
+    log "slot $k: record is $state $(record_desk "$k"), starting $desk: re-preparing from the template first"
+    prepare "$k" || { echo "slot $k: prepare failed, refused" >&2; return 1; }
+    write_record "$k" desk "$desk"; log "slot $k: claimed for $desk"
+  fi
+  # a wake reads the slot's release copies (and the read trace's first-open set) from the host's side, capped, beside the rest of the start
+  # (preread.py): the pages end up in the host's page cache, charged to no desk, so the desk's own root-read share isn't spent on them
+  local pre="" tpre; tpre=$(date +%s)
+  mkdir -p /var/log/desk-host
+  rm -f "$RUN/preread-$k.gate"
+  PREREAD_ITYPE=$ty python3 -I $LIB/preread.py "$k" --gate "$RUN/preread-$k.gate" >> /var/log/desk-host/preread-$k.log 2>&1 < /dev/null & pre=$!
+  # the desk's share and limits on desk-<k> (host-owned), by its class, admitted only while the host's desks fit DesksPerHost
+  # standard desks' memory and disk; its container desk-<k>/desk (delegated); sandboxes beside it
+  local w sw zw p rrb rri rwb rwi vrb vri vwb vwi why
+  read -r w memcap sw zw p rrb rri rwb rwi vrb vri vwb vwi <<<"$vals"
+  lock_admit
+  why=$(python3 -I $LIB/classes.py admit "$k" "$cls" "$ty") || { unlock_admit; echo "slot $k: the host is full for a $cls desk: $why. Refused" >&2; return 75; }
+  mkdir -p "$cg"
+  write_limits "$k" "$cls" "$vals" "$dev"
+  unlock_admit
+  echo "+cpu +memory +pids" > "$cg/cgroup.subtree_control"
+  mkdir -p "$cg/desk"; chown "$base:$base" "$cg/desk" "$cg/desk/cgroup.procs" "$cg/desk/cgroup.subtree_control" "$cg/desk/cgroup.threads"
+  # WALL-03: the host's own directory for this slot, read-only in the desk; RC-01: the shared /run directories, a fresh tmpfs
+  install -d -m 755 -o root -g root $RUN/$k $RUN/share; chmod 711 $RUN/share
+  printf '{"slot":%s,"deskId":"%s","epoch":%s}\n' "$k" "$desk" "$epoch" > $RUN/$k/slot.json
+  write_class "$k" "$cls" "$ty"
+  [ "$port" = 443 ] || printf 'port=%s\n' "$port" > $RUN/$k/desk-rtc.conf     # ADR 0072 section 6: desk-rtc's port, the host's file
+  printf '{"bytesOut":0,"bytesIn":0,"boot":"%s"}\n' "$(cat /proc/sys/kernel/random/uuid)" > $RUN/$k/net.json
+  if [ "$TEST" = 1 ]; then for f in test-cdp test-probe; do [ -e /var/lib/desk-host/test/$f.on ] && : > $RUN/$k/$f; done; fi
+  install -d -m 711 $RUN/share/$k; mount -t tmpfs -o nosuid,nodev,noexec,mode=711,size=64m "dh-share-$k" $RUN/share/$k
+  python3 -I $LIB/svc-spec.py shares "$k" $RUN/share/$k >/dev/null
+  install -d -m 700 $RUN/ns
+  mountpoint -q $RUN/ns || { mount --bind $RUN/ns $RUN/ns; mount --make-private $RUN/ns; }
+  install -d -m 700 "$RUN/ns/$k"
+  sed "s/@K@/$k/g" $LIB/apparmor.tmpl > /etc/apparmor.d/desk-host-$k; apparmor_parser -r -W /etc/apparmor.d/desk-host-$k
+  python3 -I $LIB/desk-spec.py "$k" "$S/$k" >/dev/null
+  runc create --bundle "$S/$k" dh-desk-$k >> /var/log/desk-host/desk-$k.log 2>&1 < /dev/null \
+    || { echo "slot $k: runc create failed: $(tail -2 /var/log/desk-host/desk-$k.log)" >&2; reset_slot "$k"; return 1; }
+  pid=$(pid_of dh-desk-$k)
+  for n in user net ipc mnt; do bind_ns "$pid" "/desk-host/desk-$k/desk" "$n" "$RUN/ns/$k/$n"; done
+  for svc in $SVCS; do
+    python3 -I $LIB/svc-spec.py "$k" "$svc" >/dev/null
+    runc create --bundle "$S/$k/svc/$svc" dh-svc-$k-$svc >> /var/log/desk-host/svc-$k-$svc.log 2>&1 < /dev/null \
+      || { echo "slot $k: runc create $svc failed: $(tail -2 /var/log/desk-host/svc-$k-$svc.log)" >&2; reset_slot "$k"; return 1; }
+    spid=$(pid_of dh-svc-$k-$svc); bind_ns "$spid" "/desk-host/desk-$k/svc-$svc" mnt "$RUN/ns/$k/mnt-$svc"
+  done
+  python3 -I $LIB/mounts.py vol "$k" "$dev" "$vol" | sed "s/^/[mounts] /"
+  [ "${PIPESTATUS[0]}" = 0 ] || { echo "slot $k: the volume didn't go in, refused" >&2; reset_slot "$k"; return 1; }
+  refused=$(python3 -I -c 'import json,sys; print(" ".join(json.load(open(sys.argv[1]))["refused"]))' $RUN/$k.mounts.json)
+  # the network: the host's own binaries, in the desk's network namespace only (its host-owned bind), before anything starts
+  ip link del "$veth" 2>/dev/null || true
+  ip link add "$veth" type veth peer name dhc$k
+  sysctl -q -w "net.ipv6.conf.$veth.disable_ipv6=1"
+  ip addr add 10.98.$k.1/30 dev "$veth"; ip link set "$veth" up
+  ip link set dhc$k netns "$pid"
+  local NS="nsenter --net=$RUN/ns/$k/net"
+  $NS sh -c "sysctl -q -w net.ipv6.conf.default.disable_ipv6=1; sysctl -q -w net.ipv6.conf.dhc$k.disable_ipv6=1; ip link set lo up; ip link set dhc$k name eth0; ip addr add 10.98.$k.2/30 dev eth0; ip link set eth0 up; ip route add default via 10.98.$k.1"
+  $NS nft -f $T/etc/nftables.conf      # the template's, never the slot's copy (WALL-03)
+  $NS nft -f - <<EOF
+table inet deskhost {
+  chain out { type filter hook output priority -140; policy accept;   # after conntrack (-200), so ct state is set
+    meta skuid 1105 counter drop     # desk-notebook: an empty network namespace (its sandbox); this stays as a second layer
+    tcp dport 19222 counter reject with tcp reset   # WR2-01: nothing inside a desk reaches a test host's CDP forward
+    jump conns
+  }
+  chain conns { }
+}
+EOF
+  # Address plus port (ADR 0072 P1): desk-rtc listens on 4430+k, so the template's input chain, which takes 443 only, takes that port
+  # instead, as it takes 443: the host's rule, in the host's ruleset for the desk (0.1.3 left it out, and port mode never connected)
+  [ "$port" = 443 ] || $NS nft insert rule inet ma input iifname eth0 meta l4proto '{ tcp, udp }' th dport "$port" accept
+  [ "$TEST" = 1 ] && [ -e $RUN/$k/test-cdp ] && $NS nft insert rule inet ma input iifname eth0 ip saddr 10.98.$k.1 tcp dport 19222 accept   # a test host's CDP forward: the host's side only
+  nft_slot_reset "$k"; ct_rules "$k" "$CT_DESK" "$CT_HOST"
+  # the epoch the slot's counters (from 0 at this start, nft_slot_reset) belong to: the report gives them only for that epoch
+  install -d -m 700 $RUN/net; echo "$epoch" > "$RUN/net/$k.epoch"
+  # PF-01, PF-03: the slot's packets leave from the interface that carries its address (its own table when that isn't the
+  # one with the default route: EC2 drops a packet whose source isn't its interface's)
+  if [ "$gw" != - ]; then
+    ip rule add iif "$veth" lookup $((1000 + k)) priority $((1000 + k))
+    ip route replace default via "$gw" dev "$ifc" onlink table $((1000 + k))
+    sysctl -q -w "net.ipv4.conf.$ifc.rp_filter=2"
+  fi
+  local lo=$((10000 + (k - 1) * 50000 / $(slots_per_host))) hi=$((10000 + k * 50000 / $(slots_per_host) - 1)) out=$ip   # its own block of ports
+  nft add rule ip host_nat pre_$k ip daddr "$ip" meta l4proto '{ tcp, udp }' th dport "$port" dnat to 10.98.$k.2
+  # IN-03, IN-04: the slot's own metadata stand-in (desk-host-link), and nothing else of 169.254.169.254
+  nft add rule ip host_nat pre_$k iifname "$veth" ip saddr 10.98.$k.2 ip daddr 169.254.169.254 tcp dport 80 dnat to "10.98.$k.1:$STANDIN_PORT"
+  nft add rule ip host_nat post_$k ip saddr 10.98.$k.2 oifname "$ifc" meta l4proto '{ tcp, udp }' snat to "$out:$lo-$hi"
+  nft add rule ip host_nat post_$k ip saddr 10.98.$k.2 oifname "$ifc" snat to "$out"
+  # IN-09: spoofed sources dropped before any flow, established ones included (desk_src); desk_est then counts what's left
+  nft add rule inet host src_$k ip saddr != 10.98.$k.2 counter drop
+  nft add rule inet host slot_$k meta nfproto ipv6 counter drop                                # IN-05, WALL-10: no IPv6 from a desk
+  nft add rule inet host slot_$k ip saddr != 10.98.$k.2 counter drop                           # spoofed sources
+  nft add rule inet host slot_$k jump ct_$k                                                     # IN-06
+  nft add rule inet host slot_$k ip daddr 169.254.169.254 counter drop                         # IMDS: only the stand-in, by DNAT above
+  nft add rule inet host slot_$k ip daddr 169.254.169.253 meta l4proto '{ tcp, udp }' th dport 53 counter name out_$k accept   # the VPC resolver
+  nft add rule inet host slot_$k ip daddr '{ 10.0.0.0/8, 172.16.0.0/12, 192.168.0.0/16, 100.64.0.0/10, 169.254.0.0/16 }' counter drop   # WALL-10
+  nft add rule inet host slot_$k oifname "$ifc" counter name out_$k accept
+  nft add rule inet host slot_$k counter drop
+  nft add rule inet host fwdin_$k meta nfproto ipv6 counter drop
+  nft add rule inet host est_$k iifname "dhv$k" oifname "$ifc" counter name out_$k      # the established flows' packets (desk_est): every byte, not the first
+  nft add rule inet host est_$k iifname "$ifc" oifname "dhv$k" counter name rx_$k
+  nft add rule inet host fwdin_$k ip daddr 10.98.$k.2 meta l4proto '{ tcp, udp }' th dport "$port" counter name rx_$k accept
+  nft add rule inet host fwdin_$k counter drop
+  nft add rule inet host in_$k meta nfproto ipv6 counter drop
+  nft add rule inet host in_$k ip saddr 10.98.$k.2 ip daddr 10.98.$k.1 tcp dport "$STANDIN_PORT" ct original ip daddr 169.254.169.254 accept
+  [ -n "$HOST_PORTS" ] && nft add rule inet host in_$k ip saddr 10.98.$k.2 ip daddr 10.98.$k.1 tcp dport "{ ${HOST_PORTS// /, } }" accept
+  nft add rule inet host in_$k counter drop
+  install -d -m 700 $RUN/slotstate   # what the report says of a slot while it's up: the desk and epoch it was started with
+  printf '{"deskId":"%s","epoch":%s,"volumeId":"%s","address":"%s","interface":"%s","class":"%s"}\n' "$desk" "$epoch" "$vol" "$ip" "$ifc" "$cls" > "$RUN/slotstate/$k.json"
+  if [ -n "$pre" ]; then   # the start waits for the list's first part (deskd and the base libraries); Chromium's files are read beside the running desk
+    local w=0; while [ ! -e "$RUN/preread-$k.gate" ] && kill -0 "$pre" 2>/dev/null && [ "$w" -lt 600 ]; do sleep 0.1; w=$((w + 1)); done
+    log "slot $k: pre-read: $(grep -E 'stage 1|slot' /var/log/desk-host/preread-$k.log | tail -2 | tr '\n' ' ')(start waited $(( $(date +%s) - tpre )) s from its begin)"
+  fi
+  runc start dh-desk-$k
+  for svc in $SVCS; do
+    if [[ " $refused " == *" $svc "* ]]; then runc delete -f dh-svc-$k-$svc; umount "$RUN/ns/$k/mnt-$svc"; log "slot $k: $svc not started (refused above)"
+    else runc start dh-svc-$k-$svc; fi
+  done
+  log "slot $k: $desk up at $(date -u +%s.%N), desk pid $pid; sandboxes $(for svc in $SVCS; do printf '%s ' "$svc:$(runc state dh-svc-$k-$svc 2>/dev/null | python3 -I -c 'import json,sys; print(json.load(sys.stdin)["status"])' 2>/dev/null || echo none)"; done)"
+  log "slot $k: epoch $epoch, $ip:$port on $ifc$([ "$gw" != - ] && echo " (its own table)") -> 10.98.$k.2, class $cls: $(cpu_is $w), memory $((memcap / 1048576)) MiB (swap $((sw / 1048576)) MiB, zswap $((zw / 1048576)) MiB, writeback 0), pids $p, io.max root r/w $(mb $rrb)/$(mb $rwb) MB/s $rri/$rwi IOPS, volume r/w $(mb $vrb)/$(mb $vwb) MB/s $vri/$vwi IOPS, /data idmapped$([ "$TEST" = 1 ] && echo ', TEST HOST')"
+}
+
+# set_class <k> [<class>]: a running desk's class changed in place (an upgrade, or a downgrade), from the tag if not given.
+# Nothing in the desk restarts and nothing enters it: the limits are on desk-<k>, which the host owns. cpu.weight (or cpu.idle), pids.max and
+# the memory rule's allowances (inside the desk's own cap) are written at once. memory.max and io.max follow the class when:
+# - a raise is admitted as a start is; when the host has no room yet, they stay as they are and wait as `pending` (exit 75,
+#   the rest applied): `desk-host class <k>` again finishes it once a neighbour's stop makes room, and the next start takes
+#   the class whole (or is refused there, and Platform starts the desk where it fits);
+# - a lower memory.max is written only if the desk's memory.current is at most 90% of it, so the kernel needn't reclaim or kill
+#   for it; otherwise it waits as pending for the desk's next start. A lower io.max is written at once.
+set_class() {
+  local k=$1 cls=${2:-} desk ty vals cur curio w m sw zw p rrb rri rwb rwi vrb vri vwb vwi dev pend="" why="" rc=0 cg=$CGR/desk-$1
+  runc state dh-desk-$k >/dev/null 2>&1 && [ -d "$cg" ] && [ -f "$RUN/$k/class.json" ] || { echo "slot $k: no desk running" >&2; return 1; }
+  desk=$(python3 -I -c 'import json,sys; print(json.load(open(sys.argv[1]))["deskId"])' "$RUN/$k/slot.json")
+  if [ -z "$cls" ]; then
+    local tdesk tvol tcls; read -r tdesk tvol tcls <<<"$(slot_tag "$k")" || true
+    [ "${tdesk:-}" = "$desk" ] || { echo "slot $k: DeskSlot$k doesn't name $desk: refused" >&2; return 1; }
+    cls=$tcls
+  fi
+  ty=$(itype)
+  vals=$(class_values "$cls" "$ty") || { echo "slot $k: class $cls refused (not in /etc/desk-host/classes.conf, or the table is bad)" >&2; return 1; }
+  read -r w m sw zw p rrb rri rwb rwi vrb vri vwb vwi <<<"$vals"
+  dev=$(python3 -I -c 'import json,sys; print(json.load(open(sys.argv[1]))["device"])' "$RUN/$k.mounts.json")
+  lock_admit
+  cur=$(cat "$cg/memory.max"); curio=$(sed -n "s/^$(findmnt -no MAJ:MIN $DH) rbps=\([0-9]*\) .*/\1/p" "$cg/io.max")
+  write_cpu "$cg" "$w"; echo "$p" > "$cg/pids.max"
+  echo "$sw" > "$cg/memory.swap.max"; echo "$zw" > "$cg/memory.zswap.max"; echo 0 > "$cg/memory.zswap.writeback"
+  if [ "$m" -gt "$cur" ] || [ "$rrb" -gt "${curio:-0}" ]; then   # a raise: only if the host has room
+    if why=$(python3 -I $LIB/classes.py admit "$k" "$cls" "$ty" "$m"); then
+      write_limits "$k" "$cls" "$vals" "$dev"
+    else
+      pend=$m; rc=75
+    fi
+  else   # a lower class: io.max at once, memory.max once the desk fits in it
+    [ "$(cat "$cg/memory.current")" -gt $((m / 10 * 9)) ] && { pend=$m; m=$cur; }
+    write_limits "$k" "$cls" "$w $m $sw $zw $p $rrb $rri $rwb $rwi $vrb $vri $vwb $vwi" "$dev"
+  fi
+  unlock_admit
+  write_class "$k" "$cls" "$ty" "$pend"
+  if [ "$rc" = 75 ]; then
+    log "slot $k: $desk is $cls now for CPU ($(cpu_is $w)), pids ($p) and the memory rule; its memory.max $((pend / 1048576)) MiB and disk share wait for room on the host ($why). Run class $k again to finish"
+  else
+    log "slot $k: $desk is $cls now, in place: $(cpu_is $w), memory.max $(( $(cat "$cg/memory.max") / 1048576 )) MiB$([ -n "$pend" ] && echo " (its $((pend / 1048576)) MiB waits for the next start: memory.current is over 90% of it)"), swap $((sw / 1048576)) MiB, zswap $((zw / 1048576)) MiB, pids $p, io.max root $(mb $rrb)/$(mb $rwb) MB/s, volume $(mb $vrb)/$(mb $vwb) MB/s${why:+; $why}"
+  fi
+  return $rc
+}
+
+kill_wait() {   # kill_wait <container> <seconds>: TERM, wait for stopped, then KILL
+  local c=$1 t=$2 i
+  runc state "$c" >/dev/null 2>&1 || return 0
+  runc kill "$c" TERM 2>/dev/null || true
+  for i in $(seq 1 "$t"); do [ "$(runc state "$c" 2>/dev/null | python3 -I -c 'import json,sys; print(json.load(sys.stdin)["status"])' 2>/dev/null)" = stopped ] && return 0; sleep 1; done
+  log "$c: did not stop in $t s, KILL"; runc kill "$c" KILL 2>/dev/null || true; sleep 1
+}
+
+stop_one() {   # WALL-02: signals only. deskd's sandbox first, then the desk (its init thaws and closes the browser), then the rest
+  local k=$1 t0 dev vol svc left released=yes; t0=$(date +%s)
+  kill_wait dh-svc-$k-deskd 70
+  kill_wait dh-desk-$k 150
+  for svc in $SVCS; do kill_wait dh-svc-$k-$svc 40 & done; wait
+  dev=$(python3 -I -c 'import json,sys; print(json.load(open(sys.argv[1])).get("device",""))' $RUN/$k.mounts.json 2>/dev/null || true)
+  reset_slot "$k"
+  [ -n "$dev" ] && [ -e "/sys/fs/ext4/$(basename "$dev")" ] && released=no
+  left=$(leftovers "$k")
+  log "slot $k: stopped in $(( $(date +%s) - t0 )) s; volume released: $released; slot state left: ${left:-none}; root and record kept"
+  grep -E 'desk-browser-close|SIGKILL|did not stop' /var/log/desk-host/desk-$k.log | tail -2 || true
+}
+
+cmd=${1:-}; shift || true
+case "$cmd" in
+up)
+  usage="usage: desk-host up <k> <deskId> [<vol-id>] [<class> | --class <class>] --public <the slot's public address>"
+  [ $# -ge 2 ] || die "$usage"; k=$1; desk=$2; shift 2; vol=; pub=; cls=
+  while [ $# -gt 0 ]; do case "$1" in
+    --public) [ $# -ge 2 ] || die "$usage"; pub=$2; shift 2 ;;
+    --class) [ $# -ge 2 ] || die "$usage"; cls=$2; shift 2 ;;
+    vol-*) vol=$1; shift ;;
+    [a-z]*) [[ $1 =~ ^[a-z][a-z0-9-]{0,31}$ ]] || die "$usage"; cls=$1; shift ;;   # sub/host-size-classes' positional form, up <k> <deskId> <vol-id> <class>
+    *) die "$usage" ;;
+  esac; done
+  valid_slot "$k"; lock_slot "$k"
+  mkdir -p /var/log/desk-host
+  rm -f "$RUN/fault/$k"; op_mark "$k" starting
+  trap 'rc=$?; op_clear '"$k"'; [ $rc = 0 ] || [ -s "$RUN/fault/'"$k"'" ] || fault '"$k"' start_failed' EXIT
+  up_one "$k" "$desk" "$vol" "$pub" "$cls" ;;
+class) [ $# -ge 1 ] || die "usage: desk-host class <k> [<class>]"; valid_slot "$1"; lock_slot "$1"; set_class "$@" ;;
+stop) valid_slot "$1"; lock_slot "$1"; op_mark "$1" stopping; trap 'op_clear '"$1" EXIT; stop_one "$1" ;;
+stop-all)   # a host shutdown, the cost guard's included (IN-09): every running desk, as a stop does, at once
+  for k in $(seq 1 "$(slots_per_host)"); do runc state dh-desk-$k >/dev/null 2>&1 && { ( "$0" stop "$k" ) & }; done; wait; log "every desk stopped" ;;
+prepare) valid_slot "$1"; lock_slot "$1"; prepare "$1" ;;
+reset) valid_slot "$1"; lock_slot "$1"; reset_slot "$1"; log "slot $1: reset; left: $(leftovers "$1")" ;;
+leftovers) valid_slot "$1"; echo "slot $1: $(leftovers "$1")" ;;
+ctlimit) valid_slot "$1"; ct_rules "$1" "$2" "$3"; log "slot $1: connections at most $2 inside the desk, $3 on the host" ;;
+state) for f in $REC/*.json; do [ -f "$f" ] && echo "$f: $(cat "$f")"; done; runc list ;;
+report) exec python3 -I $LIB/report.py ;;
+check) exec $LIB/desk-host-check "$@" ;;
+*) sed -n 2,11p "$0" >&2; exit 2 ;;
+esac

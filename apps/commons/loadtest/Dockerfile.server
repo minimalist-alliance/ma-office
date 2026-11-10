@@ -1,0 +1,4 @@
+# The stand-in guild server alone, for the load test: a static binary and nothing else.
+FROM scratch
+COPY commons-server /commons-server
+ENTRYPOINT ["/commons-server"]

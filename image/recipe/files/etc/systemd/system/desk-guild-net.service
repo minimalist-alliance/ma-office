@@ -1,0 +1,37 @@
+[Unit]
+Description=Commons' voice ports in nftables, on a Guild Desk only (image/README.md, Guild Desk)
+# Only on a Guild Desk: desk-kind.service writes /run/ma/guild for an exact DeskKind=guild and nothing else. On a member's
+# desk this unit is skipped and the ruleset stays exactly what nftables.conf loads. nftables.service also runs the helper
+# after each of its starts and reloads (its drop-in), since those flush the ruleset.
+ConditionPathExists=/run/ma/guild
+After=desk-kind.service nftables.service
+Wants=desk-kind.service
+Before=commons-server.service
+
+[Service]
+Type=oneshot
+RemainAfterExit=yes
+ExecStart=/usr/local/lib/ma/desk-guild-net
+CapabilityBoundingSet=CAP_NET_ADMIN
+AmbientCapabilities=
+NoNewPrivileges=yes
+ProtectSystem=strict
+ProtectHome=yes
+PrivateTmp=yes
+PrivateDevices=yes
+InaccessiblePaths=-/data
+ProtectKernelModules=yes
+ProtectKernelLogs=yes
+ProtectControlGroups=yes
+ProtectClock=yes
+ProtectHostname=yes
+RestrictAddressFamilies=AF_NETLINK AF_UNIX
+RestrictNamespaces=yes
+RestrictRealtime=yes
+RestrictSUIDSGID=yes
+LockPersonality=yes
+MemoryDenyWriteExecute=yes
+SystemCallArchitectures=native
+
+[Install]
+WantedBy=multi-user.target

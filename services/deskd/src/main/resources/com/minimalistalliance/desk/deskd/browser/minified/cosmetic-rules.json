@@ -1,0 +1,129 @@
+{
+ "v": "deskd-builtin-1",
+ "cls": {
+  "adsbygoogle": "ad",
+  "ad-slot": "ad",
+  "ad-container": "ad",
+  "ad-wrapper": "ad",
+  "ad-unit": "ad",
+  "ad-banner": "ad",
+  "advertisement": "ad",
+  "advert": "ad",
+  "ads-container": "ad",
+  "dfp-ad": "ad",
+  "gpt-ad": "ad",
+  "ad-placeholder": "ad",
+  "adthrive-ad": "ad",
+  "mv-ad-box": "ad",
+  "ezoic-ad": "ad",
+  "GoogleActiveViewElement": "ad",
+  "taboola": "ad",
+  "trc_related_container": "ad",
+  "OUTBRAIN": "ad",
+  "ob-widget": "ad",
+  "ob-smartfeed-wrapper": "ad",
+  "sponsored-content": "ad",
+  "native-ad": "ad",
+  "ad-leaderboard": "ad",
+  "ad-sidebar": "ad",
+  "top-ad": "ad",
+  "sticky-ad": "ad",
+  "adunit": "ad",
+  "fc-consent-root": "consent",
+  "cc-window": "consent",
+  "cookie-banner": "consent",
+  "cookie-consent": "consent",
+  "cookie-notice": "consent",
+  "osano-cm-window": "consent",
+  "cmplz-cookiebanner": "consent",
+  "qc-cmp2-container": "consent",
+  "truste_box_overlay": "consent",
+  "evidon-banner": "consent",
+  "cookiebanner": "consent",
+  "gdpr-banner": "consent",
+  "consent-banner": "consent"
+ },
+ "ids": {
+  "onetrust-banner-sdk": "consent",
+  "onetrust-consent-sdk": "consent",
+  "CybotCookiebotDialog": "consent",
+  "didomi-host": "consent",
+  "didomi-popup": "consent",
+  "usercentrics-root": "consent",
+  "truste-consent-track": "consent",
+  "cookie-law-info-bar": "consent",
+  "cookie-notice": "consent",
+  "cmplz-cookiebanner-container": "consent",
+  "gdpr-cookie-message": "consent",
+  "qc-cmp2-container": "consent",
+  "cookiebanner": "consent",
+  "cookie-banner": "consent",
+  "consent-banner": "consent",
+  "BorlabsCookieBox": "consent",
+  "ccc": "consent",
+  "taboola-below-article-thumbnails": "ad",
+  "taboola-right-rail-thumbnails": "ad",
+  "outbrain_widget_0": "ad",
+  "ad-slot": "ad",
+  "ad_slot": "ad",
+  "adslot": "ad",
+  "top-ad": "ad",
+  "leaderboard-ad": "ad",
+  "sidebar-ad": "ad"
+ },
+ "keyed": {},
+ "tags": {
+  "amp-ad": [
+   [
+    "amp-ad",
+    "ad"
+   ]
+  ],
+  "amp-embed": [
+   [
+    "amp-embed[type=taboola]",
+    "ad"
+   ],
+   [
+    "amp-embed[type=outbrain]",
+    "ad"
+   ]
+  ],
+  "ins": [
+   [
+    "ins.adsbygoogle",
+    "ad"
+   ]
+  ]
+ },
+ "other": [
+  [
+   "[id^=\"sp_message_container_\"]",
+   "consent"
+  ],
+  [
+   "[id^=\"google_ads_iframe\"]",
+   "ad"
+  ],
+  [
+   "[id^=\"div-gpt-ad\"]",
+   "ad"
+  ],
+  [
+   "[data-ad-slot]",
+   "ad"
+  ],
+  [
+   "[data-google-query-id]",
+   "ad"
+  ],
+  [
+   "[id^=\"taboola-\"]",
+   "ad"
+  ],
+  [
+   "[data-testid=\"ad\"]",
+   "ad"
+  ]
+ ]
+}

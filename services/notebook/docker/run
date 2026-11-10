@@ -1,0 +1,18 @@
+#!/bin/sh
+# ExecStart of desk-notebook.service, which the image doesn't have yet (docs/sub-status/notebook-service.md). Stays in
+# the foreground as the docker client; the unit stops the container with docker stop, so Node (PID 1) gets SIGTERM,
+# stores every open page and checkpoints the WAL. Flags: no network at all, uid 1105 (notebook), read-only root, no
+# capabilities, no core files (they would hold notes), journald with a tag, and container limits, because systemd's
+# don't reach a container. The image goes by ID, which ma-update wrote at install.
+# Memory: README.md, "Measured", has this cap and heap tested for real: 3 pages at the ceiling peak at 262 MiB of anonymous
+# memory, and a 4th aborts Node at its 192 MiB heap, below the cap.
+set -eu
+
+image_id=$(cat "${RELEASE_DIR:?RELEASE_DIR is not set}/image-id")
+
+exec docker run --rm --name desk-notebook --network none --user 1105:1105 --read-only --tmpfs /tmp \
+  --cap-drop=ALL --security-opt=no-new-privileges --log-driver=journald --log-opt tag=desk-notebook \
+  --memory=320m --memory-swap=320m --cpu-shares=256 --pids-limit=64 --stop-timeout=30 --ulimit core=0 \
+  -v /run/desk-notebook:/run/desk-notebook -v /data/notebook:/data/notebook \
+  --env-file "$RELEASE_DIR/desk-notebook.env" \
+  "$image_id" --max-old-space-size=192 --disable-warning=ExperimentalWarning /app/desk-notebook.mjs

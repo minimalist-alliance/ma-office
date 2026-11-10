@@ -1,0 +1,38 @@
+{
+  "name": "desk-notebook",
+  "version": "0.1.0",
+  "private": true,
+  "description": "The sync and storage service behind the Notebook app on a desk: Hocuspocus 4 on Node 24, SQLite, one Unix socket.",
+  "type": "module",
+  "engines": {
+    "node": ">=24"
+  },
+  "scripts": {
+    "build": "node scripts/bundle.mjs",
+    "typecheck": "tsc --noEmit -p tsconfig.json",
+    "test": "node scripts/bundle.mjs && vitest run",
+    "measure": "node scripts/bundle.mjs && MEASURE=1 vitest run tests/measure.test.ts",
+    "check": "npm run typecheck && npm run test",
+    "memory": "node scripts/bundle.mjs && MEMORY=1 vitest run tests/memory.test.ts"
+  },
+  "dependencies": {
+    "@hocuspocus/server": "4.8.0",
+    "@tiptap/core": "3.32.0",
+    "@tiptap/extension-highlight": "3.32.0",
+    "@tiptap/extension-list": "3.32.0",
+    "@tiptap/pm": "3.32.0",
+    "@tiptap/starter-kit": "3.32.0",
+    "@tiptap/y-tiptap": "3.0.10",
+    "lib0": "0.2.119",
+    "y-protocols": "1.0.7",
+    "yjs": "13.6.33"
+  },
+  "devDependencies": {
+    "@hocuspocus/provider": "4.8.0",
+    "@types/node": "24.19.2",
+    "esbuild": "0.28.2",
+    "typescript": "5.9.3",
+    "vite": "8.3.5",
+    "vitest": "5.1.0"
+  }
+}

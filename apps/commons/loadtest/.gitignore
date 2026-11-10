@@ -1,0 +1,6 @@
+strokes.bin
+results/**/*.part*
+results/**/*.err*
+results/**/*.pprof
+results/**/*.server.log
+results/all.log

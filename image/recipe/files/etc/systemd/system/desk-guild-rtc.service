@@ -1,0 +1,27 @@
+[Unit]
+Description=desk-rtc's limits on a Guild Desk: MemoryMax 512M, GOMEMLIMIT 384MiB (image/README.md, Guild Desk; sub/guild-rtc)
+# A Guild Desk's desk-rtc carries up to 600 members' sessions, about 330 MiB at 600 (sub/guild-rtc's measure), against the
+# 128M a member's desk gives it. A drop-in can't carry a condition, so this writes a runtime one, under /run, only on a
+# Guild Desk, and reloads systemd before desk-rtc starts. A member's desk never runs it: its desk-rtc unit and environment
+# stay byte for byte the image's. /run is fresh at every boot, so this runs again each time.
+ConditionPathExists=/run/ma/guild
+After=desk-kind.service
+Wants=desk-kind.service
+Before=desk-rtc.service
+
+[Service]
+Type=oneshot
+RemainAfterExit=yes
+ExecStart=/usr/local/lib/ma/desk-guild-rtc
+NoNewPrivileges=yes
+ProtectSystem=strict
+ReadWritePaths=/run/systemd/system
+ProtectHome=yes
+PrivateTmp=yes
+PrivateNetwork=yes
+InaccessiblePaths=-/data
+RestrictAddressFamilies=AF_UNIX
+SystemCallArchitectures=native
+
+[Install]
+WantedBy=multi-user.target

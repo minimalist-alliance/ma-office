@@ -1,0 +1,107 @@
+<?xml version="1.0" encoding="UTF-8"?>
+<project xmlns="http://maven.apache.org/POM/4.0.0"
+         xmlns:xsi="http://www.w3.org/2001/XMLSchema-instance"
+         xsi:schemaLocation="http://maven.apache.org/POM/4.0.0 https://maven.apache.org/xsd/maven-4.0.0.xsd">
+  <modelVersion>4.0.0</modelVersion>
+
+  <!--
+    The services' parent, found at ../pom.xml. That pom doesn't list desk-agent as a module yet (its owner adds the
+    line, STATUS.md), so build this one on its own: ../mvnw -f desk-agent/pom.xml verify, from services/.
+  -->
+  <parent>
+    <groupId>com.minimalistalliance.desk</groupId>
+    <artifactId>desk-services</artifactId>
+    <version>0.1.0-SNAPSHOT</version>
+  </parent>
+
+  <artifactId>desk-agent</artifactId>
+  <name>desk-agent</name>
+  <description>The Agent app's runtime on the desk EC2: agents, providers, limits and the audit log.</description>
+
+  <dependencies>
+    <dependency>
+      <groupId>org.springframework.boot</groupId>
+      <artifactId>spring-boot-starter</artifactId>
+      <exclusions>
+        <!-- Configuration is properties only. -->
+        <exclusion>
+          <groupId>org.yaml</groupId>
+          <artifactId>snakeyaml</artifactId>
+        </exclusion>
+        <!-- Nothing here logs through Log4j 2, but commons-logging would load it at every boot. -->
+        <exclusion>
+          <groupId>org.apache.logging.log4j</groupId>
+          <artifactId>log4j-to-slf4j</artifactId>
+        </exclusion>
+      </exclusions>
+    </dependency>
+
+    <!-- Maps and lists only, as in deskd: jackson-core and no databind. -->
+    <dependency>
+      <groupId>tools.jackson.jr</groupId>
+      <artifactId>jackson-jr-objects</artifactId>
+    </dependency>
+
+    <!-- The usage ledger and the audit log (ADRs 0019, 0020, 0040). JNI, so it runs on platform threads of its own. -->
+    <dependency>
+      <groupId>org.xerial</groupId>
+      <artifactId>sqlite-jdbc</artifactId>
+    </dependency>
+
+    <!--
+      PDF text for attached files (ADR 0082). It runs only in the parse worker, a child JVM with its own small heap and
+      a deadline (attach/Parsers), never in desk-agent's own process. Word, Excel and PowerPoint files are read with
+      the JDK's XML parser instead of Apache POI, which is far larger. spring-jcl already provides commons-logging.
+    -->
+    <dependency>
+      <groupId>org.apache.pdfbox</groupId>
+      <artifactId>pdfbox</artifactId>
+      <version>3.0.5</version>
+      <exclusions>
+        <exclusion>
+          <groupId>commons-logging</groupId>
+          <artifactId>commons-logging</artifactId>
+        </exclusion>
+      </exclusions>
+    </dependency>
+
+    <dependency>
+      <groupId>org.springframework.boot</groupId>
+      <artifactId>spring-boot-starter-test</artifactId>
+      <scope>test</scope>
+    </dependency>
+  </dependencies>
+
+  <build>
+    <finalName>desk-agent</finalName>
+    <plugins>
+      <plugin>
+        <groupId>org.springframework.boot</groupId>
+        <artifactId>spring-boot-maven-plugin</artifactId>
+        <configuration>
+          <mainClass>com.minimalistalliance.desk.agent.DeskAgentApplication</mainClass>
+        </configuration>
+        <executions>
+          <!-- The parent pom already binds repackage; the jar keeps jarmode tools for the Dockerfile. -->
+          <execution>
+            <id>process-aot</id>
+            <goals>
+              <goal>process-aot</goal>
+            </goals>
+          </execution>
+        </executions>
+      </plugin>
+
+      <!-- AOT output exists only after prepare-package, so the boot with it runs as an integration test. -->
+      <plugin>
+        <groupId>org.apache.maven.plugins</groupId>
+        <artifactId>maven-failsafe-plugin</artifactId>
+        <configuration>
+          <systemPropertyVariables>
+            <spring.aot.enabled>true</spring.aot.enabled>
+          </systemPropertyVariables>
+        </configuration>
+      </plugin>
+    </plugins>
+  </build>
+</project>

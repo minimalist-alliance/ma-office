@@ -1,0 +1,17 @@
+# A fallback for a desk whose first-boot network file no longer matches (TD-227, image/README.md "Faster wakes").
+# cloud-init writes /etc/netplan/50-cloud-init.yaml on a desk's first boot, matched to that boot's network card by MAC
+# address, and from then on netplan makes the 10-netplan-ens5.network that file describes. cloud-init is off after the first
+# boot (desk-cloud-init-off.service), so nothing writes that file again. If the card ever changed, that .network would not
+# match and the desk would have no address. This one matches any wired Ethernet card by name, sorts after netplan's
+# (10- before 20-, and systemd-networkd uses the first file that matches), so on a normal boot it is never the one used.
+[Match]
+Name=en* eth*
+Type=ether
+
+[Network]
+DHCP=ipv4
+LinkLocalAddressing=no
+IPv6AcceptRA=no
+
+[DHCPv4]
+UseDomains=no

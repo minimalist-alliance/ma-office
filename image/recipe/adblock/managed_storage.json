@@ -1,0 +1,14 @@
+{
+  "type": "object",
+  "properties": {
+    "noFiltering": {
+      "title": "Sites where the member turned blocking off",
+      "type": "array",
+      "items": { "type": "string" }
+    },
+    "off": {
+      "title": "The kill switch: no blocking anywhere, the blocker stays installed",
+      "type": "boolean"
+    }
+  }
+}

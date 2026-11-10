@@ -1,0 +1,24 @@
+#!/bin/sh
+# ExecStartPost of desk-xorg.service, as kiosk: load the keymap, then let kiosk, desk-rtc and desk-stream in.
+# It reaches X with the start's cookie (XAUTHORITY, from the unit), the only client that does (DA-1): everyone it adds
+# here is admitted by uid (SI:localuser), so the cookie never leaves kiosk's RuntimeDirectory, and any other uid is refused.
+#
+# Keymap first, so nobody can read the old one: desk-rtc connects as soon as it has access, and desk-browser
+# waits for this unit. Xorg with no input devices starts on its compiled-in default, rules "base", which means
+# xfree86 keycodes (Left is 100). Chromium reads keycodes as evdev+8 whatever X says, so on those the page gets
+# e.code "Convert" for ArrowLeft, and a keysym desk-rtc adds on a free code can land on a real key.
+#
+# -symbols pc+us leaves out the rules' inet(evdev): the media and launcher keysyms it adds aren't sent by any
+# client, and the codes they'd hold are the ones desk-rtc needs (runtime spec section 8.6). On such a code a page
+# would see that symbol in e.key whatever desk-rtc put there, because Chromium reads e.key from a copy of the
+# keymap it takes at its first key event and never updates.
+set -u
+i=0
+until xhost >/dev/null 2>&1; do
+  i=$((i + 1))
+  [ "$i" -le 600 ] || { echo "desk-xorg-ready: X never came up" >&2; exit 1; }
+  sleep 0.1   # Chromium waits on this unit, so a first start waits on this sleep
+done
+# A failure is reported and not fatal: the browser still works, with the wrong e.code on some named keys.
+setxkbmap -rules evdev -model pc105 -layout us -option '' -symbols pc+us || echo "desk-xorg-ready: setxkbmap failed, keycodes stay xfree86" >&2
+xhost +SI:localuser:kiosk && xhost +SI:localuser:rtc && xhost +SI:localuser:stream

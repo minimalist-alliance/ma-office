@@ -1,0 +1,24 @@
+AMI ami-0123456789abcdef0 (ma-desk-0.2.9), booted once as i-0123456789abcdef0, stopped, root vol-0123456789abcdef0 read on i-0123456789abcdef0, 2026-11-07T17:18:07Z
+image: version=0.2.9 built=2026-11-07T16:33:54Z
+control, the reader's own journal, which logged this login (must be above 0): 4
+== /var/log/journal: 1 machine-ID directories; this boot's ID among them: yes
+  this boot's directory: 2 files, 1 boots, 1138 entries, address count 0 in the files and 0 in journalctl's text; sshd source addresses 0, this workstation's among them 0
+  journal works: flush to /var/log/journal logged 1 times, system.journal 8388608 bytes
+== address count by path (occurrences)
+  /var/log/journal: 0
+  /var/log, without the journal: 0
+  /var/lib, without cloud-init: 0
+  cloud-init (/var/lib/cloud, /var/log/cloud-init*, /etc/cloud): 0
+  /etc: 0
+  /root: 0
+  /home: 0
+  the whole root filesystem: 0
+  the raw partition, free blocks included: 0
+== login records
+  /var/log/wtmp: 800 bytes
+  /var/log/btmp: 0 bytes
+  /var/log/lastlog: 0 bytes
+  /var/log/wtmp.db: absent
+  /var/lib/wtmpdb/wtmp.db: absent
+  /var/lib/lastlog/lastlog2.db: absent
+  journald drop-ins: ma.conf

@@ -1,0 +1,485 @@
+Minimalist Alliance apps: WCAG contrast, Today against Final (2026-11-05)
+Computed from web/src/theme/tokens.ts on main (Today) and tokens.json (Final). Translucent colors are composited over their surface; a translucent surface sits on surface.worldBase.
+Bar: 4.5:1 for text, 3:1 for focus rings, active-desk rings, control borders and glyphs. "<<" marks a miss. Today is shown for reference, and Today's own misses are not marked.
+
+PANEL TO GROUND
+          stop          Today  Final
+  light   worldHi        1.04   1.07
+  light   worldBase      1.17   1.20
+  light   worldLo        1.30   1.33
+  dusk    worldHi        1.05   1.05
+  dusk    worldBase      1.05   1.05
+  dusk    worldLo        1.17   1.17
+  dark    worldHi        1.08   1.24
+  dark    worldBase      1.13   1.32
+  dark    worldLo        1.19   1.38
+
+--- LIGHT
+    pair                                           Today Final
+  TEXT, needs 4.5
+    text.primary on surface.panel                  13.56 13.38  titles, menus, buttons, icon glyphs
+    text.primary on surface.tile                   13.79 13.63  titles, menus, buttons, icon glyphs
+    text.primary on surface.window                 13.79 13.63  titles, menus, buttons, icon glyphs
+    text.primary on surface.overlay                13.79 13.63  titles, menus, buttons, icon glyphs
+    text.primary on surface.chrome                 13.26 13.29  titles, menus, buttons, icon glyphs
+    text.primary on surface.sunken                 12.53 12.25  titles, menus, buttons, icon glyphs
+    text.primary on surface.fill                   11.87 11.50  titles, menus, buttons, icon glyphs
+    text.primary on surface.fillStrong             10.61 10.17  titles, menus, buttons, icon glyphs
+    text.secondary on surface.panel                 6.09  6.79  body, hints, About values, tile text
+    text.secondary on surface.tile                  6.20  6.91  body, hints, About values, tile text
+    text.secondary on surface.window                6.20  6.91  body, hints, About values, tile text
+    text.secondary on surface.overlay               6.20  6.91  body, hints, About values, tile text
+    text.secondary on surface.chrome                5.96  6.74  body, hints, About values, tile text
+    text.secondary on surface.sunken                5.63  6.21  body, hints, About values, tile text
+    text.secondary on surface.fill                  5.34  5.83  body, hints, About values, tile text
+    text.tertiary on surface.panel                  5.41  5.65  small labels, About keys, tile foot
+    text.tertiary on surface.tile                   5.50  5.75  small labels, About keys, tile foot
+    text.tertiary on surface.window                 5.50  5.75  small labels, About keys, tile foot
+    text.tertiary on surface.overlay                5.50  5.75  small labels, About keys, tile foot
+    text.tertiary on surface.chrome                 5.29  5.61  small labels, About keys, tile foot
+    text.tertiary on surface.sunken                 5.00  5.17  small labels, About keys, tile foot
+    text.link on surface.panel                      5.11  5.28  links
+    text.link on surface.tile                       5.20  5.38  links
+    text.link on surface.window                     5.20  5.38  links
+    text.link on surface.overlay                    5.20  5.38  links
+    text.link on surface.sunken                     4.73  4.83  links
+    text.link on accent.subtle                      4.54  4.56  links
+    text.onAccent on accent.default                 5.20  4.65  primary button
+    text.onAccent on accent.hover                   6.57  5.45  primary button
+    text.onAccent on accent.pressed                 8.28  6.52  primary button
+    text.disabled on surface.overlay                2.44  4.61  disabled menu item (WCAG exempt; held to the bar anyway)
+    switcher.text on switcher.track                13.52 10.68  scope and theme switch
+    switcher.text on switcher.selected             11.07  9.14  scope and theme switch
+    switcher.text on surface.fill                  13.89 11.50  scope and theme switch
+    mark.fg on mark.disc                           13.79 13.63  provider letter
+    badge.fg on badge.bg                            5.37  5.37  unread count
+    etch.fill on surface.panel                      3.07  4.67  etched name, ADR 0064
+  NON-TEXT, needs 3.0
+    focus.ring on surface.panel                     5.11  4.57  focus ring
+    focus.ring on surface.tile                      5.20  4.65  focus ring
+    focus.ring on surface.window                    5.20  4.65  focus ring
+    focus.ring on surface.overlay                   5.20  4.65  focus ring
+    focus.ring on surface.chrome                    5.00  4.54  focus ring
+    focus.ring on surface.fillStrong                4.00  3.47  focus ring
+    focus.ring on surface.worldHi                   4.90  4.26  focus ring
+    focus.ring on surface.worldBase                 4.36  3.82  focus ring
+    focus.ring on surface.worldLo                   3.93  3.44  focus ring
+    ring.activeDesk on surface.panel                4.01  4.04  active-desk ring
+    ring.activeDesk on surface.worldHi              3.84  3.76  active-desk ring
+    ring.activeDesk on surface.worldBase            3.42  3.38  active-desk ring
+    ring.activeDesk on surface.worldLo              3.08  3.04  active-desk ring
+    accent.default on surface.panel                 5.11  4.57  switch on, glyph accents
+    accent.default on surface.tile                  5.20  4.65  switch on, glyph accents
+    accent.default on surface.window                5.20  4.65  switch on, glyph accents
+    accent.default on surface.overlay               5.20  4.65  switch on, glyph accents
+    border.strong on surface.panel                  3.65  3.99  control border: .btn, .switch, selected segment
+    border.strong on surface.window                 3.71  4.07  control border: .btn, .switch, selected segment
+    border.strong on surface.overlay                3.71  4.07  control border: .btn, .switch, selected segment
+    border.strong on surface.fill                   3.19  3.43  control border: .btn, .switch, selected segment
+    border.strong on switcher.track                 3.11  3.19  control border: .btn, .switch, selected segment
+    text.secondary on surface.fill                  5.34  5.83  switch knob, off
+    text.onAccent on accent.default                 5.20  4.65  switch knob, on
+    glyph.default on surface.tile                   8.05  8.65  app glyphs
+    glyph.default on surface.panel                  7.91  8.49  app glyphs
+    glyph.default on surface.window                 8.05  8.65  app glyphs
+    glyph.soft on surface.tile                      3.11  3.61  glyph detail, tile grip
+    glyph.soft on surface.panel                     3.06  3.55  glyph detail, tile grip
+    glyph.soft on glyph.page                        2.72  3.14  glyph detail, tile grip
+    glyph.globe on surface.tile                     5.05  4.66  browser glyph
+    badge.bg on surface.tile                        5.37  5.37  badge disc
+    status.online on surface.panel                  3.46  3.45  status dot
+    status.warn on surface.panel                    3.62  3.61  status dot
+    status.error on surface.panel                   5.28  5.28  status dot
+    status.offline on surface.panel                 3.65  3.64  status dot
+  EDGES AND DEPTH, no minimum, shown for separation
+    surface.panel on surface.worldHi                1.04  1.07  desk on ground, gradient center
+    surface.panel on surface.worldBase              1.17  1.20  desk on ground, flat-ground mode and mid gradient
+    surface.panel on surface.worldLo                1.30  1.33  desk on ground, gradient edge
+    surface.tile on surface.panel                   1.02  1.02  tile on desk
+    surface.window on surface.panel                 1.02  1.02  window over desk
+    surface.window on surface.worldBase             1.19  1.22  window over ground
+    surface.overlay on surface.window               1.00  1.00  menu over window
+    surface.overlay on surface.panel                1.02  1.02  menu over desk
+    surface.chrome on surface.worldBase             1.15  1.19  top and bottom pills on ground
+    switcher.track on surface.worldHi               1.12  1.17  switch track on ground
+    border.hairline on surface.panel                1.13  1.16  tile and panel hairline
+    border.default on surface.chrome                1.28  1.30  pill outline: .icon-btn, .desk-nav, .zoom-ctl
+    border.default on surface.window                1.28  1.30  window head rule, .icon-btn
+    etch.highlight on surface.panel                 1.02  1.02  etch lower lip
+    etch.wall on etch.fill                          1.61  2.13  etch upper wall against fill
+
+--- DUSK (derived from today's Dusk structure)
+    pair                                           Today Final
+  TEXT, needs 4.5
+    text.primary on surface.panel                   7.79  6.94  titles, menus, buttons, icon glyphs
+    text.primary on surface.tile                    7.09  6.32  titles, menus, buttons, icon glyphs
+    text.primary on surface.window                  7.79  6.63  titles, menus, buttons, icon glyphs
+    text.primary on surface.overlay                 7.09  6.13  titles, menus, buttons, icon glyphs
+    text.primary on surface.chrome                  7.09  6.32  titles, menus, buttons, icon glyphs
+    text.primary on surface.sunken                  8.82  7.86  titles, menus, buttons, icon glyphs
+    text.primary on surface.fill                    6.76  6.03  titles, menus, buttons, icon glyphs
+    text.primary on surface.fillStrong              5.71  5.17  titles, menus, buttons, icon glyphs
+    text.secondary on surface.panel                 6.28  5.86  body, hints, About values, tile text
+    text.secondary on surface.tile                  5.71  5.33  body, hints, About values, tile text
+    text.secondary on surface.window                6.28  5.59  body, hints, About values, tile text
+    text.secondary on surface.overlay               5.71  5.17  body, hints, About values, tile text
+    text.secondary on surface.chrome                5.71  5.33  body, hints, About values, tile text
+    text.secondary on surface.sunken                7.11  6.63  body, hints, About values, tile text
+    text.secondary on surface.fill                  5.45  5.09  body, hints, About values, tile text
+    text.tertiary on surface.panel                  5.82  5.42  small labels, About keys, tile foot
+    text.tertiary on surface.tile                   5.29  4.93  small labels, About keys, tile foot
+    text.tertiary on surface.window                 5.82  5.17  small labels, About keys, tile foot
+    text.tertiary on surface.overlay                5.29  4.78  small labels, About keys, tile foot
+    text.tertiary on surface.chrome                 5.29  4.93  small labels, About keys, tile foot
+    text.tertiary on surface.sunken                 6.58  6.13  small labels, About keys, tile foot
+    text.link on surface.panel                      5.01  5.33  links
+    text.link on surface.tile                       4.56  4.85  links
+    text.link on surface.window                     5.01  5.09  links
+    text.link on surface.overlay                    4.56  4.70  links
+    text.link on surface.sunken                     5.67  6.04  links
+    text.link on accent.subtle                      5.23  5.65  links
+    text.onAccent on accent.default                 8.75  9.26  primary button
+    text.onAccent on accent.hover                  10.02 10.65  primary button
+    text.onAccent on accent.pressed                 7.52  7.99  primary button
+    text.disabled on surface.overlay                2.69  4.53  disabled menu item (WCAG exempt; held to the bar anyway)
+    switcher.text on switcher.track                 9.09  8.01  scope and theme switch
+    switcher.text on switcher.selected              5.71  5.17  scope and theme switch
+    switcher.text on surface.fill                   6.76  6.03  scope and theme switch
+    mark.fg on mark.disc                           10.33 11.31  provider letter
+    badge.fg on badge.bg                            8.54  8.54  unread count
+    etch.fill on surface.panel                      3.65  5.73  etched name, ADR 0064
+  NON-TEXT, needs 3.0
+    focus.ring on surface.panel                     5.55  5.35  focus ring
+    focus.ring on surface.tile                      5.06  4.87  focus ring
+    focus.ring on surface.window                    5.55  5.11  focus ring
+    focus.ring on surface.overlay                   5.06  4.72  focus ring
+    focus.ring on surface.chrome                    5.06  4.87  focus ring
+    focus.ring on surface.fillStrong                4.07  3.99  focus ring
+    focus.ring on surface.worldHi                   5.30  5.11  focus ring
+    focus.ring on surface.worldBase                 5.82  5.62  focus ring
+    focus.ring on surface.worldLo                   6.48  6.27  focus ring
+    ring.activeDesk on surface.panel                4.51  4.32  active-desk ring
+    ring.activeDesk on surface.worldHi              4.30  4.13  active-desk ring
+    ring.activeDesk on surface.worldBase            4.72  4.53  active-desk ring
+    ring.activeDesk on surface.worldLo              5.26  5.06  active-desk ring
+    accent.default on surface.panel                 4.51  4.32  switch on, glyph accents
+    accent.default on surface.tile                  4.10  3.93  switch on, glyph accents
+    accent.default on surface.window                4.51  4.12  switch on, glyph accents
+    accent.default on surface.overlay               4.10  3.81  switch on, glyph accents
+    border.strong on surface.panel                  3.40  3.63  control border: .btn, .switch, selected segment
+    border.strong on surface.window                 3.40  3.46  control border: .btn, .switch, selected segment
+    border.strong on surface.overlay                3.09  3.20  control border: .btn, .switch, selected segment
+    border.strong on surface.fill                   2.95  3.15  control border: .btn, .switch, selected segment
+    border.strong on switcher.track                 3.96  4.18  control border: .btn, .switch, selected segment
+    text.secondary on surface.fill                  5.45  5.09  switch knob, off
+    text.onAccent on accent.default                 8.75  9.26  switch knob, on
+    glyph.default on surface.tile                   5.71  5.33  app glyphs
+    glyph.default on surface.panel                  6.28  5.86  app glyphs
+    glyph.default on surface.window                 6.28  5.59  app glyphs
+    glyph.soft on surface.tile                      3.43  3.86  glyph detail, tile grip
+    glyph.soft on surface.panel                     3.77  4.24  glyph detail, tile grip
+    glyph.soft on glyph.page                        2.49  3.20  glyph detail, tile grip
+    glyph.globe on surface.tile                     4.97  4.82  browser glyph
+    badge.bg on surface.tile                        3.72  3.83  badge disc
+    status.online on surface.panel                  4.72  4.86  status dot
+    status.warn on surface.panel                    4.84  4.98  status dot
+    status.error on surface.panel                   4.08  4.20  status dot
+    status.offline on surface.panel                 4.08  4.20  status dot
+  EDGES AND DEPTH, no minimum, shown for separation
+    surface.panel on surface.worldHi                1.05  1.05  desk on ground, gradient center
+    surface.panel on surface.worldBase              1.05  1.05  desk on ground, flat-ground mode and mid gradient
+    surface.panel on surface.worldLo                1.17  1.17  desk on ground, gradient edge
+    surface.tile on surface.panel                   1.10  1.10  tile on desk
+    surface.window on surface.panel                 1.00  1.05  window over desk
+    surface.window on surface.worldBase             1.05  1.10  window over ground
+    surface.overlay on surface.window               1.10  1.08  menu over window
+    surface.overlay on surface.panel                1.10  1.13  menu over desk
+    surface.chrome on surface.worldBase             1.15  1.15  top and bottom pills on ground
+    switcher.track on surface.worldHi               1.22  1.21  switch track on ground
+    border.hairline on surface.panel                1.24  1.22  tile and panel hairline
+    border.default on surface.chrome                1.42  1.38  pill outline: .icon-btn, .desk-nav, .zoom-ctl
+    border.default on surface.window                1.44  1.39  window head rule, .icon-btn
+    etch.highlight on surface.panel                 1.30  2.16  etch lower lip
+    etch.wall on etch.fill                          3.42 12.29  etch upper wall against fill
+
+--- DARK
+    pair                                           Today Final
+  TEXT, needs 4.5
+    text.primary on surface.panel                  12.79 11.31  titles, menus, buttons, icon glyphs
+    text.primary on surface.tile                   11.78  9.91  titles, menus, buttons, icon glyphs
+    text.primary on surface.window                 12.46 10.51  titles, menus, buttons, icon glyphs
+    text.primary on surface.overlay                11.00  9.17  titles, menus, buttons, icon glyphs
+    text.primary on surface.chrome                 12.54 10.83  titles, menus, buttons, icon glyphs
+    text.primary on surface.sunken                 13.63 12.58  titles, menus, buttons, icon glyphs
+    text.primary on surface.fill                   10.20  8.75  titles, menus, buttons, icon glyphs
+    text.primary on surface.fillStrong              9.17  7.39  titles, menus, buttons, icon glyphs
+    text.secondary on surface.panel                 7.78  7.63  body, hints, About values, tile text
+    text.secondary on surface.tile                  7.16  6.68  body, hints, About values, tile text
+    text.secondary on surface.window                7.57  7.09  body, hints, About values, tile text
+    text.secondary on surface.overlay               6.69  6.18  body, hints, About values, tile text
+    text.secondary on surface.chrome                7.62  7.31  body, hints, About values, tile text
+    text.secondary on surface.sunken                8.29  8.48  body, hints, About values, tile text
+    text.secondary on surface.fill                  6.20  5.90  body, hints, About values, tile text
+    text.tertiary on surface.panel                  5.98  6.11  small labels, About keys, tile foot
+    text.tertiary on surface.tile                   5.51  5.35  small labels, About keys, tile foot
+    text.tertiary on surface.window                 5.82  5.68  small labels, About keys, tile foot
+    text.tertiary on surface.overlay                5.14  4.96  small labels, About keys, tile foot
+    text.tertiary on surface.chrome                 5.86  5.86  small labels, About keys, tile foot
+    text.tertiary on surface.sunken                 6.37  6.80  small labels, About keys, tile foot
+    text.link on surface.panel                      6.94  6.01  links
+    text.link on surface.tile                       6.39  5.26  links
+    text.link on surface.window                     6.76  5.58  links
+    text.link on surface.overlay                    5.97  4.87  links
+    text.link on surface.sunken                     7.39  6.68  links
+    text.link on accent.subtle                      5.83  5.70  links
+    text.onAccent on accent.default                 7.25  5.28  primary button
+    text.onAccent on accent.hover                   8.61  6.45  primary button
+    text.onAccent on accent.pressed                 5.84  4.61  primary button
+    text.disabled on surface.overlay                2.59  4.57  disabled menu item (WCAG exempt; held to the bar anyway)
+    switcher.text on switcher.track                13.63 13.06  scope and theme switch
+    switcher.text on switcher.selected              9.17  7.39  scope and theme switch
+    switcher.text on surface.fill                  10.20  8.75  scope and theme switch
+    mark.fg on mark.disc                           11.86 14.89  provider letter
+    badge.fg on badge.bg                            5.94  5.94  unread count
+    etch.fill on surface.panel                      3.42  5.97  etched name, ADR 0064
+  NON-TEXT, needs 3.0
+    focus.ring on surface.panel                     6.94  6.01  focus ring
+    focus.ring on surface.tile                      6.39  5.26  focus ring
+    focus.ring on surface.window                    6.76  5.58  focus ring
+    focus.ring on surface.overlay                   5.97  4.87  focus ring
+    focus.ring on surface.chrome                    6.80  5.76  focus ring
+    focus.ring on surface.fillStrong                4.97  3.93  focus ring
+    focus.ring on surface.worldHi                   7.48  7.43  focus ring
+    focus.ring on surface.worldBase                 7.83  7.91  focus ring
+    focus.ring on surface.worldLo                   8.23  8.26  focus ring
+    ring.activeDesk on surface.panel                4.76  3.32  active-desk ring
+    ring.activeDesk on surface.worldHi              5.12  4.10  active-desk ring
+    ring.activeDesk on surface.worldBase            5.37  4.36  active-desk ring
+    ring.activeDesk on surface.worldLo              5.64  4.56  active-desk ring
+    accent.default on surface.panel                 6.05  4.01  switch on, glyph accents
+    accent.default on surface.tile                  5.57  3.51  switch on, glyph accents
+    accent.default on surface.window                5.89  3.73  switch on, glyph accents
+    accent.default on surface.overlay               5.20  3.25  switch on, glyph accents
+    border.strong on surface.panel                  3.52  4.08  control border: .btn, .switch, selected segment
+    border.strong on surface.window                 3.42  3.79  control border: .btn, .switch, selected segment
+    border.strong on surface.overlay                3.02  3.31  control border: .btn, .switch, selected segment
+    border.strong on surface.fill                   2.81  3.16  control border: .btn, .switch, selected segment
+    border.strong on switcher.track                 3.75  4.71  control border: .btn, .switch, selected segment
+    text.secondary on surface.fill                  6.20  5.90  switch knob, off
+    text.onAccent on accent.default                 7.25  5.28  switch knob, on
+    glyph.default on surface.tile                   8.65  7.41  app glyphs
+    glyph.default on surface.panel                  9.39  8.46  app glyphs
+    glyph.default on surface.window                 9.14  7.86  app glyphs
+    glyph.soft on surface.tile                      4.11  3.91  glyph detail, tile grip
+    glyph.soft on surface.panel                     4.46  4.46  glyph detail, tile grip
+    glyph.soft on glyph.page                        3.12  3.16  glyph detail, tile grip
+    glyph.globe on surface.tile                     6.61  5.51  browser glyph
+    badge.bg on surface.tile                        4.43  3.83  badge disc
+    status.online on surface.panel                  6.65  6.05  status dot
+    status.warn on surface.panel                    6.71  6.10  status dot
+    status.error on surface.panel                   4.81  4.37  status dot
+    status.offline on surface.panel                 3.96  3.61  status dot
+  EDGES AND DEPTH, no minimum, shown for separation
+    surface.panel on surface.worldHi                1.08  1.24  desk on ground, gradient center
+    surface.panel on surface.worldBase              1.13  1.32  desk on ground, flat-ground mode and mid gradient
+    surface.panel on surface.worldLo                1.19  1.38  desk on ground, gradient edge
+    surface.tile on surface.panel                   1.09  1.14  tile on desk
+    surface.window on surface.panel                 1.03  1.08  window over desk
+    surface.window on surface.worldBase             1.16  1.42  window over ground
+    surface.overlay on surface.window               1.13  1.15  menu over window
+    surface.overlay on surface.panel                1.16  1.23  menu over desk
+    surface.chrome on surface.worldBase             1.15  1.37  top and bottom pills on ground
+    switcher.track on surface.worldHi               1.01  1.07  switch track on ground
+    border.hairline on surface.panel                1.18  1.21  tile and panel hairline
+    border.default on surface.chrome                1.41  1.45  pill outline: .icon-btn, .desk-nav, .zoom-ctl
+    border.default on surface.window                1.41  1.44  window head rule, .icon-btn
+    etch.highlight on surface.panel                 1.28  2.03  etch lower lip
+    etch.wall on etch.fill                          3.54  8.88  etch upper wall against fill
+
+LOWEST LEFT IN FINAL
+  light  text 4.56 (text.link on accent.subtle); non-text 3.04 (ring.activeDesk on surface.worldLo)
+  dusk   text 4.53 (text.disabled on surface.overlay); non-text 3.15 (border.strong on surface.fill)
+  dark   text 4.57 (text.disabled on surface.overlay); non-text 3.16 (border.strong on surface.fill)
+
+MISSES IN FINAL
+  None in the pairs above.
+
+SIGN-IN PAGES (mock.html tokens), Today against Final
+--- LIGHT
+    pair                             Today Final
+  TEXT, needs 4.5
+    text on card                     13.79 13.63  heading, card text
+    text on field                    13.79 13.63  typed text
+    text on sec                      13.79 13.63  secondary button
+    text on sec-h                    12.53 12.25  secondary button, hover
+    text on err-bg                   12.56 12.41  alert text
+    text2 on card                     6.20  6.91  line under heading, labels
+    text2 on field-fixed              5.63  6.21  read-only email
+    text on field-fixed              12.53 12.25  setup key
+    link on card                      5.20  5.38  links
+    link on field                     5.20  5.38  Show
+    link on field-fixed               4.73  4.83  Copy
+    on-accent on accent               5.20  4.65  Sign in
+    on-accent on accent-h             6.57  5.45  Sign in, hover
+    on-accent on accent-p             8.28  6.52  Sign in, pressed
+    err on card                       5.37  5.37  error under field
+    g-text on g-fill                 13.79 16.48  Google button
+    g-text on g-h                    12.53 14.72  Google button, hover
+  NON-TEXT, needs 3.0
+    field-line on card                3.25  3.37  field border
+    field-line on field               3.25  3.37  field border on its fill
+    sec-line on card                  1.61  3.37  secondary button border
+    g-line on card                    1.61  4.53  Google button border
+    g-line on g-fill                  1.61  4.53  Google button border on its fill
+    focus on card                     5.20  4.65  focus ring
+    focus on field                    5.20  4.65  focus ring in a field
+    err on field                      5.37  5.37  invalid field border
+    err on err-bg                     4.89  4.89  alert border
+    accent on card                    5.20  4.65  Sign in shape
+  EDGES, no minimum
+    card on g1                        1.06  1.09  card on ground, top
+    card on g2                        1.19  1.22  card on ground, middle
+    card on g3                        1.32  1.35  card on ground, bottom
+    card-line on card                 1.23  1.28  card hairline
+    div on card                       1.25  1.28  "or" rule
+
+--- DUSK
+    pair                             Today Final
+  TEXT, needs 4.5
+    text on card                      7.09  6.32  heading, card text
+    text on field                     8.82  7.86  typed text
+    text on sec                       8.82  7.86  secondary button
+    text on sec-h                     7.79  6.94  secondary button, hover
+    text on err-bg                    7.44  6.74  alert text
+    text2 on card                     5.71  5.33  line under heading, labels
+    text2 on field-fixed              6.28  5.86  read-only email
+    text on field-fixed               7.79  6.94  setup key
+    link on card                      4.56  4.85  links
+    link on field                     5.67  6.04  Show
+    link on field-fixed               5.01  5.33  Copy
+    on-accent on accent               8.75  9.26  Sign in
+    on-accent on accent-h            10.02 10.65  Sign in, hover
+    on-accent on accent-p             7.52  7.99  Sign in, pressed
+    err on card                       5.07  5.22  error under field
+    g-text on g-fill                  8.82 14.47  Google button
+    g-text on g-h                     7.79 12.83  Google button, hover
+  NON-TEXT, needs 3.0
+    field-line on card                3.09  3.30  field border
+    field-line on field               3.85  4.11  field border on its fill
+    sec-line on card                  1.96  3.30  secondary button border
+    g-line on card                    1.96  2.39  <<  Google button border
+    g-line on g-fill                  2.44  5.83  Google button border on its fill
+    focus on card                     5.06  4.87  focus ring
+    focus on field                    6.29  6.06  focus ring in a field
+    err on field                      6.31  6.49  invalid field border
+    err on err-bg                     5.32  5.57  alert border
+    accent on card                    4.10  3.93  Sign in shape
+  EDGES, no minimum
+    card on g1                        1.05  1.05  card on ground, top
+    card on g2                        1.15  1.15  card on ground, middle
+    card on g3                        1.28  1.29  card on ground, bottom
+    card-line on card                 1.44  1.46  card hairline
+    div on card                       1.44  1.46  "or" rule
+
+--- DARK
+    pair                             Today Final
+  TEXT, needs 4.5
+    text on card                     12.79 11.31  heading, card text
+    text on field                    13.78 13.39  typed text
+    text on sec                      11.78  9.91  secondary button
+    text on sec-h                    10.51  8.75  secondary button, hover
+    text on err-bg                   11.28  9.84  alert text
+    text2 on card                     7.78  7.63  line under heading, labels
+    text2 on field-fixed              7.16  6.68  read-only email
+    text on field-fixed              11.78  9.91  setup key
+    link on card                      6.94  6.01  links
+    link on field                     7.48  7.12  Show
+    link on field-fixed               6.39  5.26  Copy
+    on-accent on accent               7.25  5.28  Sign in
+    on-accent on accent-h             8.61  6.45  Sign in, hover
+    on-accent on accent-p             5.84  4.61  Sign in, pressed
+    err on card                       4.81  4.90  error under field
+    g-text on g-fill                 11.78 14.47  Google button
+    g-text on g-h                    10.51 12.83  Google button, hover
+  NON-TEXT, needs 3.0
+    field-line on card                3.77  3.43  field border
+    field-line on field               4.06  4.06  field border on its fill
+    sec-line on card                  1.79  3.67  secondary button border
+    g-line on card                    1.79  4.28  Google button border
+    g-line on g-fill                  1.65  5.83  Google button border on its fill
+    focus on card                     6.94  6.01  focus ring
+    focus on field                    7.48  7.12  focus ring in a field
+    err on field                      5.18  5.81  invalid field border
+    err on err-bg                     4.24  4.27  alert border
+    accent on card                    6.05  4.01  Sign in shape
+  EDGES, no minimum
+    card on g1                        1.08  1.24  card on ground, top
+    card on g2                        1.13  1.32  card on ground, middle
+    card on g3                        1.19  1.38  card on ground, bottom
+    card-line on card                 1.17  1.38  card hairline
+    div on card                       1.39  1.38  "or" rule
+
+LOWEST LEFT, SIGN-IN
+  light  text 4.65 (on-accent on accent); non-text 3.37 (field-line on card)
+  dusk   text 4.85 (link on card); non-text 2.39 (g-line on card)
+  dark   text 4.61 (on-accent on accent-p); non-text 3.43 (field-line on card)
+
+
+NOTES
+- Control borders. Every outline that renders on a control uses border.strong: .btn, .switch, the selected segment, and the sign-in fields and buttons. border.default does not outline the top or bottom bar: .icon-btn.chrome, .desk-nav, .zoom-ctl, .hints and .segmented compute to a 0 px border in the app.
+- One soft control edge is left: the phone-only size chip on a tile strokes border.default at about 1.3 to 1.5:1. Its glyph passes. It wasn't in these shots, because it shows only in the phone grid.
+- text.disabled meets 4.5 even though WCAG exempts it. In Dusk and Dark it sits close to text.tertiary; a disabled menu item still reads paler than its text.primary neighbours.
+- .btn:disabled uses opacity 0.45, so a disabled button drops below the bar. WCAG exempts it, and it is not a token. The app shows it only for a moment, while client-config loads.
+- accent.subtle and text.link have no use in the app's CSS today. They are held to the bar for when they do.
+- Dusk's panel to ground stays about 1.05 at the middle stop, the same as today. The brief set a floor for Light only; Dusk's desks rely on a hairline and a shadow, as they do now.
+- Google button on Dusk's card, the one miss: Google's border #8E918F is 2.39:1 on the card, and the README's #131314 fill is 2.44:1 against it. Neither can move without leaving the README's fill or Google's stroke. It affects every screen with the Google button on Dusk: Sign in, Confirm (Google account) and their errors. The label is 14.5:1, so the button still reads. The fix is the README's own fallback, a #F2F2F2 fill at about 6.8:1, which is the coordinator's and owner's call.
+- Light's etch highlight (#FFFFFF on #FDFDFB) is close to invisible, as ADR 0064 said it would be. The wall carries the depth there.
+- Dark keeps the exact kit #5B7FB0 on the active-desk ring, and Light too. The accent moved: Light darker (#5076AA), Dark lighter (#6A8DBF), both in the steel blue family. Only the logo files keep #517BAD.
+
+MEASURED IN THE SCREENSHOTS, panel pixel against ground pixel 70 px from the desk (shadow clear), at 2x
+  light today: panel #FCFCFC, upper ground #F3F3F5 1.08, lower-left ground #DEE1E7 1.28; final: panel #FCFCFA, upper ground #F1F1ED 1.10, lower-left ground #DFDFDC 1.30
+  dusk  today: panel #4A5059, upper ground #4B515A 1.02, lower-left ground #444952 1.11; final: panel #474E5B, upper ground #484F5B 1.01, lower-left ground #404753 1.12
+  dark  today: panel #23262B, upper ground #1C1F24 1.09, lower-left ground #17191D 1.16; final: panel #292D34, upper ground #191B1F 1.25, lower-left ground #111317 1.35
+
+CHECKS
+- src/theme tests with the final tokens: 69 pass. 2 fail, both value pins: Dusk text.primary #FAFAFA (ADR 0050) and --ma-surface-tile #50565F. The contrast minimums in tokens.test.ts pass.
+- Sign-in mock: 16 screens, 3 themes, 2 sizes (96 frames) in headless Chromium: no sideways overflow, no clipped text, no console errors.
+
+Dusk, after keeping ADR 0050's neutral whites (these replace the Dusk rows above):
+    text.primary on surface.panel          8.02
+    text.primary on surface.tile           7.30
+    text.primary on surface.window         7.65
+    text.primary on surface.overlay        7.08
+    text.primary on surface.chip           5.97
+    text.primary on surface.fillStrong     5.97
+    text.secondary on surface.panel          6.46
+    text.secondary on surface.tile           5.88
+    text.secondary on surface.window         6.16
+    text.secondary on surface.overlay        5.70
+    text.secondary on surface.chip           4.81
+    text.secondary on surface.fillStrong     4.81
+    text.tertiary on surface.panel          5.99
+    text.tertiary on surface.tile           5.45
+    text.tertiary on surface.window         5.71
+    text.tertiary on surface.overlay        5.28
+    text.tertiary on surface.chip           4.46
+    text.tertiary on surface.fillStrong     4.46
+    After darkening surface.chip, surface.fillStrong and switcher.selected to #585F6C: text.tertiary 4.60, text.secondary 4.96
+
+KIT ADDITIONS (2026-11-07): text.danger and notebook.*, computed from tokens.json with the WCAG 2.x formula. No Today column: these tokens are new.
+Bar: 4.5:1 for text. "<<" marks a miss.
+
+  pair                                              Light   Dusk   Dark
+  text.danger on surface.window                      5.37   4.94   5.43
+  text.danger on surface.overlay                     5.37   4.57   4.74
+  text.danger on surface.fill                        4.53   4.50   4.52
+  text.danger on surface.fillStrong                  4.01<< 3.98<< 3.82<<   Delete buttons, destructive words
+  text.primary on notebook.highlightYellow          10.97   5.11   6.43   ticked items, and links inside a highlight (links keep their underline)
+  text.link on notebook.highlightYellow              4.33<< 3.40<< 3.41<<   for reference only: the reason links use text.primary inside a highlight
+
+NOTES
+- The decision (DECISIONS.md, Notebook look 6 of 9) says every text.danger pair clears 4.5 except Light on fillStrong at about 4.0. The figures above disagree on Dusk and Dark: fillStrong is 3.98 and 3.82, not 4.5 or more. Recorded as computed; the colors are unchanged.
+- Dusk on surface.fill is 4.502, a pass by 0.002.
+- The highlight claim (5.1 to 11:1) holds: 5.11, 6.43, 10.97. Light's link on the highlight is 4.33, as the decision says.
+- 2026-11-07: Dusk text.danger moves #F7BEB7 -> #F9CBC5. A hovered menu row in the Notebook measured 4.37:1, under 4.5. New figures in Dusk: window 5.4, overlay 5.06, fill 4.98, fillStrong about 4.4 (still a miss, unused there). It still reads as red on Dusk's grey.
+

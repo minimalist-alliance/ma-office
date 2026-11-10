@@ -1,0 +1,13 @@
+[Unit]
+Description=Desk batches and Debian's security updates, applied while the desk is idle (desk-runtime.md section 6.1)
+After=network-online.target docker.service desk-datadirs.service
+Wants=network-online.target
+
+[Service]
+Type=oneshot
+ExecStart=/usr/local/lib/ma/desk-batch tick
+StateDirectory=ma/batch
+StateDirectoryMode=0755
+# A batch's prepare downloads and loads every release (up to 15 minutes each by ma-update's own limits), and apt's upgrade
+# has an hour. Once switching starts it finishes; a tick cut off anyway is picked up by the next one (desk-batch resume).
+TimeoutStartSec=3h

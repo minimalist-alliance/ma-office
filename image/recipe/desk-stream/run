@@ -1,0 +1,17 @@
+#!/bin/sh
+# ExecStart of desk-stream.service (desk-runtime.md section 6). Runs as user stream.
+set -eu
+: "${RELEASE_DIR:?RELEASE_DIR is not set}"
+# yuvconv (image) and anything a release ships beside stream.conf: from 0.3.0, deskcap built for this machine's
+# architecture (gst-plugins/aarch64 for cloud desks, gst-plugins/x86_64 for self-hosted ones; ADR 0073).
+GST_PLUGIN_PATH="$RELEASE_DIR/gst-plugins/$(uname -m):$RELEASE_DIR/gst-plugins:/usr/local/lib/ma/gst-plugins"
+export GST_PLUGIN_PATH
+# ADR 0036: desk-egress names a profile once a desk has used its allowance. Anything missing or unknown is the normal picture.
+conf=stream.conf
+profile=$(cat /run/desk-egress/profile 2>/dev/null || true)
+case "$profile" in
+  capped | deep)
+    if [ -f "$RELEASE_DIR/stream-$profile.conf" ]; then conf=stream-$profile.conf; fi
+    ;;
+esac
+exec /usr/bin/python3 -I "$RELEASE_DIR/desk-stream" --config "$RELEASE_DIR/$conf"

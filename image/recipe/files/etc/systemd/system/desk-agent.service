@@ -1,0 +1,36 @@
+[Unit]
+Description=desk-agent (the desk's agents; Spring Boot in Docker, runs as root to call the Docker CLI)
+ConditionPathExists=/opt/ma/desk-agent/current/run
+Requires=docker.service desk-datadirs.service
+After=docker.service desk-datadirs.service network-online.target
+Wants=network-online.target
+# uid 1103 reaches a provider only through desk-agent-filter (ADR 0070). Wants, not Requires: with the filter down its calls
+# are refused, and desk-agent still answers health and can come back without a restart.
+Wants=desk-agent-filter.service
+After=desk-agent-filter.service
+# The shaper goes on first if it can, as for deskd. Its failure never stops this unit (ADR 0036).
+Wants=desk-egress.service
+After=desk-egress.service
+# DA-2: the filter is nftables' agent_redirect, so without the ruleset uid 1103 would have open egress (any site, IMDS,
+# the VPC). desk-agent never starts without it: nftables.service must have loaded, and ExecStartPre below lists the chain.
+Requires=nftables.service
+After=nftables.service
+
+[Service]
+Environment=RELEASE_DIR=/opt/ma/desk-agent/current
+# No "-": if table inet ma or its agent chain is missing (a flushed or failed ruleset), the start fails and Restart= tries
+# again every 3 s, so desk-agent comes back by itself once the ruleset is loaded. /opt/ma/smoke-test checks the same.
+ExecStartPre=/usr/sbin/nft list chain inet ma agent_redirect
+ExecStartPre=-/usr/bin/docker rm -f desk-agent
+ExecStart=/opt/ma/desk-agent/current/run
+# run gives the container --stop-timeout=30.
+ExecStop=/usr/bin/docker stop -t 30 desk-agent
+# docker stop sends the JVM SIGTERM, and it exits 143, which the docker client passes on: without this a stop ends
+# the unit as failed (0.2.8's note in image/RELEASES.md). verify.sh section 3f checks it.
+SuccessExitStatus=143
+TimeoutStopSec=40
+Restart=always
+RestartSec=3
+
+[Install]
+WantedBy=multi-user.target

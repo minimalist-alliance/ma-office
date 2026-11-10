@@ -1,0 +1,17 @@
+[Unit]
+Description=One unit-control request
+CollectMode=inactive-or-failed
+
+[Service]
+ExecStart=/usr/local/lib/ma/desk-units
+StandardInput=socket
+StandardOutput=journal
+StandardError=journal
+# desk-units waits up to 90 s for a stop of desk-browser: desk-browser-thaw's thaw and quit (up to 55 s), then SIGTERM (30 s).
+TimeoutStartSec=100
+NoNewPrivileges=yes
+ProtectSystem=strict
+ProtectHome=yes
+PrivateTmp=yes
+PrivateNetwork=yes
+RestrictAddressFamilies=AF_UNIX

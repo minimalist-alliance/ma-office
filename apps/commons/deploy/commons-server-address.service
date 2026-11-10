@@ -1,0 +1,19 @@
+[Unit]
+Description=commons-server's public address (the guild desk's public IPv4, for voice; read here because Commons may not reach the metadata service)
+ConditionPathExists=/opt/ma/commons-server/current/address
+After=network-online.target
+Wants=network-online.target
+Before=commons-server.service
+
+[Service]
+Type=oneshot
+RemainAfterExit=yes
+ExecStart=/opt/ma/commons-server/current/address
+TimeoutStartSec=40
+ProtectSystem=strict
+ProtectHome=yes
+ReadWritePaths=/run
+NoNewPrivileges=yes
+
+[Install]
+WantedBy=multi-user.target

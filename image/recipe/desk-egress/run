@@ -1,0 +1,5 @@
+#!/bin/sh
+# ExecStart of desk-egress.service (ADR 0036, desk-runtime.md section 9). Runs as root.
+set -eu
+: "${RELEASE_DIR:?RELEASE_DIR is not set}"
+exec /usr/bin/python3 -I "$RELEASE_DIR/desk-egress"

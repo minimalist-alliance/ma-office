@@ -1,0 +1,3 @@
+#!/bin/sh
+# ExecStart of desk-agent-filter.service: the unit sets the user, the sandbox and RELEASE_DIR.
+exec "${RELEASE_DIR:?RELEASE_DIR is not set}/desk-agent-filter"

@@ -1,0 +1,95 @@
+#!/bin/sh
+# ma-selfhost-port: the port a self-hosted desk streams on, UDP and TCP (selfhost/README.md, "The port"). As root.
+#
+#   ma-selfhost-port                         print the port desk-rtc listens on
+#   ma-selfhost-port set <n> [--no-restart]  make it <n>: port= in desk-rtc's config (/etc/ma/desk-rtc.conf) and the
+#                                            firewall's rtc_port, then reload the firewall and restart desk-rtc (its
+#                                            DTLS identity stays). --no-restart only writes the two (install.sh).
+#   ma-selfhost-port check <n> <address>     whether <n> can work with that --address (install.sh, before it changes
+#                                            anything)
+#
+# `sudo ma-selfhost port [<n>]` runs this. install.sh uses it too, so the two set the port the same way.
+#
+# desk-rtc reads its port from /etc/ma/desk-rtc.conf (with no file, 443, as on a cloud desk), and says which with
+# --print-port. The bundles before it (desk-rtc 0.3.0-sh1) patched desk-rtc's run to read /etc/ma/desk-rtc-port
+# instead: while such a desk-rtc is installed, that file is kept in step, and once a desk-rtc that reads the config is,
+# it goes.
+set -eu
+CONF=/etc/ma/desk-rtc.conf
+LEGACY=/etc/ma/desk-rtc-port
+NFT=/etc/nftables.conf
+SELFHOST_CONF=/etc/ma/selfhost.conf
+RTC=/opt/ma/desk-rtc/current/desk-rtc
+
+die() { echo "ma-selfhost port: $*" >&2; exit 1; }
+
+# Whether the installed desk-rtc takes its port from the config (0.3.0-sh1 and older have no --print-port).
+reads_config() { [ -x "$RTC" ] && "$RTC" -h 2>&1 | grep -q -- '-print-port'; }
+
+current() {
+  if reads_config; then
+    "$RTC" --config "$CONF" --print-port || die "desk-rtc can't read $CONF"
+    return
+  fi
+  p=$(cat "$LEGACY" 2>/dev/null || true)
+  case "$p" in '' | *[!0-9]*) p=443 ;; esac
+  echo "$p"
+}
+
+# check <port> <address>: 1024 to 65535; below 1024 only 443, and only with a public address, because Chrome drops a
+# home-network (private) ICE candidate on a port below 1024.
+check() {
+  case "$1" in '' | 0* | *[!0-9]*) die "the port is a number from 1024 to 65535" ;; esac
+  [ "${#1}" -le 5 ] && [ "$1" -le 65535 ] || die "the port is a number from 1024 to 65535"
+  [ "$1" -ge 1024 ] && return 0
+  if [ "$1" = 443 ] && [ "$2" != auto ] \
+    && ! printf '%s\n' "$2" | grep -qE '^(10\.|192\.168\.|172\.(1[6-9]|2[0-9]|3[01])\.|100\.(6[4-9]|[7-9][0-9]|1[01][0-9]|12[0-7])\.)'; then
+    return 0
+  fi
+  die "use a port from 1024 up: Chrome won't connect to a desk on your home network on a lower one. 443 works only with a public --address"
+}
+
+set_port() {
+  port=$1 restart=$2
+  address=$(sed -n 's/^address=//p' "$SELFHOST_CONF" 2>/dev/null | tail -1)
+  check "$port" "${address:-auto}"
+  [ -f "$NFT" ] && grep -q '^define rtc_port = [0-9]* #PORT$' "$NFT" || die "$NFT has no rtc_port line: run install.sh"
+  # desk-rtc's config: port= replaced, any other line kept.
+  tmp=$(mktemp)
+  if [ -f "$CONF" ]; then
+    grep -v -E '^[[:space:]]*port[[:space:]]*=' "$CONF" > "$tmp" || true
+  else
+    echo "# desk-rtc's settings on this desk (desk-rtc/cmd/desk-rtc/config.go). Set by install.sh and ma-selfhost port." > "$tmp"
+  fi
+  echo "port=$port" >> "$tmp"
+  # The firewall's rule, checked before it's used.
+  nft_tmp=$(mktemp)
+  sed "s/^define rtc_port = [0-9]* #PORT\$/define rtc_port = $port #PORT/" "$NFT" > "$nft_tmp"
+  grep -q "^define rtc_port = $port #PORT\$" "$nft_tmp" || die "couldn't set the port in the firewall rules"
+  nft -c -f "$nft_tmp" || die "the firewall rules don't load with port $port"
+  install -m 0644 "$tmp" "$CONF"
+  install -m 0644 "$nft_tmp" "$NFT"
+  rm -f "$tmp" "$nft_tmp"
+  if reads_config; then
+    rm -f "$LEGACY"
+  else
+    printf '%s\n' "$port" > "$LEGACY"; chmod 0644 "$LEGACY"
+  fi
+  [ "$restart" = 1 ] || return 0
+  systemctl restart nftables
+  systemctl try-restart desk-rtc.service
+  echo "The desk streams on port $port now, UDP and TCP. If you forwarded a port on your router to it, change that too."
+}
+
+case "${1:-}" in
+  check) [ $# = 3 ] || die "usage: ma-selfhost-port check <n> <address>"; check "$2" "$3"; exit 0 ;;
+esac
+[ "$(id -u)" = 0 ] || die "run it as root (sudo ma-selfhost port)"
+case "${1:-}" in
+  '') current ;;
+  set)
+    [ $# -ge 2 ] || die "usage: ma-selfhost-port set <n> [--no-restart]"
+    restart=1; [ "${3:-}" = --no-restart ] && restart=0
+    set_port "$2" "$restart" ;;
+  *) [ $# = 1 ] || die "usage: ma-selfhost port [<n>]"; set_port "$1" 1 ;;
+esac

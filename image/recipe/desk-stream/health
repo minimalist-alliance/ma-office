@@ -1,0 +1,7 @@
+#!/bin/sh
+# desk-stream runs only while a Browser window is visible, so stopped is healthy. Only a failed unit isn't.
+if systemctl is-failed --quiet desk-stream; then
+  echo "desk-stream unit has failed" >&2
+  exit 1
+fi
+exit 0

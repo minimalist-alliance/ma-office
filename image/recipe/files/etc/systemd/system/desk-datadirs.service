@@ -1,0 +1,12 @@
+[Unit]
+Description=Desk data directories
+Requires=data.mount
+After=data.mount
+
+[Service]
+Type=oneshot
+RemainAfterExit=yes
+ExecStart=/usr/local/lib/ma/desk-datadirs
+
+[Install]
+WantedBy=multi-user.target

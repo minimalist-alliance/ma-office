@@ -1,0 +1,20 @@
+#!/bin/sh
+# ExecStart of desk-rtc.service (docs/interfaces/desk-runtime.md section 6). The unit runs it as user
+# rtc with CAP_NET_BIND_SERVICE and supplementary group desk. deskd passes the public IPv4 in configure.
+# GOMEMLIMIT has the Go runtime collect harder as it nears 96 MiB, which leaves room under the unit's
+# MemoryMax=128M for what the runtime doesn't count. The unit can set its own.
+# The port is 443 unless the desk's config says otherwise: /etc/ma/desk-rtc.conf, port=<n>. A cloud desk has
+# no such file. A self-hosted desk's installer writes port=4443 (selfhost/README.md, "The port").
+# DESK_RTC_CONF names another file, for tests.
+set -eu
+: "${RELEASE_DIR:?RELEASE_DIR is not set}"
+export GOMEMLIMIT="${GOMEMLIMIT:-96MiB}"
+exec "$RELEASE_DIR/desk-rtc" \
+  --socket /run/desk/rtc.sock \
+  --socket-group desk \
+  --data-dir /data/rtc \
+  --bind auto \
+  --config "${DESK_RTC_CONF:-/etc/ma/desk-rtc.conf}" \
+  --stream-socket /run/desk-media/stream.sock \
+  --stream-user stream \
+  --display :99

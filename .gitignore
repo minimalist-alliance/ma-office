@@ -1,0 +1,47 @@
+# Other sessions' worktrees and local Claude state
+.claude/
+
+# Dependencies / build output
+node_modules/
+target/
+dist/
+build/
+out/
+*.log
+# Secrets
+.env
+.env.*
+*.pem
+# Desk batches' trusted signing keys (S-96) are public halves and belong in the image's recipe; build.sh fails on a private key there.
+!image/recipe/files/opt/ma/etc/batch-keys/*.pem
+*.p12
+*.pfx
+# OS / editor
+.DS_Store
+.vscode/
+.idea/
+
+# The last image bake's log
+image/last-build.txt
+image/host/last-build.txt
+
+# Python bytecode
+__pycache__/
+*.pyc
+
+# Run output stays local: verification evidence, test and benchmark results, screenshots
+image/evidence/
+image/host/evidence/
+e2e/*/runs/
+e2e/real-sites/results/
+apps/commons/loadtest/results/
+desk-rtc/test/*/results/
+services/deskd/real-sites/*/results/
+web/maia-avatar/screenshots/
+apps/commons/web/media/shots/
+/spikes/
+web/agent/media/*.mp4
+web/notebook/media/*.mp4
+apps/commons/web/media/*.mp4
+web/maia-avatar/dance/party-package.mp4
+web/maia-avatar/dance/party-strip.png

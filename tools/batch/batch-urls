@@ -1,0 +1,18 @@
+#!/usr/bin/env bash
+# batch-urls: presigns, for one hour, the artifact of every component a manifest names, and prints the urls.json that
+# `desk-batch offer` takes: {"expiresAt": ..., "components": {"<name>": "<url>"}}. The platform's route does this for
+# member desks; this is for a lab box or the test desk. The URLs are bearer links for an hour: keep the file out of git
+# and out of logs. Read-only on S3.
+#
+#   tools/batch/batch-urls <manifest.json> > urls.json
+set -euo pipefail
+BUCKET=${RELEASE_BUCKET:-ma-lambda-artifacts-$(aws sts get-caller-identity --query Account --output text)}
+export AWS_DEFAULT_REGION=${AWS_DEFAULT_REGION:-us-east-1}
+[ $# -eq 1 ] && [ -f "$1" ] || { sed -n '2,8p' "$0" | sed 's/^# \{0,1\}//' >&2; exit 2; }
+exp=$(date -u -d '+3600 seconds' +%FT%TZ)
+out='{}'
+while read -r c v; do
+  u=$(aws s3 presign "s3://$BUCKET/desk/$c/$v/$c-$v.tgz" --expires-in 3600)
+  out=$(jq -c --arg c "$c" --arg u "$u" '. + {($c): $u}' <<<"$out")
+done < <(jq -r '.components[] | "\(.name) \(.version)"' "$1")
+jq -n --arg e "$exp" --argjson c "$out" '{expiresAt: $e, components: $c}'

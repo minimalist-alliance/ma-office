@@ -1,0 +1,15 @@
+# Hosts of consent managers' frames (task 47): a frame from one is the site's consent banner, never content, and it
+# doesn't count as another site's frame over the page.
+privacy-mgmt.com
+sp-prod.net
+cookielaw.org
+onetrust.com
+consensu.org
+trustarc.com
+truste.com
+cookiebot.com
+didomi.io
+usercentrics.eu
+quantcast.com
+evidon.com
+iubenda.com

@@ -1,0 +1,93 @@
+<!doctype html>
+<html lang="en" data-theme="light">
+<head>
+<meta charset="utf-8">
+<meta name="viewport" content="width=device-width, initial-scale=1">
+<title>Maia Avatar</title>
+<link rel="stylesheet" href="./demo.css">
+<script type="module" src="./demo.ts"></script>
+</head>
+<body>
+<header class="bar">
+  <h1>Maia</h1>
+  <span class="chip">Version 7</span>
+  <span class="chip">Dance draft</span>
+  <span class="grow"></span>
+  <div class="seg" role="radiogroup" aria-label="Theme">
+    <label><input type="radio" name="theme" value="light" checked><span>Light</span></label>
+    <label><input type="radio" name="theme" value="dusk"><span>Dusk</span></label>
+    <label><input type="radio" name="theme" value="dark"><span>Dark</span></label>
+  </div>
+  <button class="btn" type="button" id="pause" aria-pressed="false">Pause</button>
+</header>
+<main class="wrap">
+  <section id="bubble" aria-labelledby="bubble-h">
+    <div class="head">
+      <h2 id="bubble-h">In her bubble</h2>
+      <p class="muted">The <code>&lt;maia-avatar&gt;</code> element at 64, 112 and 200 px. Here she falls asleep after 20 seconds without use, so you can watch; the package's default is 5 minutes. Hover over her, or press a button, to wake her.</p>
+    </div>
+    <div class="figs" id="bubbles">
+      <figure><maia-avatar size="64" sleep-after-ms="20000" id="launcher"></maia-avatar><figcaption>64 px, the launcher</figcaption></figure>
+      <figure><maia-avatar size="112" sleep-after-ms="20000"></maia-avatar><figcaption>112 px</figcaption></figure>
+      <figure><maia-avatar size="200" sleep-after-ms="20000"></maia-avatar><figcaption>200 px</figcaption></figure>
+    </div>
+    <div class="controls" role="group" aria-label="State">
+      <button class="btn" type="button" data-state="calm">Calm</button>
+      <button class="btn" type="button" data-state="thinking">Thinking</button>
+      <button class="btn" type="button" data-state="speaking">Speaking</button>
+      <button class="btn" type="button" data-state="unavailable">Unavailable</button>
+      <button class="btn" type="button" data-state="sleeping">Sleep now</button>
+      <button class="btn" type="button" id="wake">Wake</button>
+    </div>
+    <p class="readout" id="readout" aria-live="off"></p>
+  </section>
+
+  <section id="compare" aria-labelledby="compare-h">
+    <div class="head">
+      <h2 id="compare-h">Her rest pose beside version 7's stills</h2>
+      <p class="muted">Left of each pair, the package's rest pose on a canvas. Right, the engine's still from <code>docs/assets/maia/svg/</code>, as an image. One per drawing tier.</p>
+    </div>
+    <div class="pairs" id="pairs"></div>
+  </section>
+
+  <section id="dance" aria-labelledby="dance-h">
+    <div class="head">
+      <h2 id="dance-h">Her dance: Party</h2>
+      <p class="muted">Draft, not approved. 48 beats at 124 a minute, about 23 seconds, played once, then she settles into warm. With less motion, or during a desk stream, she smiles instead.</p>
+    </div>
+    <div class="figs" id="dance-figs"></div>
+    <div class="controls">
+      <button class="btn primary" type="button" id="dance-play">Dance</button>
+      <label class="check"><input type="checkbox" id="dance-reduced"> Less motion</label>
+      <label class="check"><input type="checkbox" id="dance-stream"> Desk stream</label>
+    </div>
+    <p class="readout" id="dance-readout" aria-live="off"></p>
+  </section>
+
+  <section id="moods" aria-labelledby="moods-h">
+    <div class="head">
+      <h2 id="moods-h">Moods</h2>
+      <p class="muted">Each plays a score with a few beats, the same scores as the reference preview.</p>
+    </div>
+    <div class="mood-grid" id="mood-grid"></div>
+  </section>
+
+  <section id="try" aria-labelledby="try-h">
+    <div class="head">
+      <h2 id="try-h">Try a score</h2>
+      <p class="muted">Parsed by <code>parseScore</code>, the AI Engineer's <code>score.ts</code>. Anything it can't use is dropped, and with nothing left she plays <code>calm</code>. Add <code>"routine": "party"</code> and she dances first.</p>
+    </div>
+    <div class="try-grid">
+      <div class="side">
+        <label class="label" for="score-input">Score JSON</label>
+        <textarea id="score-input" rows="9" spellcheck="false"></textarea>
+        <div><button class="btn primary" type="button" id="score-play">Play</button></div>
+        <pre id="score-out"></pre>
+      </div>
+      <div class="figs" id="try-figs"></div>
+    </div>
+  </section>
+  <p class="foot muted">A demo of the package on <code>sub/maia-dance</code>, for review. The dance is a draft the owner hasn't approved.</p>
+</main>
+</body>
+</html>

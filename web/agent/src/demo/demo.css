@@ -1,0 +1,188 @@
+/* The demo page around the Agent app: the Desk's ground, and a frame like web/src/windows/AppWindow.tsx's. */
+:root {
+  --ma-font-ui: "Inter Variable", system-ui, -apple-system, "Segoe UI", Roboto, sans-serif;
+}
+*,
+*::before,
+*::after {
+  box-sizing: border-box;
+}
+html,
+body,
+#ma-root {
+  height: 100%;
+}
+html,
+body {
+  margin: 0;
+  overflow: hidden;
+  background: var(--ma-surface-world-base);
+  color: var(--ma-text-primary);
+  font-family: var(--ma-font-ui);
+  font-size: 14px;
+  line-height: 20px;
+  font-weight: 400;
+  -webkit-font-smoothing: antialiased;
+}
+button {
+  font: inherit;
+  color: inherit;
+  cursor: pointer;
+}
+:focus-visible {
+  outline: 2px solid var(--ma-focus-ring);
+  outline-offset: 2px;
+}
+.demo {
+  display: flex;
+  flex-direction: column;
+  height: 100%;
+}
+.demo-bar {
+  display: flex;
+  align-items: center;
+  justify-content: space-between;
+  flex-wrap: wrap;
+  gap: 10px 16px;
+  padding: 12px 20px;
+}
+.demo-title {
+  display: grid;
+  gap: 1px;
+}
+.demo-title b {
+  font-size: 15px;
+  font-weight: 600;
+}
+.demo-title span {
+  font-size: 12px;
+  color: var(--ma-text-tertiary);
+}
+.demo-controls {
+  display: flex;
+  flex-wrap: wrap;
+  gap: 8px;
+}
+.demo-seg {
+  display: inline-flex;
+  padding: 3px;
+  gap: 2px;
+  border-radius: 999px;
+  background: var(--ma-switcher-track);
+}
+.demo-seg button {
+  border: 1px solid transparent;
+  border-radius: 999px;
+  background: transparent;
+  padding: 4px 12px;
+  font-size: 13px;
+  color: var(--ma-switcher-text);
+}
+.demo-seg button:hover {
+  background: var(--ma-surface-fill);
+}
+.demo-seg button.on {
+  background: var(--ma-switcher-selected);
+  border-color: var(--ma-border-strong);
+  font-weight: 600;
+}
+.demo-stage {
+  flex: 1;
+  min-height: 0;
+  display: grid;
+  place-items: center;
+  padding: 4px 20px 20px;
+}
+.demo-window {
+  display: flex;
+  flex-direction: column;
+  width: min(1180px, 100%);
+  height: min(780px, 100%);
+  overflow: hidden;
+  border-radius: 16px;
+  background: var(--ma-surface-window);
+  box-shadow: var(--ma-elevation-window);
+}
+.demo-window.small {
+  width: min(420px, 100%);
+  height: min(720px, 100%);
+}
+.demo-window-head {
+  flex: none;
+  display: flex;
+  align-items: center;
+  gap: 10px;
+  height: 44px;
+  padding: 0 14px;
+  border-bottom: 1px solid var(--ma-border);
+}
+.demo-glyph {
+  width: 18px;
+  height: 18px;
+  border-radius: 6px;
+  background: var(--ma-accent-subtle);
+  border: 1px solid var(--ma-border);
+}
+.demo-window-title {
+  display: flex;
+  align-items: baseline;
+  gap: 8px;
+  font-weight: 600;
+}
+.demo-window-title span {
+  font-size: 13px;
+  font-weight: 400;
+  color: var(--ma-text-tertiary);
+}
+.demo-window-body {
+  flex: 1;
+  min-height: 0;
+  display: flex;
+  overflow: hidden;
+}
+
+/* ?view=look: the agent look sheet. */
+/* The sheet is taller than the stage: it scrolls inside it, so the header above never leaves the screen (1280 by 900). */
+.demo-stage:has(> .look-sheet) {
+  grid-template: minmax(0, 1fr) / minmax(0, 1fr);
+}
+.look-sheet {
+  align-self: stretch;
+  justify-self: stretch;
+  min-height: 0;
+  min-width: 0;
+  padding: 24px;
+  overflow: auto;
+  color: var(--ma-text-primary);
+}
+.look-sheet h2 {
+  margin: 0 0 12px;
+  font-size: 15px;
+}
+.look-sheet p {
+  color: var(--ma-text-secondary);
+  font-size: 13px;
+}
+.look-sheet section {
+  margin-bottom: 32px;
+}
+.look-pick {
+  display: flex;
+  gap: 32px;
+  align-items: flex-start;
+  flex-wrap: wrap;
+}
+.look-pick-icons {
+  width: 360px;
+  max-width: 100%;
+}
+.look-row {
+  display: flex;
+  gap: 12px;
+  align-items: center;
+}
+.look-grid {
+  display: grid;
+  gap: 4px;
+  width: max-content;
+}

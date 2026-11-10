@@ -1,0 +1,30 @@
+#!/bin/sh
+# Exit 0 when the desk-rtc unit is active and it holds UDP and TCP on its port: 443, or the one the desk's
+# config sets (/etc/ma/desk-rtc.conf, as run reads it; desk-rtc itself says which, so the two can't differ)
+# (docs/interfaces/desk-runtime.md section 6). ma-update and the smoke test run this as root, which is
+# what lets ss name the process; as another user only the ports are checked.
+set -u
+
+fail() {
+  echo "desk-rtc health: $1" >&2
+  exit 1
+}
+
+systemctl is-active --quiet desk-rtc || fail "unit is not active"
+
+# The release's own desk-rtc says which port. RELEASE_DIR is set by ma-update and the smoke test; run by hand, it's here.
+RELEASE_DIR=${RELEASE_DIR:-$(cd "$(dirname "$0")" && pwd)}
+port=$("$RELEASE_DIR/desk-rtc" --config "${DESK_RTC_CONF:-/etc/ma/desk-rtc.conf}" --print-port 2>&1) || fail "$port"
+case "$port" in '' | *[!0-9]*) fail "no port from desk-rtc: $port" ;; esac
+
+udp=$(ss -Hlnup "sport = :$port" 2>/dev/null) || fail "ss failed"
+tcp=$(ss -Hlntp "sport = :$port" 2>/dev/null) || fail "ss failed"
+[ -n "$udp" ] || fail "nothing holds UDP $port"
+[ -n "$tcp" ] || fail "nothing holds TCP $port"
+
+if [ "$(id -u)" = 0 ]; then
+  case "$udp" in *'"desk-rtc"'*) ;; *) fail "UDP $port is held by something else: $udp" ;; esac
+  case "$tcp" in *'"desk-rtc"'*) ;; *) fail "TCP $port is held by something else: $tcp" ;; esac
+fi
+
+exit 0

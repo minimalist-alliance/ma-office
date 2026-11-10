@@ -1,0 +1,35 @@
+[Unit]
+Description=Chromium kiosk (sandbox on, CDP on 127.0.0.1:9222)
+Requires=desk-datadirs.service desk-xorg.service desk-audio.service
+After=desk-datadirs.service desk-xorg.service desk-audio.service
+# On the way down deskd stops first, so nothing asks for Chromium again while it writes its session (task 33 item 3).
+# Only ordering: desk-browser still starts on demand, and neither pulls in the other.
+Before=deskd.service
+
+[Service]
+User=kiosk
+Group=kiosk
+Environment=DISPLAY=:99 HOME=/data/browser/home PULSE_SERVER=unix:/run/desk-audio/native
+# No system bus for Chromium (ADR 0035; found with T46L-1). On it, Chromium holds a logind shutdown inhibitor and ends its own
+# session the moment logind announces a shutdown (PrepareForShutdown), before systemd stops any unit: measured on a lab box,
+# a reboot then ended SessionEnded with the CDP quit never sent, and a cookie set 8 s before was lost. Off it, a shutdown
+# reaches Chromium only through its units: deskd stops, desk-browser-thaw thaws and quits it over CDP (Normal, cookies
+# written), then SIGTERM for what's left. Chromium used the bus for nothing else here (UPower, which a desk doesn't run).
+# A path that can't exist, so nothing can stand in for the bus there.
+Environment=DBUS_SYSTEM_BUS_ADDRESS=unix:path=/dev/null/no-system-bus
+# A teen's Browser lock (desk-browser-policy, image/README.md): before every start, crash restarts too, and as root (+).
+# If the lock can't be put in place, Chromium doesn't start. Restart= then tries again every 3 s, so it clears by itself.
+ExecStartPre=+/usr/local/lib/ma/desk-browser-policy
+# The ad blocker's per-site off list (desk-adblock, ADR 0076), from /data into the policy, as root before every start too.
+# "-": a list or template it can't use leaves the policy that's there, which blocks, and never stops the Browser.
+ExecStartPre=-+/usr/local/lib/ma/desk-adblock render
+# The wrapper holds the Chromium command line and adds the home page only when there is no session to restore.
+ExecStart=/usr/local/lib/ma/desk-browser-start
+# Chromium writes its session on SIGTERM; give it time (ADR 0009: always stop gracefully)
+KillSignal=SIGTERM
+TimeoutStopSec=30
+Restart=on-failure
+RestartSec=3
+# desk-browser-start refused: the profile is newer than this Chromium (ADR 0035). Retrying can't help.
+RestartPreventExitStatus=78
+MemoryMax=2560M

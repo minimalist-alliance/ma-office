@@ -1,0 +1,30 @@
+#!/usr/bin/env bash
+# batch-verify: checks a desk batch manifest and its detached signature exactly as a desk does (desk-batch's own code, run
+# here without root), and prints the manifest as the desk reads it.
+#
+#   tools/batch/batch-verify <manifest.json> <signature> --pubkey <public.pem> ...   with these public keys
+#   tools/batch/batch-verify <manifest.json> <signature> --kms-key-id <id>           with the KMS key's public half
+#   tools/batch/batch-verify <manifest.json> <signature> --image                     with the keys this tree's image trusts
+#                                                                                     (image/recipe/files/opt/ma/etc/batch-keys)
+# Exit 0 valid and signed by one of the keys, 1 refused (the reason on stderr), 2 usage. Needs python3 and openssl.
+set -euo pipefail
+HERE=$(cd "$(dirname "$0")" && pwd)
+DB=$HERE/../../image/recipe/files/usr/local/lib/ma/desk-batch
+usage() { sed -n '2,10p' "$0" | sed 's/^# \{0,1\}//' >&2; exit 2; }
+[ $# -ge 3 ] || usage
+m=$1 s=$2; shift 2
+keys=()
+t=$(mktemp -d); trap 'rm -rf "$t"' EXIT
+case "$1" in
+  --pubkey) shift; [ $# -gt 0 ] || usage; keys=("$@") ;;
+  --kms-key-id)
+    [ $# -eq 2 ] || usage
+    aws kms get-public-key --key-id "$2" --query PublicKey --output text | base64 -d > "$t/pub.der"
+    openssl pkey -pubin -inform DER -in "$t/pub.der" -out "$t/kms.pem"; keys=("$t/kms.pem") ;;
+  --image)
+    [ $# -eq 1 ] || usage
+    shopt -s nullglob; keys=("$HERE"/../../image/recipe/files/opt/ma/etc/batch-keys/*.pem)
+    [ ${#keys[@]} -gt 0 ] || { echo "batch-verify: err untrusted the image trusts no key yet: a desk from it refuses every batch" >&2; exit 1; } ;;
+  *) usage ;;
+esac
+exec python3 -I "$DB" verify "$m" "$s" "${keys[@]}"

@@ -1,0 +1,46 @@
+[
+ {
+  "sites": [
+   "yahoo.com"
+  ],
+  "urlFilter": "||securepubads.g.doubleclick.net/tag/js/gpt.js",
+  "why": "Yahoo tests whether Google Publisher Tag loads. When it doesn't, Yahoo's ad-recovery loader (s.yimg.com/du/site/) goes to a numbered-subdomain video-ad player that is re-hosted on a new domain whenever one is blocked: about 1,100 more requests and a second of main thread in 12 s of scrolling. Allowing this one script is the whole fix (ddmin over the 20 hosts Yahoo has blocked: securepubads.g.doubleclick.net alone). The ad requests themselves stay blocked by the lists' host rules."
+ },
+ {
+  "sites": [
+   "allrecipes.com",
+   "fandom.com"
+  ],
+  "urlFilter": "||pagead2.googlesyndication.com/pagead/js/adsbygoogle.js",
+  "why": "Both sites test whether AdSense's library loads, together with Criteo's (next entry). When either fails they start an ad-recovery player from numbered subdomains of a throwaway domain (about 100 requests each from 8 hosts), and allrecipes' own video player dies (JW Player error 101102). ddmin over the hosts each site blocks: exactly these two. The ad requests stay blocked."
+ },
+ {
+  "sites": [
+   "allrecipes.com",
+   "fandom.com"
+  ],
+  "urlFilter": "||static.criteo.net/js/ld/publishertag.prebid.js",
+  "why": "The second half of the pair above: Criteo's prebid adapter, fetched as a test by both sites."
+ },
+ {
+  "sites": [
+   "tasty.co"
+  ],
+  "urlFilter": "||cd.connatix.com/connatix.player.js",
+  "why": "Tasty's recipe video is played by Connatix's player (class cnx-video-tag), which the lists block as an ad platform: with it blocked the page has no video element at all (3 of 3 passes; 8 elements and a playing video without the blocker). Found by allowing Connatix's hosts for tasty.co, then dropping to these three requests; with only the player script, the player's code (next two entries) is blocked and it still fails. The player's own ad and tracking calls (capi.connatix.com, ad exchanges) stay blocked: with these three the page has the one content video and not the ad slots."
+ },
+ {
+  "sites": [
+   "tasty.co"
+  ],
+  "urlFilter": "||cds.connatix.com/p/",
+  "why": "Connatix's player code, in a versioned directory (p/<build>/...), so the prefix, not a file."
+ },
+ {
+  "sites": [
+   "tasty.co"
+  ],
+  "urlFilter": "||cds.connatix.com/a/",
+  "why": "Connatix's player stylesheet."
+ }
+]

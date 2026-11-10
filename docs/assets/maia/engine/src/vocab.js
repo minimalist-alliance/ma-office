@@ -1,0 +1,123 @@
+// Maia's vocabulary. The model chooses from these lines and the engine performs them.
+// Units: x, y and dy are bubble units (720 across the bubble); rot, tilt and bend in degrees.
+// sag is one signed axis for hair: above 0 is droop, below 0 is lift, so a blend always passes through rest.
+globalThis.MAIA_VOCAB = {
+  v: 1,
+  stage: { scale: 0.76, launcherPx: 64, center: [561, 467], pivot: [470, 650], bodyCircle: [470, 560, 190], guardRadius: 350 },
+  // The open eye: a soft round-topped lid over the reference's crescent, a moving iris, a tiny highlight.
+  // lash: the crescent's own lash bunch, moved up onto the lid when open. by is the openness where the move is complete, t how far along the lid from the outer corner, root where the bunch's inner end meets the lid, deg how far it turns to reach up, under how far its inner side tucks behind the eye's edge. stand is where the lash at the inner end of the bunch goes when open, so it points up with the others: its tip and handles, measured from the bunch's base after the turn, with x outward as negative. bunch borrows another size's bunch, open and closed: bunchK scales it open; closed, it fits this crescent's end and closedK sets how far it reaches. innerClose is the openness by which the crescent's blunt inner end has closed to a point, and innerLid how much of that move the lower lid's handle follows.
+  // lashTwo on md is the whole two lash drawing, open and closed, kept for the trial of three. To restore it, make it md's lash.
+  eyes: {
+    sm: { innerClose: 0.3, innerLid: 0.4, lash: { by: 0.6, t: 0.3, root: 0.34, deg: 86, scale: 1.2, under: 3, inset: 4, stand: { tip: [-6, -30], first: [[-14, -14], [-20, 4]], last: [[4, -8], [2, -18]] } },  top: 104, out: 4, lift: 9, lowerL: 34, lowerI: 40, squint: 44, fanDeg: 18, fanScale: 0.92, grow: 0.2, spread: 8, iris: [386, 575, 46], range: [14, 9], shift: 12, glint: 0 },
+    md: { innerClose: 0.3, innerLid: 1, lash: { bunch: 'lg', bunchK: 1.23, closedK: 1.25, by: 0.6, t: 0.27, root: 0.31, deg: 88, scale: 1.4, under: 3, inset: 6 }, lashTwo: { by: 0.6, t: 0.27, root: 0.31, deg: 88, scale: 1.4, under: 3, inset: 6, stand: { tip: [-4, -22], first: [[-4.5, -15], [-2.5, -9]], last: [[3, -7.4], [0.6, -14.8]] } },  top: 104, out: 5, lift: 9, lowerL: 30, lowerI: 40, squint: 58, fanDeg: 26, fanScale: 0.8, grow: 0.16, spread: 10, iris: [402, 577, 39], range: [18, 11], shift: 12, glint: 11 },
+    lg: { innerClose: 0.3, innerLid: 1, lash: { by: 0.6, t: 0.27, root: 0.31, deg: 88, scale: 1.4, under: 3, inset: 5, stand: { tip: [-3, -17], first: [[-3.5, -11], [-2.5, -7]], last: [[2.5, -6], [0.5, -12]] } },  top: 104, out: 5, lift: 9, lowerL: 28, lowerI: 36, squint: 56, fanDeg: 26, fanScale: 0.95, grow: 0.16, spread: 10, iris: [408, 574, 35], range: [18, 11], shift: 12, glint: 10, pupil: 18 },
+    colors: {
+      light: { sclera: '#FFFFFF', lash: '#0C2558', iris: '#22324E', pupil: '#101A2B', glint: '#FFFFFF', lid: '' },
+      dusk: { sclera: '#FFFFFF', lash: '#1F4080', iris: '#1E232B', pupil: '#0B0E13', glint: '#FFFFFF', lid: '#1F4080' },
+      dark: { sclera: '#FFFFFF', lash: '#12306B', iris: '#1C2A42', pupil: '#0D1522', glint: '#FFFFFF', lid: '' },
+    },
+    // Where she looks, as x and y from -1 to 1. Spots are visited in turn; around is shuffled.
+    gaze: {
+      person: [0, 0.2], text: [1, 0.45],
+      around: [[-0.85, -0.55], [0.8, -0.65], [-0.7, 0.3], [0.35, -0.85], [0.85, 0.2], [-0.2, 0.55]],
+      withPerson: [[0, 0.2], [-0.55, -0.1], [0.05, 0.3], [0.6, -0.25]],
+      withText: [[0.3, 0.55], [0.95, 0.35], [0.55, 0.6], [1, 0.45]],
+      personText: [[0, 0.15], [0.95, 0.45], [-0.15, -0.25], [0.8, 0.3]],
+    },
+    highlightMinPx: 30,
+  },
+  moods: {
+    calm: {
+      say: 'Default. Relaxed, looking around. For plain answers and facts.',
+      hair: { sag: 0, bend: 0, curl: 1 }, eyes: { open: 0.82, squint: 0, depth: 1, dy: 0, tilt: 0 }, body: { x: 0, y: 0, rot: 0 },
+      move: { sway: 1, rock: 1, bob: 1, yHarm: 2, bounce: 0, hair: 1 }, look: { spots: 'around', every: [1.9, 3.2] },
+    },
+    warm: {
+      say: 'Friendly and glad, swaying with smiling eyes. For greetings and thanks.',
+      hair: { sag: -0.3, bend: 0, curl: 0.95 }, eyes: { open: 0.74, squint: 0.55, depth: 1.08, dy: -3, tilt: 4 }, body: { x: 0, y: -6, rot: 0 },
+      move: { sway: 1.5, rock: 2.6, bob: 0.8, yHarm: 2, bounce: 0, hair: 1.2 }, look: { spots: 'withPerson', every: [2, 3.2] },
+    },
+    curious: {
+      say: 'Interested, leaning in with wide eyes. For asking about detail or checking she understood.',
+      hair: { sag: -0.22, bend: 3, curl: 1.16 }, eyes: { open: 1.14, squint: 0, depth: 1, dy: -4, tilt: 2 }, body: { x: 38, y: -12, rot: 12 },
+      move: { sway: 0.85, rock: 1, bob: 1, yHarm: 2, bounce: 0, hair: 1.3 }, look: { spots: 'personText', every: [1.1, 1.9] },
+    },
+    focused: {
+      say: 'Working through steps, eyes narrowed and hair curling in. For step-by-step instructions only, not a problem, a refusal or a plain fact.',
+      hair: { sag: 0, bend: -3, curl: 1.3 }, eyes: { open: 0.4, squint: 0.12, depth: 0.9, dy: 3, tilt: -2 }, body: { x: -16, y: 10, rot: -7 },
+      move: { sway: 0.85, rock: 0.6, bob: 0.8, yHarm: 2, bounce: 0, hair: 1.5 }, look: { spots: 'withText', every: [1.3, 2.2] },
+    },
+    gentle: {
+      say: 'Slow and low with soft eyes. For someone with a problem or frustration, or when the news is not good.',
+      hair: { sag: 0.3, bend: 0, curl: 0.92 }, eyes: { open: 0.56, squint: 0.1, depth: 0.85, dy: 5, tilt: -6 }, body: { x: -6, y: 46, rot: -4 },
+      move: { sway: 0.9, rock: 0.8, bob: 0.9, yHarm: 1, bounce: 0, hair: 1.2 }, look: { spots: 'withPerson', every: [2.6, 3.8] },
+    },
+    bright: {
+      say: 'Pleased and bouncy. For when something worked or a problem is solved.',
+      hair: { sag: -0.6, bend: 0, curl: 0.92 }, eyes: { open: 1.04, squint: 0.08, depth: 1.05, dy: -4, tilt: 3 }, body: { x: 0, y: -2, rot: 0 },
+      move: { sway: 1.1, rock: 1.5, bob: 0.3, yHarm: 2, bounce: 66, bouncePeriod: 1.3, hair: 1.3 }, look: { spots: 'around', every: [1, 1.8] },
+    },
+  },
+  rhythms: {
+    quiet: { say: 'Slower and smaller, still clearly alive. For serious or very short replies.', curve: 'Body on a slow figure eight, hair following with a travelling ripple.', cycle: 7, x: 28, y: 15, rot: 3, bend: 6, curl: 0.08, ripple: 4.5, wander: 1, noise: 0.5 },
+    breath: { say: 'Slow and even. The default.', curve: 'A figure eight of the body with hair flowing behind it, a travelling ripple, and a slow wander with one extra cycle per loop.', cycle: 6, x: 34, y: 18, rot: 4, bend: 6, curl: 0.075, ripple: 5, wander: 1.6, noise: 0.8 },
+    drift: { say: 'Slow and wandering. For relaxed, open conversation.', curve: 'A wide figure eight, more wander, so no two cycles look alike.', cycle: 9, x: 48, y: 26, rot: 5, bend: 7, curl: 0.09, ripple: 5.5, wander: 3, noise: 1 },
+    lively: { say: 'Quicker and swimming. For upbeat replies.', curve: 'A quicker figure eight with a stronger ripple.', cycle: 4, x: 38, y: 22, rot: 5, bend: 6.5, curl: 0.085, ripple: 8.5, wander: 1.6, noise: 1 },
+  },
+  beats: {
+    lift: { track: 'hair', say: 'Hair rises and settles. Interest or good news.', dur: [2, 2.6, 3.2], amount: [0.4, 0.62, 0.9], curve: 'rise 35%, hold 15%, settle 50%.' },
+    nod: { track: 'hair', say: 'She dips, hair following, once or twice. Agreement or "understood".', dur: [1.2, 1.5, 2.8], dips: [1, 1, 2], amount: [0.18, 0.28, 0.36], body: [18, 30, 40], rot: [3, 5, 7], curve: 'sin squared per dip.' },
+    flick: { track: 'hair', say: 'A quick soft flick of the hair tips. A light touch or small aside.', dur: [0.8, 0.9, 1], tipDeg: [36, 54, 72], roomRadius: 350, curve: 'rise 30%, settle 70%, tips only.' },
+    wave: { track: 'hair', say: 'A big ripple from root to tips. A greeting or a change of subject.', dur: [2.2, 2.8, 3.4], deg: [12, 18, 24], cycles: 1.5, lag: 0.5, curve: 'Travelling sine, 1.5 cycles, tips lag the root.' },
+    curl: { track: 'hair', say: 'Hair tips wind in, hold, unwind. Turning something over.', dur: [2.2, 2.8, 3.6], amount: [0.14, 0.24, 0.34], curve: 'wind 30%, hold 35%, unwind 35%.' },
+    hop: { track: 'body', say: 'A small hop, or two at level 3. Delight.', dur: [1, 1.2, 2.2], height: [52, 84, 96], hops: [1, 1, 2], curve: 'crouch 22%, air 58%, land 20%. Squash and stretch come from her own acceleration.' },
+    bob: { track: 'body', say: 'She sinks and rises, once or twice. Settling in or a soft yes.', dur: [1.2, 1.7, 2.3], depth: [28, 42, 58], times: [1, 2, 2], curve: 'sin squared per bob.' },
+    lean: { track: 'body', say: 'She leans toward her text, holds, returns. Pointing at what she wrote.', dur: [2, 2.6, 3.2], x: [36, 56, 70], rot: [7, 10, 14], curve: 'small pull back, lean 25%, hold 40%, return.' },
+    blink: { track: 'eyes', say: 'One soft blink. Use sparingly, since the engine adds its own.', dur: [0.3, 0.36, 0.44], flat: [0.8, 0.75, 0.7], curve: 'close 38%, open 62%. Eyes close to the crescent.' },
+    flutter: { track: 'eyes', say: 'Quick soft lashes. Shy or pleased.', dur: [0.9, 1.1, 1.5], lashes: [2, 2, 3], curve: 'sin squared per lash, never above 3 per second.' },
+    smile: { track: 'eyes', say: 'Eyes close into the happy crescent and hold. Warm agreement or shared pleasure.', dur: [1.4, 2.2, 3], tilt: [3, 4.5, 6], dy: [-4, -7, -10], curve: 'close 22%, hold 45%, open 33%.' },
+    soften: { track: 'eyes', say: 'Lids lower gently. Sympathy or care.', dur: [2, 2.6, 3.2], keep: [0.72, 0.58, 0.45], tilt: [-3, -5, -6], dy: [2, 3.5, 5], curve: 'lower 30%, hold 35%, raise 35%.' },
+    glance: { track: 'eyes', say: 'Eyes slide to her text and back. Pointing at what she just wrote.', dur: [1.2, 1.7, 2.3], reach: [0.75, 1, 1], curve: 'slide 20%, hold 45%, return 35%.' },
+  },
+  states: {
+    thinking: {
+      note: 'Turn sent, no text yet. Looking up, eyes moving, hair swirling, drifting.',
+      hair: { sag: -0.12, bend: -5, curl: 1.26 }, eyes: { open: 1, squint: 0, depth: 1, dy: -4, tilt: 1 }, body: { x: 0, y: -18, rot: -7 },
+      driftX: 40, driftXPeriod: 5.3, driftY: 22, driftYPeriod: 3.7, rock: 6, rockPeriod: 4.6, windCurl: 0.09, windPeriod: 4.4, swirlDeg: 14, swirlPeriod: 2.6, lookX: 0.9, lookXPeriod: 3.3, lookY: -0.72, lookYAmp: 0.22, lookYPeriod: 2.3, blinkEvery: [2.4, 4.2],
+    },
+    speaking: {
+      note: 'Text is streaming. She bobs with the text rate, hair flowing, looking at the person and her text in turn.',
+      hair: { sag: -0.1, bend: 0, curl: 1.02 }, eyes: { open: 0.86, squint: 0.1, depth: 1, dy: -1, tilt: 1 }, body: { x: 6, y: -4, rot: 2 },
+      ratePerS: [0, 40], rateSmoothS: 0.5, bobPx: [10, 34], bobPeriod: 1.05, swayX: 24, swayPeriod: 3.4, rock: 4, rippleDeg: [4, 13], ripplePeriod: 1.6, lookEvery: [1.4, 2.6], blinkEvery: [2.6, 4.6],
+    },
+    sleeping: {
+      note: 'Falling asleep: lids lower with a slow blink, then she sinks and her hair settles, both strands resting. Then a slow hair and body breath, played from a bitmap strip so the render loop stops.',
+      hair: { sag: 0.94, bend: 2, curl: 1 }, eyes: { open: 0, squint: 0, depth: 1, dy: 2, tilt: 0 }, body: { x: -8, y: 46, rot: -6 },
+      fallS: 4, eyesEndS: 1.6, hairStartS: 0.8, hairEndS: 3.4, cycle: 9, breathSag: 0.05, breathBend: 2.4, breathY: 9, breathSquash: 0.018, stripFrames: 36,
+    },
+    waking: { note: 'Eyes open first, then she rises and hair lifts.', durS: 1.3, eyesEndS: 0.45, sagFloor: -0.1 },
+    unavailable: {
+      note: 'Limit or refusal. Still, soft eyes looking down, no loop. The render loop stops once she has settled.',
+      hair: { sag: 0.05, bend: 0, curl: 1 }, eyes: { open: 0.5, squint: 0.1, depth: 0.85, dy: 3, tilt: -4 }, body: { x: 0, y: 8, rot: 0 }, look: [0, 0.6],
+    },
+    reducedMotion: { note: 'For people who ask for less motion. Hair and body at rest. Only the eyes fade between expressions; blinks, hops and glances are dropped. No frames while nothing is fading.', fadeOmega: 5 },
+  },
+  rules: {
+    moodBlend: 'A new mood blends over about 1.5 s through a critically damped follower on every posture value.',
+    loop: 'seconds snaps to a whole number of rhythm cycles within the range. Rhythm phases accumulate and close over the loop. Noise is windowed to zero at the loop point, so each pass can differ with no jump.',
+    seconds: [20, 30], capBeats: 12, endMarginS: 0.8, gapS: 0.3, maxScoreBytes: 4096,
+    blinkGapMaxS: 5.2, blinkEveryS: [3, 4.8], defaultLevel: 1, defaultMood: 'calm', defaultRhythm: 'breath',
+  },
+  timing: {
+    fps: 30,
+    postureOmega: { score: 3.4, thinking: 4.5, speaking: 4, unavailable: 3.5, timed: 16 },
+    eyeOmega: 26, gazeOmega: 15, bodyOmega: 11, gainTauS: 0.4, rhythmTauS: 0.7,
+    hairOmega: [40, 40, 38, 36, 34, 30, 26, 22, 18, 15],
+    hairDamping: [1, 1, 1, 0.98, 0.95, 0.9, 0.85, 0.78, 0.72, 0.68],
+    hairCoupling: 0.92, timedCoupling: 0.1,
+    dragPerUnit: 0.0011, dragMax: 0.6, squashAccel: 0.000042, stretchSpeed: 0.00028, squashMax: 0.14, squashTauS: 0.08, gazeLean: 12, gazeRock: 3,
+  },
+  // While a desk stream plays she renders at 15 fps. She keeps about the same size of movement, but no frame steps further than this, and beats run longer.
+  modes: { stream: { fps: 15, maxStepPxAt56: 1.5, beatStretch: 1.7 } },
+  limits: { headingSpeedRadS: 9, lashesPerSecond: 3, reachUnits: 355 },
+};

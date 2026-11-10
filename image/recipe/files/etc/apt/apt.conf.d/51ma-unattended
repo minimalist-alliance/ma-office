@@ -1,0 +1,13 @@
+// Debian's security archive only (S-96; draft-desk-app-contract.md 13.1). Debian's own default (50unattended-upgrades)
+// also takes stable point releases; those wait for a new image. Chromium's fixes come through the security archive.
+// The lists are cleared first, because a later file otherwise adds to them.
+#clear Unattended-Upgrade::Origins-Pattern;
+#clear Unattended-Upgrade::Allowed-Origins;
+Unattended-Upgrade::Origins-Pattern {
+        "origin=Debian,codename=${distro_codename}-security,label=Debian-Security";
+        "origin=Debian,codename=${distro_codename},label=Debian-Security";
+};
+// Never reboot on our own: a newer kernel is recorded as reboot-pending by desk-batch, and the platform replaces the root
+// volume for OS-level changes.
+Unattended-Upgrade::Automatic-Reboot "false";
+Unattended-Upgrade::Remove-Unused-Dependencies "true";

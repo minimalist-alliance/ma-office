@@ -1,0 +1,329 @@
+/* The export page, /export (draft ADR "data export and transfer"): the calm screens' ground, cards and type, on the
+   app's tokens. Every color is a token. */
+.xp-page {
+  height: 100dvh;
+  overflow-y: auto;
+  background-image: radial-gradient(ellipse 120% 95% at 50% 0%, var(--ma-surface-world-hi) 0%, var(--ma-surface-world-base) 55%, var(--ma-surface-world-lo) 100%);
+}
+.xp-column {
+  display: grid;
+  gap: 20px;
+  width: min(560px, 100%);
+  margin: 0 auto;
+  padding: 32px 16px 64px;
+}
+.xp-head {
+  display: grid;
+  padding: 0 8px;
+}
+.xp-back {
+  justify-self: start;
+  display: inline-flex;
+  align-items: center;
+  gap: 2px;
+  margin: 0 0 24px -8px;
+  padding: 6px 10px 6px 4px;
+  border-radius: 10px;
+  color: var(--ma-text-secondary);
+  font-size: 13px;
+  line-height: 18px;
+  text-decoration: none;
+}
+.xp-back:hover {
+  background: var(--ma-surface-fill);
+  color: var(--ma-text-primary);
+}
+.xp-head h1 {
+  margin-top: 4px;
+  font-size: 28px;
+  line-height: 36px;
+  font-weight: 400;
+}
+.xp-lede {
+  margin-top: 10px;
+  color: var(--ma-text-secondary);
+}
+.xp-card {
+  display: grid;
+  gap: 16px;
+  padding: 28px;
+  border-radius: 22px;
+  background: var(--ma-surface-panel);
+  box-shadow: var(--ma-elevation-panel);
+}
+.xp-card h2 {
+  font-size: 16px;
+  line-height: 24px;
+  font-weight: 600;
+}
+.xp-text {
+  color: var(--ma-text-secondary);
+}
+.xp-fine,
+.xp-label {
+  font-size: 12px;
+  line-height: 16px;
+  color: var(--ma-text-tertiary);
+}
+.xp-num {
+  font-variant-numeric: tabular-nums;
+}
+.xp-nowrap {
+  white-space: nowrap;
+}
+.xp-stack {
+  display: grid;
+  gap: 16px;
+}
+.xp-warn {
+  color: var(--ma-text-primary);
+}
+.xp-actions {
+  display: flex;
+  flex-wrap: wrap;
+  gap: 8px;
+}
+.xp-inline {
+  padding: 0;
+  border: 0;
+  background: none;
+  color: var(--ma-text-link);
+  text-decoration: underline;
+  text-underline-offset: 2px;
+}
+.xp-link {
+  color: var(--ma-text-link);
+  text-underline-offset: 2px;
+}
+
+/* ---------------- the desks, to choose and then as they copy */
+.xp-desks {
+  display: grid;
+  margin: 0;
+  padding: 0;
+  border: 0;
+  list-style: none;
+}
+.xp-desks legend {
+  margin-bottom: 4px;
+  padding: 0;
+}
+.xp-row-text {
+  display: grid;
+  gap: 2px;
+  min-width: 0;
+}
+.xp-desk-name {
+  font-weight: 500;
+  color: var(--ma-text-primary);
+  overflow-wrap: anywhere;
+}
+.xp-row-note {
+  font-size: 12px;
+  line-height: 16px;
+  color: var(--ma-text-tertiary);
+  font-variant-numeric: tabular-nums;
+}
+.xp-choice {
+  position: relative;
+  display: flex;
+  align-items: center;
+  gap: 12px;
+  margin: 0 -10px;
+  padding: 10px;
+  border-radius: 12px;
+  cursor: pointer;
+}
+.xp-choice:hover {
+  background: var(--ma-surface-fill);
+}
+.xp-choice input {
+  position: absolute;
+  width: 1px;
+  height: 1px;
+  opacity: 0;
+}
+.xp-check {
+  flex: none;
+  display: grid;
+  place-items: center;
+  width: 20px;
+  height: 20px;
+  border: 1px solid var(--ma-border-strong);
+  border-radius: 6px;
+  background: var(--ma-surface-window);
+  color: transparent;
+}
+.xp-choice input:checked + .xp-check {
+  border-color: var(--ma-accent);
+  background: var(--ma-accent);
+  color: var(--ma-text-on-accent);
+}
+.xp-choice input:focus-visible + .xp-check {
+  outline: 2px solid var(--ma-focus-ring);
+  outline-offset: 2px;
+}
+.xp-choice.disabled {
+  cursor: default;
+}
+.xp-choice.disabled:hover {
+  background: none;
+}
+.xp-choice.disabled .xp-check,
+.xp-choice.disabled .xp-desk-name {
+  opacity: 0.5;
+}
+.xp-progress .xp-row {
+  display: grid;
+  gap: 8px;
+  padding: 12px 0;
+}
+.xp-progress .xp-row + .xp-row {
+  border-top: 1px solid var(--ma-border);
+}
+.xp-progress .xp-row.quiet .xp-desk-name {
+  color: var(--ma-text-secondary);
+}
+.xp-bar {
+  height: 4px;
+  border-radius: 2px;
+  background: var(--ma-surface-fill);
+  overflow: hidden;
+}
+.xp-bar span {
+  display: block;
+  height: 100%;
+  background: var(--ma-accent);
+  transform-origin: left center;
+  transition: transform 240ms ease-out;
+}
+
+/* ---------------- the move */
+.xp-pickers {
+  display: grid;
+  grid-template-columns: 1fr 1fr;
+  gap: 12px;
+}
+.xp-field {
+  display: grid;
+  gap: 6px;
+  min-width: 0;
+}
+.xp-select {
+  height: 40px;
+  padding: 0 10px;
+  border: 1px solid var(--ma-border-strong);
+  border-radius: 12px;
+  background: var(--ma-surface-window);
+  color: var(--ma-text-primary);
+}
+.xp-select:focus-visible {
+  outline: 2px solid var(--ma-focus-ring);
+  outline-offset: 2px;
+}
+.xp-input:focus-visible {
+  outline: 2px solid var(--ma-focus-ring);
+  outline-offset: 2px;
+}
+.xp-code-block {
+  display: grid;
+  gap: 12px;
+}
+.xp-code-row {
+  display: flex;
+  flex-wrap: wrap;
+  align-items: center;
+  gap: 12px;
+}
+.xp-code {
+  font-size: 32px;
+  line-height: 40px;
+  font-weight: 500;
+  letter-spacing: 0.06em;
+  font-variant-numeric: tabular-nums;
+  color: var(--ma-text-primary);
+  user-select: all;
+}
+.xp-command {
+  padding: 8px 12px;
+  border-radius: 10px;
+  background: var(--ma-surface-sunken);
+  color: var(--ma-text-primary);
+  font: inherit;
+  font-weight: 500;
+  font-variant-ligatures: none;
+  user-select: all;
+}
+.btn.xp-copy {
+  height: 32px;
+  padding: 0 12px;
+  border-radius: 10px;
+  font-size: 13px;
+}
+.xp-moves {
+  display: grid;
+  gap: 6px;
+  margin: 0;
+  padding: 14px 0 0;
+  border-top: 1px solid var(--ma-border);
+  list-style: none;
+  color: var(--ma-text-secondary);
+  font-size: 13px;
+}
+.xp-pass {
+  display: grid;
+  gap: 10px;
+}
+.xp-input {
+  width: 100%;
+  height: 40px;
+  padding: 0 10px;
+  border: 1px solid var(--ma-border-strong);
+  border-radius: 12px;
+  background: var(--ma-surface-window);
+  color: var(--ma-text-primary);
+  font: inherit;
+}
+.xp-move-item {
+  display: grid;
+  gap: 8px;
+}
+.xp-move-row {
+  display: flex;
+  flex-wrap: wrap;
+  align-items: center;
+  justify-content: space-between;
+  gap: 8px;
+}
+.xp-confirm {
+  display: grid;
+  gap: 10px;
+  padding: 12px 14px;
+  border-radius: 12px;
+  background: var(--ma-surface-sunken);
+}
+.xp-muted {
+  color: var(--ma-text-tertiary);
+}
+
+@media (max-width: 599px) {
+  .xp-column {
+    padding-top: 20px;
+  }
+  .xp-card {
+    padding: 20px;
+    border-radius: 18px;
+  }
+  .xp-pickers {
+    grid-template-columns: 1fr;
+  }
+  .xp-code {
+    font-size: 26px;
+    line-height: 34px;
+  }
+}
+@media (prefers-reduced-motion: reduce) {
+  .xp-bar span {
+    transition: none;
+  }
+}

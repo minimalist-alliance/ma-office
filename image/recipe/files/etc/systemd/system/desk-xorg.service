@@ -1,0 +1,22 @@
+[Unit]
+Description=Xorg dummy display :99 (1920x1080)
+Requires=desk-datadirs.service
+After=desk-datadirs.service
+
+[Service]
+User=kiosk
+Group=kiosk
+RuntimeDirectory=desk-xorg
+Environment=DISPLAY=:99 XAUTHORITY=/run/desk-xorg/auth
+# DA-1 (ADR 0072 section 2): a cookie made at every start, 0600 kiosk, never handed out. With -auth, X admits only a client
+# with the cookie or a server-interpreted entry, which desk-xorg-ready adds for kiosk, rtc and stream; without it, Xorg
+# treats every local uid as authorised. -nolisten local drops the abstract socket, which any process sharing the network
+# namespace could reach (desk-agent and deskd run with host networking).
+ExecStartPre=/usr/local/lib/ma/desk-xauth /run/desk-xorg/auth 99
+ExecStart=/usr/lib/xorg/Xorg :99 -config /etc/ma/xorg-dummy.conf -noreset -nolisten tcp -nolisten local -auth /run/desk-xorg/auth -logfile /run/desk-xorg/Xorg.99.log -novtswitch -sharevts
+# Loads the evdev keymap, then gives X access to kiosk (Chromium), desk-rtc (XTEST input injection) and desk-stream (capture) only
+ExecStartPost=/usr/local/lib/ma/desk-xorg-ready
+Restart=on-failure
+RestartSec=2
+
+# Not enabled: started on first Browser use (design 10.3)

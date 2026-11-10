@@ -1,0 +1,18 @@
+{
+  "ExtensionSettings": {
+    "__BLOCKER_ID__": {
+      "installation_mode": "force_installed",
+      "update_url": "file:///usr/share/ma/adblock/update.xml",
+      "override_update_url": true
+    }
+  },
+  "DeveloperToolsAvailability": 1,
+  "3rdparty": {
+    "extensions": {
+      "__BLOCKER_ID__": {
+        "noFiltering": [],
+        "off": false
+      }
+    }
+  }
+}

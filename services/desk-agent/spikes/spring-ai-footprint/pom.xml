@@ -1,0 +1,104 @@
+<?xml version="1.0" encoding="UTF-8"?>
+<project xmlns="http://maven.apache.org/POM/4.0.0"
+         xmlns:xsi="http://www.w3.org/2001/XMLSchema-instance"
+         xsi:schemaLocation="http://maven.apache.org/POM/4.0.0 https://maven.apache.org/xsd/maven-4.0.0.xsd">
+  <modelVersion>4.0.0</modelVersion>
+
+  <!--
+    A measurement, not a module: what Spring AI adds to a desk-agent-shaped JVM, against the thin client desk-agent
+    would write itself. Same Spring Boot as the services. README.md beside this has the method and the numbers.
+  -->
+  <parent>
+    <groupId>org.springframework.boot</groupId>
+    <artifactId>spring-boot-starter-parent</artifactId>
+    <version>4.1.2</version>
+    <relativePath/>
+  </parent>
+
+  <groupId>com.minimalistalliance.desk.spikes</groupId>
+  <artifactId>spring-ai-footprint</artifactId>
+  <version>0</version>
+
+  <properties>
+    <java.version>21</java.version>
+    <spring-ai.version>2.0.2</spring-ai.version>
+  </properties>
+
+  <dependencies>
+    <dependency>
+      <groupId>org.springframework.boot</groupId>
+      <artifactId>spring-boot-starter</artifactId>
+      <exclusions>
+        <exclusion>
+          <groupId>org.yaml</groupId>
+          <artifactId>snakeyaml</artifactId>
+        </exclusion>
+        <exclusion>
+          <groupId>org.apache.logging.log4j</groupId>
+          <artifactId>log4j-to-slf4j</artifactId>
+        </exclusion>
+      </exclusions>
+    </dependency>
+    <dependency>
+      <groupId>tools.jackson.jr</groupId>
+      <artifactId>jackson-jr-objects</artifactId>
+    </dependency>
+  </dependencies>
+
+  <profiles>
+    <!-- -Pspring-ai: the Anthropic chat model, as Spring AI ships it, built by hand with no auto-configuration. -->
+    <profile>
+      <id>spring-ai</id>
+      <dependencies>
+        <dependency>
+          <groupId>org.springframework.ai</groupId>
+          <artifactId>spring-ai-anthropic</artifactId>
+          <version>${spring-ai.version}</version>
+        </dependency>
+      </dependencies>
+      <build>
+        <plugins>
+          <plugin>
+            <groupId>org.codehaus.mojo</groupId>
+            <artifactId>build-helper-maven-plugin</artifactId>
+            <executions>
+              <execution>
+                <id>spring-ai-source</id>
+                <phase>generate-sources</phase>
+                <goals>
+                  <goal>add-source</goal>
+                </goals>
+                <configuration>
+                  <sources>
+                    <source>src/springai/java</source>
+                  </sources>
+                </configuration>
+              </execution>
+            </executions>
+          </plugin>
+        </plugins>
+      </build>
+    </profile>
+    <!-- -Pspring-ai-all: Anthropic, OpenAI and Google's modules together, for the jar count only. -->
+    <profile>
+      <id>spring-ai-all</id>
+      <dependencies>
+        <dependency>
+          <groupId>org.springframework.ai</groupId>
+          <artifactId>spring-ai-anthropic</artifactId>
+          <version>${spring-ai.version}</version>
+        </dependency>
+        <dependency>
+          <groupId>org.springframework.ai</groupId>
+          <artifactId>spring-ai-openai</artifactId>
+          <version>${spring-ai.version}</version>
+        </dependency>
+        <dependency>
+          <groupId>org.springframework.ai</groupId>
+          <artifactId>spring-ai-google-genai</artifactId>
+          <version>${spring-ai.version}</version>
+        </dependency>
+      </dependencies>
+    </profile>
+  </profiles>
+</project>

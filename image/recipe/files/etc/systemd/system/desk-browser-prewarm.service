@@ -1,0 +1,20 @@
+[Unit]
+Description=Start the Browser with the machine, once deskd answers (TD-227, image/README.md "Faster wakes")
+# Only where there is a session to bring back (deskd has written the age band: a desk's first boot has none) and not on a Guild
+# Desk, which has no Browser (its units each skip with /run/ma/guild as well). Ordered after the desk's own services so it never
+# delays them; Wants nothing. Type=exec, not oneshot, so the boot is never held while it waits for deskd. The script exits 0 whatever happens.
+ConditionPathExists=/data/desk/age-band
+ConditionPathExists=!/run/ma/guild
+# The kill switch (image/README.md "Faster wakes"): a file here turns the prewarm off on this desk, and it survives a root replacement.
+ConditionPathExists=!/data/desk/no-prewarm
+After=desk-kind.service desk-datadirs.service deskd.service desk-rtc.service
+# deskd is Restart=always: a unit it needs a restart of isn't this one's business.
+
+[Service]
+Type=exec
+ExecStart=/usr/local/lib/ma/desk-browser-prewarm
+TimeoutStartSec=60
+Nice=10
+
+[Install]
+WantedBy=multi-user.target

@@ -1,0 +1,26 @@
+#!/bin/sh
+# ExecStart of commons-server-address.service, as root, before commons-server starts: writes the guild desk's public
+# IPv4 to /run/commons-server.address for `run`, which passes it to Commons as -advertise for voice candidates. It lives
+# in its own unit because commons-server.service denies the instance metadata service to Commons itself (Security's
+# GDS-4). The address changes only across a stop and start, which runs this again. COMMONS_ADDRESS_FILE is for tests.
+set -u
+out=${COMMONS_ADDRESS_FILE:-/run/commons-server.address}
+ip=
+i=0
+while [ $i -lt 10 ]; do
+  tok=$(curl -fsS -m 2 -X PUT -H 'X-aws-ec2-metadata-token-ttl-seconds: 60' http://169.254.169.254/latest/api/token 2>/dev/null || true)
+  if [ -n "$tok" ]; then
+    ip=$(curl -fsS -m 2 -H "X-aws-ec2-metadata-token: $tok" http://169.254.169.254/latest/meta-data/public-ipv4 2>/dev/null || true)
+  fi
+  case "$ip" in *[!0-9.]* | '') ip= ;; *) break ;; esac
+  i=$((i + 1))
+  sleep 2
+done
+umask 022
+if [ -n "$ip" ]; then
+  printf '%s\n' "$ip" > "$out.tmp" && mv -f "$out.tmp" "$out"
+else
+  rm -f "$out"
+  echo "commons-server-address: no public IPv4 from the metadata service; voice will work only inside this network" >&2
+fi
+exit 0

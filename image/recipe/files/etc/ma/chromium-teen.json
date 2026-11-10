@@ -1,0 +1,9 @@
+{
+  "DnsOverHttpsMode": "secure",
+  "DnsOverHttpsTemplates": "https://family.cloudflare-dns.com/dns-query",
+  "ForceGoogleSafeSearch": true,
+  "ForceYouTubeRestrict": 1,
+  "ProxyMode": "direct",
+  "ExtensionInstallBlocklist": ["*"],
+  "ExtensionInstallAllowlist": []
+}

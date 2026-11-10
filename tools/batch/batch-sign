@@ -1,0 +1,36 @@
+#!/usr/bin/env bash
+# batch-sign: signs a desk batch manifest as it stands, writing the detached signature (DER) beside it as <manifest>.sig, then
+# checks it with the matching public key through desk-batch's own check (batch-verify).
+#
+#   tools/batch/batch-sign <manifest.json> --kms-key-id <key id or alias>   the release key: AWS KMS, ECC_NIST_P256,
+#                                                                         ECDSA_SHA_256, MessageType RAW (4096 bytes at most)
+#   tools/batch/batch-sign <manifest.json> --key <private.pem>             a dev key (P-256), for a lab box or the test desk's
+#                                                                         drop-in; never in git
+#
+# KMS returns the signature in DER (ANSI X9.62), which is what openssl writes and checks, so both paths give the same kind
+# of file. Needs: openssl, python3; aws and base64 for KMS. Exit 0 signed and checked, 1 failed, 2 usage.
+set -euo pipefail
+HERE=$(cd "$(dirname "$0")" && pwd)
+usage() { sed -n '2,11p' "$0" | sed 's/^# \{0,1\}//' >&2; exit 2; }
+fail() { echo "batch-sign: $*" >&2; exit 1; }
+[ $# -eq 3 ] || usage
+m=$1 mode=$2 key=$3
+[ -f "$m" ] || fail "no $m"
+python3 -I "$HERE/../../image/recipe/files/usr/local/lib/ma/desk-batch" verify-manifest "$m" >/dev/null || fail "$m isn't a valid manifest"
+t=$(mktemp -d); trap 'rm -rf "$t"' EXIT
+case "$mode" in
+  --kms-key-id)
+    [ "$(stat -c %s "$m")" -le 4096 ] || fail "$m is over 4096 bytes, KMS's limit for a RAW message"
+    aws kms sign --key-id "$key" --message "fileb://$m" --message-type RAW --signing-algorithm ECDSA_SHA_256 \
+      --query Signature --output text | base64 -d > "$t/sig" || fail "KMS didn't sign"
+    aws kms get-public-key --key-id "$key" --query PublicKey --output text | base64 -d > "$t/pub.der" || fail "no public key from KMS"
+    openssl pkey -pubin -inform DER -in "$t/pub.der" -out "$t/pub.pem" || fail "KMS's public key isn't one openssl reads" ;;
+  --key)
+    [ -f "$key" ] || fail "no $key"
+    openssl dgst -sha256 -sign "$key" -out "$t/sig" "$m" || fail "openssl didn't sign"
+    openssl pkey -in "$key" -pubout -out "$t/pub.pem" || fail "can't read the public half of $key" ;;
+  *) usage ;;
+esac
+"$HERE/batch-verify" "$m" "$t/sig" --pubkey "$t/pub.pem" >/dev/null || fail "the new signature doesn't verify"
+install -m 0644 "$t/sig" "$m.sig"
+echo "batch-sign: wrote $m.sig ($(stat -c %s "$m.sig") bytes, DER), checked with the key's public half" >&2

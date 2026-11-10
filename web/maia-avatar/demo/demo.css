@@ -1,0 +1,70 @@
+/* The demo page only. Surfaces are the brand kit's, from docs/assets/maia/README.md "Themes". Her bubble is
+   surface.overlay, drawn here in CSS: nothing is ever painted behind her on her canvas. */
+:root {
+  --world: #E9E9E5; --overlay: #FFFFFF; --sunken: #F3F3EF; --hairline: rgba(42, 46, 53, 0.08); --rule: rgba(16, 24, 40, 0.18);
+  --fg: #2B2D31; --fg2: #5F6166; --accent: #5076AA; --on-accent: #FFFFFF; --wash: rgba(80, 118, 170, 0.12);
+  color-scheme: light;
+}
+:root[data-theme="dusk"] {
+  --world: #444B57; --overlay: #4F5663; --sunken: #404652; --hairline: rgba(250, 250, 250, 0.08); --rule: rgba(250, 250, 250, 0.26);
+  --fg: #FAFAFA; --fg2: #E2E2E2; --accent: #A5BCDD; --on-accent: #15171B; --wash: rgba(165, 188, 221, 0.18); color-scheme: dark;
+}
+:root[data-theme="dark"] {
+  --world: #15171B; --overlay: #383C45; --sunken: #23262C; --hairline: rgba(232, 234, 237, 0.07); --rule: rgba(236, 237, 239, 0.2);
+  --fg: #ECEDEF; --fg2: #B7BBC2; --accent: #6A8DBF; --on-accent: #15171B; --wash: rgba(106, 141, 191, 0.16); color-scheme: dark;
+}
+* { box-sizing: border-box; }
+body { margin: 0; background: var(--world); color: var(--fg); font: 400 15px/1.55 "Segoe UI", system-ui, -apple-system, Helvetica, Arial, sans-serif; }
+h1, h2 { font-weight: 500; margin: 0; }
+h1 { font-size: 20px; }
+h2 { font-size: 19px; }
+p { margin: 0; max-width: 68ch; }
+code, pre, textarea { font: 13px/1.5 ui-monospace, "SF Mono", Menlo, Consolas, monospace; }
+.muted { color: var(--fg2); }
+.label { font-size: 12px; color: var(--fg2); }
+button, input, textarea { color: inherit; }
+:focus-visible, input:focus-visible + span { outline: 2px solid var(--accent); outline-offset: 2px; }
+
+.bar { position: sticky; top: 0; z-index: 2; display: flex; flex-wrap: wrap; align-items: center; gap: 8px 14px; padding: 12px max(16px, calc((100% - 1080px) / 2)); background: var(--world); border-bottom: 1px solid var(--hairline); }
+.grow { flex: 1 1 0; }
+.chip { font-size: 11px; letter-spacing: 0.06em; text-transform: uppercase; color: var(--fg2); border: 1px solid var(--rule); border-radius: 4px; padding: 1px 6px; }
+.seg { display: inline-flex; border: 1px solid var(--rule); border-radius: 6px; overflow: hidden; }
+.seg label { position: relative; display: block; cursor: pointer; }
+.seg input { position: absolute; inset: 0; opacity: 0; margin: 0; cursor: pointer; }
+.seg span { display: block; padding: 4px 11px; font-size: 13px; line-height: 20px; }
+.seg label + label span { border-left: 1px solid var(--rule); }
+.seg input:checked + span, .btn.primary { background: var(--accent); color: var(--on-accent); }
+.btn { font: inherit; font-size: 13px; line-height: 20px; border: 1px solid var(--rule); border-radius: 6px; background: transparent; padding: 4px 12px; cursor: pointer; }
+.btn:hover { background: var(--wash); }
+.btn.primary:hover { background: var(--accent); filter: brightness(1.08); }
+.btn[aria-pressed="true"] { background: var(--accent); border-color: var(--accent); color: var(--on-accent); }
+
+.wrap { max-width: 1080px; margin: 0 auto; padding: 8px 16px 72px; display: grid; gap: 48px; }
+section { display: grid; gap: 18px; padding-top: 24px; min-width: 0; }
+.head { display: grid; gap: 6px; }
+.figs { display: flex; flex-wrap: wrap; align-items: flex-end; gap: 16px 24px; }
+figure { margin: 0; display: inline-grid; justify-items: center; gap: 8px; }
+figcaption { font-size: 12px; color: var(--fg2); }
+.controls { display: flex; flex-wrap: wrap; gap: 8px; }
+.check { display: inline-flex; align-items: center; gap: 6px; font-size: 13px; cursor: pointer; }
+.readout { font-size: 13px; color: var(--fg2); font-variant-numeric: tabular-nums; min-height: 1.55em; }
+.foot { font-size: 13px; }
+
+/* Her bubble: the element is the bubble, and so is the span round a bare canvas. */
+maia-avatar, .bubble { background: var(--overlay); box-shadow: 0 0 0 1px var(--hairline); }
+.bubble { position: relative; display: block; border-radius: 50%; overflow: hidden; }
+.bubble canvas, .still { display: block; }
+
+.pairs { display: flex; flex-wrap: wrap; align-items: flex-end; gap: 24px 40px; }
+.pair { display: grid; gap: 8px; justify-items: start; }
+.pair .figs { gap: 12px; }
+
+.mood-grid { display: grid; grid-template-columns: repeat(auto-fill, minmax(240px, 1fr)); gap: 24px 32px; }
+.mood { display: grid; gap: 10px; align-content: start; }
+.mood h3 { margin: 0; font-size: 15px; font-weight: 500; }
+
+.try-grid { display: grid; grid-template-columns: minmax(0, 1fr) auto; gap: 24px 40px; align-items: start; }
+.side { display: grid; gap: 10px; min-width: 0; }
+textarea { width: 100%; resize: vertical; background: var(--sunken); border: 1px solid var(--rule); border-radius: 8px; padding: 10px 12px; }
+pre { margin: 0; white-space: pre-wrap; overflow-wrap: anywhere; color: var(--fg2); }
+@media (max-width: 640px) { .try-grid { grid-template-columns: minmax(0, 1fr); } }

@@ -1,0 +1,24 @@
+#!/bin/sh
+# ExecStart of commons-server.service on a guild desk. The unit runs it as user commons with the env file's settings.
+# The public IPv4 for voice comes from COMMONS_ADVERTISE, or else from /run/commons-server.address, which
+# commons-server-address.service writes from the instance metadata service before this starts (Commons itself is
+# denied the metadata service). COMMONS_ADDRESS_FILE is for tests.
+set -eu
+: "${RELEASE_DIR:?RELEASE_DIR is not set}"
+
+adv=${COMMONS_ADVERTISE:-}
+if [ -z "$adv" ] && [ -r "${COMMONS_ADDRESS_FILE:-/run/commons-server.address}" ]; then
+  adv=$(head -c 64 "${COMMONS_ADDRESS_FILE:-/run/commons-server.address}" | tr -d ' \n')
+fi
+case "$adv" in *[!0-9.]*) echo "commons-server: ignoring a public address that isn't IPv4: $adv" >&2; adv= ;; esac
+[ -n "$adv" ] || echo "commons-server: no public IPv4; voice works only inside this network" >&2
+
+exec "$RELEASE_DIR/commons-server" \
+  -addr "${COMMONS_HTTP:-127.0.0.1:8790}" \
+  -udp "${COMMONS_UDP:-0.0.0.0:8791}" \
+  ${adv:+-advertise "$adv"} \
+  -relay-socket "${COMMONS_RELAY_SOCKET:-/run/desk-commons/commons.sock}" \
+  -relay-uid "${COMMONS_RELAY_UID:-1100}" \
+  -data "${MA_APP_DATA:-/data/guild/commons}" \
+  -max-channels "${COMMONS_MAX_CHANNELS:-10}" \
+  -stats=true

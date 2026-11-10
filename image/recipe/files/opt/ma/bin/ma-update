@@ -1,0 +1,301 @@
+#!/bin/bash
+# ma-update <component> <url> <sha256>            install a release, smoke test, roll back on failure
+# ma-update <component> --rollback                swap current and previous
+# ma-update <component> --prepare <url> <sha256>  download, check, unpack and load a release beside the live one; switch nothing
+# ma-update <component> --activate <version>      switch to the prepared release, restart, smoke test, put the old one back on failure
+# ma-update <component> --unprepare               drop the prepared release, unless it's current or previous
+# Exit: 0 healthy (or prepared) | 1 smoke test failed (old release put back) or rollback unhealthy | 2 error before any change
+# The release that's already current, from the same artifact (artifact.sha256 in its directory), changes nothing: it
+# only runs the smoke test. That's a rollout of the version an image bakes in.
+# Refused, exit 2 with nothing changed: desk-rtc 0.2.0, by install, prepare, activate or rollback, on any image but 0.1.x, 0.2.0
+# and 0.2.1 (/etc/ma-release). From image 0.2.2 on, characters go missing and one reloads the page. build.sh refuses to bake it too.
+#
+# Prepare and activate (desk batches, S-96; docs/interfaces/desk-runtime.md section 6.1). desk-batch prepares every component
+# of a batch first, so the downloads, unpacks and docker loads are done before the first restart, then activates them in
+# order. --prepare lays the release out as an install does, in releases/<version>, and points the link `prepared` at it;
+# current and previous don't move and nothing restarts. An artifact that's already current changes nothing; one that's
+# previous, or already prepared, is prepared again without a download. Preparing another release drops the one prepared
+# before. --activate <version> needs `prepared` on that version, then does what an install does from its switch on: previous
+# to the old current, current to it, restart, the smoke test for up to 90 s, prune; and on failure the old pair back, the
+# prepared release removed (unless it was previous), exit 1. Prune keeps current, previous and prepared, and every
+# component's images for those three.
+# On a shared host (ADR 0072 section 2) there's no Docker: load_image is the one step that changes, to unpacking the image
+# into the release instead of `docker load`. The arguments, links, smoke test and exit codes stay as they are.
+#
+# Test hooks (root only): MA_ROOT, MA_SMOKE_TEST, MA_SMOKE_WAIT, MA_RELEASE_FILE.
+# Bake hook (root only): MA_INSTALL_ONLY=1 installs and links the release, then stops: no restart, no smoke test, no
+# prune. recipe/build.sh uses it so the baked releases have exactly a rollout's layout without starting anything.
+set -euo pipefail
+ROOT=${MA_ROOT:-/opt/ma}
+SMOKE=${MA_SMOKE_TEST:-/opt/ma/smoke-test}
+SMOKE_WAIT=${MA_SMOKE_WAIT:-90}
+INSTALL_ONLY=${MA_INSTALL_ONLY:-0}
+RELEASE_FILE=${MA_RELEASE_FILE:-/etc/ma-release}
+USAGE="usage: ma-update <component> <url> <sha256> | <component> --rollback | <component> --prepare <url> <sha256> | <component> --activate <version> | <component> --unprepare"
+log() { echo "ma-update: $*" >&2; }
+die() { log "ERROR: $*"; exit 2; }
+# never_here <component> <version>: dies if this release must never run on this image. Only an image older than 0.2.2 may
+# run desk-rtc 0.2.0; one with no readable version, a self-hosted desk's and a test bake's are all newer.
+never_here() {
+  [ "$1" = desk-rtc ] && [ "$2" = 0.2.0 ] || return 0
+  local img; img=$(sed -n 's/^version=//p' "$RELEASE_FILE" 2>/dev/null | head -1 || true)
+  case "$img" in 0.1.* | 0.2.0 | 0.2.1) return 0 ;; esac
+  die "desk-rtc 0.2.0 must never run on image ${img:-unknown} (0.2.2 or later): characters go missing and one reloads the page"
+}
+
+[ "$(id -u)" = 0 ] || die "must run as root"
+[ $# -ge 2 ] || die "$USAGE"
+comp=$1
+[[ $comp =~ ^[a-z][a-z0-9-]{0,40}$ ]] || die "bad component name"
+exec 9>/run/ma-update.lock
+flock -n 9 || die "another ma-update is running"
+
+command -v docker >/dev/null || die "docker CLI not found (package docker-cli missing from the image)"
+cdir=$ROOT/$comp
+unit=$comp.service
+
+set_link() { ln -sfn "$2" "$cdir/$1.tmp" && mv -T "$cdir/$1.tmp" "$cdir/$1"; }
+rm_link() { rm -f "$cdir/$1"; }
+target() { readlink "$cdir/$1" 2>/dev/null || true; }
+art_sha() { cat "$1/artifact.sha256" 2>/dev/null || true; }   # art_sha <release dir>
+
+# A release with an ON_DEMAND file at its root (desk-stream) isn't started by an update, only restarted
+# if it's already running: deskd decides when it runs.
+restart_unit() {
+  if systemctl cat "$unit" >/dev/null 2>&1; then
+    systemctl reset-failed "$unit" 2>/dev/null || true
+    if [ -e "$cdir/current/ON_DEMAND" ]; then
+      systemctl try-restart "$unit"
+    else
+      systemctl restart "$unit"
+    fi
+  else
+    log "no unit $unit, nothing to restart"
+  fi
+}
+stop_unit() { systemctl cat "$unit" >/dev/null 2>&1 && systemctl stop "$unit" || true; }
+
+smoke_wait() {
+  local end=$((SECONDS + SMOKE_WAIT))
+  while :; do
+    if "$SMOKE"; then return 0; fi
+    [ "$SECONDS" -ge "$end" ] && return 1
+    sleep 3
+  done
+}
+
+prune_images() {
+  local keep="" d id
+  for d in "$(target current)" "$(target previous)" "$(target prepared)"; do
+    [ -n "$d" ] && [ -f "$d/image-id" ] && keep="$keep $(cat "$d/image-id")"
+  done
+  # other components' images are kept too, a release prepared for a batch included
+  for d in "$ROOT"/*/current/image-id "$ROOT"/*/previous/image-id "$ROOT"/*/prepared/image-id; do
+    [ -f "$d" ] && keep="$keep $(cat "$d")"
+  done
+  for id in $(docker images -q --no-trunc | sort -u); do
+    case " $keep " in *" $id "*) ;; *) docker rmi -f "$id" >/dev/null 2>&1 || true ;; esac
+  done
+}
+prune() {
+  local keep1 keep2 keep3 d
+  keep1=$(basename "$(target current)" 2>/dev/null || true)
+  keep2=$(basename "$(target previous)" 2>/dev/null || true)
+  keep3=$(basename "$(target prepared)" 2>/dev/null || true)
+  for d in "$cdir"/releases/*; do
+    [ -d "$d" ] || continue
+    case "$(basename "$d")" in "$keep1"|"$keep2"|"$keep3") ;; *) rm -rf "$d" ;; esac
+  done
+  prune_images
+}
+
+# drop_prepared: takes the link `prepared` away, and its release with it unless that's current or previous.
+drop_prepared() {
+  local p; p=$(target prepared)
+  [ -n "$p" ] || return 0
+  rm_link prepared
+  case "$p" in "$(target current)"|"$(target previous)") ;; *) rm -rf "$p" ;; esac
+}
+
+# fetch <url> <sha>: downloads and checks the artifact and unpacks it into $tmp/x. Sets ver. Exits 2 on any problem.
+fetch() {
+  local url=$1 sha=$2 v
+  case $url in https://*|file:///*) ;; *) die "url must be https:// (presigned) or file:///" ;; esac
+  tmp=$(mktemp -d /var/tmp/ma-update.XXXXXX)
+  trap 'rm -rf "$tmp"' EXIT
+  log "downloading"
+  curl --fail --silent --show-error --location --proto '=https,file' --max-time 900 --retry 3 -o "$tmp/artifact" "$url" \
+    || die "download failed"
+  echo "$sha  $tmp/artifact" | sha256sum -c --status || die "sha256 mismatch (got $(sha256sum "$tmp/artifact" | cut -d' ' -f1))"
+
+  mkdir "$tmp/x"
+  tar -xf "$tmp/artifact" -C "$tmp/x" --no-same-owner || die "cannot unpack artifact"
+  if [ ! -f "$tmp/x/VERSION" ]; then
+    if [ -f "$tmp/x/manifest.json" ]; then
+      # Tolerated: a bare `docker save` tarball. The version comes from its ma/<component> tag.
+      v=$(jq -r --arg p "ma/$comp:" '[.[].RepoTags[]? | select(startswith($p))][0] // "" | sub("^.*:"; "")' "$tmp/x/manifest.json")
+      [ -n "$v" ] || die "docker tarball has no ma/$comp:<version> tag"
+      mv "$tmp/artifact" "$tmp/x/image.tar"; find "$tmp/x" -mindepth 1 -maxdepth 1 ! -name image.tar -exec rm -rf {} +
+      echo "$v" > "$tmp/x/VERSION"
+    else
+      die "artifact has no VERSION"
+    fi
+  fi
+  ver=$(tr -d '[:space:]' < "$tmp/x/VERSION")
+  [[ $ver =~ ^[A-Za-z0-9._+-]{1,64}$ ]] || die "bad VERSION '$ver'"
+  never_here "$comp" "$ver"
+}
+
+# load_image: the unpacked release's image.tar becomes a loaded image, its ID in image-id, and image.tar goes. On a shared
+# host this is the step that unpacks the image into the release instead (ADR 0072 section 2); nothing else changes.
+load_image() {
+  local out ref id
+  [ -f "$tmp/x/image.tar" ] || return 0
+  log "docker load"
+  out=$(docker load -i "$tmp/x/image.tar") || die "docker load failed"
+  ref=$(echo "$out" | sed -n 's/^Loaded image ID: //p;s/^Loaded image: //p' | tail -1)
+  [ -n "$ref" ] || die "could not read the loaded image from: $out"
+  id=$(docker image inspect --format '{{.Id}}' "$ref") || die "loaded image $ref not found"
+  echo "$id" > "$tmp/x/image-id"
+  rm -f "$tmp/x/image.tar"
+}
+
+# place <sha>: checks the unpacked release, records its artifact's hash and moves it into releases/$ver (rel).
+place() {
+  [ -x "$tmp/x/run" ] && [ -x "$tmp/x/health" ] || die "artifact needs executable run and health"
+  echo "$1" > "$tmp/x/artifact.sha256"
+  install -d -m 0755 -o root -g root "$cdir" "$cdir/releases"
+  chown -R root:root "$tmp/x"; chmod -R go-w "$tmp/x"; chmod 0755 "$tmp/x"
+  mv "$tmp/x" "$rel"
+}
+
+# switch_and_check: from the links' switch on, for an install and an activate. old_cur, old_prev and rel are set; keep_rel=1
+# keeps rel on a failure (it was previous, so the desk had run it).
+switch_and_check() {
+  local ok=1
+  restart_unit || ok=0
+  if [ "$ok" = 1 ] && smoke_wait; then
+    prune
+    log "healthy"
+    exit 0
+  fi
+  log "smoke test FAILED: rolling back"
+  if [ -n "$old_cur" ]; then set_link current "$old_cur"; else rm_link current; fi
+  if [ -n "$old_prev" ]; then set_link previous "$old_prev"; else rm_link previous; fi
+  [ "${keep_rel:-0}" = 1 ] || rm -rf "$rel"
+  prune_images
+  if [ -n "$old_cur" ]; then restart_unit || true; else stop_unit; fi
+  "$SMOKE" >&2 || log "note: smoke test still failing after rollback"
+  exit 1
+}
+
+if [ "$2" = "--rollback" ]; then
+  cur=$(target current); prev=$(target previous)
+  [ -n "$prev" ] && [ -d "$prev" ] || die "no previous release for $comp"
+  never_here "$comp" "$(basename "$prev")"
+  set_link current "$prev"
+  if [ -n "$cur" ]; then set_link previous "$cur"; else rm_link previous; fi
+  log "rolled $comp back: current -> $prev"
+  restart_unit
+  if smoke_wait; then log "rollback healthy"; exit 0; fi
+  log "WARNING: smoke test fails after rollback"; exit 1
+fi
+
+if [ "$2" = "--unprepare" ]; then
+  [ $# -eq 2 ] || die "$USAGE"
+  p=$(target prepared)
+  [ -n "$p" ] || { log "$comp: nothing prepared"; exit 0; }
+  drop_prepared
+  prune_images
+  log "$comp: dropped the prepared $(basename "$p")"
+  exit 0
+fi
+
+if [ "$2" = "--prepare" ]; then
+  [ $# -eq 4 ] || die "$USAGE"
+  url=$3; sha=${4,,}
+  [[ $sha =~ ^[0-9a-f]{64}$ ]] || die "bad sha256"
+  old_cur=$(target current); old_prev=$(target previous); old_prep=$(target prepared)
+  # By the artifact's hash first, so nothing is downloaded for a release the desk already has.
+  if [ -n "$old_cur" ] && [ "$(art_sha "$old_cur")" = "$sha" ]; then
+    [ -z "$old_prep" ] || { drop_prepared; prune_images; }
+    log "$comp $(basename "$old_cur") is already current, from this artifact: nothing to prepare"; exit 0
+  fi
+  if [ -n "$old_prep" ] && [ -d "$old_prep" ] && [ "$(art_sha "$old_prep")" = "$sha" ]; then
+    never_here "$comp" "$(basename "$old_prep")"
+    log "$comp $(basename "$old_prep") is already prepared, from this artifact"; exit 0
+  fi
+  if [ -n "$old_prev" ] && [ -d "$old_prev" ] && [ "$(art_sha "$old_prev")" = "$sha" ]; then
+    never_here "$comp" "$(basename "$old_prev")"
+    [ -z "$old_prep" ] || { drop_prepared; prune_images; }
+    set_link prepared "$old_prev"
+    log "$comp: prepared -> $(basename "$old_prev"), which is previous, from this artifact (nothing downloaded)"; exit 0
+  fi
+  fetch "$url" "$sha"
+  rel=$cdir/releases/$ver
+  if [ -e "$rel" ]; then
+    case "$rel" in "$old_cur"|"$old_prev") die "version $ver is already installed as current or previous, from another artifact" ;; esac
+    [ "$rel" != "$old_prep" ] || rm_link prepared
+    rm -rf "$rel"
+  fi
+  load_image
+  place "$sha"
+  [ -z "$old_prep" ] || [ "$old_prep" = "$rel" ] || drop_prepared
+  set_link prepared "$rel"
+  prune_images
+  log "$comp: prepared -> $ver (current: $(basename "${old_cur:-none}"), nothing switched)"
+  exit 0
+fi
+
+if [ "$2" = "--activate" ]; then
+  [ $# -eq 3 ] || die "$USAGE"
+  ver=$3
+  [[ $ver =~ ^[A-Za-z0-9._+-]{1,64}$ ]] || die "bad version '$ver'"
+  rel=$cdir/releases/$ver
+  old_cur=$(target current); old_prev=$(target previous); prep=$(target prepared)
+  if [ -n "$old_cur" ] && [ "$rel" = "$old_cur" ]; then
+    [ "$prep" != "$rel" ] || rm_link prepared
+    log "$comp $ver is already current: nothing switched"
+    if smoke_wait; then log "healthy"; exit 0; fi
+    log "smoke test FAILED (nothing was changed)"; exit 1
+  fi
+  [ "$prep" = "$rel" ] && [ -d "$rel" ] || die "$comp $ver isn't prepared (prepared: $(basename "${prep:-none}"))"
+  [ -x "$rel/run" ] && [ -x "$rel/health" ] || die "the prepared $comp $ver has no executable run and health"
+  never_here "$comp" "$ver"
+  keep_rel=0; [ "$rel" != "$old_prev" ] || keep_rel=1
+  [ -n "$old_cur" ] && set_link previous "$old_cur"
+  set_link current "$rel"
+  rm_link prepared
+  log "$comp: current -> $ver (previous: ${old_cur:-none})"
+  switch_and_check
+fi
+
+[ $# -eq 3 ] || die "$USAGE"
+url=$2; sha=${3,,}
+[[ $sha =~ ^[0-9a-f]{64}$ ]] || die "bad sha256"
+fetch "$url" "$sha"
+
+old_cur=$(target current); old_prev=$(target previous)
+rel=$cdir/releases/$ver
+# The release that's already current, from the same artifact: nothing to change, such as a rollout of the version an image
+# bakes in. Its health still decides the exit. The same version from a different artifact is still refused below.
+if [ "$rel" = "$old_cur" ] && [ "$(cat "$rel/artifact.sha256" 2>/dev/null)" = "$sha" ]; then
+  log "$comp $ver is already current, from this artifact: nothing changed"
+  if [ "$INSTALL_ONLY" = 1 ] || smoke_wait; then log "healthy"; exit 0; fi
+  log "smoke test FAILED (nothing was changed)"; exit 1
+fi
+if [ -e "$rel" ]; then
+  case "$rel" in "$old_cur"|"$old_prev") die "version $ver is already installed as current or previous" ;; esac
+  [ "$rel" != "$(target prepared)" ] || rm_link prepared   # an install of the version a batch prepared replaces it
+  rm -rf "$rel"
+fi
+
+load_image
+place "$sha"
+
+[ -n "$old_cur" ] && set_link previous "$old_cur"
+set_link current "$rel"
+log "$comp: current -> $ver (previous: ${old_cur:-none})"
+if [ "$INSTALL_ONLY" = 1 ]; then log "installed only: nothing restarted, smoke-tested or pruned"; exit 0; fi
+
+switch_and_check

@@ -1,0 +1,4 @@
+# desk-data's scratch for consistent copies of SQLite databases (draft-data-export-and-transfer.md, decision 3).
+# Root only. The helper empties what no live helper holds at every start, and unlinks each copy as it opens it.
+# Installed as /etc/tmpfiles.d/desk-data.conf. data.mount is Before=local-fs.target, so this runs on the volume.
+d /data/.ma-export-tmp 0700 root root -

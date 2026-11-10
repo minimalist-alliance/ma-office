@@ -1,0 +1,22 @@
+#!/bin/bash
+# /opt/ma/smoke-test: exit 0 only when current/health exits 0 for every installed component.
+# With nothing installed it exits 0. Each component's owner writes its own `health`.
+set -u
+rc=0; n=0
+for cur in /opt/ma/*/current; do
+  [ -x "$cur/health" ] || continue
+  n=$((n + 1)); comp=$(basename "$(dirname "$cur")")
+  if out=$(RELEASE_DIR=$cur timeout 30 "$cur/health" 2>&1); then
+    echo "smoke-test: $comp ok"
+  else
+    echo "smoke-test: $comp FAIL: $out" >&2; rc=1
+  fi
+done
+# DA-2: desk-agent's only way out is nftables' agent_redirect (ADR 0070). With the agent installed, the ruleset must be
+# loaded with that chain, or uid 1103 has open egress; the unit refuses to start without it, and so does this check.
+if [ -e /opt/ma/desk-agent/current ]; then
+  if /usr/sbin/nft list chain inet ma agent_redirect >/dev/null 2>&1; then echo "smoke-test: nftables agent_redirect ok"
+  else echo "smoke-test: nftables FAIL: table inet ma has no agent_redirect chain (ruleset not loaded?)" >&2; rc=1; fi
+fi
+[ "$rc" = 0 ] && echo "smoke-test: ok ($n component(s))"
+exit "$rc"

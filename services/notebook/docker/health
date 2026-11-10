@@ -1,0 +1,36 @@
+#!/bin/sh
+# Exit 0 only when desk-notebook answers over its own socket that its database is open (desk-runtime.md section 6).
+# /opt/ma/smoke-test calls this as root, on the host, where the image always has python3 (tools/desk-data needs it too).
+# DESK_NOTEBOOK_SOCKET is only for tests.
+exec python3 -I -c '
+import json, os, socket, struct, sys
+
+def fail(why):
+    print("desk-notebook health: " + why, file=sys.stderr)
+    sys.exit(1)
+
+path = os.environ.get("DESK_NOTEBOOK_SOCKET", "/run/desk-notebook/notebook.sock")
+s = socket.socket(socket.AF_UNIX)
+s.settimeout(5)
+try:
+    s.connect(path)
+    body = b"\x01" + json.dumps({"t": "health"}).encode()
+    s.sendall(struct.pack(">I", len(body)) + body)
+    data = b""
+    while len(data) < 4 or len(data) < 4 + struct.unpack(">I", data[:4])[0]:
+        chunk = s.recv(65536)
+        if not chunk:
+            fail("the connection closed")
+        data += chunk
+except OSError as e:
+    fail(type(e).__name__)
+n = struct.unpack(">I", data[:4])[0]
+if data[4] != 1:
+    fail("not a JSON frame")
+try:
+    reply = json.loads(data[5:4 + n])
+except ValueError:
+    fail("not JSON")
+if reply.get("t") != "health" or reply.get("ok") is not True:
+    fail("not healthy")
+'

@@ -1,0 +1,121 @@
+<title>Maia in Motion</title>
+<meta name="claude:viewport-fit-sides" content="cover">
+<style>
+/*CSS*/
+</style>
+<div class="wrap">
+  <header class="bar">
+    <h1>Maia in Motion</h1>
+    <span class="chip">Version 7</span>
+    <span class="grow"></span>
+    <div class="seg" role="radiogroup" aria-label="Theme">
+      <label><input type="radio" name="theme" id="theme-light" value="light"><span>Light</span></label>
+      <label><input type="radio" name="theme" id="theme-dusk" value="dusk"><span>Dusk</span></label>
+      <label><input type="radio" name="theme" id="theme-dark" value="dark"><span>Dark</span></label>
+    </div>
+    <button class="btn" id="pause" type="button" aria-pressed="false">Pause</button>
+  </header>
+  <div class="notice" id="motion-note" hidden>
+    <p>Your device asks for less motion, so she stays almost still here.</p>
+    <button class="btn" id="motion-anyway" type="button">Show motion anyway</button>
+  </div>
+
+  <section id="moods">
+    <div class="head">
+      <h2>Six moods, all at once</h2>
+      <p class="muted">One small score per reply drives her for 20 to 30 seconds, then loops. Her eyes stay open while she is awake. Everything here runs live at 30 fps.</p>
+    </div>
+    <div class="moods" id="mood-grid"></div>
+  </section>
+
+  <section id="chat">
+    <div class="head">
+      <h2>A chat, live</h2>
+      <p class="muted">She thinks, speaks while the text streams, plays the score, falls asleep and wakes. Her bubble is 64 px in the chat, next to the same Maia at 200 px.</p>
+    </div>
+    <div class="chat-grid">
+      <div class="chat">
+        <div class="chat-top"><h3>Maia</h3><span class="chip">Example exchange</span></div>
+        <div class="me">My office says one of my desks is waking up. Did something go wrong?</div>
+        <div class="her">
+          <span id="chat-small"></span>
+          <div class="reply"><p class="ghost" id="reply-ghost" aria-hidden="true"></p><p id="reply-text"></p></div>
+        </div>
+      </div>
+      <div class="side">
+        <div id="chat-big"></div>
+        <ul class="steps" id="chat-steps"></ul>
+        <div id="chat-tl"></div>
+        <pre id="chat-json"></pre>
+      </div>
+    </div>
+  </section>
+
+  <section id="vocabulary">
+    <div class="head">
+      <h2>Vocabulary</h2>
+      <p class="muted">The model chooses from these lines. Press one to play it: moods and rhythms stay set, beats play once. Level 3 is the largest.</p>
+    </div>
+    <div class="voc-grid">
+      <div class="voc-lists" id="voc-lists"></div>
+      <div class="stage" id="voc-stage"></div>
+    </div>
+  </section>
+
+  <section id="states">
+    <div class="head">
+      <h2>States</h2>
+      <p class="muted">The engine owns these. The model can never pick them.</p>
+    </div>
+    <div class="rows" id="state-rows"></div>
+  </section>
+
+  <section id="stream">
+    <div class="head">
+      <h2>While a desk stream plays</h2>
+      <p class="muted">She drops to 15 fps to leave the machine to the desk. She moves about as far, but no single frame steps more than 1.5 px at 56 px, and beats run longer. Same score on both.</p>
+    </div>
+    <div class="figs" id="stream-figs"></div>
+  </section>
+
+  <section id="sizes">
+    <div class="head">
+      <h2>Sizes</h2>
+      <p class="muted">A full 12 beat score at every size. Below 53 px the small drawing is used, and at 127 px and up the large one.</p>
+    </div>
+    <div class="figs" id="size-figs"></div>
+    <div id="sizes-tl"></div>
+  </section>
+
+  <section id="try">
+    <div class="head">
+      <h2>Try a score</h2>
+      <p class="muted">Edit the score and play it. It is treated as data: anything unknown is dropped one item at a time, and if nothing valid is left she plays calm.</p>
+    </div>
+    <div class="try-grid">
+      <div>
+        <label class="label" for="score-input">Score JSON</label>
+        <textarea id="score-input" spellcheck="false"></textarea>
+        <div><button class="btn primary" id="score-play" type="button">Play this score</button></div>
+        <ul class="notes" id="score-notes"></ul>
+      </div>
+      <div>
+        <div class="figs" id="try-figs"></div>
+        <div id="try-tl"></div>
+      </div>
+    </div>
+  </section>
+  <p class="foot">Version 7, for review. Sample text and scores are examples. Numbers come from a headless test run, not from a shipped product.</p>
+</div>
+<script>
+/*DATA*/
+</script>
+<script>
+/*VOCAB*/
+</script>
+<script>
+/*ENGINE*/
+</script>
+<script>
+/*PAGE*/
+</script>

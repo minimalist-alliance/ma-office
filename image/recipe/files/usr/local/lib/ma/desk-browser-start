@@ -1,0 +1,78 @@
+#!/bin/bash
+# desk-browser-start: exec Chromium for desk-browser.service (design section 6.1).
+# A URL on the command line is opened IN ADDITION to the restored session, so every restart added a tab.
+# So the home page is passed only when there is no session to restore (first start, or a profile with no saved tabs).
+# Restoring after a clean stop is the RestoreOnStartup policy's job (etc/chromium/policies/managed/ma.json).
+# After a crash (kill -9, OOM) Chromium sees exit_type=Crashed, skips the policy and leaves restoring to a "restore pages?"
+# bubble, which --disable-session-crashed-bubble removes, so the desk came back with one empty tab (measured on the 0.2.0
+# image). Marking the last exit as clean makes the policy apply as after a graceful stop; --restore-last-session is a
+# second line. Tabs are restored with no prompt.
+#
+# Window size: there's no window manager, so --kiosk never makes the window fullscreen, and Chromium won't open a
+# window at exactly a display's size: it takes 1 px off each side, for window managers that take such a window as
+# fullscreen (AdjustSizeForDisplay in x11_window.cc). That left the page 1919x1079 with a black strip right and
+# bottom. Resized from outside, Chromium just follows. A larger --window-size isn't a way round it: the page gets
+# 1921x1081, past the edge of the screen.
+#
+# Downgrade guard (ADR 0035). A Chromium older than the profile razes what it can't read: measured on 156.0.8078.79,
+# a Cookies database marked newer came back empty, persistent and session cookies alike, and Web Data was recreated.
+# History and Login Data only refuse to open. Chromium overwrites "Last Version" on every start, so this check has to
+# come before any start, and before anything below changes the profile. A refused browser is recoverable; razed
+# cookies aren't. Exit 78 is RestartPreventExitStatus in desk-browser.service. --check runs only this part, and
+# desk-units runs it first, so deskd gets an error at once instead of a unit that starts and dies.
+# Test hook: MA_BROWSER_PROFILE.
+set -u
+P=${MA_BROWSER_PROFILE:-/data/browser/profile}
+W=1920 H=1080
+REFUSED=78
+refuse() {
+  local m="desk-browser-start: REFUSING TO START, profile left untouched: $*"
+  echo "$m" >&2
+  logger -p user.crit -t desk-browser-start "$m" 2>/dev/null || true
+  exit "$REFUSED"
+}
+version_re='^[0-9]+(\.[0-9]+){1,3}$'
+last=$(head -c 64 "$P/Last Version" 2>/dev/null | tr -d '[:space:]')
+if [ -n "$last" ]; then   # none: a new profile, or one that never finished a first start
+  installed=$(dpkg-query -W -f='${Version}' chromium 2>/dev/null); installed=${installed#*:}; installed=${installed%%-*}
+  [[ $last =~ $version_re ]] || refuse "$P/Last Version isn't a version, so it can't be compared"
+  [[ $installed =~ $version_re ]] || refuse "can't read the installed Chromium's version"
+  if [ "$last" != "$installed" ] && [ "$(printf '%s\n%s\n' "$last" "$installed" | sort -V | tail -1)" = "$last" ]; then
+    refuse "profile last ran Chromium $last, newer than the installed $installed. Update Chromium; never remove the profile (ADR 0035)"
+  fi
+fi
+[ "${1:-}" = --check ] && exit 0
+
+fit_window() {
+  local i win
+  for i in $(seq 1 1500); do   # 5 minutes: a first boot reads Chromium from the snapshot slowly
+    win=$(xdotool search --onlyvisible --classname "$P" 2>/dev/null | head -1)   # the instance name holds the profile path
+    if [ -n "$win" ]; then
+      case "$(xdotool getwindowgeometry --shell "$win" 2>/dev/null)" in
+        *"WIDTH=$W"*"HEIGHT=$H"*) return 0 ;;
+      esac
+      xdotool windowsize "$win" "$W" "$H"
+    fi
+    sleep 0.2
+  done
+  echo "desk-browser-start: never got the window to ${W}x${H}" >&2
+}
+fit_window &
+
+# systemd runs one desk-browser at a time, so any Singleton* left behind belongs to a dead Chromium (a kill -9, or a
+# changed hostname after a stop/start). Left in place, Chromium can wait on a "profile in use" dialog nobody can answer.
+rm -f "$P/SingletonLock" "$P/SingletonCookie" "$P/SingletonSocket"
+PREFS=$P/Default/Preferences
+[ -f "$PREFS" ] && sed -i 's/"exit_type":"Crashed"/"exit_type":"Normal"/; s/"exited_cleanly":false/"exited_cleanly":true/' "$PREFS"
+args=()
+if find "$P/Default/Sessions" -maxdepth 1 -type f \( -name 'Session_*' -o -name 'Tabs_*' \) -size +16c 2>/dev/null | grep -q .; then
+  args=(--restore-last-session)
+else
+  args=(file:///usr/local/share/ma/home.html)
+fi
+exec /usr/bin/chromium --kiosk --no-first-run --no-default-browser-check --noerrdialogs \
+  --disable-session-crashed-bubble --disable-infobars --disable-breakpad --password-store=basic \
+  --ozone-platform=x11 --disable-gpu --window-position=0,0 --window-size="$W,$H" \
+  --user-data-dir="$P" --disk-cache-size=1073741824 \
+  --remote-debugging-address=127.0.0.1 --remote-debugging-port=9222 \
+  "${args[@]}"

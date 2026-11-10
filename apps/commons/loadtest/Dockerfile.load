@@ -1,0 +1,5 @@
+# The load generator and its Yjs stroke updates.
+FROM scratch
+COPY commons-load /commons-load
+COPY strokes.bin /strokes.bin
+ENTRYPOINT ["/commons-load", "-fixtures", "/strokes.bin"]

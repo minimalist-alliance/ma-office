@@ -1,0 +1,126 @@
+#!/bin/bash
+# desk-browser-close: stop Chromium cleanly, and keep it stopped, before something takes the machine down without asking
+# it first. A root swap (CreateReplaceRootVolumeTask) reboots the instance, and AWS doesn't say the guest is asked to shut
+# down, so the swap path runs this straight before it (image/README.md, "Before a root swap"; task 33 item 3; ADR 0035).
+# The swap path runs this tree's copy over SSM (image/desk-browser-close.sh), so it works on images that don't carry it.
+#
+# deskd goes first: it's the only thing that starts desk-browser (through desk-units, for a viewer who wants live), so with
+# it stopped nothing can start Chromium again before the swap. A start desk-units was already running finishes first.
+#
+# Then Chromium is asked to quit as its own Exit would, over CDP (Browser.close, as root on 127.0.0.1:9222 or [::1]:9222).
+# That's its full shutdown, and it writes the cookies it hasn't committed yet. SIGTERM, which systemd's stop sends, is its
+# session-ending path: it writes the session and preferences and exits SessionEnded, but cookies reach the disk only at
+# Chromium's own commit, about every 30 s, so a cookie set in the last 30 s or so was lost (restore rehearsal, 2026-11-07,
+# docs/sub-status/td-110.md). If CDP doesn't answer, or Chromium is still running COMMIT_WAIT (31) seconds after it was
+# asked, the wait has let a commit happen first, and systemd's stop follows (TimeoutStopSec=30 before SIGKILL). The stop
+# runs every time: it's a no-op once Chromium has quit, and it cancels a restart if Chromium's exit counted as a failure.
+#
+# Then `sync -f /data` writes the data volume's dirty pages out, before anything is reported: Chromium doesn't fsync
+# everything it writes on exit (Sessions, LevelDB logs), and a reboot that doesn't shut the guest down would lose what's
+# still in memory. From the profile it reads exit_type and nothing else, and it never writes there.
+#
+# Usage, as root: desk-browser-close
+# Prints one line: desk-browser-close: browser=<before>-><after> exit_type=<value> deskd=<state> quit=<how> sync=<ok|failed>
+#   quit=cdp   Chromium quit on Browser.close
+#   quit=term  it didn't (no answer on CDP, or still running after the wait), so systemd's SIGTERM stopped it
+#   quit=none  it wasn't running
+# Exit 0: Chromium is stopped and its last exit was clean, or it wasn't running, and /data was synced. Exit 1: it's still
+# running, its exit wasn't clean, so it was killed, or the sync failed. Either way deskd stays stopped until the reboot, or
+# `systemctl start deskd`. Its unit reads inactive after the stop from image 0.2.9 (SuccessExitStatus=143). Before it, it
+# read failed (docker's exit status, 143), which was harmless: a start or a boot clears it.
+#
+# desk-browser-close --quit: the same quit as part of a stop of desk-browser that's already queued (desk-browser-quit, the
+# second ExecStop of desk-browser-thaw.service, runs it on every stop, restart and shutdown; ADR 0035, 0045). It leaves
+# deskd alone, never asks systemd to stop anything (the stop is already waiting on it), syncs /data, prints its line
+# with deskd=left, and always exits 0: systemd's SIGTERM follows for whatever is left.
+#
+# Chromium is thawed before the quit, and again on every pass of the wait, a second apart (T46L-1): desk-units refuses a freeze
+# while a stop of desk-browser is queued, and desk-browser-thaw waits for one already under way, but a freeze that gets past both
+# (or one written some other way) would hold Chromium mid-quit, and it would then be killed without its session.
+# Test hooks: MA_BROWSER_PROFILE, MA_CLOSE_SETTLE (seconds to wait for desk-units, 30), MA_DATA (the volume to sync, /data),
+# MA_CDP_HOSTS ("127.0.0.1 ::1"), MA_CDP_PORT (9222), MA_COMMIT_WAIT (31), MA_BROWSER_CGROUP (desk-browser's cgroup).
+set -u
+QUIT_ONLY=0
+[ "${1:-}" = --quit ] && QUIT_ONLY=1
+P=${MA_BROWSER_PROFILE:-/data/browser/profile}
+SETTLE=${MA_CLOSE_SETTLE:-30}
+DATA=${MA_DATA:-/data}
+CDP_HOSTS=${MA_CDP_HOSTS:-127.0.0.1 ::1}
+CDP_PORT=${MA_CDP_PORT:-9222}
+COMMIT_WAIT=${MA_COMMIT_WAIT:-31}
+CG=${MA_BROWSER_CGROUP:-/sys/fs/cgroup/system.slice/desk-browser.service}
+
+# thaw: 0 into desk-browser's cgroup.freeze, if it has one (ADR 0045). Never fails, and says nothing.
+thaw() { [ -e "$CG/cgroup.freeze" ] && { echo 0 > "$CG/cgroup.freeze"; } 2>/dev/null; return 0; }
+
+# cdp_close: sends Browser.close to the browser's own CDP target. Exit 0 once Chromium has taken the message, 1 if no host
+# answered. Nothing but the one command is sent, and nothing it answers is printed.
+cdp_close() {
+  MA_CDP_HOSTS=$CDP_HOSTS MA_CDP_PORT=$CDP_PORT python3 -I -c '
+import base64, json, os, socket, sys, urllib.parse, urllib.request
+op = urllib.request.build_opener(urllib.request.ProxyHandler({}))
+port = int(os.environ["MA_CDP_PORT"])
+for h in os.environ["MA_CDP_HOSTS"].split():
+    try:
+        ws = urllib.parse.urlsplit(json.load(op.open("http://%s:%d/json/version" % ("[%s]" % h if ":" in h else h, port), timeout=3))["webSocketDebuggerUrl"])
+        s = socket.create_connection((ws.hostname, ws.port), timeout=5)
+        s.sendall(("GET %s HTTP/1.1\r\nHost: %s\r\nUpgrade: websocket\r\nConnection: Upgrade\r\nSec-WebSocket-Key: %s\r\n"
+                   "Sec-WebSocket-Version: 13\r\n\r\n" % (ws.path, ws.netloc, base64.b64encode(os.urandom(16)).decode())).encode())
+        b = b""
+        while b"\r\n\r\n" not in b:
+            d = s.recv(4096)
+            if not d: raise EOFError
+            b += d
+        if b.split(b" ", 2)[1] != b"101": raise ConnectionError
+        m = json.dumps({"id": 1, "method": "Browser.close"}).encode(); k = os.urandom(4)
+        s.sendall(b"\x81" + bytes([0x80 | len(m)]) + k + bytes(c ^ k[i % 4] for i, c in enumerate(m)))
+        try: s.recv(4096)
+        except OSError: pass
+        sys.exit(0)
+    except (OSError, ValueError, KeyError, IndexError, TypeError, EOFError):
+        continue
+sys.exit(1)
+' 2>/dev/null
+}
+
+before=$(systemctl is-active desk-browser)
+if [ "$QUIT_ONLY" = 0 ]; then
+  systemctl stop deskd
+  for _ in $(seq 1 "$SETTLE"); do
+    [ -z "$(systemctl list-units --plain --no-legend --state=active,activating 'desk-units@*' 2>/dev/null)" ] && break
+    sleep 1
+  done
+fi
+# ADR 0045: deskd may have left Chromium frozen (desk-units freezes its cgroup). Thaw it, so it can take the quit.
+thaw
+# up: the Chromium being quit is still there. With --quit that's its main process by PID: a stop queued with others can
+# let a start bring a new Chromium up the moment this one goes, and the unit then reads active again.
+pid=
+[ "$QUIT_ONLY" = 1 ] && pid=$(systemctl show -p MainPID --value desk-browser 2>/dev/null)
+up() {
+  if [[ $pid =~ ^[1-9][0-9]*$ ]]; then local s; s=$(ps -o stat= -p "$pid" 2>/dev/null); [ -n "$s" ] && [ "${s#Z}" = "$s" ]; return; fi
+  case "$(systemctl is-active desk-browser)" in active | deactivating) return 0 ;; *) return 1 ;; esac
+}
+quit=none
+if [ "$(systemctl is-active desk-browser)" = active ]; then
+  quit=term
+  if cdp_close; then
+    for _ in $(seq 1 "$COMMIT_WAIT"); do
+      thaw
+      if up; then sleep 1; else quit=cdp; break; fi
+    done
+  else
+    for _ in $(seq 1 "$COMMIT_WAIT"); do thaw; sleep 1; done
+  fi
+fi
+[ "$QUIT_ONLY" = 1 ] || systemctl stop desk-browser
+after=$(systemctl is-active desk-browser)
+if sync -f "$DATA"; then synced=ok; else synced=failed; fi
+exit_type=$(grep -o '"exit_type":"[A-Za-z]*"' "$P/Default/Preferences" 2>/dev/null | head -1 | cut -d'"' -f4)
+if [ "$QUIT_ONLY" = 1 ]; then echo "desk-browser-close --quit: browser=$before->$after exit_type=${exit_type:-none} deskd=left quit=$quit sync=$synced"; exit 0; fi
+echo "desk-browser-close: browser=$before->$after exit_type=${exit_type:-none} deskd=$(systemctl is-active deskd) quit=$quit sync=$synced"
+
+case "$after" in active | activating | deactivating | reloading) exit 1 ;; esac
+[ "$synced" = ok ] || exit 1
+case "$before" in inactive | failed) exit 0 ;; esac
+case "$exit_type" in SessionEnded | Normal) exit 0 ;; *) exit 1 ;; esac

@@ -1,0 +1,15 @@
+[Unit]
+Description=Read-only data access for deskd's export and move (draft-data-export-and-transfer.md, decision 3)
+
+[Socket]
+ListenStream=/run/desk/data.sock
+SocketUser=desk
+SocketGroup=desk
+SocketMode=0600
+Accept=yes
+# One connection per call, and one per data.read for as long as it lasts: deskd runs at most 12 transfers
+# desk-wide, which leaves room for its other calls.
+MaxConnections=24
+
+[Install]
+WantedBy=sockets.target

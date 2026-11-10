@@ -1,0 +1,107 @@
+#!/bin/bash
+# desk-host-boot: the shared host's own setup at every boot, before any desk (desk-host-boot.service). Root.
+# - zswap (ADR 0072 section 3, the memory rule): lz4, zsmalloc, at most 50% of RAM, no shrinker writing back; desks are
+#   charged their compressed pages (memory.zswap.max) and never write back (memory.zswap.writeback 0, set per desk).
+# - the swap file zswap sits in front of, never written to while every desk has writeback 0; no zram (the image has none).
+# - the slot store: the AMI's second volume, found by the filesystem UUID baked in and, from the first boot on, by its NVMe
+#   serial (the volume ID) too; grown to the volume's size; mounted prjquota,nosuid,nodev; the template bound read-only.
+# - the cgroup for desks (+cpu +memory +pids +io), conntrack sized for every desk's limit (IN-06), the vsock modules out.
+# - DesksPerHost, SlotsPerHost and HostingVersion from the instance's tags at the first boot, kept after (ADR 0072 section 1).
+#   DesksPerHost is the host's size in standard desks (every class's unit); SlotsPerHost (proposed to Platform, "Container
+#   sizes by tier") how many slots it has, DesksPerHost to 29, default DesksPerHost: a host without it is a 0.1.4 host.
+set -euo pipefail
+conf() { sed -n "s/^$1=//p" /etc/desk-host/desk-host.conf 2>/dev/null | tail -1 | tr -d '"'; }
+log() { echo "desk-host-boot: $*"; }
+DH=/srv/desk-host; T=$DH/template; V=/var/lib/desk-host
+install -d -m 711 $V; install -d -m 700 $V/slots; install -d -m 755 /var/log/desk-host
+install -d -m 711 /run/desk-host; install -d -m 700 /run/desk-host/lock
+
+# zswap
+modprobe lz4 2>/dev/null || modprobe lz4_compress
+Z=/sys/module/zswap/parameters
+echo lz4 > $Z/compressor
+[ "$(cat $Z/zpool)" = zsmalloc ] || echo zsmalloc > $Z/zpool
+echo 50 > $Z/max_pool_percent
+echo N > $Z/shrinker_enabled
+echo Y > $Z/enabled
+log "zswap $(cat $Z/enabled) $(cat $Z/compressor) $(cat $Z/zpool) $(cat $Z/max_pool_percent)%"
+
+# swap: the file only
+F=$(conf SWAP_FILE); F=${F:-/var/lib/desk-host/swap}; GB=$(conf SWAP_GB); GB=${GB:-8}
+for z in $(swapon --noheadings --raw --show=NAME | grep -vx "$F" || true); do swapoff "$z"; done
+if [ ! -f "$F" ] || [ "$(stat -c %s "$F")" -lt $((GB << 30)) ]; then
+  rm -f "$F"; fallocate -l "${GB}G" "$F"; chmod 600 "$F"; mkswap -q "$F"
+fi
+swapon --noheadings --raw --show=NAME | grep -qx "$F" || swapon -p 10 "$F"
+log "swap $(swapon --noheadings --raw --show=NAME,SIZE | tr '\n' ' ')"
+
+# the slot store
+uuid=$(cat /etc/desk-host/store.uuid)
+dev=$(blkid -U "$uuid" 2>/dev/null || true)
+[ -n "$dev" ] || { log "no slot store (filesystem $uuid)"; exit 1; }
+ctl=/sys/block/$(basename "$dev")/device; serial=$(tr -d ' ' < "$ctl/serial" 2>/dev/null || true)
+if [ -f $V/store.serial ]; then
+  [ "$(cat $V/store.serial)" = "$serial" ] || { log "the slot store's serial $serial isn't the first boot's $(cat $V/store.serial): refused"; exit 1; }
+else
+  [ -n "$serial" ] && echo "$serial" > $V/store.serial
+fi
+mountpoint -q $DH || { install -d -m 711 $DH; mount -o prjquota,nosuid,nodev,noatime "$dev" $DH; }
+resize2fs "$dev" >/dev/null 2>&1 || true
+chmod 711 $DH; install -d -m 711 $DH/slots
+if ! grep -q " $T ext4 ro," /proc/self/mounts; then mount --bind $T $T; mount -o remount,bind,ro,nosuid,nodev $T; fi
+log "slot store $dev (serial $serial) at $DH, $(df -h --output=size,avail $DH | tail -1 | tr -s ' ')"
+
+# cgroups, conntrack, modules
+# Each controller on at the root, then on the desks' cgroup. At the first boot systemd is still realizing its own cgroups and
+# may not have the root's on yet (0.1.2 failed here with ENOENT); once desk-host's subtree has a controller, the kernel keeps it
+# on at the root (EBUSY to turning it off), so after this nothing systemd does can take it away.
+mkdir -p /sys/fs/cgroup/desk-host; ok=0
+for _ in $(seq 1 40); do
+  for c in cpu memory pids io; do grep -qw $c /sys/fs/cgroup/cgroup.subtree_control || echo "+$c" > /sys/fs/cgroup/cgroup.subtree_control 2>/dev/null || true; done
+  ok=1; for c in cpu memory pids io; do grep -qw $c /sys/fs/cgroup/desk-host/cgroup.subtree_control || echo "+$c" > /sys/fs/cgroup/desk-host/cgroup.subtree_control 2>/dev/null || ok=0; done
+  [ $ok = 1 ] && break; sleep 0.5
+done
+[ $ok = 1 ] || { log "the desks' cgroup lacks a controller: root [$(cat /sys/fs/cgroup/cgroup.subtree_control)], desk-host [$(cat /sys/fs/cgroup/desk-host/cgroup.subtree_control)]"; exit 1; }
+log "cgroups: desk-host [$(cat /sys/fs/cgroup/desk-host/cgroup.subtree_control)]"
+modprobe nf_conntrack
+for m in vsock_loopback vmw_vsock_virtio_transport vmw_vsock_virtio_transport_common vsock_diag vsock; do modprobe -r "$m" 2>/dev/null || true; done
+
+# DesksPerHost and HostingVersion, from the first boot's tags (ADR 0072 section 1); a later boot keeps the first and says so
+tags=$(python3 -I - "$(conf DESKS_PER_HOST)" <<'PY'
+import json, sys, urllib.request
+def imds(p):
+    t = urllib.request.urlopen(urllib.request.Request("http://169.254.169.254/latest/api/token", method="PUT", headers={"X-aws-ec2-metadata-token-ttl-seconds": "60"}), timeout=3).read().decode()
+    return urllib.request.urlopen(urllib.request.Request("http://169.254.169.254/latest/meta-data/" + p, headers={"X-aws-ec2-metadata-token": t}), timeout=3).read().decode()
+out = {}
+for k, key in (("desksPerHost", "DesksPerHost"), ("slotsPerHost", "SlotsPerHost"), ("hostingVersion", "HostingVersion")):
+    try:
+        out[k] = imds("tags/instance/" + key)
+    except Exception:
+        pass
+if "desksPerHost" in out:
+    out["desksPerHost"] = int(out["desksPerHost"]); out["from"] = "tags"
+else:
+    out["desksPerHost"] = int(sys.argv[1] or 6); out["from"] = "desk-host.conf (no DesksPerHost tag)"
+s = out.get("slotsPerHost", "")
+if s.isdigit() and out["desksPerHost"] <= int(s) <= 29:
+    out["slotsPerHost"] = int(s)
+else:
+    if s:
+        out["slotsPerHostRefused"] = s[:16]   # not a number from DesksPerHost to 29: ignored, and said
+    out["slotsPerHost"] = out["desksPerHost"]
+print(json.dumps(out))
+PY
+)
+if [ -f $V/hosting.json ]; then
+  [ "$(python3 -I -c 'import json,sys; print(json.load(open(sys.argv[1]))["desksPerHost"])' $V/hosting.json)" = "$(python3 -I -c 'import json,sys; print(json.loads(sys.argv[1])["desksPerHost"])' "$tags")" ] \
+    || log "DesksPerHost differs from the first boot's ($tags): the first boot's kept"
+else
+  echo "$tags" > $V/hosting.json
+fi
+log "hosting $(cat $V/hosting.json)"
+# conntrack: every slot's host limit (CT_HOST) plus a reserve, never under NF_CONNTRACK_MAX (65,536: 6 slots as 0.1.4 had)
+slots=$(python3 -I -c 'import json,sys; h = json.load(open(sys.argv[1])); print(h.get("slotsPerHost") or h["desksPerHost"])' $V/hosting.json)
+ct=$(conf NF_CONNTRACK_MAX | grep . || echo 65536); ch=$(conf CT_HOST | grep . || echo 4608)
+[ $((slots * ch + 16384)) -gt "$ct" ] && ct=$((slots * ch + 16384))
+sysctl -q -w net.netfilter.nf_conntrack_max=$ct
+log "conntrack $ct for $slots slots"

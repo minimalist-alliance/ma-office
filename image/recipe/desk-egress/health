@@ -1,0 +1,4 @@
+#!/bin/sh
+# Healthy means the unit runs and the shaper is on the interface. /opt/ma/smoke-test runs this for every component's update.
+systemctl is-active --quiet desk-egress || { echo "desk-egress unit isn't active" >&2; exit 1; }
+exec /usr/bin/python3 -I "$RELEASE_DIR/desk-egress" --check

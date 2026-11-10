@@ -1,0 +1,427 @@
+--- version-7/engine.js
++++ dance/engine.js
+@@ -385,6 +385,56 @@
+     p.closePath();
+   }
+ 
++  // ---------------------------------------------------------------- DANCE: moves and routines, data from vocab.js
++  // A move is a few beats of keyframes over her channels. A routine places moves on a beat grid, and moves layer by adding.
++  // Every move starts and ends at zero, so nothing pops when one starts or stops. All of this is compiled once, so a step allocates nothing.
++  const CHN = V.dance.channels, NCH = CHN.length, CHI = Object.fromEntries(CHN.map((n, i) => [n, i]));
++  const C_X = CHI.x, C_Y = CHI.y, C_ROT = CHI.rot, C_SQ = CHI.sq, C_SPIN = CHI.spin, C_YAW = CHI.yaw, C_SAG = CHI.sag, C_BEND = CHI.bend, C_CURL = CHI.curl, C_LAG = CHI.lag, C_TIP = CHI.tip;
++  const C_SHUT = CHI.shut, C_OPEN = CHI.open, C_SQUINT = CHI.squint, C_TILT = CHI.tilt, C_DY = CHI.dy, C_GX = CHI.gx, C_GY = CHI.gy, C_WINK = CHI.wink;
++  const FLIPS = Int8Array.from(CHN, (n) => (V.dance.flips.includes(n) ? 1 : 0));
++  const EASES = { io: 0, out: 1, in: 2, lin: 3 };
++  const easeAt = (e, u) => (e === 0 ? u * u * (3 - 2 * u) : e === 1 ? u * (2 - u) : e === 2 ? u * u : u);
++  function compileMove(def) {
++    const tracks = [];
++    for (const name of CHN) {
++      const keys = def[name];
++      if (!keys) continue;
++      const pts = keys.map((k) => [k[0], k[1], EASES[k[2] || 'io']]);
++      if (pts[0][0] > 0) pts.unshift([0, 0, 0]);
++      if (pts[pts.length - 1][0] < def.len) pts.push([def.len, 0, 0]);
++      tracks.push({ ch: CHI[name], flip: FLIPS[CHI[name]], whole: name === 'spin' || name === 'yaw' || name === 'wink', n: pts.length, t: Float64Array.from(pts, (p) => p[0]), v: Float64Array.from(pts, (p) => p[1]), e: Uint8Array.from(pts, (p) => p[2]) });
++    }
++    return { len: def.len, tracks };
++  }
++  const MOVES = new Map(Object.entries(V.dance.moves).map(([k, d]) => [k, compileMove(d)]));
++  const BEAT_MOVES = new Map(Object.entries(V.beats).filter(([, d]) => d.move).map(([k, d]) => [k, MOVES.get(d.move)]));
++  // Adds one move at b beats from its start.
++  function addMove(m, b, g, f, RV) {
++    const T = m.tracks;
++    for (let i = 0; i < T.length; i += 1) {
++      const tr = T[i], t = tr.t, n = tr.n;
++      let j = 1;
++      while (j < n - 1 && t[j] < b) j += 1;
++      const u = clamp((b - t[j - 1]) / (t[j] - t[j - 1] || 1), 0, 1), a = tr.v[j - 1];
++      const val = a + (tr.v[j] - a) * easeAt(tr.e[j], u);
++      RV[tr.ch] += tr.whole ? val : tr.flip ? val * g * f : val * g;
++    }
++  }
++  function compileRoutine(def) {
++    const steps = [], cues = [];
++    for (const s of def.steps) {
++      const [at, name, g = 1, f = 1, times = 1, alt = 0] = s;
++      if (BEATS_EYES.has(name)) { cues.push({ at, name, level: g }); continue; }
++      const m = MOVES.get(name);
++      // Repeats follow each other. With alt, every second repeat is mirrored at that gain.
++      for (let i = 0; i < times; i += 1) steps.push({ at: at + i * m.len, end: at + (i + 1) * m.len, m, g: i % 2 && alt ? alt : g, f: i % 2 && alt ? -f : f });
++    }
++    cues.sort((a, b) => a.at - b.at);
++    return { bps: def.bpm / 60, lead: def.lead === undefined ? V.dance.leadS : def.lead, seconds: (def.beats * 60) / def.bpm, pose: poseArray(def.pose.hair, def.pose.eyes, def.pose.body), steps, cues };
++  }
++  const BEATS_EYES = new Set(Object.keys(V.beats).filter((k) => V.beats[k].track === 'eyes'));
++  const ROUTINES = new Map(Object.entries(V.routines).map(([k, d]) => [k, compileRoutine(d)]));
++
+   // ---------------------------------------------------------------- the score: untrusted data only
+   const MOODS = new Map(Object.entries(V.moods));
+   const RHYTHMS = new Map(Object.entries(V.rhythms));
+@@ -417,8 +467,13 @@
+         const level = typeof b.level === 'number' && Number.isFinite(b.level) ? clamp(Math.round(b.level), 1, 3) : R.defaultLevel;
+         beats.push({ t, do: name, level });
+       }
+-      if (!mood && !rhythm && !beats.length) return null;
+-      return { v: 1, mood: mood || R.defaultMood, rhythm: rhythm || R.defaultRhythm, seconds, beats, notes };
++      // DANCE: an optional routine, by name. Unknown names fall away like every other field. Its settle mood stands in if the score gives none.
++      const routine = typeof o.routine === 'string' && ROUTINES.has(o.routine) ? o.routine : null;
++      if (!routine && o.routine !== undefined) notes.push('routine dropped, not in the vocabulary');
++      if (!mood && !rhythm && !beats.length && !routine) return null;
++      const out = { v: 1, mood: mood || (routine ? V.routines[routine].settle : R.defaultMood), rhythm: rhythm || R.defaultRhythm, seconds, beats, notes };
++      if (routine) out.routine = routine;
++      return out;
+     } catch (err) {
+       return null;
+     }
+@@ -442,6 +497,7 @@
+     while (k * cycle < R.seconds[0]) k += 1;
+     const seconds = k * cycle;
+     const out = { mood: p.mood, rhythm: p.rhythm, askedSeconds: p.seconds, seconds, cycles: k, hair: [], eyes: [], body: [], notes: p.notes.slice(), seed: hashScore(p) };
++    if (p.routine) out.routine = p.routine; // DANCE
+     const sorted = p.beats.slice().sort((a, b) => a.t - b.t);
+     const end = { hair: -Infinity, eyes: -Infinity, body: -Infinity };
+     let kept = 0;
+@@ -512,6 +568,8 @@
+   const moodPose = Object.fromEntries(Object.entries(V.moods).map(([k, m]) => [k, poseArray(m.hair, m.eyes, m.body)]));
+   const CALM = compileScore(null);
+   const BODY_COEF = springCoef(TM.bodyOmega, 1);
++  const DANCE_COEF = springCoef(V.dance.bodyOmega, 1); // DANCE
++  const WINK_K = 1 - exp(-DT * TM.eyeOmega * 0.7); // DANCE
+   const GAZE_COEF = springCoef(TM.gazeOmega, 1);
+   const SC = STAGE.scale, CX = STAGE.center[0], CY = STAGE.center[1], PX = STAGE.pivot[0], PY = STAGE.pivot[1];
+   // A hop: a small crouch, the air, a small give on landing. Used for her beats and for bright's bounce.
+@@ -559,6 +617,9 @@
+       this.nextBlink = 3; this.nextLook = 0; this.lookSpot = 0;
+       this.timer = 0; this.sleepClock = 0;
+       this.dormant = false; this.quiet = 0;
++      // DANCE: what the channels ask for this step, the routine playing, and the transforms that aren't in her resting rig.
++      this.RV = new Float64Array(NCH); this.rOn = false; this.ro = null; this.rPend = null; this.rT = 0; this.rE = 0; this.rFading = false; this.rFade = 1;
++      this.spinA = 0; this.spinV = 0; this.yawA = 0; this.wk = 0; this.wkD = 0; this.domesB = null; this.lidsB = null; this.lidWB = 0;
+       this.noNoise = !!opts.noNoise;
+       this.setPostureOmega(TM.postureOmega.score);
+       this.eyeCoef = springCoef(this.reduced ? ST.reducedMotion.fadeOmega : TM.eyeOmega, 1);
+@@ -609,10 +670,16 @@
+       this.beatScale = on ? m.beatStretch : 1;
+       this.stepLimit = on ? ((m.maxStepPxAt56 / (56 / 720)) * m.fps * DT) : 0;
+       this.pTipX = NaN;
++      if (on && (this.ro || this.rPend)) { this.rPend = null; this.stopRoutine(); this.fireEye('smile', 2); } // DANCE: no dance during a stream, a smile instead
+     }
+     setReduced(on) {
+       this.reduced = !!on;
+       this.eyeCoef = springCoef(this.reduced ? ST.reducedMotion.fadeOmega : TM.eyeOmega, 1);
++      if (this.reduced && (this.ro || this.rPend)) { // DANCE: no dance with reduced motion, a smile instead
++        this.rPend = null; this.ro = null; this.rOn = false; this.RV.fill(0); this.spinA = 0; this.spinV = 0; this.yawA = 0; this.wk = 0;
++        if (this.state === 'routine') this.leaveRoutine();
++        this.fireEye('smile', 2);
++      }
+       this.wakeLoop();
+     }
+     random() { this.rand = nextRand(this.rand); return this.rand / 4294967296; }
+@@ -631,6 +698,10 @@
+       this.moodName = c.mood; this.rhythmName = c.rhythm;
+       if (this.state === 'falling' || this.state === 'sleeping') this.toWaking();
+       else if (this.state !== 'waking') this.toState('score');
++      // DANCE: a score's routine starts on the next score step, so a sleeping Maia wakes first. Reduced motion and a stream get a smile.
++      if (this.ro) this.stopRoutine();
++      this.rPend = null;
++      if (c.routine) { if (this.reduced || this.streaming) this.fireEye('smile', 2); else this.rPend = c.routine; }
+       this.wakeLoop();
+     }
+     setMood(name) { if (MOODS.has(name)) { this.moodName = name; this.wakeLoop(); } }
+@@ -649,7 +720,51 @@
+       this.hbK = 1 + (this.random() - 0.5) * 0.12;
+     }
+     fireEye(name, lv) { this.eb = name; this.ebL = lv; this.ebT = 0; this.ebD = V.beats[name].dur[lv - 1]; }
+-    fireBody(name, lv) { this.bb = name; this.bbL = lv; this.bbT = 0; this.bbD = V.beats[name].dur[lv - 1] * this.beatScale; }
++    fireBody(name, lv) { this.bb = name; this.bbL = lv; this.bbT = 0; this.bbD = V.beats[name].dur[lv - 1] * this.beatScale; if (BEAT_MOVES.has(name)) this.rOn = true; } // DANCE: rOn
++
++    // ---- DANCE: routines
++    startRoutine(name) {
++      this.ro = ROUTINES.get(name); this.rT = -DT; this.rE = 0; this.rFading = false; this.rFade = 1; this.rOn = true;
++      this.state = 'routine'; this.timer = 0; this.hb = null; this.bb = null; this.eb = null;
++      const G = V.eyes.gaze.person; this.gtx = G[0]; this.gty = G[1];
++      this.setPostureOmega(TM.postureOmega.score);
++    }
++    leaveRoutine() { this.toState('score'); this.scoreT = -DT; this.nh = 0; this.ne = 0; this.nb = 0; this.ng = 0; }
++    // Cut short: the pose it had reached fades out, a turn by the short way, then her score carries on.
++    stopRoutine() { if (this.ro && !this.rFading) { this.rFading = true; this.rFade = 1; if (this.state === 'routine') { const r = this.ro; this.ro = null; this.leaveRoutine(); this.ro = r; } } }
++    // Fills the channels for this step. Values add, so a beat can play over anything.
++    stepChannels() {
++      const RV = this.RV, ro = this.ro;
++      RV.fill(0);
++      let on = false;
++      if (ro !== null) {
++        on = true;
++        if (!this.rFading) this.rT += DT;
++        const b = (this.rT + ro.lead) * ro.bps, S = ro.steps;
++        for (let i = 0; i < S.length; i += 1) { const q = S[i]; if (b >= q.at && b < q.end) addMove(q.m, b - q.at, q.g, q.f, RV); }
++        if (this.rFading) {
++          this.rFade -= DT / V.dance.fadeS;
++          const k = smooth(this.rFade);
++          RV[C_SPIN] = atan2(sin(RV[C_SPIN] * RAD), cos(RV[C_SPIN] * RAD)) / RAD;
++          RV[C_YAW] = atan2(sin(RV[C_YAW] * RAD), cos(RV[C_YAW] * RAD)) / RAD;
++          for (let i = 0; i < NCH; i += 1) RV[i] *= k;
++          if (this.rFade <= 0) { this.ro = null; on = false; }
++        } else {
++          const C = ro.cues;
++          while (this.rE < C.length && C[this.rE].at <= b) { const q = C[this.rE]; this.fireEye(q.name, q.level); this.rE += 1; }
++          if (this.rT >= ro.seconds) { this.ro = null; RV.fill(0); if (this.state === 'routine') this.leaveRoutine(); }
++        }
++      }
++      if (this.bb !== null) {
++        const mv = BEAT_MOVES.get(this.bb);
++        if (mv) { on = true; addMove(mv, (this.bbT / this.bbD) * mv.len, V.beats[this.bb].gain[this.bbL - 1], 1, RV); }
++      }
++      // During a stream no turn plays: a turn's frames would step past the cap. The rest of a beat plays under the cap like any beat.
++      // A routine cut short by a stream starting fades its turn out instead, so nothing pops.
++      if (this.streaming && !this.rFading) { RV[C_SPIN] = 0; RV[C_YAW] = 0; }
++      this.spinV = (RV[C_SPIN] - this.spinA) / DT; this.spinA = RV[C_SPIN]; this.yawA = RV[C_YAW];
++      if (!on) { this.rOn = false; this.spinA = 0; this.spinV = 0; this.yawA = 0; RV.fill(0); }
++    }
+ 
+     // ---- states
+     setState(name) {
+@@ -660,6 +775,7 @@
+       this.wakeLoop();
+     }
+     toState(name) {
++      if (this.ro) this.stopRoutine(); // DANCE
+       this.state = name;
+       this.timer = 0;
+       if (name === 'thinking' || name === 'speaking') { this.nextBlink = this.t + mix(1.5, 3, this.random()); this.nextLook = this.t; }
+@@ -668,6 +784,7 @@
+     }
+     fallAsleep() {
+       if (this.state === 'falling' || this.state === 'sleeping') return;
++      if (this.ro) this.stopRoutine(); // DANCE
+       this.state = 'falling';
+       this.timer = 0;
+       this.PS.set(this.P);
+@@ -676,6 +793,7 @@
+     }
+     wake() { if (this.state === 'falling' || this.state === 'sleeping') this.toWaking(); this.wakeLoop(); }
+     toWaking() {
++      if (this.ro) this.stopRoutine(); // DANCE
+       this.state = 'waking';
+       this.timer = 0;
+       this.PS.set(this.P);
+@@ -694,10 +812,11 @@
+         PV[i] = c[2] * x + c[3] * v;
+       }
+       if (this.state === 'score') this.tickScore();
++      if (this.rOn) this.stepChannels(); // DANCE
+       this.updateGains();
+       const limited = this.stepLimit > 0 && !this.reduced;
+       if (limited) { this.ph.set(this.h); this.pih.set(this.ih); this.pBody[0] = this.tx; this.pBody[1] = this.ty; this.pBody[2] = this.rot; this.pBody[3] = this.sq; }
+-      if (this.reduced) { this.h.fill(0); this.hv.fill(0); this.ih.fill(0); this.hb = null; this.bb = null; this.tx = this.ty = this.rot = this.sq = 0; } else { this.stepBody(); this.stepHair(); }
++      if (this.reduced) { this.h.fill(0); this.hv.fill(0); this.ih.fill(0); this.hb = null; this.bb = null; this.tx = this.ty = this.rot = this.sq = 0; this.rOn = false; this.spinA = 0; this.yawA = 0; } else { this.stepBody(); this.stepHair(); } // DANCE: rOn, spinA, yawA
+       this.stepEyes();
+       this.layHair();
+       this.placeBody();
+@@ -708,6 +827,7 @@
+     postureTarget() {
+       const PT = this.PT, s = this.state;
+       if (s === 'score') { PT.set(moodPose[this.moodName]); return; }
++      if (s === 'routine') { PT.set(this.ro.pose); return; } // DANCE
+       if (s === 'thinking') { PT.set(THINK_POSE); return; }
+       if (s === 'speaking') { PT.set(SPEAK_POSE); return; }
+       if (s === 'unavailable') { PT.set(UNAVAILABLE_POSE); return; }
+@@ -728,6 +848,7 @@
+       }
+     }
+     tickScore() {
++      if (this.rPend !== null && this.ro === null) { const name = this.rPend; this.rPend = null; this.startRoutine(name); return; } // DANCE
+       const S = this.score;
+       let T = this.scoreT + DT;
+       if (T >= S.seconds) {
+@@ -758,7 +879,7 @@
+       this.gT += ((s === 'thinking' ? 1 : 0) - this.gT) * k;
+       this.gS += ((s === 'speaking' ? 1 : 0) - this.gS) * k;
+       this.gZ += ((s === 'sleeping' || s === 'falling' ? 1 : 0) - this.gZ) * k;
+-      this.gB += ((s === 'score' || s === 'thinking' || s === 'speaking' ? 1 : 0) - this.gB) * k;
++      this.gB += ((s === 'score' || s === 'thinking' || s === 'speaking' || s === 'routine' ? 1 : 0) - this.gB) * k; // DANCE: routine
+       this.fillRhythm(this.rhythmK);
+       const r = V.rhythms[this.rhythmName], S = this.score, loop = S.rhythm === this.rhythmName ? S.seconds : r.cycle * S.cycles;
+       const mv = V.moods[this.moodName].move;
+@@ -819,7 +940,8 @@
+         const u = this.hbT / this.hbD, L = this.hbL - 1, d = V.beats.nod;
+         if (u < 1) { const s = sin(Math.PI * d.dips[L] * u), v = s * s * this.gB; Y += d.body[L] * v; A += d.rot[L] * v; }
+       }
+-      const c = BODY_COEF;
++      if (this.rOn) { X += this.RV[C_X]; Y += this.RV[C_Y]; A += this.RV[C_ROT]; } // DANCE
++      const c = this.rOn ? DANCE_COEF : BODY_COEF; // DANCE: rOn
+       let x = this.tx - X, v = this.tvx;
+       this.tx = X + c[0] * x + c[1] * v; this.tvx = c[2] * x + c[3] * v;
+       x = this.ty - Y; v = this.tvy;
+@@ -830,7 +952,7 @@
+       this.rot = A + c[0] * x + c[1] * v; this.rv = c[2] * x + c[3] * v;
+       // Stretch with speed, squash when pushing off the floor of the move.
+       const want = this.gZ > 0.5 ? -0.03 + ZZ.breathSquash * (this.state === 'sleeping' ? (1 - cos((TAU * this.sleepClock) / ZZ.cycle)) / 2 : 0) : clamp(TM.stretchSpeed * abs(nvy) + TM.squashAccel * ay, -TM.squashMax, TM.squashMax);
+-      this.sq += (want - this.sq) * this.sqK;
++      this.sq += ((this.rOn ? clamp(want * V.dance.autoSquash + this.RV[C_SQ], -V.dance.squashMax, V.dance.squashMax) : want) - this.sq) * this.sqK; // DANCE: rOn
+     }
+ 
+     // Hair: posture, then rhythm and beats, into heading targets, then the spring chain that makes the tip lag the root.
+@@ -876,6 +998,7 @@
+           bend -= 2.5 * d.amount[L] * v;
+         }
+       }
++      if (this.rOn) { sag += this.RV[C_SAG]; bend += this.RV[C_BEND]; curl += this.RV[C_CURL]; } // DANCE
+       const PH = rig.params.hair;
+       const cSag = clamp(sag, -1, 1), cBend = clamp(bend, PH.bend.min * 1.6, PH.bend.max * 1.6), cCurl = clamp(curl, PH.curl.min * 0.9, PH.curl.max * 1.06);
+       hairTargets(rig, cSag, cBend, cCurl, H);
+@@ -905,6 +1028,12 @@
+           }
+         }
+       }
++      // DANCE: lag is a plain arc added along the strand, tip a kick at the tips. A turn drags the hair behind it: clockwise winds it tighter, counterclockwise only a little.
++      if (this.rOn) {
++        const RV = this.RV, rv = this.rv + this.spinV, D = V.dance;
++        const lag = (RV[C_LAG] - clamp(rv * (rv > 0 ? D.spinDrag : D.spinDragBack), -D.spinDragMax, D.spinDragMax)) * RAD, tip = RV[C_TIP] * RAD;
++        for (let j = 1; j < n; j += 1) { const x = j / m; H[j] += lag * x + tip * x * x * x; }
++      }
+       // The chain: each stretch chases its target plus what the stretch before it has not reached yet.
+       const timed = this.state === 'falling' || this.state === 'waking';
+       this.chainK += ((timed ? TM.timedCoupling : TM.hairCoupling) - this.chainK) * this.gainK;
+@@ -957,7 +1086,7 @@
+         this.ebT += DT;
+         const u = this.ebT / this.ebD, L = this.ebL - 1, d = V.beats[this.eb], g = this.gB;
+         if (u >= 1) this.eb = null;
+-        else if (this.eb === 'blink') {
++        else if (this.eb === 'wink') { /* DANCE: read below */ } else if (this.eb === 'blink') {
+           const v = (u < 0.38 ? smooth(u / 0.38) : smooth(1 - (u - 0.38) / 0.62)) * g;
+           open *= 1 - v;
+           depth = mix(depth, d.flat[L], v);
+@@ -976,6 +1105,16 @@
+           gtx = mix(gtx, this.textSide * d.reach[L], v); gty = mix(gty, V.eyes.gaze.text[1], v);
+         }
+       }
++      // DANCE: eye channels. shut closes like smile does. wink closes one eye only.
++      let wk = 0;
++      if (this.eb === 'wink') { const u = this.ebT / this.ebD; wk = envelope(clamp(u, 0, 1), 0.2, 0.42); }
++      if (this.rOn) {
++        const RV = this.RV, sh = clamp(RV[C_SHUT], 0, 1);
++        open = (open + RV[C_OPEN]) * (1 - sh); squint = (squint + RV[C_SQUINT]) * (1 - sh); tilt += RV[C_TILT]; dy += RV[C_DY]; gtx += RV[C_GX]; gty += RV[C_GY];
++        if (RV[C_WINK] > wk) wk = RV[C_WINK];
++      }
++      this.wk += (clamp(wk, 0, 1) - this.wk) * WINK_K;
++      if (wk === 0 && this.wk < 1e-3) this.wk = 0;
+       const EPR = this.rig.params.eye;
+       // With reduced motion every still is eyes open, so her eyes never close all the way.
+       ET[0] = clamp(this.reduced ? Math.max(open, 0.45) : open, 0, this.openMax);
+@@ -1043,6 +1182,16 @@
+       let ex = CX + SC * (PX - CX) + this.tx - SC * (a * PX + d * PY);
+       let ey = CY + SC * (PY - CY) + this.ty - SC * (b * PX + e * PY);
+       M[0] = SC * a; M[1] = SC * b; M[2] = SC * d; M[3] = SC * e;
++      // DANCE: still one transform. Yaw is a turn seen from the side: her x scale goes through cos(yaw), about a vertical axis. Spin is a plain rotation of the whole of her about a point that travels with her.
++      if (this.yawA !== 0 || this.spinA !== 0) {
++        // She has some depth, so edge on she keeps a share of her width and never thins to a line.
++        const yc = cos(this.yawA * RAD), ys = sin(this.yawA * RAD) * V.dance.yawDepth, ym = sqrt(yc * yc + ys * ys), k = yc < 0 ? -ym : ym, ax = V.dance.yawAxis * (1 - k), SA = V.dance.spinAt;
++        ex += M[0] * ax; ey += M[1] * ax; M[0] *= k; M[1] *= k;
++        const sa = this.spinA * RAD, sc = cos(sa), sn = sin(sa), m0 = M[0], m1 = M[1], m2 = M[2], m3 = M[3];
++        M[0] = sc * m0 - sn * m1; M[1] = sn * m0 + sc * m1; M[2] = sc * m2 - sn * m3; M[3] = sn * m2 + sc * m3;
++        const qcx = CX + SC * (SA[0] - CX) + this.tx, qcy = CY + SC * (SA[1] - CY) + this.ty, ux = ex - qcx, uy = ey - qcy;
++        ex = qcx + sc * ux - sn * uy; ey = qcy + sn * ux + sc * uy;
++      }
+       // A soft wall inside the bubble. Her hair reaches further than her moves were made for, so at the wall the hair gives first: it turns
+       // from a point part way along, as far as that helps. Whatever is left holds her back. Both are smooth functions of the pose, so nothing jumps.
+       const G = STAGE.guardRadius, BC = STAGE.bodyCircle, rig = this.rig;
+@@ -1095,7 +1244,8 @@
+     // Every still she ever shows goes through here: rest pose, eyes open, looking at the person. Pause and a render error use it,
+     // and an over-budget fallback would, though none is built. Her moving state is put back afterward, so she can carry on.
+     drawStill() {
+-      const keep = { h: this.h.slice(), ih: this.ih.slice(), hl: this.hl.slice(), il: this.il.slice(), ip: this.ip.slice(), sp: this.sp.slice(), m: this.m.slice(), E: this.E.slice(), gx: this.gx, gy: this.gy, tx: this.tx, ty: this.ty, rot: this.rot, sq: this.sq };
++      const keep = { h: this.h.slice(), ih: this.ih.slice(), hl: this.hl.slice(), il: this.il.slice(), ip: this.ip.slice(), sp: this.sp.slice(), m: this.m.slice(), E: this.E.slice(), gx: this.gx, gy: this.gy, tx: this.tx, ty: this.ty, rot: this.rot, sq: this.sq, spinA: this.spinA, yawA: this.yawA, wk: this.wk }; // DANCE: spinA, yawA, wk
++      this.spinA = 0; this.yawA = 0; this.wk = 0; // DANCE
+       this.h.fill(0); this.ih.fill(0); this.layHair();
+       this.E[0] = V.moods.calm.eyes.open; this.E[1] = 1; this.E[2] = 0; this.E[3] = 0; this.E[4] = 0;
+       this.gx = V.eyes.gaze.person[0]; this.gy = V.eyes.gaze.person[1];
+@@ -1104,7 +1254,7 @@
+       this.draw();
+       this.isStill = true;
+       this.h.set(keep.h); this.ih.set(keep.ih); this.hl.set(keep.hl); this.il.set(keep.il); this.ip.set(keep.ip); this.sp.set(keep.sp); this.m.set(keep.m); this.E.set(keep.E);
+-      this.gx = keep.gx; this.gy = keep.gy; this.tx = keep.tx; this.ty = keep.ty; this.rot = keep.rot; this.sq = keep.sq;
++      this.gx = keep.gx; this.gy = keep.gy; this.tx = keep.tx; this.ty = keep.ty; this.rot = keep.rot; this.sq = keep.sq; this.spinA = keep.spinA; this.yawA = keep.yawA; this.wk = keep.wk; // DANCE: spinA, yawA, wk
+       this.hd[0] = 9; this.ED[0] = -9;
+     }
+     // Runs to the settled sleeping pose without drawing, at the top of the breath.
+@@ -1121,14 +1271,17 @@
+       for (let j = 0; j < HN; j += 1) if (abs(hl[j] - hd[j]) > 2e-5 || abs(il[j] - ihd[j]) > 2e-5) { hairMoved = true; break; }
+       for (let i = 0; i < 5; i += 1) if (abs(E[i] - ED[i]) > 2e-4) { eyesMoved = true; break; }
+       if (abs(this.gx - ED[5]) > 3e-3 || abs(this.gy - ED[6]) > 3e-3) eyesMoved = true;
++      if (abs(this.wk - this.wkD) > 2e-4) eyesMoved = true; // DANCE
+       if (hairMoved || !this.bodyPath) {
+         hd.set(hl); ihd.set(il);
+         bodyEdges(rig, this.sp, this.ip, hl, il);
+         this.bodyPath = new Path2D();
+         traceBody(rig, this.bodyPath);
+       }
++      if (eyesMoved && this.wk > 0) { this.buildWinkEyes(); return true; } // DANCE
+       if (eyesMoved || !this.domes) {
+         ED.set(E); ED[5] = this.gx; ED[6] = this.gy;
++        this.wkD = 0; this.domesB = null; this.lidsB = null; // DANCE
+         const eye = rig.eye, open = E[0];
+         eyeCompute(eye, look, open, E[1], E[4]);
+         this.domes = new Path2D(); this.lashes = new Path2D(); this.lids = this.look.lid && open > 0.02 ? new Path2D() : null;
+@@ -1155,6 +1308,35 @@
+       }
+       return true;
+     }
++    // DANCE: both eyes, one of them closing on its own. The same eye math per side; a closing eye below the colour change goes in its own path.
++    buildWinkEyes() {
++      const rig = this.rig, E = this.E, ED = this.ED, look = rig.look, eye = rig.eye, open = E[0];
++      ED.set(E); ED[5] = this.gx; ED[6] = this.gy; this.wkD = this.wk;
++      const win = open * (1 - this.wk), shift = this.gx * look.shift, gx = this.gx * look.range[0], gy = this.gy * look.range[1];
++      const showGlint = look.glint && this.size * STAGE.scale >= V.eyes.highlightMinPx;
++      this.domes = new Path2D(); this.lashes = new Path2D(); this.lids = this.look.lid && open > 0.02 ? new Path2D() : null;
++      this.lidsB = this.look.lid && win > 0.02 ? new Path2D() : null; this.lidW = 7 * smooth(open / 0.25); this.lidWB = 7 * smooth(win / 0.25);
++      this.domesB = win < 0.16 ? new Path2D() : null;
++      this.irises = new Path2D(); this.glints = showGlint ? new Path2D() : null; this.pupils = look.pupil ? new Path2D() : null;
++      for (let side = 0; side < 2; side += 1) {
++        const op = side === V.dance.winkSide ? win : open;
++        eyeCompute(eye, look, op, E[1], E[4]);
++        placeSetup(eye, look, side === 1, op, E[3], E[2], shift);
++        eyePlace(26 + 6 * lashSegs);
++        traceCrescent(side === V.dance.winkSide && this.domesB ? this.domesB : this.domes); traceLashes(this.lashes);
++        const lid = side === V.dance.winkSide ? this.lidsB : this.lids;
++        if (lid) traceLid(lid);
++        if (op > 0.03) {
++          place(look.iris[0], look.iris[1]);
++          const cx = qx + gx * pk, cy = qy + gy * pk, r = look.iris[2] * smooth(op / 0.4) * pk;
++          this.irises.moveTo(cx + r, cy); this.irises.arc(cx, cy, r, 0, TAU);
++          if (this.pupils) { const pr = look.pupil * pk * smooth(op / 0.4); this.pupils.moveTo(cx + pr, cy); this.pupils.arc(cx, cy, pr, 0, TAU); }
++          if (this.glints) { const gr = look.glint * pk * smooth(op / 0.5), kx = cx - r * 0.34 - gx * 0.25 * pk, ky = cy - r * 0.42 - gy * 0.25 * pk; this.glints.moveTo(kx + gr, ky); this.glints.arc(kx, ky, gr, 0, TAU); }
++        }
++      }
++      this.irisOn = true;
++      this.scleraFill = this.eyeFillFor(open);
++    }
+     // Closed, the eye is the reference's colour; open, its white. In Light and Dark those are the same. In Dusk there is no blend,
+     // so no grey frame: the eye is only a thin sliver when the colour changes, and the dark lid line carries it.
+     eyeFillFor(open) {
+@@ -1178,6 +1360,7 @@
+       const look = this.look;
+       ctx.fillStyle = eyeFill || this.scleraFill;
+       ctx.fill(this.domes);
++      if (this.domesB) { ctx.fillStyle = eyeFill || this.eyeColor; ctx.fill(this.domesB); } // DANCE
+       if (this.irisOn && !eyeFill) {
+         ctx.globalCompositeOperation = 'source-atop';
+         ctx.fillStyle = look.iris; ctx.fill(this.irises);
+@@ -1190,6 +1373,7 @@
+       if (body) { ctx.fillStyle = grad; ctx.fill(this.bodyPath); }
+       ctx.globalCompositeOperation = 'source-over';
+       if (this.lids && !eyeFill) { ctx.strokeStyle = look.lid; ctx.lineWidth = this.lidW; ctx.lineCap = 'round'; ctx.stroke(this.lids); }
++      if (this.lidsB && !eyeFill) { ctx.strokeStyle = look.lid; ctx.lineWidth = this.lidWB; ctx.lineCap = 'round'; ctx.stroke(this.lidsB); } // DANCE
+     }
+   }
+ 
+@@ -1221,7 +1405,7 @@
+   }
+ 
+   root.MaiaEngine = {
+-    Avatar, createAvatar: (canvas, opts) => new Avatar(canvas, opts), parseScore, compileScore, makeSleepStrip, tierFor, backingScale, DT,
+-    internal: { RIGS, buildLash, hairTargets, spineFrom, innerFrom, partOuter, strandGap, carried, bodyEdges, traceBody, eyeCompute, placeSetup, eyePlace, traceCrescent, traceLashes },
++    Avatar, createAvatar: (canvas, opts) => new Avatar(canvas, opts), parseScore, compileScore, makeSleepStrip, tierFor, backingScale, DT, ROUTINES, // DANCE: ROUTINES
++    internal: { RIGS, buildLash, hairTargets, walk, spineFrom, innerFrom, partOuter, strandGap, carried, bodyEdges, traceBody, eyeCompute, placeSetup, eyePlace, traceCrescent, traceLashes }, // DANCE: walk, to draw between steps as the package does
+   };
+ })(globalThis);

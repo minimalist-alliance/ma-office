@@ -1,0 +1,1151 @@
+#!/usr/bin/python3 -I
+"""desk-batch: applies a signed batch of the desk's service releases while the desk is idle, and Debian's security updates
+the same way (S-96; docs/decisions/draft-desk-app-contract.md section 13; docs/interfaces/desk-runtime.md section 6.1).
+
+Runs as root, outside deskd, because nothing can supervise its own replacement.
+  desk-batch offer <manifest> <signature> <urls.json>     check the signature and the sequence number; keep it as pending
+  desk-batch tick                                         desk-batch.timer, every 5 minutes: whatever is due, while idle
+  desk-batch status                                       the state, as JSON
+  desk-batch hold <minutes>                               the platform's idle sweep waits, at most 15 minutes; 0 clears it
+  desk-batch verify <manifest> <signature> [<key.pem>...] check a manifest and its signature and store nothing (no root
+                                                          needed; with no key, the desk's own trusted keys)
+  desk-batch verify-manifest <manifest>                   check a manifest's fields only (no root needed)
+  desk-batch serve                                        one request on /run/desk/batch.sock (desk-batch@.service)
+
+The manifest (format "ma-desk-batch/1") names each component's version and the sha256 of its artifact, and is signed as
+it stands: a detached ECDSA P-256 SHA-256 signature over its exact bytes, DER, which is what the cloud's key service gives
+(ECC_NIST_P256, ECDSA_SHA_256) and what `openssl dgst -sha256 -verify` checks. The trusted public keys are
+/opt/ma/etc/batch-keys/*.pem (the image's) and /etc/ma/batch-keys.d/*.pem (an admin's drop-in): each P-256, a regular file
+root owns that nobody else can write, in a directory the same. With no key every batch is refused. URLs are never signed or
+trusted: ma-update checks every artifact against the manifest's sha256. A batch with a sequence number at or below the
+last one applied, refused or failed, or below the image's baseline, is refused, so an old signed batch can't be replayed.
+
+A tick with a pending batch and the desk idle prepares every component first (download, check, unpack, docker load;
+nothing switched, and any failure switches nothing), looks at idle again, then activates them in the manifest's order. Once
+switching starts it finishes: a failure there rolls the components already switched back, in reverse, with
+`ma-update --rollback`, and the batch is recorded rolled-back and never tried again. A batch that names an image applies
+its services and records root-pending (the swap itself is the platform's). Debian's updates run only while idle, or after
+72 hours with none, at the lowest priority. Nothing here reads or writes /data/browser/profile, and nothing reboots.
+
+Idle comes from deskd, in /run/desk/idle.json (desk-runtime.md section 6.1). Missing, unreadable, not deskd's, or older
+than 60 s means not idle.
+"""
+import base64
+import binascii
+import calendar
+import contextlib
+import fcntl
+import json
+import os
+import re
+import shutil
+import socket
+import stat
+import struct
+import subprocess
+import sys
+import tempfile
+import time
+
+DESKD_UID = 1100
+IDLE_UID = DESKD_UID           # who must own idle.json
+KEY_OWNER = 0                  # who must own the trusted keys and their directories
+STATE_DIR = "/var/lib/ma/batch"
+KEY_DIRS = ("/opt/ma/etc/batch-keys", "/etc/ma/batch-keys.d")
+# The image's baseline: the sequence number of the newest batch the image's own releases already hold, written by the
+# bake when there is one. Offers at or below it are refused, so an older batch can't be replayed onto a newer image.
+BASELINE = "/opt/ma/etc/batch-baseline"
+IDLE_FILE = "/run/desk/idle.json"
+MA_ROOT = "/opt/ma"
+MA_UPDATE = "/opt/ma/bin/ma-update"
+RELEASE_FILE = "/etc/ma-release"
+OPENSSL = "/usr/bin/openssl"
+DPKG_QUERY = "/usr/bin/dpkg-query"
+BROWSER_CGROUP = "/sys/fs/cgroup/system.slice/desk-browser.service"
+CHROMIUM_DIR = "/usr/lib/chromium/"
+BOOT_DIR = "/boot"
+REBOOT_REQUIRED = "/run/reboot-required"
+# The lowest priority there is: nice 19 and the idle I/O class.
+LOW = ["/usr/bin/nice", "-n", "19", "/usr/bin/ionice", "-c3"]
+APT_UPDATE = ["/usr/bin/apt-get", "-q", "-o", "DPkg::Lock::Timeout=120", "update"]
+APT_UPGRADE = ["/usr/bin/unattended-upgrade"]
+APT_CLEAN = ["/usr/bin/apt-get", "-q", "clean"]
+APT_ENV = {"PATH": "/usr/sbin:/usr/bin:/sbin:/bin", "DEBIAN_FRONTEND": "noninteractive", "LANG": "C.UTF-8"}
+# A prepare runs at a low but not the lowest priority: it's on an idle desk, and a slow one keeps the desk on longer.
+PREPARE_PRIORITY = ["/usr/bin/nice", "-n", "10", "/usr/bin/ionice", "-c2", "-n7"]
+
+FORMAT = "ma-desk-batch/1"
+MAX_MANIFEST = 64 * 1024
+MAX_SIGNATURE = 512
+MAX_URLS = 128 * 1024
+MAX_URL = 4096
+MAX_COMPONENTS = 16
+MAX_NOTE = 2000
+MAX_REQUEST = 256 * 1024
+MAX_IDLE = 64 * 1024
+MAX_KEY = 4096
+MAX_SEQ = 2 ** 53
+NAME = re.compile(r"\A[a-z][a-z0-9-]{0,40}\Z")         # ma-update's component names
+RESERVED = {"bin", "etc"}                                # /opt/ma's own directories, never a component
+VERSION = re.compile(r"\A[A-Za-z0-9._+-]{1,64}\Z")       # ma-update's versions
+SHA256 = re.compile(r"\A[0-9a-f]{64}\Z")
+BATCH_ID = re.compile(r"\A[A-Za-z0-9._-]{1,64}\Z")
+UTC = re.compile(r"\A(\d{4})-(\d{2})-(\d{2})T(\d{2}):(\d{2}):(\d{2})(\.\d{1,9})?Z\Z")
+
+IDLE_FRESH_S = 60              # idle.json older than this isn't idle
+IDLE_DEFAULT_S = 600           # required idle when deskd doesn't say the desk's idle-stop time
+IDLE_MAX_S = 3600              # half the idle-stop time, at most an hour
+URGENT_RELAX_S = 24 * 3600     # an urgent batch that waited this long takes 15 minutes with no input
+URGENT_INPUT_S = 900
+URGENT_LAST_S = 72 * 3600      # and after this long, 60 s with no input
+URGENT_LAST_INPUT_S = 60
+HOLD_MAX_MIN = 15
+HOLD_WORK_S = 15 * 60          # what a tick asks the sweep for while it works, renewed at each step
+URLS_MARGIN_S = 600            # presigned URLs with less left than this are asked for again
+PREPARE_TRIES = 3
+PREPARE_RETRY_S = 3600
+APT_EVERY_S = 24 * 3600
+APT_FORCE_S = 72 * 3600
+APT_RETRY_S = 3600
+APT_UPDATE_TIMEOUT_S = 900
+APT_UPGRADE_TIMEOUT_S = 3600
+MA_UPDATE_TIMEOUT_S = 1800     # a prepare's download is up to 900 s and docker load follows; an activate is ~100 s
+SMOKE_RESUME_S = 90
+SMOKE_TEST = "/opt/ma/smoke-test"
+APPLYING = ("preparing", "activating", "rolling-back")
+NOW = time.time
+SLEEP = time.sleep
+
+
+class Refused(Exception):
+    def __init__(self, code, text):
+        super().__init__(text)
+        self.code, self.text = code, text
+
+
+def log(msg):
+    print(f"desk-batch: {msg}", file=sys.stderr, flush=True)
+
+
+# ---------------------------------------------------------------- times and files
+def utc(ts):
+    return time.strftime("%Y-%m-%dT%H:%M:%SZ", time.gmtime(ts)) if ts is not None else None
+
+
+def parse_utc(s):
+    """Seconds since the epoch for an exact UTC time such as 2026-11-09T18:00:00Z, else None."""
+    if not isinstance(s, str):
+        return None
+    m = UTC.match(s)
+    if not m:
+        return None
+    try:
+        t = time.strptime(s[:19], "%Y-%m-%dT%H:%M:%S")
+    except ValueError:
+        return None
+    return calendar.timegm(t) + (float(m.group(7)) if m.group(7) else 0.0)
+
+
+def write_atomic(path, data, mode):
+    d = os.path.dirname(path)
+    fd, tmp = tempfile.mkstemp(dir=d, prefix=".tmp-")
+    try:
+        os.fchmod(fd, mode)
+        os.write(fd, data)
+        os.fsync(fd)
+        os.close(fd)
+        fd = -1
+        os.rename(tmp, path)
+        dfd = os.open(d, os.O_RDONLY | os.O_DIRECTORY)
+        try:
+            os.fsync(dfd)
+        finally:
+            os.close(dfd)
+    except BaseException:
+        if fd >= 0:
+            os.close(fd)
+        with contextlib.suppress(FileNotFoundError):
+            os.unlink(tmp)
+        raise
+
+
+def read_limited(path, limit, owner=None):
+    """A regular file's bytes, refusing links, other owners and anything over limit. Raises OSError or Refused."""
+    fd = os.open(path, os.O_RDONLY | os.O_NOFOLLOW | os.O_CLOEXEC | os.O_NONBLOCK)
+    try:
+        st = os.fstat(fd)
+        if not stat.S_ISREG(st.st_mode):
+            raise Refused("bad_request", f"{path} isn't a regular file")
+        if owner is not None and st.st_uid != owner:
+            raise Refused("bad_request", f"{path} isn't owned by uid {owner}")
+        if st.st_size > limit:
+            raise Refused("bad_request", f"{path} is over {limit} bytes")
+        data = os.read(fd, limit + 1)
+        if len(data) > limit:
+            raise Refused("bad_request", f"{path} is over {limit} bytes")
+        return data
+    finally:
+        os.close(fd)
+
+
+def strict_json(data, what):
+    """JSON with no repeated keys and no NaN, since a signed document two parsers read differently is worse than none."""
+    def pairs(items):
+        d = {}
+        for k, v in items:
+            if k in d:
+                raise Refused("bad_request", f"{what}: key {k!r} appears twice")
+            d[k] = v
+        return d
+
+    def constant(c):
+        raise Refused("bad_request", f"{what}: {c} isn't JSON")
+    try:
+        return json.loads(data.decode("utf-8"), object_pairs_hook=pairs, parse_constant=constant)
+    except (UnicodeDecodeError, ValueError, RecursionError) as e:
+        raise Refused("bad_request", f"{what} isn't JSON: {type(e).__name__}") from None
+
+
+# ---------------------------------------------------------------- the manifest and its signature
+def check_manifest(data):
+    """The manifest's fields, checked. Unknown fields are ignored: anything a desk must understand bumps the format."""
+    if len(data) > MAX_MANIFEST:
+        raise Refused("bad_request", f"manifest over {MAX_MANIFEST} bytes")
+    m = strict_json(data, "manifest")
+    if not isinstance(m, dict):
+        raise Refused("bad_request", "manifest isn't an object")
+    if m.get("format") != FORMAT:
+        raise Refused("bad_request", f"manifest format {m.get('format')!r} isn't {FORMAT}")
+    seq = m.get("seq")
+    if type(seq) is not int or not 1 <= seq <= MAX_SEQ:
+        raise Refused("bad_request", "seq must be a whole number from 1")
+    if not isinstance(m.get("id"), str) or not BATCH_ID.match(m["id"]):
+        raise Refused("bad_request", "bad id")
+    if parse_utc(m.get("created")) is None:
+        raise Refused("bad_request", "created must be a UTC time like 2026-11-09T18:00:00Z")
+    if type(m.get("urgent")) is not bool:
+        raise Refused("bad_request", "urgent must be true or false")
+    image = m.get("image")
+    if image is not None and (not isinstance(image, str) or not VERSION.match(image)):
+        raise Refused("bad_request", "bad image version")
+    note = m.get("note", "")
+    if not isinstance(note, str) or len(note) > MAX_NOTE or any(ord(c) < 32 and c != "\n" or ord(c) == 127 for c in note):
+        raise Refused("bad_request", f"note must be plain text, at most {MAX_NOTE} characters")
+    comps = m.get("components")
+    if not isinstance(comps, list) or not 1 <= len(comps) <= MAX_COMPONENTS:
+        raise Refused("bad_request", f"components must list 1 to {MAX_COMPONENTS}")
+    seen, out = set(), []
+    for c in comps:
+        if not isinstance(c, dict):
+            raise Refused("bad_request", "a component isn't an object")
+        name, ver, sha = c.get("name"), c.get("version"), c.get("sha256")
+        if not isinstance(name, str) or not NAME.match(name) or name in RESERVED:
+            raise Refused("bad_request", "bad component name")
+        if name in seen:
+            raise Refused("bad_request", f"{name} is named twice")
+        if not isinstance(ver, str) or not VERSION.match(ver):
+            raise Refused("bad_request", f"{name}: bad version")
+        if not isinstance(sha, str) or not SHA256.match(sha):
+            raise Refused("bad_request", f"{name}: bad sha256")
+        seen.add(name)
+        out.append({"name": name, "version": ver, "sha256": sha})
+    return {"seq": seq, "id": m["id"], "created": m["created"], "urgent": m["urgent"], "image": image, "note": note,
+            "components": out}
+
+
+def decode_signature(sig):
+    """DER as the key service gives it, or that in base64."""
+    sig = sig.strip() if sig[:1] != b"\x30" else sig
+    if sig[:1] != b"\x30":
+        try:
+            sig = base64.b64decode(sig, validate=True)
+        except (binascii.Error, ValueError):
+            raise Refused("bad_request", "signature is neither DER nor base64") from None
+    if not 8 <= len(sig) <= MAX_SIGNATURE or sig[:1] != b"\x30":
+        raise Refused("bad_request", "signature isn't a DER ECDSA signature")
+    return sig
+
+
+def safe_dir(path):
+    """True for a real directory KEY_OWNER owns that nobody else can write."""
+    try:
+        st = os.lstat(path)
+    except OSError:
+        return False
+    return stat.S_ISDIR(st.st_mode) and st.st_uid == KEY_OWNER and not st.st_mode & 0o022
+
+
+def is_p256(path):
+    try:
+        r = subprocess.run([OPENSSL, "pkey", "-pubin", "-in", path, "-noout", "-text"], capture_output=True, text=True,
+                           timeout=10, stdin=subprocess.DEVNULL)
+    except (OSError, subprocess.TimeoutExpired):
+        return False
+    return r.returncode == 0 and ("prime256v1" in r.stdout or "P-256" in r.stdout)
+
+
+def trusted_keys(dirs=None):
+    """The keys a batch may be signed with: *.pem in KEY_DIRS that pass every check. Anything else is skipped, and said."""
+    keys = []
+    for d in dirs if dirs is not None else KEY_DIRS:
+        if not os.path.lexists(d):
+            continue
+        if not safe_dir(d):
+            log(f"skipping {d}: not a directory root alone can write")
+            continue
+        for name in sorted(os.listdir(d)):
+            if not name.endswith(".pem"):
+                continue
+            p = os.path.join(d, name)
+            try:
+                st = os.lstat(p)
+            except OSError:
+                continue
+            if not stat.S_ISREG(st.st_mode) or st.st_uid != KEY_OWNER or st.st_mode & 0o022 or st.st_size > MAX_KEY:
+                log(f"skipping key {p}: not a regular file root alone can write")
+                continue
+            if not is_p256(p):
+                log(f"skipping key {p}: not a P-256 public key")
+                continue
+            keys.append(p)
+    return keys
+
+
+def verify_signature(data, sig, keys):
+    """The key that verifies sig over data's exact bytes, or Refused."""
+    if not keys:
+        raise Refused("untrusted", "no trusted key: every batch is refused until one is installed")
+    with tempfile.TemporaryDirectory(prefix="desk-batch-") as t:
+        mp, sp = os.path.join(t, "m"), os.path.join(t, "s")
+        with open(mp, "wb") as f:
+            f.write(data)
+        with open(sp, "wb") as f:
+            f.write(sig)
+        for k in keys:
+            try:
+                r = subprocess.run([OPENSSL, "dgst", "-sha256", "-verify", k, "-signature", sp, mp], capture_output=True,
+                                   timeout=10, stdin=subprocess.DEVNULL)
+            except (OSError, subprocess.TimeoutExpired):
+                continue
+            if r.returncode == 0:
+                return k
+    raise Refused("untrusted", "the signature doesn't verify with any trusted key")
+
+
+def check_urls(obj, comps):
+    if not isinstance(obj, dict) or not isinstance(obj.get("components"), dict):
+        raise Refused("bad_request", "urls must be an object with components")
+    urls = obj["components"]
+    expires = obj.get("expiresAt")
+    if expires is not None and parse_utc(expires) is None:
+        raise Refused("bad_request", "bad expiresAt")
+    out = {}
+    for c in comps:
+        u = urls.get(c["name"])
+        if (not isinstance(u, str) or len(u) > MAX_URL or not (u.startswith("https://") or u.startswith("file:///"))
+                or any(ord(ch) <= 32 or ord(ch) == 127 for ch in u)):
+            raise Refused("bad_request", f"no usable URL for {c['name']}")
+        out[c["name"]] = u
+    if set(urls) - set(out):
+        raise Refused("bad_request", "urls name a component the manifest doesn't")
+    return {"expiresAt": expires, "components": out}
+
+
+# ---------------------------------------------------------------- state
+def default_state():
+    return {"format": 1, "updatedAt": None, "phase": "none", "appliedSeq": 0, "failedSeq": 0, "applied": None,
+            "pending": None, "progress": None, "rootPending": None, "lastError": None, "lastBatch": None,
+            "holdUntil": None, "idle": None, "chromium": None, "reboot": None,
+            "apt": {"firstSeen": None, "lastAttempt": None, "lastOk": None, "lastResult": None, "seconds": None,
+                    "forced": None}}
+
+
+def state_path():
+    return os.path.join(STATE_DIR, "state.json")
+
+
+def pending_dir(seq=None):
+    p = os.path.join(STATE_DIR, "pending")
+    return p if seq is None else os.path.join(p, str(seq))
+
+
+def ensure_dirs():
+    os.makedirs(STATE_DIR, mode=0o755, exist_ok=True)
+    os.chmod(STATE_DIR, 0o755)
+    os.makedirs(pending_dir(), mode=0o700, exist_ok=True)
+    os.chmod(pending_dir(), 0o700)
+
+
+def load():
+    try:
+        data = read_limited(state_path(), 1024 * 1024)
+    except FileNotFoundError:
+        return default_state()
+    except (OSError, Refused) as e:
+        raise Refused("failed", f"state unreadable: {e}") from None
+    try:
+        st = json.loads(data)
+    except ValueError:
+        raise Refused("failed", "state unreadable: not JSON") from None
+    if not isinstance(st, dict) or st.get("format") != 1:
+        raise Refused("failed", "state unreadable: unknown format")
+    base = default_state()
+    apt = {**base["apt"], **(st.get("apt") or {})}
+    base.update(st)
+    base["apt"] = apt
+    return base
+
+
+def save(st):
+    st["updatedAt"] = utc(NOW())
+    write_atomic(state_path(), (json.dumps(st, indent=1, sort_keys=True) + "\n").encode(), 0o644)
+
+
+@contextlib.contextmanager
+def locked(name, blocking=True):
+    """An flock on STATE_DIR/.<name>.lock. Yields False when not blocking and it's held."""
+    ensure_dirs()
+    fd = os.open(os.path.join(STATE_DIR, f".{name}.lock"), os.O_RDWR | os.O_CREAT | os.O_CLOEXEC, 0o600)
+    try:
+        try:
+            fcntl.flock(fd, fcntl.LOCK_EX | (0 if blocking else fcntl.LOCK_NB))
+        except BlockingIOError:
+            yield False
+            return
+        yield True
+    finally:
+        os.close(fd)
+
+
+def update(fn):
+    """Loads, changes and saves the state under its lock, and returns what fn returns. fn may raise Refused, which leaves
+    the state as it was."""
+    with locked("state"):
+        st = load()
+        out = fn(st)
+        save(st)
+        return out
+
+
+def baseline():
+    try:
+        data = read_limited(BASELINE, 4096, owner=KEY_OWNER)
+    except FileNotFoundError:
+        return 0
+    except (OSError, Refused):
+        log(f"{BASELINE} unreadable: every batch is refused")
+        return MAX_SEQ
+    try:
+        v = json.loads(data)
+        v = v.get("seq") if isinstance(v, dict) else v
+        if type(v) is int and 0 <= v <= MAX_SEQ:
+            return v
+    except ValueError:
+        pass
+    log(f"{BASELINE} unreadable: every batch is refused")
+    return MAX_SEQ
+
+
+def floor_seq(st):
+    return max(st.get("appliedSeq") or 0, st.get("failedSeq") or 0, baseline())
+
+
+def holding(st, until):
+    cur = parse_utc(st.get("holdUntil"))
+    st["holdUntil"] = utc(max(until, cur or 0))
+
+
+def current_hold(st):
+    t = parse_utc(st.get("holdUntil"))
+    return st["holdUntil"] if t and t > NOW() else None
+
+
+# ---------------------------------------------------------------- offer
+def offer(manifest, sig, urls_obj):
+    """Checks a batch and keeps it as pending. The pending summary, or Refused."""
+    m = check_manifest(manifest)
+    key = verify_signature(manifest, decode_signature(sig), trusted_keys())
+
+    def change(st):
+        if st["phase"] in APPLYING:
+            raise Refused("busy", f"applying batch {st['progress']['seq'] if st.get('progress') else '?'}")
+        floor = floor_seq(st)
+        if m["seq"] <= floor:
+            raise Refused("seq", f"seq {m['seq']} isn't above {floor}")
+        p = st.get("pending")
+        if p and m["seq"] < p["seq"]:
+            raise Refused("seq", f"seq {m['seq']} is below the pending {p['seq']}")
+        urls = check_urls(urls_obj, m["components"])
+        d = pending_dir(m["seq"])
+        if p and m["seq"] == p["seq"]:
+            try:
+                same = read_limited(os.path.join(d, "manifest.json"), MAX_MANIFEST) == manifest
+            except (OSError, Refused):
+                same = False
+            if not same:
+                raise Refused("conflict", f"seq {m['seq']} is pending with another manifest")
+            write_atomic(os.path.join(d, "urls.json"), json.dumps(urls).encode(), 0o600)
+            p["urlsExpireAt"], p["urlsWanted"] = urls["expiresAt"], False
+            log(f"offer {m['id']} (seq {m['seq']}): new URLs")
+            return p
+        os.makedirs(d, mode=0o700, exist_ok=True)
+        write_atomic(os.path.join(d, "manifest.json"), manifest, 0o600)
+        write_atomic(os.path.join(d, "manifest.sig"), sig, 0o600)
+        write_atomic(os.path.join(d, "urls.json"), json.dumps(urls).encode(), 0o600)
+        for other in os.listdir(pending_dir()):
+            if other != str(m["seq"]):
+                shutil.rmtree(os.path.join(pending_dir(), other), ignore_errors=True)
+        st["pending"] = {"seq": m["seq"], "id": m["id"], "created": m["created"], "urgent": m["urgent"],
+                         "image": m["image"], "components": m["components"], "note": m["note"],
+                         "offeredAt": utc(NOW()), "urlsExpireAt": urls["expiresAt"], "urlsWanted": False,
+                         "attempts": 0, "lastAttemptAt": None}
+        st["phase"] = "pending"
+        log(f"offer {m['id']} (seq {m['seq']}, {len(m['components'])} components) taken, signed by {os.path.basename(key)}")
+        return st["pending"]
+
+    return update(change)
+
+
+def load_pending(p):
+    """The pending batch's manifest and URLs from disk, its signature checked again (the keys may have changed)."""
+    d = pending_dir(p["seq"])
+    manifest = read_limited(os.path.join(d, "manifest.json"), MAX_MANIFEST)
+    sig = read_limited(os.path.join(d, "manifest.sig"), MAX_SIGNATURE * 2)
+    m = check_manifest(manifest)
+    verify_signature(manifest, decode_signature(sig), trusted_keys())
+    if m["seq"] != p["seq"]:
+        raise Refused("failed", "the stored manifest isn't the pending one")
+    urls = json.loads(read_limited(os.path.join(d, "urls.json"), MAX_URLS))
+    return m, urls["components"]
+
+
+# ---------------------------------------------------------------- idle
+def idle_now(pending=None):
+    """(idle, reason): from deskd's idle.json, failing closed."""
+    now = NOW()
+    try:
+        d = strict_json(read_limited(IDLE_FILE, MAX_IDLE, owner=IDLE_UID), "idle.json")
+    except FileNotFoundError:
+        return False, "no idle.json"
+    except (OSError, Refused) as e:
+        return False, f"idle.json unreadable: {getattr(e, 'text', type(e).__name__)}"
+    if not isinstance(d, dict):
+        return False, "idle.json isn't an object"
+    at = parse_utc(d.get("at"))
+    if at is None:
+        return False, "idle.json has no at"
+    if now - at > IDLE_FRESH_S or at - now > IDLE_FRESH_S:
+        return False, f"idle.json is {int(now - at)} s old"
+    counts = {}
+    for k in ("sessions", "agentTasks", "exports", "downloads"):
+        v = d.get(k)
+        if type(v) is not int or v < 0:
+            return False, f"idle.json has no {k}"
+        counts[k] = v
+    stop = d.get("idleStopSeconds")
+    if stop is not None and (type(stop) is not int or stop <= 0):
+        return False, "bad idleStopSeconds"
+    need = min(stop // 2, IDLE_MAX_S) if stop else IDLE_DEFAULT_S
+    since = d.get("idleSince")
+    since_t = parse_utc(since) if since is not None else None
+    if since is not None and since_t is None:
+        return False, "bad idleSince"
+    if since_t is not None and counts["sessions"] == counts["agentTasks"] == counts["exports"] == 0 and now - since_t >= need:
+        return True, f"idle {int(now - since_t)} s, {need} s needed"
+    reason = (f"{counts['sessions']} sessions, {counts['agentTasks']} agent tasks, {counts['exports']} exports"
+              if since_t is None or any(counts[k] for k in ("sessions", "agentTasks", "exports"))
+              else f"idle {int(now - since_t)} s of {need} s")
+    # An urgent fix (13.2): after 24 h of waiting, 15 minutes with no input will do; after 72 h, 60 s.
+    if pending and pending.get("urgent"):
+        waited = now - (parse_utc(pending.get("offeredAt")) or now)
+        last_input = parse_utc(d.get("lastInputAt")) if d.get("lastInputAt") is not None else None
+        if last_input is None and since_t is not None and counts["sessions"] == 0:
+            last_input = since_t   # input needs a session, so there's been none since the desk went idle
+        if last_input is not None and waited >= URGENT_RELAX_S:
+            quiet = URGENT_LAST_INPUT_S if waited >= URGENT_LAST_S else URGENT_INPUT_S
+            if now - last_input >= quiet:
+                return True, f"urgent, waited {int(waited)} s, no input for {int(now - last_input)} s"
+    return False, reason
+
+
+# ---------------------------------------------------------------- the desk's releases
+def release_info(name):
+    """(version, artifact sha256) of a component's current release, or (None, None)."""
+    cur = os.path.join(MA_ROOT, name, "current")
+    try:
+        target = os.readlink(cur)
+    except OSError:
+        return None, None
+    try:
+        with open(os.path.join(target, "artifact.sha256")) as f:
+            sha = f.read().strip()
+    except OSError:
+        sha = None
+    return os.path.basename(target.rstrip("/")), sha
+
+
+def prepared_ok(c):
+    p = os.path.join(MA_ROOT, c["name"], "prepared")
+    try:
+        target = os.readlink(p)
+        with open(os.path.join(target, "artifact.sha256")) as f:
+            return os.path.basename(target.rstrip("/")) == c["version"] and f.read().strip() == c["sha256"]
+    except OSError:
+        return False
+
+
+def is_current(c):
+    return release_info(c["name"]) == (c["version"], c["sha256"])
+
+
+def ma_update(*args, priority=None, timeout=MA_UPDATE_TIMEOUT_S):
+    """(exit code, its last lines). URLs are passed, never logged."""
+    try:
+        r = subprocess.run([*(priority or []), MA_UPDATE, *args], capture_output=True, text=True, timeout=timeout,
+                           stdin=subprocess.DEVNULL)
+    except subprocess.TimeoutExpired:
+        return 124, "timed out"
+    except OSError as e:
+        return 127, type(e).__name__
+    lines = (r.stderr or "").strip().splitlines()
+    said = [line for line in lines if line.startswith("ma-update:") or " FAIL" in line] or lines
+    return r.returncode, " | ".join(said[-3:])[:400]
+
+
+def image_version():
+    try:
+        with open(RELEASE_FILE) as f:
+            for line in f:
+                if line.startswith("version="):
+                    return line.strip().split("=", 1)[1]
+    except OSError:
+        pass
+    return None
+
+
+# ---------------------------------------------------------------- applying a batch
+def apply_pending(idle, reason):
+    """Runs the pending batch if it's time. (whether it changed anything, what happened)."""
+    st = load()
+    p = st.get("pending")
+    if not p:
+        return False, "nothing pending"
+    if not idle:
+        return False, f"batch {p['seq']} waits: {reason}"
+    if st["phase"] != "prepared":   # a batch that's all prepared downloads nothing, so needs no URLs
+        if p.get("urlsWanted"):
+            return False, f"batch {p['seq']} waits for new URLs"
+        exp = parse_utc(p.get("urlsExpireAt")) if p.get("urlsExpireAt") else None
+        if exp is not None and exp - NOW() < URLS_MARGIN_S:
+            def want(s):
+                if s.get("pending") and s["pending"]["seq"] == p["seq"]:
+                    s["pending"]["urlsWanted"] = True
+            update(want)
+            return True, f"batch {p['seq']} waits for new URLs (they expire at {p['urlsExpireAt']})"
+        last = parse_utc(p.get("lastFailedAt")) if p.get("lastFailedAt") else None
+        if last is not None and NOW() - last < PREPARE_RETRY_S:
+            return False, f"batch {p['seq']} waits to try its prepare again"
+    try:
+        m, urls = load_pending(p)
+    except (OSError, ValueError, KeyError, Refused) as e:
+        text = getattr(e, "text", type(e).__name__)
+        drop_failed(p["seq"], "failed", "stored", f"the stored batch can't be used: {text}")
+        return True, f"batch {p['seq']} dropped: {text}"
+    return True, run_batch(m, urls)
+
+
+def drop_failed(seq, phase, code, text, unprepare=()):
+    """A batch that won't be tried again: its seq refused from now on, its prepared releases dropped."""
+    for name in unprepare:
+        ma_update(name, "--unprepare", timeout=300)
+
+    def change(st):
+        st["failedSeq"] = max(st.get("failedSeq") or 0, seq)
+        if st.get("pending") and st["pending"]["seq"] == seq:
+            st["pending"] = None
+        st["progress"] = None
+        st["phase"] = "pending" if st.get("pending") else phase
+        st["lastError"] = {"at": utc(NOW()), "seq": seq, "code": code, "text": text}
+        st["lastBatch"] = {"seq": seq, "result": phase, "at": utc(NOW())}
+        st["holdUntil"] = None
+    update(change)
+    shutil.rmtree(pending_dir(seq), ignore_errors=True)
+    log(f"batch {seq} {phase}: {text}")
+
+
+def renew_hold():
+    update(lambda st: holding(st, NOW() + HOLD_WORK_S))
+
+
+def run_batch(m, urls):
+    seq = m["seq"]
+    t0 = NOW()
+    to_switch = [c for c in m["components"] if not is_current(c)]
+
+    def start(st):
+        if not st.get("pending") or st["pending"]["seq"] != seq or st["phase"] in APPLYING:
+            raise Refused("busy", "the pending batch changed")
+        st["phase"] = "preparing"
+        st["progress"] = {"seq": seq, "toSwitch": [c["name"] for c in to_switch], "switched": [], "startedAt": utc(t0)}
+        holding(st, NOW() + HOLD_WORK_S)
+    try:
+        update(start)
+    except Refused as e:
+        return f"batch {seq}: {e.text}"
+    if to_switch:
+        log(f"batch {m['id']} (seq {seq}): preparing {', '.join(c['name'] + ' ' + c['version'] for c in to_switch)}")
+    # A component that a superseded batch prepared, and this one doesn't switch, is dropped first.
+    names = {c["name"] for c in to_switch}
+    for d in sorted(os.listdir(MA_ROOT)) if os.path.isdir(MA_ROOT) else ():
+        if d not in names and NAME.match(d) and os.path.islink(os.path.join(MA_ROOT, d, "prepared")):
+            ma_update(d, "--unprepare", timeout=300)
+    for c in to_switch:
+        renew_hold()
+        rc, tail = ma_update(c["name"], "--prepare", urls[c["name"]], c["sha256"], priority=PREPARE_PRIORITY)
+        if rc != 0 or not prepared_ok(c):
+            return prepare_failed(m, c, rc, tail, to_switch)
+    t_prep = NOW() - t0
+    if not to_switch:
+        finish(m, [], t0, t_prep)
+        return f"batch {seq}: every component was already current"
+    log(f"batch {seq}: prepared in {t_prep:.1f} s")
+    idle, reason = idle_now(load().get("pending"))
+
+    def prepared(st):
+        st["phase"] = "prepared"
+        st["progress"] = None
+        if not idle:
+            st["holdUntil"] = None
+    update(prepared)
+    if not idle:
+        return f"batch {seq}: prepared, then not idle ({reason}); it activates at the next idle"
+    return activate(m, to_switch, t0, t_prep)
+
+
+def prepare_failed(m, c, rc, tail, to_switch):
+    seq = m["seq"]
+    text = f"prepare {c['name']} {c['version']} failed (exit {rc}): {tail}"
+
+    def change(st):
+        p = st.get("pending")
+        st["progress"] = None
+        st["holdUntil"] = None
+        st["lastError"] = {"at": utc(NOW()), "seq": seq, "code": "prepare", "text": text}
+        if not p or p["seq"] != seq:
+            return False
+        p["attempts"] = (p.get("attempts") or 0) + 1
+        p["lastFailedAt"] = utc(NOW())
+        p["urlsWanted"] = True   # the next try takes fresh URLs
+        st["phase"] = "pending"
+        return p["attempts"] >= PREPARE_TRIES
+    give_up = update(change)
+    log(f"batch {seq}: {text}; nothing was switched")
+    if give_up:
+        drop_failed(seq, "failed", "prepare", f"{text}; gave up after {PREPARE_TRIES} tries", [x["name"] for x in to_switch])
+        return f"batch {seq} failed: {text}"
+    return f"batch {seq}: {text}; nothing switched, tried again later"
+
+
+def activate(m, to_switch, t0, t_prep, switched=()):
+    seq = m["seq"]
+    switched = list(switched)
+
+    def begin(st):
+        st["phase"] = "activating"
+        st["progress"] = {"seq": seq, "toSwitch": [c["name"] for c in to_switch], "switched": list(switched),
+                          "startedAt": utc(t0)}
+        holding(st, NOW() + HOLD_WORK_S)
+    update(begin)
+    t_act = NOW()
+    for c in to_switch:
+        if c["name"] in switched:
+            continue
+        renew_hold()
+        rc, tail = ma_update(c["name"], "--activate", c["version"])
+        if rc != 0:
+            return roll_back(m, to_switch, switched, f"activate {c['name']} {c['version']} failed (exit {rc}): {tail}")
+        switched.append(c["name"])
+
+        def note(st):
+            if st.get("progress"):
+                st["progress"]["switched"] = list(switched)
+        update(note)
+        log(f"batch {seq}: {c['name']} {c['version']} is active")
+    finish(m, to_switch, t0, t_prep, NOW() - t_act)
+    return f"batch {seq} applied in {NOW() - t0:.1f} s"
+
+
+def roll_back(m, to_switch, switched, why):
+    """Puts back, in reverse, each component switched that's still on the batch's version, and never tries the batch again."""
+    seq = m["seq"]
+    update(lambda st: st.__setitem__("phase", "rolling-back"))
+    log(f"batch {seq}: {why}; rolling back {', '.join(reversed(switched)) or 'nothing'}")
+    errors, done = [], []
+    by_name = {c["name"]: c for c in to_switch}
+    for name in reversed(switched):
+        if release_info(name)[0] != by_name[name]["version"]:
+            continue   # already back: a tick that died mid-rollback
+        rc, tail = ma_update(name, "--rollback")
+        done.append(name)
+        if rc != 0:
+            errors.append(f"{name}: rollback exit {rc}: {tail}")
+    rest = [c["name"] for c in to_switch if c["name"] not in switched]
+    text = why + (f"; rolled back {', '.join(done)}" if done else "; nothing else had been switched")
+    if errors:
+        text += "; " + "; ".join(errors)
+    drop_failed(seq, "rolled-back", "activate", text, rest)
+    return f"batch {seq} rolled back: {text}"
+
+
+def finish(m, to_switch, t0, t_prep, t_act=0.0):
+    seq = m["seq"]
+    img = m.get("image")
+    root = img is not None and img != image_version()
+
+    def change(st):
+        st["appliedSeq"] = max(st.get("appliedSeq") or 0, seq)
+        st["applied"] = {"seq": seq, "id": m["id"], "created": m["created"], "at": utc(NOW()), "note": m["note"],
+                         "image": img, "components": [{"name": c["name"], "version": c["version"]} for c in m["components"]]}
+        if st.get("pending") and st["pending"]["seq"] <= seq:
+            st["pending"] = None
+        st["progress"] = None
+        st["rootPending"] = {"seq": seq, "image": img} if root else None
+        st["phase"] = "pending" if st.get("pending") else ("root-pending" if root else "applied")
+        st["lastBatch"] = {"seq": seq, "result": "applied", "at": utc(NOW()), "switched": [c["name"] for c in to_switch],
+                           "seconds": round(NOW() - t0, 1), "prepareSeconds": round(t_prep, 1),
+                           "activateSeconds": round(t_act, 1)}
+        st["holdUntil"] = None
+    update(change)
+    shutil.rmtree(pending_dir(seq), ignore_errors=True)
+    log(f"batch {m['id']} (seq {seq}) applied: {len(to_switch)} switched in {NOW() - t0:.1f} s"
+        + (f"; image {img} is root-pending" if root else ""))
+
+
+def smoke_until_healthy():
+    end = NOW() + SMOKE_RESUME_S
+    while True:
+        try:
+            if subprocess.run([SMOKE_TEST], capture_output=True, timeout=120, stdin=subprocess.DEVNULL).returncode == 0:
+                return True
+        except (OSError, subprocess.TimeoutExpired):
+            pass
+        if NOW() >= end:
+            return False
+        SLEEP(3)
+
+
+def resume():
+    """A tick that died mid-batch (a reboot, a kill): finishes what it started, or puts it back. Nothing waits for idle
+    here, since once switching started it finishes. None when there was nothing to resume."""
+    st = load()
+    if st["phase"] not in APPLYING:
+        return None
+    prog = st.get("progress") or {}
+    p = st.get("pending")
+    if not p or prog.get("seq") != p["seq"]:
+        update(lambda s: s.update({"phase": "pending" if s.get("pending") else "none", "progress": None}))
+        return "a stale batch record was cleared"
+    if st["phase"] == "preparing":
+        update(lambda s: s.update({"phase": "pending", "progress": None, "holdUntil": None}))
+        return f"batch {p['seq']}: a prepare was cut off; nothing was switched, tried at the next idle"
+    try:
+        m, _ = load_pending(p)
+    except (OSError, ValueError, KeyError, Refused) as e:
+        return f"batch {p['seq']}: can't resume: {getattr(e, 'text', type(e).__name__)}"
+    to_switch = [c for c in m["components"] if c["name"] in prog.get("toSwitch", [])]
+    now_on = [c["name"] for c in to_switch if release_info(c["name"])[0] == c["version"]]
+    log(f"batch {p['seq']}: resuming a cut-off {st['phase']}; on the batch's version now: {', '.join(now_on) or 'none'}")
+    if st["phase"] == "rolling-back":
+        return roll_back(m, to_switch, now_on, (st.get("lastError") or {}).get("text") or "a rollback was cut off")
+    if not smoke_until_healthy():
+        return roll_back(m, to_switch, now_on, "unhealthy after an activate was cut off")
+    if not all(prepared_ok(c) for c in to_switch if c["name"] not in now_on):
+        return roll_back(m, to_switch, now_on, "a prepared release went missing after an activate was cut off")
+    return activate(m, to_switch, parse_utc(prog.get("startedAt")) or NOW(), 0.0, now_on)
+
+
+# ---------------------------------------------------------------- Debian's updates and what they leave pending
+def chromium_facts():
+    installed = None
+    try:
+        r = subprocess.run([DPKG_QUERY, "-W", "-f=${Version}", "chromium"], capture_output=True, text=True, timeout=20,
+                           stdin=subprocess.DEVNULL)
+        installed = r.stdout.strip() or None if r.returncode == 0 else None
+    except (OSError, subprocess.TimeoutExpired):
+        pass
+    running = pending = False
+    try:
+        with open(os.path.join(BROWSER_CGROUP, "cgroup.procs")) as f:
+            pids = [line.strip() for line in f if line.strip().isdigit()]
+    except OSError:
+        pids = []
+    for pid in pids:
+        try:
+            exe = os.readlink(f"/proc/{pid}/exe")
+        except OSError:
+            continue
+        if exe.startswith(CHROMIUM_DIR):
+            running = True
+            # dpkg replaces a file by renaming over it, so a Chromium started before an upgrade runs a deleted binary.
+            pending = pending or exe.endswith(" (deleted)")
+    return {"installed": installed, "running": running, "pending": pending}
+
+
+def version_key(v):
+    return [(0, int(x), "") if x.isdigit() else (1, 0, x) for x in re.findall(r"\d+|[^\d]+", v)]
+
+
+def reboot_facts():
+    running = os.uname().release
+    kernels = []
+    with contextlib.suppress(OSError):
+        kernels = [n[len("vmlinuz-"):] for n in os.listdir(BOOT_DIR) if n.startswith("vmlinuz-")]
+    newest = max(kernels, key=version_key) if kernels else running
+    return {"running": running, "installed": newest,
+            "pending": newest != running or os.path.exists(REBOOT_REQUIRED)}
+
+
+def host_facts():
+    c, r = chromium_facts(), reboot_facts()
+    update(lambda st: st.update({"chromium": c, "reboot": r}))
+    return c, r
+
+
+def apt_due(st, idle):
+    a = st.get("apt") or {}
+    now = NOW()
+    first = parse_utc(a.get("firstSeen")) or now
+    ok = parse_utc(a.get("lastOk")) if a.get("lastOk") else None
+    tried = parse_utc(a.get("lastAttempt")) if a.get("lastAttempt") else None
+    if ok is not None and now - ok < APT_EVERY_S:
+        return None
+    if tried is not None and now - tried < APT_RETRY_S:
+        return None
+    forced = now - (ok if ok is not None else first) >= APT_FORCE_S
+    if idle:
+        return "idle"
+    return "forced" if forced else None
+
+
+def run_apt(why):
+    t0 = NOW()
+
+    def begin(st):
+        st["apt"]["lastAttempt"] = utc(t0)
+        holding(st, NOW() + HOLD_WORK_S)
+    update(begin)
+    env = dict(APT_ENV)
+    result = "ok"
+    steps = (("apt-get update", APT_UPDATE, APT_UPDATE_TIMEOUT_S), ("unattended-upgrade", APT_UPGRADE, APT_UPGRADE_TIMEOUT_S),
+             ("apt-get clean", APT_CLEAN, 300))
+    for name, cmd, timeout in steps:
+        renew_hold()
+        try:
+            r = subprocess.run([*LOW, *cmd], capture_output=True, text=True, timeout=timeout, env=env, stdin=subprocess.DEVNULL)
+            rc = r.returncode
+            tail = " | ".join(((r.stderr or "") + (r.stdout or "")).strip().splitlines()[-2:])[:300]
+        except subprocess.TimeoutExpired:
+            rc, tail = "timeout", ""
+        except OSError as e:
+            rc, tail = type(e).__name__, ""
+        if rc != 0:
+            result = f"{name}: exit {rc}"
+            log(f"apt ({why}): {result}: {tail}")
+            break
+    secs = round(NOW() - t0, 1)
+
+    def done(st):
+        st["apt"].update({"lastResult": result, "seconds": secs, "forced": why == "forced"})
+        if result == "ok":
+            st["apt"]["lastOk"] = utc(NOW())
+        st["holdUntil"] = None
+    update(done)
+    log(f"apt ({why}): {result} in {secs} s")
+    return result
+
+
+# ---------------------------------------------------------------- the verbs
+def tick():
+    ensure_dirs()
+    with locked("apply", blocking=False) as got:
+        if not got:
+            log("tick: another tick is running")
+            return 0
+        try:
+            st = load()
+        except Refused as e:
+            # Atomic writes make this all but impossible. Nothing is applied and apt doesn't run until it's fixed (over
+            # SSM), since starting afresh would forget which batches must never be taken again. deskd reports it.
+            print(f"<2>desk-batch: tick: {e.text}; nothing runs until it's fixed", file=sys.stderr, flush=True)
+            return 1
+
+        def tidy(s):
+            if not s["apt"].get("firstSeen"):
+                s["apt"]["firstSeen"] = utc(NOW())
+            held = parse_utc(s.get("holdUntil")) if s.get("holdUntil") else None
+            if s["phase"] not in APPLYING and held is not None and held <= NOW():
+                s["holdUntil"] = None
+        update(tidy)
+        out = resume()
+        if out:
+            log(f"tick: {out}")
+            host_facts()
+            return 0
+        st = load()
+        idle, reason = idle_now(st.get("pending"))
+        update(lambda s: s.__setitem__("idle", {"at": utc(NOW()), "idle": idle, "reason": reason}))
+        worked, out = apply_pending(idle, reason)
+        log(f"tick: {out}")
+        host_facts()
+        if not worked:
+            plain_idle = idle_now(None)[0] if st.get("pending") else idle   # apt never takes the urgent rule
+            why = apt_due(load(), plain_idle)
+            if why:
+                run_apt(why)
+                host_facts()
+    return 0
+
+
+def status():
+    try:
+        st = load()
+    except Refused as e:
+        st = default_state()
+        st["phase"] = "broken"
+        st["lastError"] = {"at": utc(NOW()), "seq": None, "code": e.code, "text": e.text}
+        return st
+    st["holdUntil"] = current_hold(st)
+    st["floorSeq"] = floor_seq(st)
+    return st
+
+
+def hold(minutes):
+    if type(minutes) is not int or not 0 <= minutes <= HOLD_MAX_MIN:
+        raise Refused("bad_request", f"minutes must be 0 to {HOLD_MAX_MIN}")
+
+    def change(st):
+        if minutes == 0:
+            if st["phase"] not in APPLYING:
+                st["holdUntil"] = None
+        else:
+            holding(st, NOW() + minutes * 60)
+        return current_hold(st)
+    return update(change)
+
+
+def verify_cli(manifest_path, sig_path, keys):
+    manifest = read_limited(manifest_path, MAX_MANIFEST)
+    sig = read_limited(sig_path, MAX_SIGNATURE * 2)
+    m = check_manifest(manifest)
+    if not keys:
+        keys = trusted_keys()
+    else:
+        for k in keys:
+            if not is_p256(k):
+                raise Refused("untrusted", f"{k} isn't a P-256 public key")
+    key = verify_signature(manifest, decode_signature(sig), keys)
+    return {"ok": True, "key": key, "manifest": m}
+
+
+def peer_uid(conn):
+    return struct.unpack("3i", conn.getsockopt(socket.SOL_SOCKET, socket.SO_PEERCRED, 12))[1]
+
+
+def read_request(conn):
+    data = b""
+    while b"\n" not in data and len(data) <= MAX_REQUEST:
+        chunk = conn.recv(65536)
+        if not chunk:
+            break
+        data += chunk
+    return data
+
+
+def serve(conn):
+    """One request: `status`, `hold <minutes>` or `offer <json>`, then an answer line: `ok[ <json>]` or `err <code> <text>`."""
+    uid = peer_uid(conn)
+    if uid not in (DESKD_UID, 0):
+        log(f"refused uid {uid}")
+        conn.sendall(b"err denied only deskd may use this socket\n")
+        return
+    conn.settimeout(10)
+    try:
+        data = read_request(conn)
+    except OSError:
+        return
+    if len(data) > MAX_REQUEST or not data.endswith(b"\n"):
+        conn.sendall(b"err bad_request one line, at most 256 KiB\n")
+        return
+    line = data[:-1]
+    verb, _, arg = line.partition(b" ")
+    try:
+        if verb == b"status" and not arg:
+            out = "ok " + json.dumps(status(), sort_keys=True, separators=(",", ":"))
+        elif verb == b"hold" and re.fullmatch(rb"\d{1,2}", arg or b""):
+            out = "ok " + json.dumps({"holdUntil": hold(int(arg))})
+        elif verb == b"offer" and arg:
+            req = strict_json(arg, "offer")
+            if not isinstance(req, dict) or not all(isinstance(req.get(k), str) for k in ("manifest", "signature")):
+                raise Refused("bad_request", "offer needs manifest and signature in base64, and urls")
+            try:
+                manifest = base64.b64decode(req["manifest"], validate=True)
+                sig = base64.b64decode(req["signature"], validate=True)
+            except (binascii.Error, ValueError):
+                raise Refused("bad_request", "manifest and signature must be base64") from None
+            p = offer(manifest, sig, req.get("urls"))
+            out = "ok " + json.dumps({"seq": p["seq"], "id": p["id"]})
+        else:
+            raise Refused("bad_request", "expected: status | hold <minutes> | offer <json>")
+    except Refused as e:
+        log(f"{verb.decode('ascii', 'replace')[:16]}: err {e.code}")
+        out = f"err {e.code} {' '.join(e.text.split())[:300]}"
+    except OSError as e:
+        out = f"err failed {type(e).__name__}"
+    conn.sendall(out.encode() + b"\n")
+
+
+def main(argv):
+    verb = argv[1] if len(argv) > 1 else ""
+    try:
+        if verb == "verify" and len(argv) >= 4:
+            print(json.dumps(verify_cli(argv[2], argv[3], argv[4:]), indent=1))
+            return 0
+        if verb == "verify-manifest" and len(argv) == 3:
+            print(json.dumps(check_manifest(read_limited(argv[2], MAX_MANIFEST)), indent=1))
+            return 0
+        if os.geteuid() != 0:
+            print("desk-batch: must run as root (verify doesn't)", file=sys.stderr)
+            return 2
+        if verb == "serve" and len(argv) == 2:
+            conn = socket.socket(fileno=0)
+            try:
+                serve(conn)
+            finally:
+                with contextlib.suppress(OSError):
+                    conn.shutdown(socket.SHUT_RDWR)
+            return 0
+        if verb == "tick" and len(argv) == 2:
+            return tick()
+        if verb == "status" and len(argv) == 2:
+            print(json.dumps(status(), indent=1, sort_keys=True))
+            return 0
+        if verb == "hold" and len(argv) == 3 and argv[2].isdigit():
+            print(json.dumps({"holdUntil": hold(int(argv[2]))}))
+            return 0
+        if verb == "offer" and len(argv) == 5:
+            urls = strict_json(read_limited(argv[4], MAX_URLS), "urls.json")
+            p = offer(read_limited(argv[2], MAX_MANIFEST), read_limited(argv[3], MAX_SIGNATURE * 2), urls)
+            print(f"ok {json.dumps({'seq': p['seq'], 'id': p['id']})}")
+            return 0
+    except Refused as e:
+        print(f"err {e.code} {e.text}", file=sys.stderr)
+        return 1
+    except OSError as e:
+        print(f"err failed {e}", file=sys.stderr)
+        return 1
+    print(__doc__.split("\n\n")[1], file=sys.stderr)
+    return 2
+
+
+if __name__ == "__main__":
+    sys.exit(main(sys.argv))

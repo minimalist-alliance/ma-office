@@ -1,0 +1,32 @@
+[Unit]
+Description=desk-rtc (WebRTC endpoint)
+ConditionPathExists=/opt/ma/desk-rtc/current/run
+Requires=desk-datadirs.service
+After=desk-datadirs.service network-online.target
+Wants=network-online.target
+# The shaper goes on first if it can. Wants, not Requires: its failure never stops this unit (ADR 0036).
+Wants=desk-egress.service
+After=desk-egress.service
+
+[Service]
+User=rtc
+Group=rtc
+SupplementaryGroups=desk
+# Group desk owns /run/desk and rtc.sock (0660)
+UMask=0007
+AmbientCapabilities=CAP_NET_BIND_SERVICE
+CapabilityBoundingSet=CAP_NET_BIND_SERVICE
+NoNewPrivileges=yes
+ProtectSystem=strict
+ProtectHome=yes
+ReadWritePaths=/data/rtc /run/desk /run/desk-media
+Environment=DISPLAY=:99 RELEASE_DIR=/opt/ma/desk-rtc/current
+ExecStart=/opt/ma/desk-rtc/current/run
+Restart=always
+RestartSec=2
+MemoryMax=128M
+CPUWeight=400
+LimitNOFILE=65536
+
+[Install]
+WantedBy=multi-user.target

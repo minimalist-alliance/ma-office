@@ -1,0 +1,12 @@
+#!/bin/sh
+# desk-guild-rtc: desk-rtc's limits on a Guild Desk, as a runtime drop-in (desk-guild-rtc.service; image/README.md, "Guild Desk").
+# sub/guild-rtc measured guild mode at 317 to 331 MiB with 600 sessions; it asks for MemoryMax=512M and GOMEMLIMIT=384MiB
+# there. A member's desk keeps the image's 128M and no GOMEMLIMIT: this only runs with /run/ma/guild.
+set -eu
+[ -e /run/ma/guild ] || { echo "desk-guild-rtc: not a Guild Desk, nothing to do"; exit 0; }
+d=/run/systemd/system/desk-rtc.service.d
+install -d -m 0755 "$d"
+printf '%s\n' "# Written at boot by desk-guild-rtc, on a Guild Desk only." "[Service]" "MemoryMax=512M" "Environment=GOMEMLIMIT=384MiB" > "$d/50-guild.conf.tmp"
+chmod 0644 "$d/50-guild.conf.tmp"; mv -f "$d/50-guild.conf.tmp" "$d/50-guild.conf"
+systemctl daemon-reload
+echo "desk-guild-rtc: desk-rtc gets MemoryMax=512M and GOMEMLIMIT=384MiB on this Guild Desk"

@@ -1,0 +1,262 @@
+#!/usr/bin/python3 -I
+"""desk-host-release: the host's release store, filled only from verified artifacts (ADR 0072 sections 2 and 13, RC-01).
+
+  desk-host-release install <component>-<version>.tgz   check, unpack, make current
+  desk-host-release verify                              every pinned release is in the store, as installed
+  desk-host-release list
+
+A host takes each desk component only by the hash in its own releases.pin (/etc/desk-host/releases.pin, the desk image's
+recipe/releases.pin baked into the host image), the same rule the desk image uses: the artifact's sha256 must be the one
+pinned for its component and version, or nothing is unpacked. deskd, desk-agent and desk-notebook ship a Docker image
+(image.tar, `docker save`'s OCI layout); the host has no Docker, so this unpacks the layers itself, in order, with their
+whiteouts, each layer blob checked against its own digest and the image ID taken from the config blob's digest. Each
+member goes through tarfile's 'tar' filter: nothing outside the release's root, no device files, no set-id bits. The tree
+is host root's (the image's own owners don't matter: a sandbox runs it read-only, joined to its desk's user namespace).
+desk-rtc and desk-stream ship a native release directory, kept as it is. A release goes in under a new name and is renamed
+into place, then `current` is swapped by rename, so a crash leaves the old one or none. desk-host copies `current` into
+each slot at prepare; nothing a desk writes is ever read here (the desk's ma-update never names a path to the host).
+Each release keeps artifact.sha256 (the pin's) and tree.sha256 (a hash of every path, mode, owner and content), which
+`verify` recomputes.
+"""
+import hashlib
+import io
+import json
+import os
+import shutil
+import stat
+import sys
+import tarfile
+import time
+
+STORE = "/srv/desk-host/releases"
+PIN = "/etc/desk-host/releases.pin"
+IMAGE_COMPONENTS = {"deskd", "desk-agent", "desk-notebook"}
+NATIVE_COMPONENTS = {"desk-rtc", "desk-stream"}
+ENV_KEYS = ("JAVA_HOME", "PATH", "LANG", "LANGUAGE", "LC_ALL", "JAVA_VERSION", "NODE_VERSION", "DESK_NOTEBOOK_VERSION")
+MOUNTPOINTS = ("data", "run", "tmp", "desk-host", "proc", "sys", "dev")   # a read-only root needs them to exist
+
+
+def die(msg):
+    print(f"desk-host-release: REFUSED: {msg}", file=sys.stderr)
+    sys.exit(1)
+
+
+def pins():
+    out = {}
+    for line in open(PIN):
+        f = line.split()
+        if not f or f[0].startswith("#"):
+            continue
+        if len(f) != 3 or len(f[2]) != 64:
+            die(f"bad line in {PIN}: {line.strip()}")
+        out[f[0]] = (f[1], f[2])
+    return out
+
+
+def sha256_file(path):
+    h = hashlib.sha256()
+    with open(path, "rb") as fh:
+        for b in iter(lambda: fh.read(1 << 20), b""):
+            h.update(b)
+    return h.hexdigest()
+
+
+def tree_hash(root):
+    """Every entry under root, sorted: path, type, mode, uid, gid, and the content's or the link's hash. Links not followed.
+    The top level's tree.sha256 itself is left out."""
+    h = hashlib.sha256()
+    for dirpath, dirnames, filenames in os.walk(root):
+        dirnames.sort()
+        for name in sorted(dirnames + filenames):
+            if dirpath == root and name == "tree.sha256":
+                continue
+            p = os.path.join(dirpath, name)
+            st = os.lstat(p)
+            rel = os.path.relpath(p, root)
+            if stat.S_ISREG(st.st_mode):
+                c = sha256_file(p)
+            elif stat.S_ISLNK(st.st_mode):
+                c = "->" + os.readlink(p)
+            else:
+                c = "-"
+            h.update(f"{rel}\0{stat.S_IFMT(st.st_mode):o}\0{stat.S_IMODE(st.st_mode):o}\0{st.st_uid}\0{st.st_gid}\0{c}\n".encode())
+    return h.hexdigest()
+
+
+def safe_target(root, name):
+    """The path a member names, inside root, or None if it would leave it (resolving links already on disk)."""
+    name = name.lstrip("/")
+    p = os.path.realpath(os.path.join(root, name))
+    return p if p == root or p.startswith(root + os.sep) else None
+
+
+def remove(path):
+    if os.path.islink(path) or not os.path.isdir(path):
+        os.unlink(path)
+    else:
+        shutil.rmtree(path)
+
+
+def unpack_image(image_tar, rootfs):
+    """docker save's layout: manifest.json names the config and the layers in order. Returns (image id, env lines)."""
+    with tarfile.open(image_tar) as outer:
+        members = {m.name.lstrip("./"): m for m in outer.getmembers()}
+        manifest = json.load(outer.extractfile(members["manifest.json"]))
+        if len(manifest) != 1:
+            die(f"{image_tar}: {len(manifest)} images in one release")
+        man = manifest[0]
+
+        def blob(path):
+            data = outer.extractfile(members[path.lstrip("./")]).read()
+            want = path.rsplit("/", 1)[-1]
+            if hashlib.sha256(data).hexdigest() != want:
+                die(f"{image_tar}: {path} doesn't hash to its own name")
+            return data
+
+        config = blob(man["Config"])
+        image_id = "sha256:" + hashlib.sha256(config).hexdigest()
+        env = [e for e in json.loads(config)["config"].get("Env", []) if e.split("=", 1)[0] in ENV_KEYS]
+        os.makedirs(rootfs, mode=0o755)
+        for layer_path in man["Layers"]:
+            data = blob(layer_path)
+            if data[:2] == b"\x1f\x8b":
+                import gzip
+                data = gzip.decompress(data)
+            with tarfile.open(fileobj=io.BytesIO(data)) as layer:
+                ms = layer.getmembers()
+                for m in ms:   # whiteouts first: they remove what lower layers put there
+                    base = os.path.basename(m.name)
+                    if not base.startswith(".wh."):
+                        continue
+                    parent = safe_target(rootfs, os.path.dirname(m.name))
+                    if parent is None:
+                        die(f"{layer_path}: whiteout {m.name} outside the root")
+                    if base == ".wh..wh..opq":
+                        if os.path.isdir(parent) and not os.path.islink(parent):
+                            for c in os.listdir(parent):
+                                remove(os.path.join(parent, c))
+                    else:
+                        t = os.path.join(parent, base[4:])
+                        if os.path.lexists(t):
+                            remove(t)
+                rest = [m for m in ms if not os.path.basename(m.name).startswith(".wh.")]
+                for m in rest:
+                    if m.isdev():
+                        continue   # no device files in a release root
+                    t = safe_target(rootfs, m.name)
+                    if t is None:
+                        die(f"{layer_path}: {m.name} outside the root")
+                    if os.path.lexists(t) and not (m.isdir() and os.path.isdir(t) and not os.path.islink(t)):
+                        remove(t)   # a later layer replaces what's there
+                layer.extractall(rootfs, members=rest, numeric_owner=True, filter="tar")
+    for dirpath, dirnames, filenames in os.walk(rootfs):   # host root's, no set-id bits, no write for others
+        for name in dirnames + filenames + ["."]:
+            p = os.path.normpath(os.path.join(dirpath, name))
+            st = os.lstat(p)
+            os.lchown(p, 0, 0)
+            if not stat.S_ISLNK(st.st_mode):
+                os.chmod(p, stat.S_IMODE(st.st_mode) & ~(stat.S_ISUID | stat.S_ISGID | stat.S_IWOTH))
+    for d in MOUNTPOINTS:
+        p = os.path.join(rootfs, d)
+        if os.path.islink(p):
+            os.unlink(p)
+        os.makedirs(p, exist_ok=True)
+    return image_id, env
+
+
+def install(tgz):
+    name = os.path.basename(tgz)
+    if not name.endswith(".tgz"):
+        die(f"{name}: not <component>-<version>.tgz")
+    pinned = pins()
+    comp = next((c for c in sorted(pinned, key=len, reverse=True) if name.startswith(c + "-")), None)
+    if comp is None or comp not in IMAGE_COMPONENTS | NATIVE_COMPONENTS:
+        die(f"{name}: no component of the store's in {PIN}")
+    ver = name[len(comp) + 1:-4]
+    if pinned[comp][0] != ver:
+        die(f"{comp} {ver} isn't pinned ({PIN} pins {comp} {pinned[comp][0]})")
+    got = sha256_file(tgz)
+    if got != pinned[comp][1]:
+        die(f"{name} hashes to {got[:16]}..., {PIN} pins {pinned[comp][1][:16]}...")
+    os.makedirs(f"{STORE}/{comp}", mode=0o755, exist_ok=True)
+    final = f"{STORE}/{comp}/{ver}"
+    new = f"{final}.new.{os.getpid()}"
+    for stale in os.listdir(f"{STORE}/{comp}"):
+        if ".new." in stale:
+            shutil.rmtree(f"{STORE}/{comp}/{stale}")
+    os.mkdir(new, 0o755)
+    t0 = time.time()
+    with tarfile.open(tgz) as tf:
+        ms = tf.getmembers()
+        for m in ms:
+            if not (m.isfile() or m.isdir() or m.issym()) or safe_target(new, m.name) is None:
+                die(f"{name}: unexpected member {m.name}")
+        tf.extractall(new, members=ms, numeric_owner=True, filter="tar")
+    image_id = None
+    if comp in IMAGE_COMPONENTS:
+        if not os.path.isfile(f"{new}/image.tar"):
+            die(f"{name}: no image.tar")
+        image_id, env = unpack_image(f"{new}/image.tar", f"{new}/rootfs")
+        os.unlink(f"{new}/image.tar")
+        with open(f"{new}/image-id", "w") as fh:
+            fh.write(image_id + "\n")
+        with open(f"{new}/image.env", "w") as fh:
+            fh.write("\n".join(env) + "\n")
+    for dirpath, dirnames, filenames in os.walk(new):   # the release's own files: host root's, nobody else may write
+        if os.path.join(new, "rootfs") in (dirpath, os.path.dirname(dirpath)) or dirpath.startswith(os.path.join(new, "rootfs") + os.sep):
+            continue
+        for q in [os.path.join(dirpath, x) for x in dirnames + filenames]:
+            if q == os.path.join(new, "rootfs"):
+                continue
+            st = os.lstat(q)
+            os.lchown(q, 0, 0)
+            if not stat.S_ISLNK(st.st_mode):
+                os.chmod(q, stat.S_IMODE(st.st_mode) & ~(stat.S_ISUID | stat.S_ISGID | stat.S_IWGRP | stat.S_IWOTH))
+    with open(f"{new}/artifact.sha256", "w") as fh:
+        fh.write(got + "\n")
+    th = tree_hash(new)
+    with open(f"{new}/tree.sha256", "w") as fh:
+        fh.write(th + "\n")
+    if os.path.lexists(final):
+        shutil.rmtree(final)
+    os.rename(new, final)
+    link = f"{STORE}/{comp}/current"
+    os.symlink(ver, link + ".new")
+    os.rename(link + ".new", link)
+    print(f"desk-host-release: {comp} {ver} in the store (sha256 {got[:12]} as pinned{', image ' + image_id[:19] if image_id else ''}, tree {th[:12]}) in {time.time() - t0:.0f} s")
+
+
+def verify():
+    bad = 0
+    for comp, (ver, sha) in sorted(pins().items()):
+        if comp not in IMAGE_COMPONENTS | NATIVE_COMPONENTS:
+            continue
+        d = f"{STORE}/{comp}/current"
+        try:
+            cur = os.readlink(d)
+            a = open(f"{d}/artifact.sha256").read().strip()
+            t = open(f"{d}/tree.sha256").read().strip()
+        except OSError as e:
+            print(f"FAIL release {comp}: {e}")
+            bad = 1
+            continue
+        now = tree_hash(os.path.realpath(d))
+        ok = cur == ver and a == sha and t == now
+        print(f"{'PASS' if ok else 'FAIL'} release {comp}: current {cur} (pinned {ver}), artifact {a[:12]} (pinned {sha[:12]}), tree {now[:12]} (recorded {t[:12]})")
+        bad |= not ok
+    return bad
+
+
+def main():
+    if len(sys.argv) == 3 and sys.argv[1] == "install":
+        install(sys.argv[2])
+    elif sys.argv[1:] == ["verify"]:
+        sys.exit(verify())
+    elif sys.argv[1:] == ["list"]:
+        for comp in sorted(os.listdir(STORE)):
+            print(comp, os.readlink(f"{STORE}/{comp}/current") if os.path.islink(f"{STORE}/{comp}/current") else "-")
+    else:
+        raise SystemExit(__doc__)
+
+
+main()

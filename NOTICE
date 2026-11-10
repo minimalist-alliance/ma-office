@@ -1,0 +1,21 @@
+Minimalist Alliance office
+Copyright 2026 Minimalist Alliance LLC
+
+This product is licensed under the Apache License, Version 2.0 (see LICENSE), except as noted below.
+
+The "Minimalist Alliance" name and logo are trademarks of Minimalist Alliance LLC. They are not licensed under the
+Apache License; see TRADEMARKS.md.
+
+Maia, the office's assistant, is Minimalist Alliance's brand character. Her name, character and art are not
+licensed under the Apache License; all rights are reserved by Minimalist Alliance LLC. These files hold her art
+and are not covered by the Apache License (see TRADEMARKS.md):
+- docs/assets/maia/ (every file in it)
+- web/maia-avatar/ (every file in it)
+- web/vendor/minimalist-alliance-maia-avatar-0.2.0-dance.1.tgz
+
+This product includes third-party software under its own licenses:
+- desk-rtc/third_party/pion-webrtc/: Pion WebRTC, MIT License (its LICENSE file).
+- services/deskd/src/main/resources/com/minimalistalliance/desk/deskd/browser/minified/readability.js: Mozilla
+  Readability, Apache License 2.0 (readability.LICENSE.md beside it).
+- The web app's npm dependencies, listed with their license texts in THIRD-PARTY-NOTICES.txt, which
+  `npm run build:release` writes into the release bundle.

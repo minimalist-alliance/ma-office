@@ -1,0 +1,492 @@
+{
+  "_doc": "MDoc v1, the simplified view's document (services/deskd/docs/API.md section 14). Every field a block, run or head part may have, with its type; nothing else is ever sent. Types: string, int, number, bool, runs (a list of runs), blocks, strings, cells (table rows), menus, cards, tracks, suggested, map:<part>, list:<part>. Required fields end in !. MDocSchemaTest checks deskd's output against this; the renderer can check what it gets the same way.",
+  "head": {
+    "v!": "int",
+    "tabId!": "string",
+    "rev!": "int",
+    "url!": "string",
+    "origin": "string",
+    "title!": "string",
+    "kind!": "string",
+    "sensitive!": "bool",
+    "truncated!": "bool",
+    "loading!": "bool",
+    "blocks!": "blocks",
+    "site": "map:site",
+    "hidden": "map:hidden",
+    "challenge": "map:challenge",
+    "article": "map:article",
+    "pageHeight": "int"
+  },
+  "blocks": {
+    "heading": {
+      "key!": "string",
+      "level!": "int",
+      "runs!": "runs",
+      "dialog": "bool",
+      "grouped": "bool"
+    },
+    "para": {
+      "key!": "string",
+      "runs!": "runs",
+      "quote": "int",
+      "dialog": "bool",
+      "grouped": "bool",
+      "depth": "int"
+    },
+    "item": {
+      "key!": "string",
+      "depth!": "int",
+      "ordinal!": "int",
+      "cont": "bool",
+      "runs!": "runs",
+      "dialog": "bool",
+      "grouped": "bool"
+    },
+    "code": {
+      "key!": "string",
+      "text!": "string",
+      "dialog": "bool",
+      "grouped": "bool"
+    },
+    "rule": {
+      "key!": "string",
+      "dialog": "bool",
+      "grouped": "bool"
+    },
+    "image": {
+      "key!": "string",
+      "image!": "string",
+      "alt!": "string",
+      "width!": "int",
+      "height!": "int",
+      "link": "map:link",
+      "dialog": "bool",
+      "grouped": "bool",
+      "renderedWidth": "int",
+      "renderedHeight": "int"
+    },
+    "table": {
+      "key!": "string",
+      "rows!": "cells",
+      "dialog": "bool",
+      "grouped": "bool"
+    },
+    "meta": {
+      "key!": "string",
+      "runs!": "runs",
+      "dialog": "bool",
+      "grouped": "bool"
+    },
+    "controls": {
+      "key!": "string",
+      "runs!": "runs",
+      "dialog": "bool",
+      "grouped": "bool",
+      "menus": "menus"
+    },
+    "bar": {
+      "key!": "string",
+      "runs!": "runs",
+      "menus!": "menus",
+      "dialog": "bool",
+      "grouped": "bool"
+    },
+    "cards": {
+      "key!": "string",
+      "layout!": "string",
+      "repeat!": "int",
+      "items!": "cards",
+      "dialog": "bool",
+      "grouped": "bool"
+    },
+    "group": {
+      "key!": "string",
+      "label!": "string",
+      "size!": "int"
+    },
+    "island": {
+      "key!": "string",
+      "kind!": "string",
+      "width!": "int",
+      "height!": "int",
+      "island": "string",
+      "fp": "string",
+      "box": "map:box",
+      "media": "map:media",
+      "main": "bool",
+      "preRoll": "bool",
+      "label": "string",
+      "dialog": "bool",
+      "grouped": "bool",
+      "state!": "string",
+      "ad": "bool"
+    },
+    "sensitive": {
+      "key!": "string",
+      "kind!": "string",
+      "origin": "string",
+      "dialog": "bool",
+      "grouped": "bool"
+    },
+    "structured": {
+      "key!": "string",
+      "type!": "string",
+      "data!": "map:any",
+      "fold": "int"
+    },
+    "answer": {
+      "key!": "string",
+      "label!": "string",
+      "runs!": "runs",
+      "sources!": "runs",
+      "dialog": "bool",
+      "grouped": "bool"
+    },
+    "comment": {
+      "key!": "string",
+      "kind!": "string",
+      "depth!": "int",
+      "author": "map:author",
+      "score": "string",
+      "up": "run",
+      "down": "run",
+      "reply": "run",
+      "collapsed": "bool",
+      "more": "int",
+      "accepted": "bool",
+      "runs!": "runs",
+      "dialog": "bool",
+      "grouped": "bool"
+    },
+    "fold": {
+      "key!": "string",
+      "label!": "string",
+      "kind!": "string",
+      "lead!": "int",
+      "size!": "int",
+      "meta": "string"
+    },
+    "filters": {
+      "key!": "string",
+      "runs!": "runs",
+      "menus!": "menus",
+      "count": "int",
+      "sort": "run",
+      "dialog": "bool",
+      "grouped": "bool"
+    },
+    "paywall": {
+      "key!": "string"
+    }
+  },
+  "runs": {
+    "b": {
+      "runs!": "runs"
+    },
+    "i": {
+      "runs!": "runs"
+    },
+    "code": {
+      "runs!": "runs"
+    },
+    "sup": {
+      "runs!": "runs"
+    },
+    "sub": {
+      "runs!": "runs"
+    },
+    "s": {
+      "runs!": "runs"
+    },
+    "br": {},
+    "image": {
+      "image!": "string",
+      "alt!": "string",
+      "width!": "int",
+      "height!": "int",
+      "renderedWidth": "int",
+      "renderedHeight": "int"
+    },
+    "link": {
+      "node": "string",
+      "fp": "string",
+      "url": "string",
+      "runs!": "runs",
+      "primary": "bool",
+      "name": "string",
+      "redirect": "bool",
+      "signIn": "bool",
+      "next": "bool"
+    },
+    "button": {
+      "node": "string",
+      "fp": "string",
+      "label!": "string",
+      "text": "string",
+      "role": "string",
+      "pressed": "bool",
+      "expanded": "bool",
+      "selected": "bool",
+      "checked": "bool",
+      "disabled": "bool",
+      "primary": "bool",
+      "name": "string",
+      "signIn": "bool"
+    },
+    "field": {
+      "node": "string",
+      "fp": "string",
+      "kind!": "string",
+      "label!": "string",
+      "value!": "string",
+      "placeholder": "string",
+      "disabled": "bool",
+      "enter": "bool"
+    },
+    "check": {
+      "node": "string",
+      "fp": "string",
+      "kind!": "string",
+      "checked!": "bool",
+      "label!": "string",
+      "disabled": "bool",
+      "group": "string"
+    },
+    "select": {
+      "node": "string",
+      "fp": "string",
+      "label!": "string",
+      "options!": "strings",
+      "selected!": "int",
+      "multiple": "bool",
+      "disabled": "bool"
+    },
+    "sensitive": {
+      "kind!": "string",
+      "origin": "string"
+    },
+    "vote": {
+      "score!": "string",
+      "up": "map:arrow",
+      "down": "map:arrow",
+      "state": "string"
+    }
+  },
+  "parts": {
+    "site": {
+      "name": "string",
+      "icon": "string",
+      "actions": "list:action",
+      "themeColor": "string"
+    },
+    "action": {
+      "tag!": "string",
+      "node!": "string",
+      "fp!": "string",
+      "label!": "string",
+      "count": "int"
+    },
+    "hidden": {
+      "counts!": "map:counts",
+      "trackers": "int",
+      "done": "map:done", "blocking": "bool"
+    },
+    "counts": {
+      "ads": "int",
+      "cookie": "int",
+      "newsletter": "int",
+      "popup": "int",
+      "recommended": "int",
+      "sponsored": "int",
+      "other": "int",
+      "shorts": "int",
+      "shelves": "int",
+      "signin": "int"
+    },
+    "done": {
+      "cookie!": "string",
+      "label": "string"
+    },
+    "challenge": {
+      "reason!": "string"
+    },
+    "article": {
+      "kicker": "string",
+      "byline": "strings",
+      "date": "string",
+      "readMinutes!": "int",
+      "lead": "map:lead"
+    },
+    "lead": {
+      "image!": "string",
+      "width!": "int",
+      "height!": "int",
+      "caption": "string",
+      "credit": "string"
+    },
+    "link": {
+      "node": "string",
+      "fp": "string",
+      "url": "string",
+      "text": "string"
+    },
+    "box": {
+      "x!": "int",
+      "y!": "int",
+      "width!": "int",
+      "height!": "int"
+    },
+    "media": {
+      "duration": "number",
+      "time": "number",
+      "paused": "bool",
+      "muted": "bool",
+      "drm": "bool",
+      "poster": "string",
+      "tracks": "tracks",
+      "frame!": "bool",
+      "crossOrigin": "bool",
+      "chapters": "list:chapter"
+    },
+    "track": {
+      "kind!": "string",
+      "label!": "string",
+      "lang!": "string",
+      "on!": "bool"
+    },
+    "card": {
+      "title!": "map:link",
+      "image": "map:cardImage",
+      "price": "string",
+      "rating": "string",
+      "duration": "string",
+      "meta": "strings",
+      "chips": "strings",
+      "snippet": "string",
+      "actions": "runs",
+      "listPrice": "string",
+      "ratingCount": "string",
+      "badge": "string",
+      "deal": "string",
+      "delivery": "string"
+    },
+    "cardImage": {
+      "image!": "string",
+      "width!": "int",
+      "height!": "int"
+    },
+    "menu": {
+      "label!": "string",
+      "runs!": "runs",
+      "kind!": "string"
+    },
+    "cell": {
+      "head": "bool",
+      "span": "int",
+      "runs!": "runs"
+    },
+    "chapter": {
+      "time!": "number",
+      "label!": "string"
+    },
+    "author": {
+      "name!": "string",
+      "role": "string"
+    },
+    "arrow": {
+      "node!": "string",
+      "fp!": "string"
+    }
+  },
+  "enums": {
+    "head.kind": [
+      "article",
+      "page"
+    ],
+    "field.kind": [
+      "plain",
+      "query",
+      "email_address",
+      "phone_number",
+      "web_address",
+      "numeric",
+      "date_choice",
+      "time_choice",
+      "datetime_choice",
+      "month_choice",
+      "week_choice",
+      "colour_choice",
+      "range_choice",
+      "file_choice",
+      "multiline"
+    ],
+    "check.kind": [
+      "checkbox",
+      "radio"
+    ],
+    "sensitive.kind": [
+      "password",
+      "one_time_code",
+      "card",
+      "masked",
+      "payment"
+    ],
+    "island.kind": [
+      "video",
+      "audio",
+      "canvas",
+      "frame",
+      "embed"
+    ],
+    "cards.layout": [
+      "grid",
+      "list"
+    ],
+    "action.tag": [
+      "search",
+      "sections",
+      "signin",
+      "cart"
+    ],
+    "challenge.reason": [
+      "person_check",
+      "sign_in",
+      "payment"
+    ],
+    "done.cookie": [
+      "hidden",
+      "rejected"
+    ],
+    "structured.type": [
+      "recipe",
+      "product",
+      "qa",
+      "video"
+    ],
+    "island.state": [
+      "live",
+      "click",
+      "none"
+    ],
+    "menu.kind": [
+      "menu",
+      "filters",
+      "contents"
+    ],
+    "comment.kind": [
+      "comment",
+      "answer",
+      "question"
+    ],
+    "fold.kind": [
+      "description",
+      "comments",
+      "other"
+    ],
+    "vote.state": [
+      "up",
+      "down"
+    ]
+  }
+}

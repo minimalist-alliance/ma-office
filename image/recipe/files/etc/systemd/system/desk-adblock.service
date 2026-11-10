@@ -1,0 +1,21 @@
+[Unit]
+Description=Ad blocking: put a member's per-site off list in place now (ADR 0076)
+# On demand only: deskd starts it through /run/desk/units.sock after it rewrites /data/desk/adblock-off, and the start
+# answers when the blocker's own rules show the list (or when there's nothing running to tell). desk-browser.service also
+# runs "desk-adblock render" before every start of Chromium, so a list written while Chromium is down applies then.
+Requires=desk-datadirs.service
+After=desk-datadirs.service
+
+[Service]
+Type=oneshot
+# As root to write /etc/chromium/policies/managed/ma-adblock.json, then as uid 1100 (deskd's) for Chromium's debugging port.
+ExecStart=/usr/local/lib/ma/desk-adblock apply
+TimeoutStartSec=30
+ProtectSystem=strict
+ReadWritePaths=/etc/chromium/policies/managed
+ProtectHome=yes
+PrivateTmp=yes
+NoNewPrivileges=yes
+CapabilityBoundingSet=CAP_SETUID CAP_SETGID CAP_CHOWN CAP_FOWNER CAP_DAC_OVERRIDE CAP_DAC_READ_SEARCH
+RestrictAddressFamilies=AF_INET AF_INET6 AF_UNIX
+MemoryMax=64M

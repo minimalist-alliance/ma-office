@@ -1,0 +1,64 @@
+# The program mutants mutate.sh runs: each is recipe/desk-agent-filter (0.1.1) with this one change, built for arm64 like the
+# release (CGO_ENABLED=0 GOARCH=arm64 go build -trimpath -ldflags '-s -w -buildid='). The rules' and the unit's breaks are in mutate.sh.
+
+## any-name
+proxy.go:
+-	if _, ok := s.names[name]; !ok {
++	if false {
+
+## dials-elsewhere
+proxy.go:
+-			c, err := d.DialContext(ctx, "tcp", net.JoinHostPort(a.String(), strconv.Itoa(s.upstreamPort)))
++			c, err := d.DialContext(ctx, "tcp", net.JoinHostPort(func() string { _ = a; return "8.8.8.8" }(), strconv.Itoa(s.upstreamPort)))
+
+## dns-any-name
+dns.go:
+-	_, listed := d.names[lower]
++	listed := true
+
+## dns-any-type
+dns.go:
+-	case qclass == classIN && qtype == typeAAAA:
++	case qclass == classIN:
+
+## ech-ok
+hello.go:
+-	name, ech := "", false
++	name, ech := "", false; _ = ech
+-	case ech:
+-		return "", errECH
+
+## log-contents
+hello.go:
+-			return nil, "", perr
++			return raw, "", perr
+proxy.go:
+-		s.refusals.refused("refused: %s", helloReason(err))
++		s.refusals.refused("refused: %s %q", helloReason(err), raw)
+
+## log-unlimited
+main.go:
+-const refusalsPerMinute = 10
++const refusalsPerMinute = 100000
+
+## no-buffers
+dns.go:
+-				if bound(c, dnsBuffer, dnsBuffer) != nil {
++				if false {
+proxy.go:
+-				if err := bound(c, clientReadBuffer, clientWriteBuffer); err != nil {
++				if err := error(nil); err != nil {
+-	d := net.Dialer{KeepAliveConfig: keepAlive, Timeout: s.dialTimeout, Control: boundControl(upstreamReadBuffer, upstreamWriteBuffer)}
++	d := net.Dialer{KeepAliveConfig: keepAlive, Timeout: s.dialTimeout}
+
+## no-sni-ok
+hello.go:
+-		return "", errNoSNI // a hello may have no extensions at all
++		return "api.anthropic.com", nil
+-		return "", errNoSNI
++		return "api.anthropic.com", nil
+
+## private-ok
+main.go:
+-		allowAddr:     providerAddress,
++		allowAddr:     func(netip.Addr) bool { return true },

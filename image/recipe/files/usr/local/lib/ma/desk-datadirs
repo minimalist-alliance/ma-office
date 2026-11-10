@@ -1,0 +1,32 @@
+#!/bin/bash
+# Create the /data layout (design 10.4, runtime spec section 2). Idempotent; never recursive.
+set -euo pipefail
+mountpoint -q /data || { echo "desk-datadirs: /data is not mounted" >&2; exit 1; }
+mk() { install -d -o "$2" -g "$3" -m "$4" "$1"; }
+mk /data/desk     desk   desk   0750
+mk /data/rtc      rtc    rtc    0700
+mk /data/browser  kiosk  kiosk  0750
+mk /data/browser/profile   kiosk kiosk 0700
+mk /data/browser/downloads kiosk kiosk 0750
+mk /data/browser/home      kiosk kiosk 0700
+mk /data/desk-egress root root 0700
+mk /data/agent   agent  agent  0700
+mk /data/notebook notebook notebook 0700
+# The Files app's tree (docs/decisions/0048-files-app.md, decision 1): deskd (uid 1100, desk) reads and writes it in-process,
+# and nothing else may. deskd's container mounts it. The mode matters: deskd answers files.* unavailable (reason tree) unless it is 0700.
+mk /data/files   desk   desk   0700
+# The volume's record for deskd (ADR 0035): /data/.ma-volume is written at format and only root can change it. A volume
+# formatted before image 0.2.3 has none, so it gets one saying the format time isn't known. deskd's container sees only
+# /data/desk, so it gets a copy, rewritten at every boot. Never touches /data/browser. deskd and desk-rtc require this
+# unit, so a record that can't be written must never fail it.
+if [ ! -e /data/.ma-volume ]; then
+  dev=$(findmnt -n -o SOURCE /data) || dev=
+  volid=$(exec 2>/dev/null; tr -d ' ' < "/sys/block/$(basename "$(readlink -f "$dev")")/device/serial") || volid=
+  case "$volid" in vol-*) ;; vol*) volid="vol-${volid#vol}" ;; *) volid=unknown ;; esac
+  { printf '{"volumeId":"%s","formattedAt":null,"firstSeenAt":"%s"}\n' "$volid" "$(date -u +%FT%TZ)" > /data/.ma-volume && chmod 0644 /data/.ma-volume; } \
+    || echo "desk-datadirs: could not write the volume record" >&2
+fi
+if [ -e /data/.ma-volume ]; then
+  install -o desk -g desk -m 0644 /data/.ma-volume /data/desk/volume.json || echo "desk-datadirs: could not copy the volume record" >&2
+fi
+exit 0

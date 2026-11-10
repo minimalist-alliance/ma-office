@@ -1,0 +1,25 @@
+--- image/recipe/desk-agent-filter/main.go
++++ image/recipe/desk-agent-filter/main.go (lab build)
+@@ -71,7 +71,7 @@
+ 	s := &server{
+ 		names:         names,
+ 		slots:         make(chan struct{}, maxConnections),
+-		allowAddr:     providerAddress,
++		allowAddr:     labAllow(providerAddress),
+ 		upstreamPort:  443,
+ 		helloTimeout:  helloTimeout,
+ 		dialTimeout:   dialTimeout,
+@@ -150,3 +150,13 @@
+ 	l.used++
+ 	l.printf(format, args...)
+ }
++
++// LAB ONLY, never in a release (lab/agent-filter/lab-private-standin.patch): MA_FILTER_LAB_ALLOW names one more address the
++// filter may reach, so ADR 0070's measurements can use a stand-in on a private address in the same zone.
++func labAllow(f func(netip.Addr) bool) func(netip.Addr) bool {
++	extra, err := netip.ParseAddr(os.Getenv("MA_FILTER_LAB_ALLOW"))
++	if err != nil {
++		return f
++	}
++	return func(a netip.Addr) bool { return f(a) || a == extra }
++}

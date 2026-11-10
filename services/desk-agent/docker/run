@@ -1,0 +1,16 @@
+#!/bin/sh
+# ExecStart of desk-agent.service, which the image doesn't have yet (STATUS.md). Stays in the foreground as the docker
+# client; the unit stops the container with docker stop, so the JVM (PID 1) gets SIGTERM and zeroes the keys it holds.
+# Flags: ADR 0040 and design 9.8's hardening, as deskd's run has them (desk-runtime.md section 5): host network,
+# uid 1103 (agent), read-only root, no capabilities, no core files (keys), journald with a tag, and container limits,
+# because systemd's don't reach a container. The image goes by ID, which ma-update wrote at install.
+# Memory: jvm.options' worst case is about 260 MiB against a measured 70 to 100 MiB (README.md, Footprint).
+set -eu
+
+image_id=$(cat "${RELEASE_DIR:?RELEASE_DIR is not set}/image-id")
+
+exec docker run --rm --name desk-agent --network host --user 1103:1103 --read-only --tmpfs /tmp \
+  --cap-drop=ALL --security-opt=no-new-privileges --log-driver=journald --log-opt tag=desk-agent \
+  --memory=320m --memory-swap=320m --cpu-shares=256 --pids-limit=128 --stop-timeout=30 --ulimit core=0 \
+  -v /run/desk-agent:/run/desk-agent -v /data/agent:/data/agent --env-file "$RELEASE_DIR/desk-agent.env" \
+  "$image_id"

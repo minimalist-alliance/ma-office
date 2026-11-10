@@ -1,0 +1,155 @@
+/* The picture quality menu (ADR 0039), at the end of a streaming app's bar. Every color is a token. */
+.qm-wrap {
+  position: relative;
+  flex: none;
+}
+.qm-btn.on {
+  background: var(--ma-surface-fill-strong);
+  color: var(--ma-text-primary);
+}
+.qm-notice:empty {
+  display: none;
+}
+
+/* Takes a click away, so it only dismisses. Inside the window it covers what's under the menu, the picture included. */
+.qm-away {
+  position: fixed;
+  inset: 0;
+  z-index: 39;
+}
+
+.qm-menu {
+  position: absolute;
+  top: calc(100% + 6px);
+  right: 0;
+  z-index: 40;
+  width: 320px;
+  max-height: 480px;
+  overflow-y: auto;
+  overscroll-behavior: contain;
+  padding: 6px;
+  border: 1px solid var(--ma-border);
+  border-radius: 14px;
+  background: var(--ma-surface-overlay);
+  box-shadow: var(--ma-elevation-menu);
+  color: var(--ma-text-primary);
+  text-align: left;
+}
+.qm-menu:focus {
+  outline: none;
+}
+.qm-title {
+  padding: 6px 10px 4px;
+  font-size: 12px;
+  line-height: 16px;
+  font-weight: 600;
+  color: var(--ma-text-tertiary);
+}
+
+.qm-item {
+  display: flex;
+  align-items: flex-start;
+  gap: 10px;
+  width: 100%;
+  padding: 8px 10px;
+  border: 0;
+  border-radius: 10px;
+  background: none;
+  color: inherit;
+  text-align: left;
+}
+.qm-item:hover {
+  background: var(--ma-surface-sunken);
+}
+.qm-item:focus-visible,
+.qm-link:focus-visible {
+  outline: 2px solid var(--ma-focus-ring);
+  outline-offset: -2px;
+}
+.qm-check {
+  flex: none;
+  margin-top: 2px;
+  color: var(--ma-accent);
+  visibility: hidden;
+}
+.qm-item[aria-checked='true'] .qm-check {
+  visibility: visible;
+}
+.qm-text {
+  flex: 1;
+  min-width: 0;
+  display: grid;
+  gap: 1px;
+}
+.qm-row {
+  display: flex;
+  align-items: baseline;
+  justify-content: space-between;
+  gap: 12px;
+}
+.qm-name {
+  font-size: 14px;
+  line-height: 20px;
+  font-weight: 500;
+}
+.qm-data {
+  flex: none;
+  font-size: 12px;
+  line-height: 16px;
+  color: var(--ma-text-tertiary);
+  font-variant-numeric: tabular-nums;
+}
+.qm-words {
+  font-size: 12.5px;
+  line-height: 17px;
+  color: var(--ma-text-secondary);
+}
+
+.qm-sep {
+  height: 1px;
+  margin: 4px 10px;
+  background: var(--ma-border-hairline);
+}
+.qm-note {
+  padding: 6px 10px 2px;
+  font-size: 12.5px;
+  line-height: 17px;
+  color: var(--ma-text-tertiary);
+}
+.qm-link {
+  display: flex;
+  align-items: center;
+  padding: 6px 10px 8px;
+  border-radius: 10px;
+  color: var(--ma-text-link);
+  font-size: 13px;
+  line-height: 18px;
+  text-decoration: none;
+}
+.qm-link:hover {
+  background: var(--ma-surface-sunken);
+}
+button.qm-link {
+  width: 100%;
+  border: 0;
+  background: none;
+  font: inherit;
+  font-size: 13px;
+  text-align: left;
+  cursor: pointer;
+}
+button.qm-link:hover {
+  background: var(--ma-surface-sunken);
+}
+
+/* A finger needs a taller row than a pointer. A one-line row centers; a level keeps its check beside its name. */
+@media (pointer: coarse) {
+  .qm-item,
+  .qm-link {
+    min-height: 44px;
+  }
+  .qm-item[data-level='default'],
+  .qm-link {
+    align-items: center;
+  }
+}

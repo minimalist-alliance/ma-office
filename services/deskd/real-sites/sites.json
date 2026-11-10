@@ -1,0 +1,338 @@
+[
+ {
+  "id": "P01",
+  "slug": "wikipedia-article",
+  "kind": "article",
+  "src": "7.8",
+  "url": "https://en.wikipedia.org/wiki/Bauhaus",
+  "why": "Wikipedia article (7.8 and the Product Designer): long text, images, infobox, references."
+ },
+ {
+  "id": "P02",
+  "slug": "bbc-news-article",
+  "kind": "news",
+  "src": "7.8",
+  "url": "https://www.bbc.com/news/articles/c3ewev11g1e0o",
+  "why": "BBC News article (7.8): a mainstream news article with images and embedded media."
+ },
+ {
+  "id": "P03",
+  "slug": "amazon-search",
+  "kind": "shopping",
+  "src": "7.8",
+  "url": "https://www.amazon.com/s?k=desk+lamp",
+  "why": "Amazon search results (7.8, and the store search results the Product Designer asked for): dense product grid, sponsored items."
+ },
+ {
+  "id": "P04",
+  "slug": "python-docs",
+  "kind": "docs",
+  "src": "7.8",
+  "url": "https://docs.python.org/3/library/datetime.html",
+  "why": "docs.python.org (7.8): a docs page with code blocks and tables (coordinator)."
+ },
+ {
+  "id": "P05",
+  "slug": "youtube-watch",
+  "kind": "video",
+  "src": "7.8",
+  "url": "https://www.youtube.com/watch?v=aqz-KE-bpKQ",
+  "why": "YouTube watch page (7.8 expected fallback; the Product Designer): the main video case for islands. Big Buck Bunny, an open movie."
+ },
+ {
+  "id": "P06",
+  "slug": "verge-article",
+  "kind": "news",
+  "src": "7.8",
+  "url": "https://www.theverge.com/tech/1029474/discogs-kevin-lewandowski-aeropress-interview",
+  "why": "The Verge article (7.8): ad-heavy tech news with a custom layout."
+ },
+ {
+  "id": "P07",
+  "slug": "hn-thread",
+  "kind": "forum",
+  "src": "7.8",
+  "url": "https://news.ycombinator.com/item?id=50406292",
+  "why": "Hacker News comment thread (7.8): nested comments, table layout."
+ },
+ {
+  "id": "P08",
+  "slug": "allrecipes-recipe",
+  "kind": "recipe",
+  "src": "7.8",
+  "url": "https://www.allrecipes.com/recipe/10813/best-chocolate-chip-cookies/",
+  "why": "Allrecipes recipe (7.8 ad-heavy; the coordinator's long recipe page): ingredients, steps, ads, video."
+ },
+ {
+  "id": "P09",
+  "slug": "mdn-docs",
+  "kind": "docs",
+  "src": "7.8",
+  "url": "https://developer.mozilla.org/en-US/docs/Web/JavaScript/Reference/Global_Objects/Array/map",
+  "why": "MDN reference (7.8): code examples, interactive editor, compatibility table."
+ },
+ {
+  "id": "P10",
+  "slug": "ddg-search",
+  "kind": "search",
+  "src": "7.8",
+  "url": "https://duckduckgo.com/?q=desk+lamp+reviews",
+  "why": "DuckDuckGo results (7.8): the JS search page."
+ },
+ {
+  "id": "P11",
+  "slug": "reddit-thread",
+  "kind": "forum",
+  "src": "7.8",
+  "url": "https://www.reddit.com/r/minimalism/comments/1xkbbx0/cats_taught_me_to_be_a_minimalist/",
+  "why": "www.reddit.com thread (7.8): the modern web-component UI, a forum thread with an image."
+ },
+ {
+  "id": "P12",
+  "slug": "ebay-search-filter",
+  "kind": "shopping",
+  "src": "7.8",
+  "url": "https://www.ebay.com/sch/i.html?_nkw=desk+lamp&LH_BIN=1",
+  "why": "eBay search with a filter applied (7.8, Buy It Now): facets, prices, sponsored items."
+ },
+ {
+  "id": "P13",
+  "slug": "nytimes-article",
+  "kind": "news",
+  "src": "coordinator",
+  "url": "https://www.nytimes.com/2026/10/31/science/ukraine-soldiers-infection-treatment.html",
+  "why": "New York Times article: a paywalled news page's free view (coordinator)."
+ },
+ {
+  "id": "P14",
+  "slug": "todomvc",
+  "kind": "form",
+  "src": "7.8",
+  "url": "https://demo.playwright.dev/todomvc/",
+  "why": "TodoMVC (7.8): a small app driven by typing."
+ },
+ {
+  "id": "P15",
+  "slug": "guardian-liveblog",
+  "kind": "news",
+  "src": "coordinator",
+  "url": "https://www.theguardian.com/sport/live/2026/nov/07/sao-paulo-formula-one-grand-prix-qualifying-in-brazil-live",
+  "why": "Guardian live blog (Product Designer): a page that updates while open."
+ },
+ {
+  "id": "P16",
+  "slug": "ikea-search",
+  "kind": "shopping",
+  "src": "common",
+  "url": "https://www.ikea.com/us/en/search/?q=desk%20lamp",
+  "why": "IKEA search results: a store's client-rendered search page (Product Designer)."
+ },
+ {
+  "id": "P17",
+  "slug": "vimeo-watch",
+  "kind": "video",
+  "src": "common",
+  "url": "https://vimeo.com/76979871",
+  "why": "Vimeo watch page: video that isn't YouTube (coordinator)."
+ },
+ {
+  "id": "P18",
+  "slug": "github-repo",
+  "kind": "docs",
+  "src": "7.8",
+  "url": "https://github.com/microsoft/playwright",
+  "why": "GitHub repo page (7.8, public, signed out): file list plus README with code."
+ },
+ {
+  "id": "P19",
+  "slug": "saucedemo-login",
+  "kind": "sensitive",
+  "src": "7.8",
+  "url": "https://www.saucedemo.com/",
+  "why": "saucedemo.com login page (7.8): a password form, which must fall back. Rendered only, never signed in."
+ },
+ {
+  "id": "P20",
+  "slug": "wikipedia-video-embed",
+  "kind": "video",
+  "src": "coordinator",
+  "url": "https://en.wikipedia.org/wiki/Big_Buck_Bunny",
+  "why": "Wikipedia article with an embedded video that isn't YouTube (coordinator)."
+ },
+ {
+  "id": "P21",
+  "slug": "bing-search",
+  "kind": "search",
+  "src": "common",
+  "url": "https://www.bing.com/search?q=desk+lamp+reviews",
+  "why": "Bing results: search with ads, answer cards and related searches."
+ },
+ {
+  "id": "P22",
+  "slug": "substack-post",
+  "kind": "article",
+  "src": "7.8",
+  "url": "https://www.astralcodexten.com/p/your-book-review-orality-and-literacy",
+  "why": "A Substack post (7.8): long-form writing with subscribe prompts."
+ },
+ {
+  "id": "P23",
+  "slug": "ikea-product",
+  "kind": "shopping",
+  "src": "coordinator",
+  "url": "https://www.ikea.com/us/en/p/tertial-work-lamp-dark-gray-20355434/",
+  "why": "IKEA product page: a shopping page with product carousels (coordinator)."
+ },
+ {
+  "id": "P24",
+  "slug": "stackoverflow-question",
+  "kind": "forum",
+  "src": "common",
+  "url": "https://stackoverflow.com/questions/11227809/why-is-processing-a-sorted-array-faster-than-processing-an-unsorted-array",
+  "why": "Stack Overflow question: Q&A with code blocks, votes and sidebars."
+ },
+ {
+  "id": "P25",
+  "slug": "cnn-article",
+  "kind": "news",
+  "src": "common",
+  "url": "https://www.cnn.com/2026/11/07/politics/democrats-midterms-data-centers-ken-paxton-james-talarico",
+  "why": "CNN article: ad-heavy news with its own video player."
+ },
+ {
+  "id": "P26",
+  "slug": "the-internet-dropdown",
+  "kind": "form",
+  "src": "7.8",
+  "url": "https://the-internet.herokuapp.com/dropdown",
+  "why": "the-internet.herokuapp.com dropdown (7.8): a plain form control."
+ },
+ {
+  "id": "P27",
+  "slug": "discourse-thread-images",
+  "kind": "forum",
+  "src": "coordinator",
+  "url": "https://forum.obsidian.md/t/plugin-chronos-timeline-interactive-timelines-from-markdown/92508",
+  "why": "Discourse forum thread with images (coordinator)."
+ },
+ {
+  "id": "P28",
+  "slug": "ted-talk",
+  "kind": "video",
+  "src": "common",
+  "url": "https://www.ted.com/talks/ken_robinson_do_schools_kill_creativity",
+  "why": "TED talk page: its own video player and a transcript."
+ },
+ {
+  "id": "P29",
+  "slug": "govuk-check-visa",
+  "kind": "form",
+  "src": "7.8",
+  "url": "https://www.gov.uk/check-uk-visa",
+  "why": "gov.uk visa checker (7.8): a government form start page."
+ },
+ {
+  "id": "P30",
+  "slug": "google-search",
+  "kind": "search",
+  "src": "common",
+  "url": "https://www.google.com/search?q=desk+lamp+reviews",
+  "why": "Google results: the most common search page."
+ },
+ {
+  "id": "P31",
+  "slug": "allbirds-product",
+  "kind": "shopping",
+  "src": "coordinator",
+  "url": "https://www.allbirds.com/products/mens-tree-runners",
+  "why": "A Shopify store's product page with an image carousel and recommendations (coordinator)."
+ },
+ {
+  "id": "P32",
+  "slug": "apnews-front",
+  "kind": "news",
+  "src": "common",
+  "url": "https://apnews.com/",
+  "why": "AP News front page: a news listing (behind a Cloudflare check from AWS earlier)."
+ },
+ {
+  "id": "P33",
+  "slug": "commons-video",
+  "kind": "video",
+  "src": "common",
+  "url": "https://commons.wikimedia.org/wiki/File:Big_Buck_Bunny_4K.webm",
+  "why": "Wikimedia Commons video file page: a plain HTML5 video player."
+ },
+ {
+  "id": "P34",
+  "slug": "github-issues",
+  "kind": "list",
+  "src": "7.8",
+  "url": "https://github.com/microsoft/playwright/issues",
+  "why": "GitHub issues list (7.8, public, signed out): a filterable list."
+ },
+ {
+  "id": "P35",
+  "slug": "weather-gov",
+  "kind": "list",
+  "src": "common",
+  "url": "https://forecast.weather.gov/MapClick.php?lat=38.8894&lon=-77.0352",
+  "why": "weather.gov forecast for Washington, DC: a common utility page with tables and icons."
+ },
+ {
+  "id": "P36",
+  "slug": "old-reddit-thread",
+  "kind": "forum",
+  "src": "7.8",
+  "url": "https://old.reddit.com/r/minimalism/comments/1xkbbx0/cats_taught_me_to_be_a_minimalist/",
+  "why": "The same thread on old.reddit.com (7.8)."
+ },
+ {
+  "id": "P37",
+  "slug": "google-maps",
+  "kind": "app",
+  "src": "7.8",
+  "url": "https://www.google.com/maps/place/Eiffel+Tower/@48.8583701,2.2944813,17z",
+  "why": "Google Maps (7.8 expected fallback): a canvas map."
+ },
+ {
+  "id": "P38",
+  "slug": "x-profile",
+  "kind": "app",
+  "src": "7.8",
+  "url": "https://x.com/NASA",
+  "why": "x.com public profile (7.8 expected fallback): a feed that fights automation."
+ },
+ {
+  "id": "P39",
+  "slug": "stripe-checkout-demo",
+  "kind": "sensitive",
+  "src": "7.8",
+  "url": "https://checkout.stripe.dev/",
+  "why": "Stripe's public Checkout demo (7.8 expected fallback): a payment page. Nothing typed."
+ },
+ {
+  "id": "P40",
+  "slug": "recaptcha-demo",
+  "kind": "sensitive",
+  "src": "7.8",
+  "url": "https://www.google.com/recaptcha/api2/demo",
+  "why": "reCAPTCHA demo (7.8 expected fallback). Not solved or clicked."
+ },
+ {
+  "id": "P41",
+  "slug": "excalidraw",
+  "kind": "app",
+  "src": "7.8",
+  "url": "https://excalidraw.com/",
+  "why": "Excalidraw (7.8 expected fallback): a canvas app."
+ },
+ {
+  "id": "P42",
+  "slug": "cloudflare-probe",
+  "kind": "probe",
+  "src": "7.8",
+  "url": "https://nowsecure.nl/",
+  "why": "A Cloudflare bot-check test page (7.8's bot-detection probe)."
+ }
+]

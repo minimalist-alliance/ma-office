@@ -1,0 +1,157 @@
+/* Account settings (settings/AccountSettings.tsx, ADR 0052): full screen over the office, on the guild sheet's window
+   surface, tabs and close button. Every color is a token. */
+.settings-away {
+  position: fixed;
+  inset: 0;
+  z-index: 70; /* over the top bar and its menu (60s), windows and Maia */
+  display: flex;
+  padding: 12px;
+  background: var(--ma-surface-scrim);
+}
+.settings-away[hidden] {
+  display: none;
+}
+.settings-modal {
+  display: flex;
+  flex-direction: column;
+  flex: 1;
+  min-width: 0;
+  min-height: 0;
+  border: 1px solid var(--ma-border);
+  border-radius: 18px;
+  background: var(--ma-surface-window);
+  color: var(--ma-text-primary);
+  box-shadow: var(--ma-elevation-window);
+  overflow: hidden;
+}
+.settings-modal:focus {
+  outline: none;
+}
+.settings-head {
+  display: flex;
+  align-items: center;
+  justify-content: space-between;
+  gap: 12px;
+  padding: 14px 16px 10px 24px;
+}
+.settings-head h2 {
+  font-size: 17px;
+  line-height: 24px;
+  font-weight: 600;
+}
+.settings-tabs {
+  display: flex;
+  gap: 4px;
+  margin: 0 24px 8px;
+  padding: 3px;
+  width: fit-content;
+  border-radius: 10px;
+  background: var(--ma-switcher-track);
+}
+.settings-tab {
+  height: 30px;
+  padding: 0 14px;
+  border: 0;
+  border-radius: 8px;
+  background: none;
+  color: var(--ma-text-secondary);
+  font: inherit;
+  font-size: 13px;
+  font-weight: 500;
+  cursor: pointer;
+}
+.settings-tab.on {
+  background: var(--ma-surface-window);
+  color: var(--ma-switcher-text);
+  box-shadow: var(--ma-elevation-tile);
+}
+.settings-tab:focus-visible {
+  outline: 2px solid var(--ma-focus-ring);
+  outline-offset: 1px;
+}
+.settings-panel {
+  position: relative;
+  flex: 1;
+  min-height: 0;
+}
+.settings-panel[hidden] {
+  display: none;
+}
+.settings-panel-data {
+  overflow-y: auto;
+}
+/* The export's own column, without its page's ground or top padding. */
+.settings-panel-data .xp-in-office {
+  padding-top: 8px;
+}
+.settings-account {
+  position: absolute;
+  inset: 0;
+  border-top: 1px solid var(--ma-border);
+}
+.settings-frame {
+  display: block;
+  width: 100%;
+  height: 100%;
+  border: 0;
+}
+/* Until the page says it's ready: a frame the browser refused never shows its error. */
+.settings-frame.waiting {
+  visibility: hidden;
+}
+.settings-line {
+  color: var(--ma-text-secondary);
+  font-size: 14px;
+  line-height: 20px;
+}
+.settings-loading {
+  position: absolute;
+  top: 24px;
+  left: 24px;
+}
+.settings-fallback {
+  display: grid;
+  justify-items: start;
+  gap: 16px;
+  width: min(560px, 100%);
+  margin: 0 auto;
+  padding: 32px 24px;
+}
+.settings-who {
+  display: flex;
+  align-items: center;
+  gap: 14px;
+}
+.settings-who-text {
+  min-width: 0;
+}
+.settings-who-name {
+  font-size: 16px;
+  line-height: 22px;
+  font-weight: 600;
+  overflow-wrap: anywhere;
+}
+.settings-who-sub {
+  color: var(--ma-text-tertiary);
+  font-size: 13px;
+  line-height: 18px;
+  overflow-wrap: anywhere;
+}
+@media (max-width: 599px) {
+  .settings-away {
+    padding: 0;
+  }
+  .settings-modal {
+    border: 0;
+    border-radius: 0;
+  }
+  .settings-head {
+    padding-left: 16px;
+  }
+  .settings-tabs {
+    margin: 0 16px 8px;
+  }
+  .settings-fallback {
+    padding: 24px 16px;
+  }
+}

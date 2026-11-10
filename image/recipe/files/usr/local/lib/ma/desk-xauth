@@ -1,0 +1,36 @@
+#!/usr/bin/python3 -I
+"""desk-xauth <file> <display number>: a fresh X cookie for Xorg's -auth, made at every start (DA-1, ADR 0072 section 2).
+
+desk-xorg's ExecStartPre, as kiosk, in its RuntimeDirectory: one MIT-MAGIC-COOKIE-1 record for any address (FamilyWild)
+on display <number>, 16 random bytes, in a new file 0600 that only kiosk can read. Xorg starts with `-auth <file>`, so a
+client needs this cookie or a server-interpreted entry; desk-xorg-ready uses the cookie once, to add `SI:localuser` for
+kiosk, rtc and stream, and nobody else is ever given it. Without -auth, Xorg treats every local uid as authorised.
+Written to a temp file O_EXCL and renamed over <file>, so a start never reads half a cookie or follows a planted link.
+"""
+import os
+import struct
+import sys
+
+
+def field(b):
+    return struct.pack(">H", len(b)) + b
+
+
+def main():
+    if len(sys.argv) != 3 or not sys.argv[2].isdigit():
+        raise SystemExit("usage: desk-xauth <file> <display number>")
+    path, number = sys.argv[1], sys.argv[2].encode()
+    record = struct.pack(">H", 0xFFFF) + field(b"") + field(number) + field(b"MIT-MAGIC-COOKIE-1") + field(os.urandom(16))
+    d, name = os.path.split(os.path.abspath(path))
+    tmp = os.path.join(d, f".{name}.{os.getpid()}")
+    fd = os.open(tmp, os.O_WRONLY | os.O_CREAT | os.O_EXCL | os.O_NOFOLLOW | os.O_CLOEXEC, 0o600)
+    try:
+        os.fchmod(fd, 0o600)
+        os.write(fd, record)
+        os.fsync(fd)
+    finally:
+        os.close(fd)
+    os.rename(tmp, path)
+
+
+main()

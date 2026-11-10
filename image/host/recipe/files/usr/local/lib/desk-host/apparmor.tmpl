@@ -1,0 +1,55 @@
+# AppArmor profile for slot @K@ of a shared desk host (ADR 0072 section 3). desk-host renders it per slot.
+# Test 2's profile (Docker 26's docker-default template, word for word, plus `userns,` for Chromium's sandbox and runc as
+# the peer allowed to signal the desk), with ADR 0072's review fixes:
+# - WALL-01 (2): capabilities that reach netfilter, traffic control, xfrm and packet sockets, modules, raw I/O, BPF, perf,
+#   the kernel log, ptrace and AppArmor itself are denied to every process in the desk. AppArmor's capability check runs
+#   whatever user namespace the process is in, so a namespace Chromium (or anything that gets one) makes has none of them
+#   either. sys_admin and sys_chroot stay: Chromium's namespace sandbox writes its uid_map and chroots with them.
+#   Each denial is audited, so an attempt shows in the host's kernel log.
+# - WALL-10: one profile per slot, so signals, ptrace and unix sockets between profiles name only this slot's processes.
+abi <abi/4.0>,
+include <tunables/global>
+
+profile desk-host-@K@ flags=(attach_disconnected,mediate_deleted) {
+  include <abstractions/base>
+
+  network,
+  capability,
+  audit deny capability net_admin,
+  audit deny capability net_raw,
+  audit deny capability sys_module,
+  audit deny capability sys_rawio,
+  audit deny capability bpf,
+  audit deny capability perfmon,
+  audit deny capability syslog,
+  audit deny capability sys_ptrace,
+  audit deny capability mac_admin,
+  audit deny capability mac_override,
+  file,
+  umount,
+  userns,
+  signal (receive) peer=unconfined,
+  signal (receive) peer=runc,       # Debian names runc's own (unconfined) profile; Docker's template has dockerd's here
+  signal (send,receive) peer=desk-host-@K@,
+
+  deny @{PROC}/* w,   # deny write for all files directly in /proc (not in a subdir)
+  # deny write to files not in /proc/<number>/** or /proc/sys/**
+  deny @{PROC}/{[^1-9],[^1-9][^0-9],[^1-9s][^0-9y][^0-9s],[^1-9][^0-9][^0-9][^0-9/]*}/** w,
+  deny @{PROC}/sys/[^k]** w,  # deny /proc/sys except /proc/sys/k* (effectively /proc/sys/kernel)
+  deny @{PROC}/sys/kernel/{?,??,[^s][^h][^m]**} w,  # deny everything except shm* in /proc/sys/kernel/
+  deny @{PROC}/sysrq-trigger rwklx,
+  deny @{PROC}/kcore rwklx,
+
+  deny mount,
+
+  deny /sys/[^f]*/** wklx,
+  deny /sys/f[^s]*/** wklx,
+  deny /sys/fs/[^c]*/** wklx,
+  deny /sys/fs/c[^g]*/** wklx,
+  deny /sys/fs/cg[^r]*/** wklx,
+  deny /sys/firmware/** rwklx,
+  deny /sys/devices/virtual/powercap/** rwklx,
+  deny /sys/kernel/security/** rwklx,
+
+  ptrace (trace,read,tracedby,readby) peer=desk-host-@K@,
+}

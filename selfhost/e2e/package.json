@@ -1,0 +1,7 @@
+{
+  "name": "ma-selfhost-e2e",
+  "private": true,
+  "description": "A self-hosted desk, end to end against staging (selfhost/e2e/README.md).",
+  "scripts": { "test": "playwright test" },
+  "devDependencies": { "@playwright/test": "1.64.1", "@types/node": "^24.0.0", "otplib": "13.6.0", "typescript": "^5.6.0" }
+}

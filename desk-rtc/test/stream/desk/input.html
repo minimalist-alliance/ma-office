@@ -1,0 +1,18 @@
+<!doctype html><meta charset="utf-8"><title>input check</title>
+<style>html,body{margin:0;background:#fff;font:20px sans-serif}
+#t{position:absolute;left:200px;top:200px;width:600px;height:40px;font:20px monospace}
+#b{position:absolute;left:1000px;top:600px;width:200px;height:100px}
+#s{position:absolute;left:0;top:800px;width:1800px;height:200px;overflow:auto;cursor:text}
+#l{position:absolute;left:1000px;top:200px;cursor:pointer;color:#00f}</style>
+<input id="t"><button id="b">click me</button><a id="l" href="#x">link</a>
+<select id="p" style="position:absolute;left:200px;top:400px;width:200px;height:40px"><option>one</option><option>two</option><option>three</option></select>
+<div id="s"><div style="height:4000px;background:linear-gradient(#fff,#000)"></div></div>
+<script>
+window.E = { clicks: [], keys: [], downs: 0, wheel: 0, focus: document.hasFocus(), right: 0, repeats: 0 };
+b.addEventListener('click', (e) => E.clicks.push([e.clientX, e.clientY, e.button]));
+addEventListener('contextmenu', (e) => { E.right++; e.preventDefault(); });
+addEventListener('keydown', (e) => { E.keys.push(['d', e.key, e.shiftKey, e.ctrlKey]); if (e.repeat) E.repeats++; }, true);
+addEventListener('keyup', (e) => E.keys.push(['u', e.key]), true);
+s.addEventListener('wheel', (e) => { E.wheel += e.deltaY; }, { passive: true });
+addEventListener('focus', () => { E.focus = true; });
+</script>

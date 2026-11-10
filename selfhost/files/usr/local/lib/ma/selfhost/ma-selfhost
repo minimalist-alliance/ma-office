@@ -1,0 +1,698 @@
+#!/usr/bin/python3 -I
+"""ma-selfhost: a self-hosted desk's identity agent (selfhost/README.md, ma-platform contract selfhost.md).
+
+On a cloud desk, deskd learns who it is and gets its credentials from the cloud's metadata service at 169.254.169.254.
+A desk on the member's own computer has none, so this stands in its place, on the same address and with the same
+paths deskd reads (IMDSv2: a token from PUT, then reads with it). Nothing in deskd or desk-rtc changes.
+
+What it holds:
+  /data/selfhost/key.pem    the desk's Ed25519 key, made here and never sent anywhere. 0600, user selfhost.
+  /data/selfhost/desk.json  which desk this is, once a member has typed its code: desk ID, user ID, env, name.
+Both on the data disk, like the desk's DTLS identity, so a reinstall of the system keeps the pairing.
+
+What it asks the platform (signed with the key; the private half never leaves the file):
+  POST /v1/self-hosted/pair     a code for the member to type, valid 15 minutes
+  POST /v1/self-hosted/session  still pending, or 15-minute credentials for the agent API. Each one also signs desk-rtc's
+                                DTLS fingerprints (from /run/ma-selfhost/dtls.json, which ma-selfhost-dtls writes as
+                                root), and the platform takes a hello only with fingerprints this key signed.
+
+Commands:
+  ma-selfhost serve             the service (ma-selfhost.service): metadata on 169.254.169.254:80, credentials kept fresh
+  ma-selfhost pair [--wait] [--yes]  print the code and link; with --wait, until a member has typed it, then show whose
+                                office the desk joined (partly hidden) and ask y/N; --yes answers it
+  ma-selfhost status            what this desk is, and whether it's online with the platform
+  ma-selfhost rotate            move the desk to a new key (both keys sign; the old one stops working)
+  ma-selfhost forget            delete the key and the pairing (after the desk was removed from its office)
+
+It never logs or prints the key or a credential. Python 3 standard library plus python3-cryptography (Debian).
+"""
+import base64
+import datetime
+import hashlib
+import json
+import os
+import secrets
+import socket
+import sys
+import threading
+import time
+import urllib.error
+import urllib.request
+from http.server import BaseHTTPRequestHandler, ThreadingHTTPServer
+
+from cryptography.hazmat.primitives import serialization
+from cryptography.hazmat.primitives.asymmetric.ed25519 import Ed25519PrivateKey
+
+CONF = os.environ.get("MA_SELFHOST_CONF", "/etc/ma/selfhost.conf")
+STATE = os.environ.get("MA_SELFHOST_STATE", "/data/selfhost")
+RUN = os.environ.get("MA_SELFHOST_RUN", "/run/ma-selfhost")
+ROLE_NAME = "ma-selfhost-desk"  # what deskd sees under iam/security-credentials/; the real role name is the platform's
+TOKEN_MAX_TTL = 21600
+REFRESH_WHEN_LEFT = 8 * 60  # deskd refreshes 5 minutes before expiry, so we must have new ones before that
+PREFIX = "ma-selfhost/v1"
+DTLS_FILE = os.path.join(RUN, "dtls.json")  # desk-rtc's fingerprints, written by ma-selfhost-dtls (root)
+
+
+def log(msg):
+    print(f"ma-selfhost: {msg}", flush=True)
+
+
+def b64u(b):
+    return base64.urlsafe_b64encode(b).rstrip(b"=").decode()
+
+
+def now_iso():
+    return datetime.datetime.now(datetime.timezone.utc).strftime("%Y-%m-%dT%H:%M:%SZ")
+
+
+# ---------- configuration ----------
+
+def load_conf():
+    conf = {"env": "staging", "api": "", "address": "auto"}
+    try:
+        with open(CONF) as f:
+            for line in f:
+                line = line.strip()
+                if not line or line.startswith("#") or "=" not in line:
+                    continue
+                k, v = line.split("=", 1)
+                conf[k.strip()] = v.strip()
+    except FileNotFoundError:
+        pass
+    if conf["env"] not in ("staging", "prod"):
+        raise SystemExit(f"ma-selfhost: env must be staging or prod in {CONF}")
+    if not conf["api"]:
+        conf["api"] = "https://api.minimalistalliance.com" if conf["env"] == "prod" else "https://api.staging.minimalistalliance.com"
+    return conf
+
+
+def desk_address(conf):
+    """The address the member's browser reaches the desk on: set in the conf, or the default route's source address,
+    which is what desk-rtc binds with --bind auto. A connected UDP socket sends nothing."""
+    a = conf.get("address", "auto")
+    if a and a != "auto":
+        socket.inet_aton(a)
+        return a
+    s = socket.socket(socket.AF_INET, socket.SOCK_DGRAM)
+    try:
+        s.connect(("192.0.2.1", 9))
+        return s.getsockname()[0]
+    finally:
+        s.close()
+
+
+# ---------- the key ----------
+
+def key_path():
+    return os.path.join(STATE, "key.pem")
+
+
+def load_key(create=False):
+    p = key_path()
+    try:
+        with open(p, "rb") as f:
+            return serialization.load_pem_private_key(f.read(), password=None)
+    except FileNotFoundError:
+        if not create:
+            return None
+    k = Ed25519PrivateKey.generate()
+    write_key(k, p)
+    log("made this desk's key")
+    return k
+
+
+def write_key(k, p):
+    pem = k.private_bytes(serialization.Encoding.PEM, serialization.PrivateFormat.PKCS8, serialization.NoEncryption())
+    tmp = p + ".new"
+    fd = os.open(tmp, os.O_WRONLY | os.O_CREAT | os.O_TRUNC, 0o600)
+    with os.fdopen(fd, "wb") as f:
+        f.write(pem)
+        f.flush()
+        os.fsync(f.fileno())
+    os.replace(tmp, p)
+
+
+def public_b64(k):
+    return b64u(k.public_key().public_bytes(serialization.Encoding.Raw, serialization.PublicFormat.Raw))
+
+
+def thumbprint(pub_b64):
+    return b64u(hashlib.sha256(base64.urlsafe_b64decode(pub_b64 + "==")).digest())
+
+
+def signed_body(k, purpose, env, extra="", **fields):
+    pub = public_b64(k)
+    at = now_iso()
+    nonce = b64u(secrets.token_bytes(18))
+    msg = "\n".join([PREFIX, purpose, env, pub, at, nonce, extra]).encode()
+    body = {"v": 1, "publicKey": pub, "at": at, "nonce": nonce, "sig": b64u(k.sign(msg))}
+    body.update(fields)
+    return body
+
+
+# ---------- the platform ----------
+
+class ApiError(Exception):
+    def __init__(self, status, code, message):
+        super().__init__(f"{status} {code}: {message}")
+        self.status, self.code = status, code
+
+
+def post(conf, path, body):
+    req = urllib.request.Request(conf["api"] + path, data=json.dumps(body).encode(), method="POST",
+                                 headers={"Content-Type": "application/json", "Accept": "application/json",
+                                          "User-Agent": "ma-selfhost/1"})
+    try:
+        with urllib.request.urlopen(req, timeout=15) as r:
+            return r.status, json.loads(r.read() or b"{}")
+    except urllib.error.HTTPError as e:
+        try:
+            err = json.loads(e.read() or b"{}").get("error", {})
+        except ValueError:
+            err = {}
+        raise ApiError(e.code, err.get("code", f"http_{e.code}"), err.get("message", "")) from None
+
+
+def read_desk():
+    try:
+        with open(os.path.join(STATE, "desk.json")) as f:
+            return json.load(f)
+    except (FileNotFoundError, ValueError):
+        return None
+
+
+def write_json(path, obj, mode=0o600):
+    tmp = path + ".new"
+    fd = os.open(tmp, os.O_WRONLY | os.O_CREAT | os.O_TRUNC, mode)
+    with os.fdopen(fd, "w") as f:
+        json.dump(obj, f)
+        f.flush()
+        os.fsync(f.fileno())
+    os.replace(tmp, path)
+
+
+def read_dtls():
+    """desk-rtc's fingerprints, lowercase and sorted, or None while it has none."""
+    try:
+        with open(DTLS_FILE) as f:
+            fps = json.load(f).get("fingerprintsSha256")
+    except (FileNotFoundError, ValueError, AttributeError):
+        return None
+    if not isinstance(fps, list) or not 1 <= len(fps) <= 2:
+        return None
+    fps = sorted({str(x).lower() for x in fps})
+    return fps if all(len(x) == 64 and all(c in "0123456789abcdef" for c in x) for x in fps) else None
+
+
+def sign_dtls(k, env, body, fps):
+    """The key's statement of the desk's DTLS identity, over this request's own time and nonce, so it can't be reused."""
+    msg = "\n".join([PREFIX, "dtls", env, body["publicKey"], body["at"], body["nonce"], ",".join(fps)]).encode()
+    body["dtls"] = {"fingerprintsSha256": fps, "sig": b64u(k.sign(msg))}
+    return body
+
+
+def session(conf, k, dtls=None, **extra_fields):
+    """One signed session call, with the DTLS statement when there are fingerprints. Returns (status, body)."""
+    extra = extra_fields.get("rotateTo", "")
+    body = signed_body(k, "session", conf["env"], extra, **extra_fields)
+    if dtls:
+        sign_dtls(k, conf["env"], body, dtls)
+    return post(conf, "/v1/self-hosted/session", body)
+
+
+def mask_word(w):
+    return w[:1] + "***" if w else w
+
+
+def mask_account(name=None, email=None):
+    """The member's account as the desk shows it, partly hidden: "R*** A***" and "r***@e***.com". Whoever sits at the
+    desk can tell whose office it joined without the desk ever printing the whole name or address."""
+    parts = []
+    if name:
+        parts.append(" ".join(mask_word(w) for w in str(name).split()[:3]))
+    if email and "@" in str(email):
+        local, _, domain = str(email).partition("@")
+        host, dot, tld = domain.rpartition(".")
+        parts.append(f"{mask_word(local)}@{mask_word(host or domain)}{dot}{tld}" if dot else f"{mask_word(local)}@{mask_word(domain)}")
+    return ", ".join(p for p in parts if p) or None
+
+
+def account_hint(body):
+    """The platform's `accountHint` (already masked on its side), else a mask of `accountName` / `accountEmail`."""
+    hint = body.get("accountHint")
+    if isinstance(hint, str) and hint.strip():
+        return hint.strip()[:80]
+    return mask_account(body.get("accountName"), body.get("accountEmail"))
+
+
+def record_paired(conf, body):
+    """Remember which desk this is. A fresh pairing whose answer says whose office it joined waits, in `pendingConfirm`,
+    until someone at this computer says it's theirs (EXP-8): until then no credential is handed to deskd."""
+    prev = read_desk()
+    desk = {"deskId": body["deskId"], "userId": body["userId"], "env": body["env"], "deskKind": body.get("deskKind", "personal"),
+            "deskName": body.get("deskName"), "pairedAt": (prev or {}).get("pairedAt") or now_iso()}
+    if desk["env"] != conf["env"]:
+        raise SystemExit("ma-selfhost: the platform answered for another env")
+    if prev is None:
+        hint = account_hint(body)
+        if hint:
+            desk.update(pendingConfirm=True, accountHint=hint)
+    elif prev.get("pendingConfirm"):
+        desk.update(pendingConfirm=True, accountHint=prev.get("accountHint"))
+    write_json(os.path.join(STATE, "desk.json"), desk, 0o640)
+    return desk
+
+
+# ---------- serve: the metadata stand-in ----------
+
+class State:
+    def __init__(self):
+        self.lock = threading.Lock()
+        self.desk = None
+        self.creds = None  # {accessKeyId, secretAccessKey, sessionToken, expiration}
+        self.tokens = {}   # token -> expires (monotonic)
+        self.address = None
+        self.status = "starting"
+        self.code = None
+        self.claim_url = None
+        self.last_ok = None
+        self.identity = "waiting"   # waiting (desk-rtc has none yet), signed, or unsupported (the platform doesn't ask)
+        self.wake = threading.Event()  # set when desk-rtc's fingerprints change, to sign them now
+
+
+def write_status(st):
+    try:
+        os.makedirs(RUN, exist_ok=True)
+        with st.lock:
+            out = {"status": st.status, "deskId": (st.desk or {}).get("deskId"), "deskName": (st.desk or {}).get("deskName"),
+                   "env": (st.desk or {}).get("env"), "code": st.code, "claimUrl": st.claim_url, "address": st.address,
+                   "credentialsExpire": (st.creds or {}).get("expiration"), "lastOk": st.last_ok,
+                   "identity": st.identity}
+        write_json(os.path.join(RUN, "status.json"), out, 0o644)
+    except OSError as e:
+        log(f"couldn't write the status file: {e.strerror}")
+
+
+def keep_fresh(conf, st):
+    """Pair if needed, then keep 15-minute credentials in hand. Backs off on failure; stops for good on removal."""
+    k = load_key(create=True)
+    wait = 5
+    while True:
+        st.wake.clear()
+        waiting = read_desk()
+        if waiting and waiting.get("pendingConfirm"):
+            with st.lock:
+                st.status, st.creds, st.code, st.claim_url = "confirm", None, None, None
+            write_status(st)
+            time.sleep(3)
+            continue
+        try:
+            st.address = desk_address(conf)
+            if read_desk() is None and st.code is None:
+                try:
+                    _, body = post(conf, "/v1/self-hosted/pair", signed_body(k, "pair", conf["env"]))
+                    with st.lock:
+                        st.status, st.code, st.claim_url = "pending", body.get("code"), body.get("claimUrl")
+                    log(f"waiting for a member to type the code (until {body.get('expiresAt', '')[11:16]} UTC)")
+                except ApiError as e:
+                    if e.code != "already_paired":
+                        raise
+            fps = read_dtls()  # a pending answer ignores it; the first paired one records it
+            status, body = session(conf, k, dtls=fps)
+            if status == 202:
+                with st.lock:
+                    st.status, st.code, st.claim_url = "pending", body.get("code"), body.get("claimUrl")
+                write_status(st)
+                time.sleep(body.get("pollAfterSeconds", 5))
+                continue
+            desk = record_paired(conf, body)
+            if desk.get("pendingConfirm"):
+                continue  # held at the top of the loop until someone at this computer confirms
+            with st.lock:
+                first = st.creds is None
+                st.desk, st.creds, st.status, st.code, st.claim_url = desk, body["credentials"], "online", None, None
+                st.last_ok = now_iso()
+            if first:
+                log(f"online as desk {desk['deskId']} ({conf['env']}), address {st.address}")
+            note_identity(st, fps, body)
+            write_status(st)
+            exp = datetime.datetime.fromisoformat(body["credentials"]["expiration"].replace("Z", "+00:00")).timestamp()
+            wait = 5
+            # Until the refresh is due, or desk-rtc's fingerprints change (watch_dtls), whichever comes first.
+            st.wake.wait(max(30, min(body.get("refreshAfterSeconds", 600), exp - time.time() - REFRESH_WHEN_LEFT)))
+        except ApiError as e:
+            if e.code in ("desk_removed", "key_retired"):
+                with st.lock:
+                    st.status, st.creds = "removed", None
+                write_status(st)
+                log(f"{e.code}: this desk was removed from its office. Run 'ma-selfhost forget', then pair again to use it.")
+                time.sleep(3600)
+                continue
+            if e.code in ("pairing_expired", "unknown_key"):
+                with st.lock:
+                    st.status, st.code, st.claim_url = "pairing", None, None
+                try:
+                    os.remove(os.path.join(STATE, "desk.json"))
+                except FileNotFoundError:
+                    pass
+                log(f"{e.code}: asking for a new code")
+                time.sleep(2)
+                continue
+            if e.code in ("account_suspended", "account_inactive", "desk_unavailable"):
+                with st.lock:
+                    st.status, st.creds = "refused", None
+                write_status(st)
+                log(f"{e.code}: the platform isn't letting this desk connect right now")
+                time.sleep(300)
+                continue
+            log(f"platform said {e}; retrying in {wait}s")
+        except (OSError, ValueError, KeyError) as e:
+            log(f"couldn't reach the platform ({type(e).__name__}); retrying in {wait}s")
+        write_status(st)
+        time.sleep(wait)
+        wait = min(wait * 2, 120)
+
+
+def note_identity(st, fps, body):
+    recorded = (body.get("dtls") or {}).get("fingerprintsSha256") if "dtls" in body else None
+    if "dtls" not in body:
+        now = "unsupported"
+    elif fps and sorted(recorded or []) == fps:
+        now = "signed"
+    else:
+        now = "waiting"
+    with st.lock:
+        before, st.identity = st.identity, now
+    if now != before:
+        log({"signed": f"signed desk-rtc's DTLS identity ({len(fps or [])} fingerprint(s))",
+             "waiting": "waiting for desk-rtc's DTLS identity, to sign it",
+             "unsupported": "the platform doesn't ask for a signed DTLS identity"}[now])
+
+
+def watch_dtls(st):
+    """Wake keep_fresh when desk-rtc's fingerprints change, so the key signs them before deskd's next hello."""
+    seen = read_dtls()
+    while True:
+        time.sleep(2)
+        now = read_dtls()
+        if now != seen:
+            seen = now
+            st.wake.set()
+
+
+def make_handler(st):
+    class H(BaseHTTPRequestHandler):
+        server_version = "ma-selfhost"
+        sys_version = ""
+
+        def log_message(self, *a):  # paths and tokens stay out of the journal
+            pass
+
+        def send(self, code, body=b"", ctype="text/plain"):
+            self.send_response(code)
+            self.send_header("Content-Type", ctype)
+            self.send_header("Content-Length", str(len(body)))
+            self.end_headers()
+            self.wfile.write(body)
+
+        def do_PUT(self):
+            if self.path != "/latest/api/token":
+                return self.send(404)
+            try:
+                ttl = int(self.headers.get("X-aws-ec2-metadata-token-ttl-seconds", ""))
+            except ValueError:
+                return self.send(400)
+            if not 1 <= ttl <= TOKEN_MAX_TTL:
+                return self.send(400)
+            tok = b64u(secrets.token_bytes(32))
+            with st.lock:
+                nowm = time.monotonic()
+                st.tokens = {t: e for t, e in st.tokens.items() if e > nowm}
+                if len(st.tokens) > 256:
+                    return self.send(503)
+                st.tokens[tok] = nowm + ttl
+            self.send(200, tok.encode())
+
+        def do_GET(self):
+            tok = self.headers.get("X-aws-ec2-metadata-token", "")
+            with st.lock:
+                ok = st.tokens.get(tok, 0) > time.monotonic()
+                desk, creds, addr = st.desk, st.creds, st.address
+            if not ok:
+                return self.send(401)
+            p = self.path
+            if not desk or not creds:
+                return self.send(404)  # deskd waits and asks again until this desk is paired and online
+            values = {
+                "/latest/meta-data/tags/instance/DeskId": desk["deskId"],
+                "/latest/meta-data/tags/instance/UserId": desk["userId"],
+                "/latest/meta-data/tags/instance/DeskKind": desk.get("deskKind") or "personal",
+                "/latest/meta-data/tags/instance/Env": desk["env"],
+                # The platform reads a self-hosted desk's instance ID as its desk ID (contract selfhost.md §4).
+                "/latest/meta-data/instance-id": desk["deskId"],
+                "/latest/meta-data/instance-type": "self-hosted",
+                "/latest/meta-data/public-ipv4": addr,
+                "/latest/meta-data/iam/security-credentials/": ROLE_NAME,
+            }
+            if p in values and values[p]:
+                return self.send(200, values[p].encode())
+            if p == "/latest/meta-data/iam/security-credentials/" + ROLE_NAME:
+                body = {"Code": "Success", "LastUpdated": now_iso(), "Type": "AWS-HMAC", "AccessKeyId": creds["accessKeyId"],
+                        "SecretAccessKey": creds["secretAccessKey"], "Token": creds["sessionToken"], "Expiration": creds["expiration"]}
+                return self.send(200, json.dumps(body).encode(), "application/json")
+            self.send(404)
+    return H
+
+
+def serve(conf):
+    os.makedirs(STATE, exist_ok=True)
+    st = State()
+    st.desk = read_desk()
+    threading.Thread(target=keep_fresh, args=(conf, st), daemon=True).start()
+    threading.Thread(target=watch_dtls, args=(st,), daemon=True).start()
+    bind = os.environ.get("MA_SELFHOST_BIND", "169.254.169.254:80")
+    host, port = bind.rsplit(":", 1)
+    srv = ThreadingHTTPServer((host, int(port)), make_handler(st))
+    srv.daemon_threads = True
+    log(f"metadata on {bind}")
+    srv.serve_forever()
+
+
+# ---------- the commands ----------
+
+def service_status():
+    """The running service's status, if it wrote one in the last minute."""
+    p = os.path.join(RUN, "status.json")
+    try:
+        if time.time() - os.stat(p).st_mtime > 60:
+            return None
+        with open(p) as f:
+            return json.load(f)
+    except (FileNotFoundError, ValueError):
+        return None
+
+
+def show_code(code, url):
+    print()
+    print(f"  Your code:  {code}")
+    print()
+    print("  On a computer where you're signed in, open")
+    print(f"  {url}")
+    print("  and add this desk to your office. The code works for 15 minutes.")
+    print()
+
+
+def confirm_pairing(conf, yes):
+    """EXP-8: show whose office this desk just joined, partly hidden, and ask. Returns True when confirmed (or nothing
+    needs confirming), False when declined, None when nobody could be asked."""
+    desk = read_desk()
+    if not desk or not desk.get("pendingConfirm"):
+        return True
+    print()
+    print(f"  This computer was just added to the office of:  {desk.get('accountHint') or 'an account'}")
+    if desk.get("deskName"):
+        print(f"  The desk is called:  {desk['deskName']}")
+    print()
+    if yes:
+        answer = "y"
+    elif sys.stdin.isatty():
+        try:
+            answer = input("  Is that your account? Keep this desk there? [y/N] ").strip().lower()
+        except EOFError:
+            answer = ""
+    else:
+        print("Nobody to ask here. Run 'sudo ma-selfhost pair --wait' at a terminal to confirm, or add --yes.", file=sys.stderr)
+        return None
+    if answer in ("y", "yes"):
+        desk = dict(desk)
+        desk.pop("pendingConfirm", None)
+        desk.pop("accountHint", None)
+        write_json(os.path.join(STATE, "desk.json"), desk, 0o640)
+        print("Confirmed.")
+        return True
+    decline(conf)
+    return False
+
+
+def decline(conf):
+    """Not this account: ask the platform to take the desk out of that office, and forget the key and pairing here."""
+    k = load_key()
+    asked = False
+    if k:
+        try:
+            post(conf, "/v1/self-hosted/decline", signed_body(k, "decline", conf["env"]))
+            asked = True
+        except ApiError:
+            pass
+    cmd_forget()
+    if asked:
+        print("Not paired. The desk was taken out of that office.")
+    else:
+        print("Not paired here. If the desk still shows in that office, they can remove it on the page they added it on (/self-hosted).")
+
+
+def cmd_pair(conf, wait, yes=False):
+    desk = read_desk()
+    if desk and desk.get("pendingConfirm"):
+        ok = confirm_pairing(conf, yes)
+        return 0 if ok else 1
+    if desk:
+        print(f"This computer is already the desk \"{desk.get('deskName') or desk['deskId']}\" in an office ({desk['env']}).")
+        return 0
+    if service_status() is not None:
+        # The service is pairing already: show its code and wait on it, rather than asking the platform twice.
+        shown = None
+        deadline = time.time() + 20 * 60
+        while time.time() < deadline:
+            s = service_status() or {}
+            if s.get("status") == "confirm":
+                ok = confirm_pairing(conf, yes)
+                if not ok:
+                    return 1
+                continue
+            if s.get("status") == "online":
+                d = read_desk() or {}
+                print(f"Paired. This computer is now \"{d.get('deskName') or s.get('deskId')}\" in your office.")
+                return 0
+            if s.get("code") and s.get("code") != shown:
+                shown = s["code"]
+                show_code(shown, s.get("claimUrl"))
+                if not wait:
+                    return 0
+            time.sleep(2)
+        print("Still not paired. Check the code, or run this again.", file=sys.stderr)
+        return 1
+    os.makedirs(STATE, exist_ok=True)
+    k = load_key(create=True)
+    try:
+        _, body = post(conf, "/v1/self-hosted/pair", signed_body(k, "pair", conf["env"]))
+    except ApiError as e:
+        if e.code == "already_paired":
+            body = None
+        else:
+            print(f"Pairing didn't start: {e}", file=sys.stderr)
+            return 1
+    if body:
+        show_code(body["code"], body["claimUrl"])
+    if not wait:
+        return 0
+    deadline = time.time() + 16 * 60
+    while time.time() < deadline:
+        try:
+            status, s = session(conf, k)
+        except ApiError as e:
+            print(f"Pairing stopped: {e.code}. Run this again for a new code.", file=sys.stderr)
+            return 1
+        if status == 200:
+            desk = record_paired(conf, s)
+            if desk.get("pendingConfirm") and not confirm_pairing(conf, yes):
+                return 1
+            print(f"Paired. This computer is now \"{desk.get('deskName') or desk['deskId']}\" in your office.")
+            return 0
+        time.sleep(s.get("pollAfterSeconds", 5))
+    print("The code ran out. Run this again for a new one.", file=sys.stderr)
+    return 1
+
+
+def cmd_status(conf):
+    try:
+        with open(os.path.join(RUN, "status.json")) as f:
+            s = json.load(f)
+    except (FileNotFoundError, ValueError):
+        s = {"status": "not running"}
+    desk = read_desk()
+    print(f"service:  {s.get('status')}")
+    if desk:
+        print(f"desk:     {desk.get('deskName') or '-'} ({desk['deskId']}, {desk['env']})")
+    if s.get("code"):
+        print(f"code:     {s['code']}  ->  {s.get('claimUrl')}")
+    if s.get("address"):
+        print(f"address:  {s['address']}")
+    if s.get("lastOk"):
+        print(f"last ok:  {s['lastOk']}")
+    if s.get("identity"):
+        print(f"identity: {s['identity']}")
+    return 0
+
+
+def cmd_rotate(conf):
+    k = load_key()
+    if not k or not read_desk():
+        print("This computer isn't paired yet.", file=sys.stderr)
+        return 1
+    new = Ed25519PrivateKey.generate()
+    new_pub = public_b64(new)
+    body = signed_body(k, "session", conf["env"], new_pub, rotateTo=new_pub)
+    old_thumb = thumbprint(body["publicKey"])
+    rmsg = "\n".join([PREFIX, "rotate", conf["env"], new_pub, body["at"], body["nonce"], old_thumb]).encode()
+    body["rotateSig"] = b64u(new.sign(rmsg))
+    # Keep the new key beside the old one until the platform has it, so a lost answer can't leave neither working.
+    write_key(new, key_path() + ".next")
+    try:
+        status, s = post(conf, "/v1/self-hosted/session", body)
+    except ApiError as e:
+        os.remove(key_path() + ".next")
+        print(f"Rotation refused: {e.code}", file=sys.stderr)
+        return 1
+    if status != 200 or not s.get("keyRotated"):
+        os.remove(key_path() + ".next")
+        print("Rotation didn't happen.", file=sys.stderr)
+        return 1
+    os.replace(key_path() + ".next", key_path())
+    print("This desk has a new key, and the old one no longer works. Restart ma-selfhost to use it: sudo systemctl restart ma-selfhost")
+    return 0
+
+
+def cmd_forget():
+    for name in ("desk.json", "key.pem"):
+        try:
+            os.remove(os.path.join(STATE, name))
+        except FileNotFoundError:
+            pass
+    print("Forgot this desk's key and pairing. Restart ma-selfhost, then pair again: sudo systemctl restart ma-selfhost && sudo ma-selfhost pair --wait")
+    return 0
+
+
+def main(argv):
+    if not argv:
+        print(__doc__)
+        return 2
+    conf = load_conf()
+    cmd = argv[0]
+    if cmd == "serve":
+        serve(conf)
+        return 0
+    if cmd == "pair":
+        return cmd_pair(conf, "--wait" in argv[1:], "--yes" in argv[1:])
+    if cmd == "status":
+        return cmd_status(conf)
+    if cmd == "rotate":
+        return cmd_rotate(conf)
+    if cmd == "forget":
+        return cmd_forget()
+    print(__doc__)
+    return 2
+
+
+if __name__ == "__main__":
+    sys.exit(main(sys.argv[1:]))

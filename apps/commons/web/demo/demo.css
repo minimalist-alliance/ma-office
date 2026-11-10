@@ -1,0 +1,124 @@
+/* The demo page only: a desk-like ground and one window, on the Desk app's tokens. */
+:root {
+  --ma-font-ui: "Inter Variable", system-ui, -apple-system, "Segoe UI", Roboto, sans-serif;
+}
+html,
+body,
+#root {
+  height: 100%;
+  margin: 0;
+}
+html {
+  background: var(--ma-surface-world-base);
+  color: var(--ma-text-primary);
+}
+body {
+  font-family: var(--ma-font-ui);
+  font-size: 14px;
+  -webkit-font-smoothing: antialiased;
+  overflow: hidden;
+}
+.demo-bare {
+  height: 100%;
+}
+.demo-ground {
+  height: 100%;
+  padding: 16px;
+  box-sizing: border-box;
+  background: var(--ma-surface-world-base);
+}
+.demo-window {
+  height: 100%;
+  display: flex;
+  flex-direction: column;
+  border-radius: 12px;
+  overflow: hidden;
+  background: var(--ma-surface-window);
+  box-shadow: var(--ma-elevation-window);
+}
+.demo-titlebar {
+  display: flex;
+  align-items: center;
+  justify-content: space-between;
+  height: 40px;
+  padding: 0 8px 0 16px;
+  background: var(--ma-surface-chrome);
+  border-bottom: 1px solid var(--ma-border-hairline);
+  flex: none;
+}
+.demo-title {
+  font-weight: 600;
+  font-size: 13px;
+}
+.demo-content {
+  flex: 1;
+  min-height: 0;
+  position: relative;
+}
+.demo-themes {
+  display: flex;
+  gap: 2px;
+  padding: 2px;
+  border-radius: 8px;
+  background: var(--ma-switcher-track);
+}
+.demo-themes button {
+  height: 24px;
+  padding: 0 10px;
+  border: 0;
+  border-radius: 6px;
+  background: transparent;
+  color: var(--ma-switcher-text);
+  font: inherit;
+  font-size: 12px;
+  cursor: pointer;
+}
+.demo-themes button[aria-checked="true"] {
+  background: var(--ma-switcher-selected);
+  font-weight: 600;
+}
+.demo-name {
+  max-width: 340px;
+  margin: 18vh auto 0;
+  display: flex;
+  flex-direction: column;
+  gap: 12px;
+  padding: 0 16px;
+}
+.demo-name h1 {
+  margin: 0;
+  font-size: 22px;
+  font-weight: 650;
+}
+.demo-name p {
+  margin: 0;
+  color: var(--ma-text-secondary);
+}
+.demo-name input {
+  height: 40px;
+  padding: 0 12px;
+  border: 1px solid var(--ma-border);
+  border-radius: 8px;
+  background: var(--ma-surface-sunken);
+  color: var(--ma-text-primary);
+  font: inherit;
+  outline: none;
+}
+.demo-name input:focus {
+  border-color: var(--ma-accent);
+}
+.demo-name button {
+  height: 40px;
+  border: 0;
+  border-radius: 8px;
+  background: var(--ma-accent);
+  color: var(--ma-text-on-accent);
+  font: inherit;
+  font-weight: 600;
+  cursor: pointer;
+}
+.demo-name button:disabled {
+  background: var(--ma-surface-fill);
+  color: var(--ma-text-disabled);
+  cursor: default;
+}

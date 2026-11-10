@@ -1,0 +1,24 @@
+[Unit]
+Description=deskd (Spring Boot in Docker; runs as root to call the Docker CLI)
+ConditionPathExists=/opt/ma/deskd/current/run
+Requires=docker.service desk-datadirs.service
+After=docker.service desk-datadirs.service desk-rtc.service network-online.target
+Wants=desk-rtc.service network-online.target
+# The shaper goes on first if it can. Wants, not Requires: its failure never stops this unit (ADR 0036).
+Wants=desk-egress.service
+After=desk-egress.service
+
+[Service]
+Environment=RELEASE_DIR=/opt/ma/deskd/current
+ExecStartPre=-/usr/bin/docker rm -f deskd
+ExecStart=/opt/ma/deskd/current/run
+ExecStop=/usr/bin/docker stop -t 60 deskd
+# docker stop sends the JVM SIGTERM, and it exits 143, which the docker client passes on: without this a stop ends
+# the unit as failed (0.2.8's note in image/RELEASES.md). verify.sh section 3f checks it.
+SuccessExitStatus=143
+TimeoutStopSec=70
+Restart=always
+RestartSec=3
+
+[Install]
+WantedBy=multi-user.target

@@ -1,0 +1,13 @@
+#!/bin/sh
+# Exit 0 only when GET /health on deskd's admin socket answers 200 (desk-runtime.md section 6). /opt/ma/smoke-test
+# calls this as root. deskd answers 503 only if it can't write its data; lost links to desk-rtc or Platform stay 200,
+# so an outage elsewhere can't trigger a rollback. DESKD_ADMIN_SOCKET is only for tests.
+socket=${DESKD_ADMIN_SOCKET:-/run/desk/deskd-admin.sock}
+
+code=$(curl --silent --show-error --max-time 5 --unix-socket "$socket" \
+  --output /dev/null --write-out '%{http_code}' http://localhost/health) || exit 1
+
+[ "$code" = 200 ] || {
+  echo "deskd /health answered $code" >&2
+  exit 1
+}

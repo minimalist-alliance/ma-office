@@ -1,0 +1,33 @@
+#!/bin/sh
+# Starts the Browser's units once deskd answers, on a desk that already has a Browser session to bring back (TD-227,
+# image/README.md "Faster wakes"). Run by desk-browser-prewarm.service as root. It starts exactly what deskd's own
+# `start desk-browser` would: desk-xorg and desk-audio (desk-browser requires
+# both). It never touches the profile, never stops anything, and exits 0 whatever happens,
+# so a failed prewarm is a Browser that starts on first use as it always did.
+#
+# Why wait for deskd: the desk has two vCPUs, and deskd (a JVM) starts in the same seconds, so Chromium is kept out of its way.
+# Starting it earlier was measured too (docs/benchmarks/2026-11-alliance-desk.md).
+# Why not desk-stream: deskd stops it at every boot until a viewer wants it (measured: stopped about 0.1 s after prewarm started
+# it), so starting it here only made noise.
+# Why skip with no /data/desk/age-band: that file is deskd's record of the member's age band, and desk-browser-policy installs
+# the teen lock for anything but an adult. On a desk's very first boot it doesn't exist yet, so Chromium would start locked and
+# deskd would have to restart it. The unit's condition checks it; this checks once more.
+set -u
+[ -f /data/desk/age-band ] || exit 0
+[ ! -e /run/ma/guild ] || exit 0
+[ ! -e /data/desk/no-prewarm ] || exit 0
+n=0
+until /opt/ma/deskd/current/health >/dev/null 2>&1; do
+  n=$((n + 1))
+  [ "$n" -le 120 ] || { echo "desk-browser-prewarm: deskd didn't answer in 30 s, leaving the Browser to its first use"; exit 0; }
+  sleep 0.25
+done
+# desk-units' own start of desk-browser first runs `desk-browser-start --check` as kiosk, because systemctl says ok to a start
+# that then exits 78 (a profile newer than Chromium: ADR 0035). Do the same, and start nothing if it refuses.
+if ! setpriv --reuid kiosk --regid kiosk --clear-groups /usr/local/lib/ma/desk-browser-start --check >/dev/null 2>&1; then
+  echo "desk-browser-prewarm: desk-browser-start --check refused, not starting the Browser"
+  exit 0
+fi
+systemctl start --no-block desk-xorg.service desk-audio.service desk-browser.service
+echo "desk-browser-prewarm: started the Browser's units after deskd answered (poll $n)"
+exit 0

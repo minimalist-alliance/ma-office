@@ -1,0 +1,2366 @@
+/* The Browser's simplified view (task 47), built to the Product Designer's spec (`design-drafts/simplified/spec.md`,
+   `src/sv.css`): the content you came for in one calm column, in the office's own type and colors. Every color is a
+   token (`--ma-*`, the kit's semantic names; `--ma-view-*` are the spec's proposed additions). Type is Nunito (ADR
+   0065). Scrolling is the browser's own, so nothing here runs per frame: no scroll listener, nothing sticky but a docs
+   page's rail (R58), no blur over moving content. Blocks off screen skip layout (`content-visibility`). Phone rules follow the view's own width. */
+.sv {
+  position: absolute;
+  inset: 0;
+  z-index: 1;
+  container: sv / inline-size;
+  background: var(--ma-surface-window);
+  color: var(--ma-text-primary);
+  font-family: 'Nunito Variable', var(--ma-font-ui);
+}
+.sv-scroll {
+  position: absolute;
+  inset: 0;
+  overflow-x: hidden;
+  overflow-y: auto;
+  /* Nothing covers what has focus (WCAG 2.4.11): the chip and the hover line sit in this margin. */
+  scroll-padding-block: 16px 80px;
+  overscroll-behavior: contain;
+  scrollbar-gutter: stable;
+  outline: none;
+}
+.sv-scroll.sv-locked {
+  overflow: hidden;
+}
+.sv-scroll:focus-visible {
+  outline: 2px solid var(--ma-focus-ring);
+  outline-offset: -2px;
+}
+
+/* ---------------------------------------------------------------- the column: 640 for text, 760 wide (spec 3) */
+.sv-page {
+  --sv-measure: 640px;
+  --sv-wide: 760px;
+  padding: 0 32px 72px;
+  font-size: 17.5px;
+  line-height: 1.72;
+  font-weight: 520;
+  overflow-wrap: anywhere;
+  transition: opacity 160ms ease;
+}
+/* Listings run as one width: results 720 (spec 3), a shop's grid 920. */
+.sv-page.sv-listing {
+  --sv-measure: 720px;
+  --sv-wide: 720px;
+}
+.sv-page.sv-listing.sv-shop {
+  --sv-measure: 920px;
+  --sv-wide: 920px;
+}
+/* A docs page with "In this article" (R58): the page at 900 and the rail beside it, 1240 in all, from 1100 px (below). */
+.sv-docs-grid {
+  display: grid;
+  grid-template-columns: minmax(0, 1fr) 236px;
+  column-gap: 8px;
+  max-width: 1240px;
+  margin: 0 auto;
+}
+.sv-page.sv-docs {
+  --sv-measure: 720px;
+  --sv-wide: 900px;
+  min-width: 0;
+}
+.sv-rail {
+  position: sticky;
+  top: 0;
+  align-self: start;
+  padding: 28px 24px 24px 0;
+  font-size: 13.5px;
+  line-height: 1.4;
+}
+.sv-rail-h {
+  margin: 0 0 8px;
+  font-size: 12.5px;
+  font-weight: 750;
+  color: var(--ma-text-tertiary);
+}
+.sv-rail ul {
+  margin: 0;
+  padding: 0;
+  list-style: none;
+  border-left: 2px solid var(--ma-border-hairline);
+}
+.sv-rail button {
+  display: block;
+  width: 100%;
+  margin-left: -2px;
+  padding: 5px 0 5px 12px;
+  border: 0;
+  border-left: 2px solid transparent;
+  background: none;
+  color: var(--ma-text-secondary);
+  font: inherit;
+  font-weight: 600;
+  text-align: left;
+  cursor: pointer;
+}
+.sv-rail button:hover {
+  color: var(--ma-text-primary);
+}
+.sv-rail button[aria-current='location'] {
+  border-left-color: var(--ma-accent);
+  color: var(--ma-text-primary);
+}
+.sv-rail button:focus-visible {
+  outline: 2px solid var(--ma-focus-ring);
+  outline-offset: -2px;
+  border-radius: 4px;
+}
+/* Beside the rail, the site's own contents would say it twice: below 1100 px, where there's no rail, it's back. */
+.sv-page.sv-docs .sv-sact[data-kind='contents'] {
+  display: none;
+}
+.sv-h[data-head]:focus {
+  outline: none;
+}
+.sv-h[data-head]:focus-visible {
+  outline: 2px solid var(--ma-focus-ring);
+  outline-offset: 4px;
+  border-radius: 4px;
+}
+
+/* A video's own page: 880 (spec 3, the Designer's brand review). */
+.sv-page.sv-watch {
+  --sv-measure: 880px;
+  --sv-wide: 880px;
+}
+.sv-page > * {
+  max-width: var(--sv-measure);
+  margin-left: auto;
+  margin-right: auto;
+}
+.sv-page > .sv-wide,
+.sv-page > .sv-island-row,
+.sv-page > .sv-cards-row,
+.sv-page > .sv-code,
+.sv-page > .sv-group {
+  max-width: var(--sv-wide);
+}
+.sv-page.stale {
+  opacity: 0.55;
+}
+.sv-block {
+  content-visibility: auto;
+  contain-intrinsic-size: auto 2.6em;
+}
+/* Words for screen readers only (the spec's section 12): never `display: none`. */
+.sv-sr {
+  position: absolute;
+  width: 1px;
+  height: 1px;
+  overflow: hidden;
+  clip-path: inset(50%);
+  white-space: nowrap;
+}
+.sv-end,
+.sv-start {
+  height: 1px;
+}
+/* The top of the page: under a viewport's scroll, it's out of view. */
+.sv-start {
+  margin-bottom: -1px;
+}
+
+/* ---------------------------------------------------------------- the site row (spec 4) */
+.sv-site {
+  margin-bottom: 30px;
+  border-bottom: 1px solid var(--ma-border-hairline);
+}
+.sv-listing > .sv-site,
+.sv-listing > .sv-filters {
+  max-width: var(--sv-wide);
+}
+.sv-site-row {
+  display: flex;
+  align-items: center;
+  gap: 4px;
+  height: 52px;
+}
+.sv-fav {
+  flex: none;
+  display: grid;
+  place-items: center;
+  width: 20px;
+  height: 20px;
+  overflow: hidden;
+  border-radius: 5px;
+  color: var(--ma-glyph-soft);
+}
+.sv-fav img {
+  width: 100%;
+  height: 100%;
+}
+.sv-site-name {
+  flex: 0 1 auto;
+  min-width: 4em;
+  margin-left: 6px;
+  font-size: 14px;
+  font-weight: 750;
+  line-height: 20px;
+  white-space: nowrap;
+  overflow: hidden;
+  text-overflow: ellipsis;
+}
+/* The page's own name for itself: second, quieter, and the first thing to go when room is short (T47O-3). */
+.sv-site-also {
+  flex: 0 1000 auto;
+  min-width: 0;
+  margin-left: 8px;
+  font-size: 13px;
+  font-weight: 600;
+  line-height: 20px;
+  color: var(--ma-text-tertiary);
+  white-space: nowrap;
+  overflow: hidden;
+  text-overflow: ellipsis;
+}
+.sv-grow {
+  flex: 1;
+}
+.sv-sact {
+  display: inline-flex;
+  align-items: center;
+  gap: 6px;
+  height: 32px;
+  padding: 0 10px;
+  border: 0;
+  border-radius: 9px;
+  background: none;
+  color: var(--ma-text-secondary);
+  font: inherit;
+  font-size: 13.5px;
+  font-weight: 650;
+  line-height: 20px;
+  white-space: nowrap;
+  cursor: pointer;
+}
+.sv-sact .sv-ic {
+  color: var(--ma-glyph);
+}
+.sv-sact:hover,
+.sv-sact.on {
+  background: var(--ma-surface-fill);
+  color: var(--ma-text-primary);
+}
+.sv-sact-count {
+  display: inline-grid;
+  place-items: center;
+  min-width: 18px;
+  height: 18px;
+  padding: 0 5px;
+  border-radius: 9px;
+  background: var(--ma-accent);
+  color: var(--ma-text-on-accent);
+  font-size: 11.5px;
+  font-weight: 800;
+}
+.sv-sep {
+  width: 1px;
+  height: 18px;
+  margin: 0 6px;
+  background: var(--ma-border);
+}
+/* The divider parts the site's actions from the hidden control; with no actions there's nothing to part (spec section 4). */
+.sv-grow + .sv-sep {
+  display: none;
+}
+.sv-hid-box {
+  position: relative;
+}
+.sv-hid {
+  display: inline-flex;
+  align-items: center;
+  gap: 6px;
+  height: 28px;
+  padding: 0 9px 0 8px;
+  border: 0;
+  border-radius: 8px;
+  background: none;
+  color: var(--ma-text-tertiary);
+  font: inherit;
+  font-size: 12.5px;
+  font-weight: 650;
+  line-height: 18px;
+  white-space: nowrap;
+  cursor: pointer;
+}
+.sv-hid .sv-ic {
+  color: var(--ma-glyph-soft);
+}
+.sv-hid:hover,
+.sv-hid.open {
+  background: var(--ma-surface-fill);
+  color: var(--ma-text-primary);
+}
+.sv-site-panel {
+  padding: 2px 0 14px;
+}
+.sv-site-search {
+  display: flex;
+  flex-wrap: wrap;
+  align-items: center;
+  gap: 8px;
+}
+.sv-site-search .sv-field {
+  flex: 1 1 16em;
+  width: auto;
+  margin: 0;
+}
+/* A search page's own field, with its clear ×. */
+.sv-search-box {
+  position: relative;
+  display: flex;
+  flex: 1 1 16em;
+  min-width: 0;
+}
+.sv-search-box .sv-field {
+  padding-right: 44px;
+}
+.sv-search-clear {
+  position: absolute;
+  top: 50%;
+  right: 8px;
+  display: grid;
+  place-items: center;
+  width: 30px;
+  height: 30px;
+  border: 0;
+  border-radius: 999px;
+  background: none;
+  color: var(--ma-text-secondary);
+  transform: translateY(-50%);
+  cursor: pointer;
+}
+.sv-search-clear:hover {
+  background: var(--ma-surface-fill);
+  color: var(--ma-text-primary);
+}
+.sv-search-clear:focus-visible {
+  outline: 2px solid var(--ma-focus-ring);
+  outline-offset: 0;
+}
+.sv-site-list {
+  display: flex;
+  flex-wrap: wrap;
+  gap: 2px 18px;
+  font-size: 14.5px;
+  font-weight: 600;
+  line-height: 1.9;
+}
+.sv-site-list .sv-link {
+  text-decoration: none;
+}
+
+/* The hidden control's popover: what went, the per-site switch, the real page. */
+.sv-pop {
+  position: absolute;
+  top: calc(100% + 6px);
+  right: 0;
+  z-index: 4;
+  width: 300px;
+  padding: 14px 0 12px;
+  border-radius: 14px;
+  background: var(--ma-surface-overlay);
+  box-shadow: var(--ma-elevation-menu);
+  color: var(--ma-text-primary);
+  font-size: 13.5px;
+  font-weight: 600;
+  line-height: 20px;
+}
+.sv-pop:focus {
+  outline: none;
+}
+.sv-pop h3 {
+  margin: 0;
+  padding: 0 16px 8px;
+  font-size: 13px;
+  font-weight: 750;
+  color: var(--ma-text-secondary);
+}
+.sv-pop ul {
+  margin: 0;
+  padding: 0;
+  list-style: none;
+}
+.sv-pop li {
+  display: flex;
+  align-items: flex-start;
+  gap: 10px;
+  padding: 5px 16px;
+}
+.sv-pop .sv-ic {
+  flex: none;
+  margin-top: 2px;
+  color: var(--ma-glyph-soft);
+}
+.sv-pop-lt {
+  flex: 1;
+}
+.sv-pop-sub {
+  display: block;
+  font-size: 12.5px;
+  line-height: 1.35;
+  color: var(--ma-text-tertiary);
+}
+.sv-pop-n {
+  color: var(--ma-text-tertiary);
+  font-variant-numeric: tabular-nums;
+}
+.sv-pop-also {
+  display: flex;
+  align-items: center;
+  gap: 10px;
+  margin: 6px 16px 0;
+  padding-top: 8px;
+  border-top: 1px dashed var(--ma-border);
+  font-size: 12.5px;
+  color: var(--ma-text-tertiary);
+}
+.sv-pop hr {
+  margin: 10px 0;
+  border: 0;
+  border-top: 1px solid var(--ma-border);
+}
+.sv-pop-row {
+  display: flex;
+  align-items: center;
+  gap: 10px;
+  padding: 4px 16px;
+}
+.sv-pop-foot {
+  padding: 6px 16px 0;
+}
+.sv-tog {
+  position: relative;
+  flex: none;
+  width: 34px;
+  height: 20px;
+  padding: 0;
+  border: 0;
+  border-radius: 10px;
+  /* Off is an outlined track and knob in border.strong: a filled track was 1.3:1 (the spec's section 12). */
+  background: transparent;
+  box-shadow: inset 0 0 0 1.5px var(--ma-border-strong);
+  cursor: pointer;
+}
+.sv-tog::after {
+  content: '';
+  position: absolute;
+  top: 2px;
+  left: 2px;
+  width: 16px;
+  height: 16px;
+  border-radius: 50%;
+  background: var(--ma-border-strong);
+  transition: transform 140ms ease;
+}
+.sv-tog[aria-checked='true'] {
+  background: var(--ma-accent);
+  box-shadow: none;
+}
+.sv-tog[aria-checked='true']::after {
+  background: var(--ma-text-on-accent);
+  transform: translateX(14px);
+}
+
+/* ---------------------------------------------------------------- reading (spec 2's type scale) */
+.sv-h {
+  margin-block: 1.9em 0.55em;
+  font-size: 23px;
+  line-height: 1.3;
+  font-weight: 780;
+  letter-spacing: -0.006em;
+  text-wrap: balance;
+}
+.sv-h1 {
+  margin-block: 0.2em 0.5em;
+  font-size: 35px;
+  line-height: 1.17;
+  letter-spacing: -0.012em;
+}
+.sv-listing .sv-h1 {
+  font-size: 29px;
+  line-height: 1.2;
+}
+.sv-h3 {
+  margin-block: 1.6em 0.45em;
+  font-size: 19px;
+  line-height: 1.35;
+  font-weight: 760;
+}
+.sv-h4,
+.sv-h5,
+.sv-h6 {
+  margin-block: 1.4em 0.4em;
+  font-size: 17.5px;
+  line-height: 1.4;
+  font-weight: 750;
+}
+.sv-p {
+  margin-block: 0 1.05em;
+  text-wrap: pretty;
+}
+.sv-page strong {
+  font-weight: 780;
+}
+.sv-kicker {
+  margin-block: 0 0.5em;
+  /* The spec's type table: 13.5 px, 750, text.link, in the site's own case (sheets 1 and 5). */
+  color: var(--ma-text-link);
+  font-size: 13.5px;
+  font-weight: 750;
+}
+/* The view ends where the member's page does (section 14's paywall): one line, its two words to the real page. */
+.sv-paywall {
+  margin-block: 2em 0;
+  padding-top: 18px;
+  border-top: 1px solid var(--ma-border-hairline);
+  color: var(--ma-text-secondary);
+  font-size: 15px;
+  font-weight: 650;
+}
+.sv-paywall-link {
+  padding: 0;
+  border: 0;
+  background: none;
+  color: var(--ma-text-link);
+  font: inherit;
+  text-decoration: underline;
+  text-underline-offset: 3px;
+  cursor: pointer;
+}
+.sv-picker {
+  display: inline-flex;
+  flex-wrap: wrap;
+  align-items: center;
+  gap: 4px 10px;
+  max-width: 100%;
+}
+.sv-picker-label {
+  font-weight: 600;
+}
+.sv-picker-value {
+  color: var(--ma-text-tertiary);
+  font-weight: 600;
+}
+.sv-picker > .sv-button {
+  margin: 0;
+}
+.sv-byline {
+  margin-block: 0.4em 1.6em;
+  font-size: 14px;
+  line-height: 1.5;
+  font-weight: 600;
+  color: var(--ma-text-tertiary);
+}
+.sv-quote {
+  padding-left: 22px;
+  border-left: 3px solid var(--ma-accent);
+  color: var(--ma-text-secondary);
+}
+.sv-list {
+  margin-block: 0 1.05em;
+  padding: 0;
+  list-style: none;
+  content-visibility: visible;
+}
+.sv-li {
+  position: relative;
+  margin-block: 0.3em;
+  padding-left: 1.5em;
+}
+.sv-li::before {
+  content: attr(data-marker);
+  position: absolute;
+  left: 0.2em;
+  color: var(--ma-text-tertiary);
+  font-variant-numeric: tabular-nums;
+}
+.sv-li.sv-d2 { padding-left: 2.8em; }
+.sv-li.sv-d2::before { left: 1.5em; }
+.sv-li.sv-d3,
+.sv-li.sv-d4,
+.sv-li.sv-d5,
+.sv-li.sv-d6 { padding-left: 4.1em; }
+.sv-li.sv-d3::before,
+.sv-li.sv-d4::before,
+.sv-li.sv-d5::before,
+.sv-li.sv-d6::before { left: 2.8em; }
+.sv-li.sv-term {
+  margin-top: 0.8em;
+  font-weight: 750;
+}
+/* A reply in a thread (R75, compact): body 15/1.45, meta 13 px, 6 px from meta to body, 10 px between siblings, 14 px a
+   level under one unbroken 2 px rule per level, three levels at most (R27; deeper ones fold). Drawn as backgrounds, so the
+   column keeps its centering. The thread's own post (depth 0 of a paragraph thread, a question) keeps body type. The rule
+   is not clipped at a block edge: `content-visibility: visible` here, since `auto` paints each block inside its own box. */
+.sv-nest,
+.sv-reply {
+  --sv-rule: linear-gradient(var(--ma-border), var(--ma-border));
+  font-size: 15px;
+  line-height: 1.45;
+}
+.sv-nest {
+  content-visibility: visible;
+  padding-left: 14px;
+  background-image: var(--sv-rule);
+  background-repeat: no-repeat;
+  background-size: 2px 100%;
+  background-position: 0 0;
+}
+/* The space under a reply is its own padding, not a margin, so each level's rule runs on unbroken from a name line to
+   its body and the next reply, as one line per level (the stills), never a dash per block. */
+.sv-page .sv-nest,
+.sv-page .sv-reply {
+  margin-bottom: 0;
+  padding-bottom: 10px;
+}
+.sv-page .sv-nest.sv-nameline {
+  padding-bottom: 6px;
+}
+.sv-nest .sv-nameline,
+.sv-nest.sv-nameline,
+.sv-reply .sv-nameline {
+  font-size: 13px;
+  line-height: 1.45;
+}
+.sv-nest .sv-nameline-acts .sv-button,
+.sv-reply .sv-nameline-acts .sv-button {
+  height: 22px;
+}
+/* A reply's vote is the same control a size down, so its meta line stays one quiet 22 px line (R75). */
+.sv-nest .sv-vote,
+.sv-reply .sv-vote {
+  height: 24px;
+  font-size: 12.5px;
+}
+.sv-nest .sv-vote-btn,
+.sv-reply .sv-vote-btn {
+  width: 22px;
+  height: 22px;
+}
+.sv-reply .sv-comment-body {
+  margin-top: 6px;
+}
+.sv-n2 {
+  padding-left: 28px;
+  background-image: var(--sv-rule), var(--sv-rule);
+  background-position: 0 0, 14px 0;
+}
+.sv-n3,
+.sv-n4,
+.sv-n5,
+.sv-n6 {
+  padding-left: 42px;
+  background-image: var(--sv-rule), var(--sv-rule), var(--sv-rule);
+  background-position: 0 0, 14px 0, 28px 0;
+}
+.sv-more-replies {
+  padding-left: 42px;
+  padding-bottom: 10px;
+  content-visibility: visible;
+}
+.sv-more-replies > summary,
+.sv-group > summary {
+  display: flex;
+  align-items: center;
+  gap: 6px;
+  width: max-content;
+  max-width: 100%;
+  padding: 2px 4px;
+  border-radius: 6px;
+  color: var(--ma-text-secondary);
+  font-size: 14px;
+  font-weight: 700;
+  cursor: pointer;
+}
+.sv-more-replies > summary:hover,
+.sv-group > summary:hover {
+  color: var(--ma-text-primary);
+}
+/* Every line that opens in place uses the spec's chevron, never the browser's markers. */
+.sv-more-replies > summary,
+.sv-group > summary,
+.sv-fold-more > summary,
+.sv-comment > summary {
+  list-style: none;
+}
+.sv-more-replies > summary::-webkit-details-marker,
+.sv-group > summary::-webkit-details-marker,
+.sv-fold-more > summary::-webkit-details-marker,
+.sv-comment > summary::-webkit-details-marker {
+  display: none;
+}
+.sv-chev {
+  flex: none;
+  color: var(--ma-glyph-soft);
+  transition: transform 140ms ease;
+}
+details[open] > summary > .sv-chev {
+  transform: rotate(180deg);
+}
+.sv-page del {
+  color: var(--ma-text-tertiary);
+}
+.sv-page code {
+  padding: 0.12em 0.38em;
+  border: 1px solid var(--ma-border-hairline);
+  border-radius: 6px;
+  background: var(--ma-surface-sunken);
+  font-family: ui-monospace, SFMono-Regular, Menlo, Consolas, monospace;
+  font-size: 0.84em;
+  font-weight: 400;
+}
+.sv-hr {
+  margin-block: 1.8em;
+  border: 0;
+  border-top: 1px solid var(--ma-border);
+}
+.sv-code {
+  margin-block: 20px 24px;
+  overflow: hidden;
+  border: 1px solid var(--ma-border-hairline);
+  border-radius: 12px;
+  background: var(--ma-surface-sunken);
+  content-visibility: visible;
+}
+.sv-code-bar {
+  display: flex;
+  justify-content: flex-end;
+  align-items: center;
+  height: 36px;
+  padding: 0 6px 0 14px;
+  border-bottom: 1px solid var(--ma-border-hairline);
+}
+.sv-code-copy {
+  display: inline-flex;
+  align-items: center;
+  gap: 6px;
+  height: 26px;
+  padding: 0 8px;
+  border: 0;
+  border-radius: 7px;
+  background: none;
+  color: var(--ma-text-secondary);
+  font: inherit;
+  font-size: 12.5px;
+  font-weight: 700;
+  cursor: pointer;
+}
+.sv-code-copy:hover {
+  background: var(--ma-surface-fill);
+}
+.sv-pre {
+  margin: 0;
+  padding: 14px 16px 16px;
+  font-family: ui-monospace, SFMono-Regular, Menlo, Consolas, monospace;
+  font-size: 13.5px;
+  line-height: 1.62;
+  font-weight: 400;
+  white-space: pre;
+  tab-size: 4;
+  overflow-x: auto;
+  overflow-wrap: normal;
+}
+
+/* ---------------------------------------------------------------- links, buttons, fields: the real ones (spec 4) */
+.sv-link {
+  color: var(--ma-text-link);
+  text-decoration: underline;
+  text-decoration-thickness: 1px;
+  text-underline-offset: 3px;
+  text-decoration-color: color-mix(in srgb, var(--ma-text-link) 45%, transparent);
+  cursor: pointer;
+  border-radius: 3px;
+}
+.sv-link:hover {
+  text-decoration-color: var(--ma-text-link);
+}
+.sv-link:focus-visible,
+.sv-button:focus-visible,
+.sv-signin:focus-visible,
+.sv-btn:focus-visible,
+.sv-sact:focus-visible,
+.sv-hid:focus-visible,
+.sv-tog:focus-visible,
+.sv-code-copy:focus-visible,
+.sv-table:focus-visible,
+.sv-pre:focus-visible,
+.sv-figure-link:focus-visible,
+.sv-group > summary:focus-visible,
+.sv-more-replies > summary:focus-visible,
+.sv-comment > summary:focus-visible,
+.sv-comment-more:focus-visible,
+.sv-paywall-link:focus-visible {
+  outline: 2px solid var(--ma-focus-ring);
+  outline-offset: 2px;
+}
+/* One ring everywhere, 1 px off a link inside running text (the spec's section 12). */
+.sv-p .sv-link:focus-visible,
+.sv-li .sv-link:focus-visible,
+.sv-byline .sv-link:focus-visible {
+  outline-offset: 1px;
+}
+/* A card is one stop, and the ring wraps it whole. */
+.sv-card:has(.sv-card-title:focus-visible) {
+  outline: 2px solid var(--ma-focus-ring);
+  outline-offset: 2px;
+  border-radius: 10px;
+}
+.sv-cards-link .sv-card:has(.sv-card-title:focus-visible) {
+  border-radius: 14px;
+}
+.sv-card-title:focus-visible {
+  outline: none;
+}
+.sv-link.sv-pressed {
+  opacity: 0.6;
+}
+.sv-button,
+.sv-btn {
+  display: inline-flex;
+  align-items: center;
+  justify-content: center;
+  gap: 8px;
+  max-width: 100%;
+  height: 32px;
+  margin: 2px 6px 2px 0;
+  padding: 0 12px;
+  border: 1px solid var(--ma-border-strong);
+  border-radius: 10px;
+  background: var(--ma-surface-window);
+  color: var(--ma-text-primary);
+  font: inherit;
+  font-size: 13px;
+  font-weight: 700;
+  line-height: 20px;
+  white-space: nowrap;
+  vertical-align: middle;
+  cursor: pointer;
+}
+.sv-btn-wide {
+  width: 100%;
+  height: 40px;
+  margin: 0;
+  border-radius: 12px;
+  font-size: 14px;
+}
+.sv-button:hover:not(:disabled),
+.sv-btn:hover {
+  background: var(--ma-surface-fill);
+}
+.sv-button[aria-pressed='true'],
+.sv-button[data-selected='1'] {
+  border: 2px solid var(--ma-accent);
+  background: var(--ma-accent-subtle);
+}
+/* A press shows in the next frame; the site's answer comes as a patch (spec 4, "Pressing"). */
+.sv-button.sv-pressed {
+  border-color: var(--ma-accent-pressed);
+  background: var(--ma-accent-pressed);
+  color: var(--ma-text-on-accent);
+  transform: translateY(1px);
+}
+.sv-button:disabled {
+  color: var(--ma-text-disabled);
+  cursor: default;
+}
+.sv-field {
+  min-width: 0;
+  width: 24em;
+  max-width: 100%;
+  height: 46px;
+  margin: 2px 6px 2px 0;
+  padding: 0 14px;
+  border: 1px solid var(--ma-border-strong);
+  border-radius: 12px;
+  background: var(--ma-surface-window);
+  color: var(--ma-text-primary);
+  font: inherit;
+  font-size: 16px;
+  font-weight: 600;
+  line-height: 22px;
+  vertical-align: middle;
+}
+.sv-field::placeholder {
+  color: var(--ma-text-tertiary);
+}
+.sv-field:focus {
+  border-color: var(--ma-focus-ring);
+  outline: 3px solid color-mix(in srgb, var(--ma-focus-ring) 22%, transparent);
+  outline-offset: 0;
+}
+.sv-lines {
+  display: block;
+  width: 100%;
+  height: auto;
+  min-height: 6em;
+  padding: 12px 14px;
+  resize: vertical;
+}
+.sv-select {
+  width: auto;
+  padding-right: 8px;
+}
+.sv-check {
+  display: inline-flex;
+  align-items: center;
+  gap: 10px;
+  margin: 2px 16px 2px 0;
+  cursor: pointer;
+}
+.sv-check input {
+  width: 20px;
+  height: 20px;
+  margin: 0;
+  accent-color: var(--ma-accent);
+}
+.sv-signin {
+  display: inline-flex;
+  align-items: center;
+  gap: 8px;
+  height: 40px;
+  padding: 0 16px;
+  border: 1px solid var(--ma-accent);
+  border-radius: 12px;
+  background: var(--ma-accent);
+  color: var(--ma-text-on-accent);
+  font: inherit;
+  font-size: 14px;
+  font-weight: 700;
+  cursor: pointer;
+}
+.sv-signin:hover {
+  background: var(--ma-accent-hover);
+}
+
+/* ---------------------------------------------------------------- photos and tables: wide, 34 above and 30 below */
+.sv-figure {
+  margin-block: 34px 30px;
+  content-visibility: visible;
+}
+.sv-img {
+  display: block;
+  width: 100%;
+  margin: 0 auto;
+  overflow: hidden;
+  border-radius: 12px;
+  background: var(--ma-surface-sunken);
+}
+.sv-img img {
+  display: block;
+  width: 100%;
+  height: 100%;
+  object-fit: contain;
+  opacity: 0;
+  transition: opacity 180ms ease;
+}
+.sv-img img.in {
+  opacity: 1;
+}
+.sv-figure-link {
+  display: block;
+  border-radius: 12px;
+  cursor: pointer;
+}
+/* A lead photo's caption, 10 px under it, and its credit kept apart. */
+.sv-caption {
+  margin-top: 10px;
+  color: var(--ma-text-secondary);
+  font-size: 14px;
+  line-height: 1.5;
+  font-weight: 600;
+}
+.sv-credit {
+  margin-left: 8px;
+  color: var(--ma-text-tertiary);
+  font-size: 13px;
+}
+.sv-icon {
+  height: 1.25em;
+  width: auto;
+  vertical-align: -0.25em;
+}
+.sv-alt {
+  display: block;
+  font-size: 14px;
+  font-weight: 600;
+  color: var(--ma-text-secondary);
+}
+.sv-table {
+  margin-block: 16px 24px;
+  overflow-x: auto;
+  border: 1px solid var(--ma-border);
+  border-radius: 12px;
+}
+.sv-table table {
+  width: 100%;
+  border-collapse: collapse;
+  font-size: 14.5px;
+  line-height: 1.5;
+  font-weight: 550;
+}
+.sv-table th,
+.sv-table td {
+  padding: 10px 14px;
+  border-bottom: 1px solid var(--ma-border-hairline);
+  text-align: left;
+  vertical-align: top;
+}
+.sv-table th {
+  border-bottom-color: var(--ma-border);
+  background: var(--ma-surface-sunken);
+  color: var(--ma-text-tertiary);
+  font-size: 12.5px;
+  font-weight: 750;
+  letter-spacing: 0.01em;
+}
+.sv-table tr:last-child td {
+  border-bottom: 0;
+}
+
+/* ---------------------------------------------------------------- cards (spec 4): kept as cards, never flattened */
+.sv-cards-row {
+  margin-block: 12px 26px;
+  content-visibility: visible;
+}
+.sv-cards {
+  display: grid;
+  margin: 0;
+  padding: 0;
+  list-style: none;
+}
+.sv-card {
+  display: flex;
+  flex-direction: column;
+  gap: 8px;
+  min-width: 0;
+}
+.sv-card-img {
+  position: relative;
+  display: block;
+  flex: none;
+  overflow: hidden;
+  border-radius: 10px;
+  background: var(--ma-surface-sunken);
+  cursor: pointer;
+}
+/* R65: a picture the tab never painted drops with its frame; the card stays, with no blank box. */
+.sv-card-img:has(> .sv-gone),
+.sv-figure:not(:has(.sv-img, .sv-alt, img)) {
+  display: none;
+}
+.sv-card-img img {
+  display: block;
+  width: 100%;
+  height: 100%;
+  object-fit: cover;
+  opacity: 0;
+  transition: opacity 180ms ease;
+}
+.sv-card-img img.in {
+  opacity: 1;
+}
+.sv-card-text {
+  display: flex;
+  flex-direction: column;
+  gap: 3px;
+  min-width: 0;
+}
+.sv-card-title {
+  display: -webkit-box;
+  overflow: hidden;
+  -webkit-box-orient: vertical;
+  -webkit-line-clamp: 2;
+  color: var(--ma-text-primary);
+  font-size: 15px;
+  line-height: 1.35;
+  font-weight: 750;
+  text-decoration: none;
+}
+.sv-card-title:hover {
+  text-decoration: underline;
+}
+.sv-card-line {
+  display: flex;
+  flex-wrap: wrap;
+  align-items: baseline;
+  gap: 4px 10px;
+}
+.sv-card-price {
+  font-size: 16px;
+  font-weight: 800;
+  font-variant-numeric: tabular-nums;
+}
+.sv-card-stars {
+  display: inline-flex;
+  align-items: center;
+  gap: 4px;
+  color: var(--ma-text-secondary);
+  font-size: 13px;
+  font-weight: 650;
+}
+.sv-card-stars svg {
+  color: var(--ma-view-star);
+}
+.sv-card-meta {
+  color: var(--ma-text-tertiary);
+  font-size: 12.5px;
+  line-height: 1.45;
+  font-weight: 600;
+}
+.sv-card-snippet {
+  display: -webkit-box;
+  overflow: hidden;
+  -webkit-box-orient: vertical;
+  -webkit-line-clamp: 3;
+  color: var(--ma-text-secondary);
+  font-size: 15px;
+  line-height: 1.6;
+  font-weight: 520;
+}
+.sv-card-chips {
+  display: flex;
+  flex-wrap: wrap;
+  gap: 4px;
+  margin-top: 2px;
+}
+.sv-tag {
+  display: inline-flex;
+  align-items: center;
+  height: 24px;
+  padding: 0 9px;
+  border-radius: 999px;
+  background: var(--ma-surface-fill);
+  color: var(--ma-text-secondary);
+  font-size: 12.5px;
+  font-weight: 700;
+}
+.sv-card-actions {
+  margin-top: 4px;
+}
+/* R13: the list price struck beside the price, the count beside the rating, at most one badge. */
+.sv-card-list {
+  color: var(--ma-text-tertiary);
+  font-size: 13px;
+  font-weight: 600;
+}
+.sv-card-count {
+  color: var(--ma-text-tertiary);
+  font-weight: 600;
+}
+.sv-card-badge {
+  align-self: flex-start;
+  height: 22px;
+  font-size: 12px;
+}
+.sv-card-dur {
+  position: absolute;
+  right: 6px;
+  bottom: 6px;
+  padding: 1px 6px;
+  border-radius: 5px;
+  background: var(--ma-view-media-badge);
+  color: var(--ma-view-media-fg);
+  font-size: 11.5px;
+  font-weight: 750;
+  line-height: 18px;
+}
+/* Results: separated by hairlines, not boxed; a 19 px title link, the snippet, a thumbnail on the right. */
+.sv-cards-result .sv-card {
+  display: grid;
+  grid-template-columns: minmax(0, 1fr) auto;
+  gap: 0 20px;
+  padding: 18px 0;
+  border-bottom: 1px solid var(--ma-border-hairline);
+}
+.sv-cards-result .sv-card-img {
+  grid-row: 1;
+  grid-column: 2;
+  align-self: center;
+  width: 112px;
+  height: 84px;
+}
+.sv-cards-result .sv-card-text {
+  grid-row: 1;
+  grid-column: 1;
+  gap: 5px;
+}
+.sv-cards-result .sv-card-title {
+  color: var(--ma-text-link);
+  font-size: 19px;
+}
+/* Videos: a 16:9 thumbnail with its duration, a two-line title, three or four to a row. */
+.sv-cards-video {
+  grid-template-columns: repeat(auto-fill, minmax(180px, 1fr));
+  gap: 18px 12px;
+}
+.sv-cards-video .sv-card-img {
+  aspect-ratio: 16 / 9;
+}
+.sv-cards-video .sv-card-title {
+  font-size: 14px;
+}
+/* Products (R13): the picture on white, the name, the price and rating, one delivery line. 200 px at least, but two across
+   from 360 px (the Designer's brand review): at most 4 at 920, 2 on a phone, 1 under 360 (below). */
+.sv-cards-product {
+  grid-template-columns: repeat(auto-fill, minmax(min(200px, calc(50% - 8px)), 1fr));
+  gap: 22px 16px;
+}
+.sv-cards-product .sv-card-img {
+  aspect-ratio: 1 / 1;
+  border-radius: 12px;
+  background: var(--ma-view-photo-well);
+}
+.sv-card-bad {
+  /* Words, so text.danger (4.5:1 in every theme); status.error is for dots and badges and is 4.1:1 on Dusk's window. */
+  color: var(--ma-text-danger);
+  font-weight: 700;
+}
+.sv-cards-product .sv-card-img img {
+  object-fit: contain;
+}
+.sv-cards-product .sv-card-title {
+  -webkit-line-clamp: 3;
+}
+/* Link cards: what the editors linked, two to a row, after the content. */
+.sv-cards-link {
+  grid-template-columns: repeat(auto-fill, minmax(260px, 1fr));
+  gap: 12px;
+}
+.sv-cards-link .sv-card {
+  flex-direction: row;
+  gap: 14px;
+  padding: 12px;
+  border: 1px solid var(--ma-border);
+  border-radius: 14px;
+  background: var(--ma-surface-window);
+}
+.sv-cards-link .sv-card-img {
+  width: 92px;
+  height: 68px;
+  border-radius: 9px;
+}
+
+/* ---------------------------------------------------------------- the site's dialogs, and what it recommends */
+/* What the page put over itself: framed apart and named by its site, never in the office's own look (T47-6). */
+.sv-dialog {
+  margin-block: 0 24px;
+  padding: 10px 16px 6px;
+  border: 1px dashed var(--ma-border-strong);
+  border-radius: 12px;
+  background: var(--ma-surface-sunken);
+  font-size: 15px;
+}
+.sv-dialog-from {
+  margin: 0 0 2px;
+  font-size: 12.5px;
+  font-weight: 650;
+  color: var(--ma-text-tertiary);
+}
+.sv-dialog .sv-h {
+  margin-top: 0.4em;
+  font-size: 17px;
+}
+.sv-group {
+  margin-block: 2.2em 0;
+  padding-top: 14px;
+  border-top: 1px solid var(--ma-border-hairline);
+  content-visibility: visible;
+}
+.sv-group[open] > summary {
+  margin-bottom: 12px;
+}
+
+/* ---------------------------------------------------------------- real pages (the spec's section 11) */
+/* R10: the filter rail as one row: All filters (N), chips that scroll sideways, then Sort. */
+.sv-filters {
+  margin-bottom: 18px;
+}
+.sv-filters-row {
+  display: flex;
+  align-items: center;
+  gap: 8px;
+}
+.sv-filters-chips {
+  display: flex;
+  flex: 1;
+  gap: 8px;
+  min-width: 0;
+  overflow-x: auto;
+  scrollbar-width: none;
+  /* The chips scroll inside their row and fade at its end, so Sort stays pinned at the right (brand review). */
+  -webkit-mask-image: linear-gradient(to right, black calc(100% - 28px), transparent);
+  mask-image: linear-gradient(to right, black calc(100% - 28px), transparent);
+  padding-right: 20px;
+}
+.sv-fall,
+.sv-filters .sv-button,
+.sv-filters .sv-select,
+.sv-filters .sv-link {
+  display: inline-flex;
+  flex: none;
+  align-items: center;
+  gap: 6px;
+  width: auto;
+  height: 32px;
+  margin: 0;
+  padding: 0 12px;
+  border: 1px solid var(--ma-border);
+  border-radius: 999px;
+  background: var(--ma-surface-window);
+  color: var(--ma-text-primary);
+  font: inherit;
+  font-size: 13px;
+  font-weight: 650;
+  line-height: 20px;
+  text-decoration: none;
+  white-space: nowrap;
+  cursor: pointer;
+}
+.sv-fall {
+  border-color: var(--ma-border-strong);
+  font-weight: 750;
+}
+.sv-fall[aria-expanded='true'] {
+  background: var(--ma-surface-fill);
+}
+.sv-fall-n {
+  color: var(--ma-text-tertiary);
+  font-variant-numeric: tabular-nums;
+}
+.sv-filters .sv-button[aria-pressed='true'],
+.sv-filters .sv-button[data-selected='1'] {
+  border: 1px solid var(--ma-accent);
+  background: var(--ma-accent-subtle);
+}
+.sv-filters .sv-button[aria-pressed='true']::after,
+.sv-filters .sv-button[data-selected='1']::after {
+  content: '\00D7';
+  margin-left: 2px;
+  color: var(--ma-text-secondary);
+}
+.sv-filters-sort {
+  flex: none;
+}
+.sv-filters-sort .sv-select {
+  border-color: transparent;
+  color: var(--ma-text-secondary);
+}
+.sv-filters .sv-select {
+  field-sizing: content;
+}
+.sv-fchip .sv-check {
+  margin: 0;
+}
+.sv-filters-all {
+  margin-top: 12px;
+  padding: 12px 16px;
+  border: 1px solid var(--ma-border);
+  border-radius: 14px;
+}
+.sv-filters-group h3 {
+  margin: 10px 0 4px;
+  font-size: 12.5px;
+  font-weight: 750;
+  color: var(--ma-text-tertiary);
+}
+.sv-filters-group:first-child h3 {
+  margin-top: 0;
+}
+.sv-filters-all .sv-button {
+  margin: 2px 6px 2px 0;
+}
+
+/* R26 to R30: a comment, answer or question: its name line, its body, and what the real page holds back under it. */
+.sv-comment {
+  margin-block: 0 1.05em;
+}
+.sv-reply.sv-comment {
+  margin-block: 0;
+}
+.sv-comment > summary {
+  cursor: pointer;
+}
+.sv-comment-body {
+  margin: 4px 0 0;
+  text-wrap: pretty;
+}
+.sv-role {
+  height: 20px;
+  margin-left: 6px;
+  padding: 0 7px;
+  font-size: 11.5px;
+}
+.sv-accepted-tag {
+  height: 20px;
+  margin-left: 6px;
+  padding: 0 7px;
+  background: var(--ma-accent-subtle);
+  color: var(--ma-text-primary);
+  font-size: 11.5px;
+}
+.sv-comment-more {
+  margin-top: 6px;
+  padding: 0;
+  border: 0;
+  background: none;
+  color: var(--ma-text-link);
+  font: inherit;
+  font-size: 14px;
+  font-weight: 700;
+  cursor: pointer;
+}
+.sv-comment-more:hover {
+  text-decoration: underline;
+}
+
+/* R26: a post's name line, Reply and one vote control at its right. */
+.sv-nameline {
+  display: flex;
+  flex-wrap: wrap;
+  align-items: center;
+  gap: 4px 12px;
+  font-size: 14.5px;
+  font-weight: 600;
+  color: var(--ma-text-tertiary);
+}
+.sv-nameline-who {
+  /* A basis, not 0: when the actions don't fit beside about 10em of name, they wrap to the next line (a phone's channel
+     row), never squeezing the name to a letter a line. */
+  flex: 1 1 10em;
+  min-width: 0;
+}
+.sv-nameline-who strong {
+  color: var(--ma-text-primary);
+}
+.sv-nameline-acts {
+  display: inline-flex;
+  flex: none;
+  align-items: center;
+  gap: 8px;
+}
+.sv-nameline-acts .sv-button {
+  height: 30px;
+  margin: 0;
+  padding: 0 8px;
+  border: 0;
+  background: none;
+  color: var(--ma-text-secondary);
+  font-size: 13.5px;
+}
+.sv-nameline-acts .sv-button:hover:not(:disabled) {
+  background: var(--ma-surface-fill);
+}
+/* R17: a video's channel row: a letter tile for its avatar, name and subscribers on the meta line, then one quiet row of
+   its actions at the right (sheet 4, #15). */
+.sv-channel {
+  gap: 6px 12px;
+  margin-block: 0 1.2em;
+}
+.sv-channel .sv-nameline-acts .sv-button {
+  padding: 0 12px;
+  border: 1px solid var(--ma-border);
+  border-radius: 999px;
+}
+.sv-avatar {
+  display: grid;
+  flex: none;
+  place-items: center;
+  width: 32px;
+  height: 32px;
+  border-radius: 50%;
+  background: var(--ma-accent);
+  color: var(--ma-text-on-accent);
+  font-size: 14px;
+  font-weight: 800;
+}
+.sv-vote {
+  display: inline-flex;
+  align-items: center;
+  height: 30px;
+  padding: 0 2px;
+  border: 1px solid var(--ma-border);
+  border-radius: 999px;
+  color: var(--ma-text-primary);
+  font-size: 13px;
+  font-weight: 750;
+  font-variant-numeric: tabular-nums;
+  vertical-align: middle;
+}
+.sv-vote-n {
+  padding: 0 2px;
+}
+/* R40: a site with no score and one arrow (HN's comments): a bare ▲, no pill. */
+.sv-vote-bare {
+  height: 26px;
+  padding: 0;
+  border-color: transparent;
+}
+.sv-vote-btn {
+  display: grid;
+  place-items: center;
+  width: 26px;
+  height: 26px;
+  padding: 0;
+  border: 0;
+  border-radius: 50%;
+  background: none;
+  color: var(--ma-text-secondary);
+  cursor: pointer;
+}
+.sv-vote-btn:hover:not(:disabled) {
+  background: var(--ma-surface-fill);
+  color: var(--ma-text-primary);
+}
+.sv-vote-btn[aria-pressed='true'] {
+  color: var(--ma-accent);
+}
+.sv-vote-btn:disabled {
+  opacity: 0.4;
+  cursor: default;
+}
+.sv-vote-btn:focus-visible,
+.sv-fall:focus-visible,
+.sv-code-all:focus-visible,
+.sv-answer-more:focus-visible,
+.sv-src:focus-visible,
+.sv-fold-row:focus-visible,
+.sv-fold-more > summary:focus-visible {
+  outline: 2px solid var(--ma-focus-ring);
+  outline-offset: 2px;
+}
+
+/* R17, R32: Description and Comments as one fold-out line; a post's first comments, then the rest. */
+.sv-fold,
+.sv-fold-row-wrap {
+  margin-block: 0 10px;
+  content-visibility: visible;
+}
+.sv-fold-row {
+  display: flex;
+  align-items: center;
+  gap: 10px;
+  width: 100%;
+  padding: 12px 16px;
+  border: 0;
+  border-radius: 14px;
+  background: var(--ma-surface-sunken);
+  color: var(--ma-text-primary);
+  font: inherit;
+  font-size: 15px;
+  font-weight: 700;
+  line-height: 22px;
+  text-align: left;
+  list-style: none;
+  cursor: pointer;
+}
+.sv-fold-row::-webkit-details-marker {
+  display: none;
+}
+.sv-fold-ic {
+  flex: none;
+  color: var(--ma-glyph);
+}
+.sv-fold-meta {
+  flex: 1;
+  margin-left: -6px;
+  font-size: 13.5px;
+  font-weight: 600;
+  color: var(--ma-text-tertiary);
+}
+.sv-fold-name {
+  flex: none;
+}
+.sv-fold-chev {
+  flex: none;
+  margin-left: auto;
+  color: var(--ma-glyph-soft);
+  transition: transform 140ms ease;
+}
+.sv-fold[open] .sv-fold-chev {
+  transform: rotate(180deg);
+}
+.sv-fold-body {
+  padding: 12px 16px 4px;
+  font-size: 15.5px;
+}
+.sv-fold-lead {
+  content-visibility: visible;
+}
+/* R75: a thread's comments, folded under the post (a question's on a Q&A page), are compact too: 15/1.45, 10 px apart. */
+.sv-fold-comments .sv-p {
+  margin-bottom: 10px;
+  font-size: 15px;
+  line-height: 1.45;
+}
+.sv-fold-more > summary {
+  width: max-content;
+  margin: 4px 0 14px;
+  padding: 2px 4px;
+  border-radius: 6px;
+  color: var(--ma-text-link);
+  font-size: 13.5px;
+  font-weight: 700;
+  cursor: pointer;
+}
+
+/* R33: long code folds at 12 lines, with a fade. */
+.sv-pre-folded {
+  overflow-y: hidden;
+  -webkit-mask-image: linear-gradient(black 70%, transparent);
+  mask-image: linear-gradient(black 70%, transparent);
+}
+.sv-code-all {
+  display: flex;
+  align-items: center;
+  justify-content: center;
+  gap: 6px;
+  width: 100%;
+  height: 36px;
+  border: 0;
+  border-top: 1px solid var(--ma-border-hairline);
+  background: none;
+  color: var(--ma-text-secondary);
+  font: inherit;
+  font-size: 13px;
+  font-weight: 700;
+  cursor: pointer;
+}
+.sv-code-all:hover {
+  background: var(--ma-surface-fill);
+}
+
+/* R22: the engine's own answer, one card, folded at about 8 lines, its sources as chips. */
+.sv-answer {
+  margin-block: 4px 22px;
+  padding: 14px 16px 12px;
+  border: 1.5px solid var(--ma-border);
+  border-radius: 14px;
+  content-visibility: visible;
+}
+.sv-answer-name {
+  display: flex;
+  align-items: center;
+  gap: 6px;
+  margin: 0 0 6px;
+  font-size: 12.5px;
+  font-weight: 700;
+  color: var(--ma-text-tertiary);
+}
+.sv-answer-host {
+  font-weight: 600;
+}
+.sv-answer-body {
+  font-size: 15px;
+  line-height: 1.6;
+}
+.sv-answer-body.folded {
+  max-height: 12.8em;
+  overflow: hidden;
+  -webkit-mask-image: linear-gradient(black 75%, transparent);
+  mask-image: linear-gradient(black 75%, transparent);
+}
+.sv-answer-body:not(.open):not(.folded) {
+  max-height: 12.8em;
+  overflow: hidden;
+}
+/* Its words are always laid out, so the fold can measure them. */
+.sv-answer-body .sv-block {
+  content-visibility: visible;
+}
+.sv-answer-body .sv-p:last-child {
+  margin-bottom: 0;
+}
+.sv-answer-foot {
+  display: flex;
+  flex-wrap: wrap;
+  align-items: center;
+  gap: 8px;
+  margin-top: 10px;
+}
+.sv-answer-srcs {
+  display: flex;
+  flex: 1;
+  flex-wrap: wrap;
+  gap: 6px;
+}
+.sv-src {
+  display: inline-flex;
+  align-items: center;
+  gap: 6px;
+  height: 26px;
+  padding: 0 9px 0 4px;
+  border-radius: 999px;
+  background: var(--ma-surface-fill);
+  color: var(--ma-text-primary);
+  font-size: 12.5px;
+  font-weight: 650;
+  text-decoration: none;
+  cursor: pointer;
+}
+.sv-src-tile {
+  display: grid;
+  place-items: center;
+  width: 18px;
+  height: 18px;
+  border-radius: 50%;
+  background: var(--ma-accent);
+  color: var(--ma-text-on-accent);
+  font-size: 10.5px;
+  font-weight: 800;
+}
+.sv-answer-more {
+  margin-left: auto;
+  padding: 2px 6px;
+  border: 0;
+  border-radius: 6px;
+  background: none;
+  color: var(--ma-text-secondary);
+  font: inherit;
+  font-size: 13px;
+  font-weight: 700;
+  cursor: pointer;
+}
+
+/* ---------------------------------------------------------------- the video island (spec 6) */
+.sv-island-row {
+  margin-block: 34px 30px;
+  content-visibility: visible;
+}
+.sv-island-main {
+  margin-top: 4px;
+}
+/* Seamless: no border, no frame, no label; the photos' radius, a dark letterbox. */
+.sv-isl {
+  position: relative;
+  isolation: isolate;
+  width: 100%;
+  overflow: hidden;
+  border-radius: 12px;
+  color: var(--ma-view-media-fg);
+  cursor: pointer;
+  outline: none;
+}
+/* The letterbox sits 1 px inside the island's rounded edge, under the still: a dark layer reaching the edge showed through
+   a light poster's antialiased corner as a 1 px arc (the Designer's finding 6). */
+.sv-isl::before {
+  content: '';
+  position: absolute;
+  inset: 1px;
+  z-index: -1;
+  border-radius: 11px;
+  background: var(--ma-view-media-letterbox);
+  pointer-events: none;
+}
+.sv-isl.filled::before {
+  inset: 0;
+  border-radius: 0;
+}
+.sv-isl:focus-visible {
+  outline: 2px solid var(--ma-focus-ring);
+  outline-offset: 2px;
+}
+/* R70: a vertical video, 420 px at most, in the middle of its column. */
+.sv-isl-tall:not(.filled) {
+  margin-inline: auto;
+}
+.sv-isl.filled {
+  position: absolute;
+  left: 0;
+  z-index: 3;
+  aspect-ratio: auto !important;
+  border-radius: 0;
+}
+.sv-isl-still,
+.sv-isl-held,
+.sv-isl-video {
+  position: absolute;
+  inset: 0;
+  width: 100%;
+  height: 100%;
+  object-fit: contain;
+  /* The island's rounded edge, so the still's own corner is drawn against the page, not the letterbox. */
+  border-radius: inherit;
+}
+.sv-isl-video {
+  opacity: 0;
+  transition: opacity 140ms ease;
+}
+.sv-isl-video.on {
+  opacity: 1;
+}
+.sv-isl-failed .sv-isl-still,
+.sv-isl-failed .sv-isl-held {
+  filter: saturate(0.6) brightness(0.38);
+}
+.sv-isl-shade {
+  position: absolute;
+  left: 0;
+  right: 0;
+  bottom: 0;
+  height: 96px;
+  /* Dark enough that the time holds 4.5:1 and the controls 3:1 over a white frame (the spec's section 12). */
+  background: linear-gradient(transparent, var(--ma-view-media-shade) 38%, var(--ma-view-media-shade-deep));
+  opacity: 0;
+  transition: opacity 200ms ease;
+  pointer-events: none;
+}
+/* Only under the controls: Ready is the poster, the play disc and the duration badge, with no shade (the spec's 17). */
+.sv-isl.ctl-on .sv-isl-shade {
+  opacity: 1;
+}
+.sv-isl-shade-top {
+  position: absolute;
+  top: 0;
+  left: 0;
+  right: 0;
+  height: 80px;
+  background: linear-gradient(var(--ma-view-media-shade-deep), var(--ma-view-media-shade) 45%, transparent);
+  pointer-events: none;
+}
+.sv-isl-title {
+  position: absolute;
+  top: 13px;
+  left: 16px;
+  right: 16px;
+  font-size: 14px;
+  font-weight: 750;
+  line-height: 20px;
+  text-shadow: 0 1px 3px var(--ma-view-media-shade);
+  white-space: nowrap;
+  overflow: hidden;
+  text-overflow: ellipsis;
+  pointer-events: none;
+}
+.sv-isl-big,
+.sv-isl-spin {
+  position: absolute;
+  top: 50%;
+  left: 50%;
+  width: 68px;
+  height: 68px;
+  margin: -34px 0 0 -34px;
+  border-radius: 50%;
+  background: var(--ma-view-media-disc);
+  box-shadow: inset 0 0 0 1px var(--ma-view-media-track);
+  backdrop-filter: blur(8px);
+}
+.sv-isl-big {
+  display: grid;
+  place-items: center;
+  padding: 0 0 0 4px;
+  border: 0;
+  color: var(--ma-view-media-fg);
+  cursor: pointer;
+}
+.sv-isl-spin::after {
+  content: '';
+  position: absolute;
+  inset: 18px;
+  border: 3px solid var(--ma-view-media-track);
+  border-top-color: var(--ma-view-media-fg);
+  border-radius: 50%;
+  animation: sv-spin 900ms linear infinite;
+}
+@keyframes sv-spin {
+  to {
+    transform: rotate(360deg);
+  }
+}
+.sv-isl-load {
+  position: absolute;
+  left: 0;
+  right: 0;
+  bottom: 0;
+  height: 3px;
+  overflow: hidden;
+  background: var(--ma-view-media-track);
+}
+.sv-isl-load::after {
+  content: '';
+  position: absolute;
+  top: 0;
+  bottom: 0;
+  left: 0;
+  width: 30%;
+  border-radius: 2px;
+  background: var(--ma-view-media-fg);
+  animation: sv-load 1.1s ease-in-out infinite;
+}
+@keyframes sv-load {
+  from {
+    transform: translateX(-100%);
+  }
+  to {
+    transform: translateX(340%);
+  }
+}
+.sv-isl-startlabel {
+  position: absolute;
+  top: 50%;
+  left: 50%;
+  display: none;
+  padding: 4px 12px;
+  border-radius: 999px;
+  background: var(--ma-view-media-badge);
+  font-size: 13.5px;
+  font-weight: 750;
+  line-height: 20px;
+  transform: translate(-50%, -50%);
+}
+.sv-isl-dur {
+  position: absolute;
+  right: 12px;
+  bottom: 12px;
+  padding: 2px 7px;
+  border-radius: 6px;
+  background: var(--ma-view-media-badge);
+  font-size: 12.5px;
+  font-weight: 750;
+  line-height: 18px;
+  font-variant-numeric: tabular-nums;
+}
+/* Its own controls, over the bottom: they drive the real element on the desk. Shown on hover or focus; gone 2 s after. */
+.sv-isl-ctl {
+  position: absolute;
+  left: 0;
+  right: 0;
+  bottom: 0;
+  padding: 0 12px 8px;
+  opacity: 0;
+  transition: opacity 200ms ease;
+  cursor: default;
+}
+.sv-isl.ctl-on .sv-isl-ctl {
+  opacity: 1;
+}
+.sv-isl-track {
+  position: relative;
+  height: 4px;
+  margin: 0 4px 6px;
+  border-radius: 2px;
+  background: var(--ma-view-media-track);
+}
+.sv-isl-buf,
+.sv-isl-pos {
+  position: absolute;
+  top: 0;
+  bottom: 0;
+  left: 0;
+  border-radius: 2px;
+}
+.sv-isl-buf {
+  background: var(--ma-view-media-buffered);
+}
+.sv-isl-pos {
+  background: var(--ma-view-media-fg);
+}
+.sv-isl-knob {
+  position: absolute;
+  top: 50%;
+  width: 13px;
+  height: 13px;
+  margin: -6.5px 0 0 -6.5px;
+  border-radius: 50%;
+  background: var(--ma-view-media-fg);
+  opacity: 0;
+  transition: opacity 120ms ease;
+}
+.sv-isl-track:hover .sv-isl-knob,
+.sv-isl-track:focus-within .sv-isl-knob {
+  opacity: 1;
+}
+.sv-isl-seek {
+  position: absolute;
+  top: -8px;
+  left: 0;
+  width: 100%;
+  height: 20px;
+  margin: 0;
+  opacity: 0;
+  cursor: pointer;
+}
+.sv-isl-row {
+  display: flex;
+  align-items: center;
+  gap: 4px;
+  height: 36px;
+}
+.sv-isl-btn {
+  display: grid;
+  place-items: center;
+  width: 36px;
+  height: 36px;
+  padding: 0;
+  border: 0;
+  border-radius: 10px;
+  background: none;
+  color: var(--ma-view-media-fg);
+  cursor: pointer;
+}
+.sv-isl-btn:hover,
+.sv-isl-btn[aria-pressed='true'] {
+  background: var(--ma-view-media-disc);
+}
+/* Over video the ring is white inside the letterbox's black, so one of the two shows on any frame. */
+.sv-isl-btn:focus-visible,
+.sv-isl-big:focus-visible,
+.sv-isl-real:focus-visible,
+.sv-isl-volume:focus-visible {
+  outline: 2px solid var(--ma-view-media-fg);
+  outline-offset: 0;
+  box-shadow: 0 0 0 4px var(--ma-view-media-letterbox);
+}
+.sv-isl-track:focus-within {
+  outline: 2px solid var(--ma-view-media-fg);
+  outline-offset: 4px;
+  box-shadow: 0 0 0 6px var(--ma-view-media-letterbox);
+}
+.sv-isl-vol {
+  display: flex;
+  align-items: center;
+  gap: 6px;
+}
+.sv-isl-volume {
+  width: 0;
+  height: 4px;
+  margin: 0;
+  border-radius: 2px;
+  appearance: none;
+  background: linear-gradient(var(--ma-view-media-fg), var(--ma-view-media-fg)) no-repeat, var(--ma-view-media-track);
+  opacity: 0;
+  transition: width 140ms ease, opacity 140ms ease;
+  cursor: pointer;
+}
+.sv-isl-vol:hover .sv-isl-volume,
+.sv-isl-volume:focus-visible {
+  width: 64px;
+  opacity: 1;
+}
+.sv-isl-volume::-webkit-slider-thumb {
+  width: 12px;
+  height: 12px;
+  border-radius: 50%;
+  appearance: none;
+  background: var(--ma-view-media-fg);
+}
+.sv-isl-time {
+  margin-left: 4px;
+  font-size: 13px;
+  font-weight: 700;
+  font-variant-numeric: tabular-nums;
+  text-shadow: 0 1px 2px var(--ma-view-media-shade);
+  white-space: nowrap;
+}
+.sv-isl-time span {
+  opacity: 0.86;
+}
+.sv-isl-grow {
+  flex: 1;
+}
+/* It can't play here: one line, one button to the real page. */
+.sv-isl-fail {
+  position: absolute;
+  inset: 0;
+  display: flex;
+  flex-direction: column;
+  align-items: center;
+  justify-content: center;
+  gap: 14px;
+  padding: 20px;
+  text-align: center;
+  cursor: default;
+}
+.sv-isl-fail p {
+  margin: 0;
+  font-size: 15.5px;
+  line-height: 1.4;
+  font-weight: 700;
+}
+.sv-isl-fail p span {
+  display: block;
+  margin-top: 2px;
+  font-size: 13.5px;
+  font-weight: 600;
+  opacity: 0.78;
+}
+.sv-isl-real {
+  display: inline-flex;
+  align-items: center;
+  gap: 8px;
+  height: 38px;
+  padding: 0 16px;
+  border: 0;
+  border-radius: 12px;
+  background: var(--ma-view-media-fg);
+  color: var(--ma-view-media-letterbox);
+  font: inherit;
+  font-size: 14px;
+  font-weight: 700;
+  cursor: pointer;
+}
+
+
+/* Scrolled away while playing: one chip at the bottom of the view. */
+.sv-chip {
+  position: absolute;
+  left: 50%;
+  bottom: 16px;
+  z-index: 3;
+  display: flex;
+  align-items: center;
+  gap: 10px;
+  max-width: calc(100% - 32px);
+  height: 46px;
+  padding: 0 6px;
+  border-radius: 999px;
+  background: var(--ma-surface-overlay);
+  box-shadow: var(--ma-elevation-menu);
+  color: var(--ma-text-primary);
+  transform: translateX(-50%);
+  white-space: nowrap;
+}
+.sv-chip-th {
+  flex: none;
+  width: 56px;
+  height: 34px;
+  overflow: hidden;
+  border-radius: 999px 8px 8px 999px;
+  background: var(--ma-view-media-letterbox);
+}
+.sv-chip-th img {
+  display: block;
+  width: 100%;
+  height: 100%;
+  object-fit: cover;
+}
+.sv-chip-tx {
+  min-width: 0;
+  overflow: hidden;
+  font-size: 13px;
+  font-weight: 750;
+  line-height: 1.2;
+  text-overflow: ellipsis;
+}
+.sv-chip-tx span {
+  display: block;
+  font-size: 12px;
+  font-weight: 600;
+  color: var(--ma-text-tertiary);
+  font-variant-numeric: tabular-nums;
+}
+.sv-chip-btn {
+  flex: none;
+  display: grid;
+  place-items: center;
+  width: 34px;
+  height: 34px;
+  padding: 0;
+  border: 0;
+  border-radius: 50%;
+  background: none;
+  color: var(--ma-text-primary);
+  cursor: pointer;
+}
+.sv-chip-btn.solid {
+  background: var(--ma-surface-fill);
+}
+.sv-chip-btn:focus-visible {
+  outline: 2px solid var(--ma-focus-ring);
+}
+
+/* ---------------------------------------------------------------- the view's own quiet signals */
+/* A link's menu: "Copy link", since a link here has no `href` (the Designer's section 13). */
+.sv-menu {
+  position: absolute;
+  z-index: 5;
+  min-width: 160px;
+  padding: 6px;
+  border-radius: 12px;
+  background: var(--ma-surface-overlay);
+  box-shadow: var(--ma-elevation-menu);
+}
+.sv-menu button {
+  display: block;
+  width: 100%;
+  padding: 7px 10px;
+  border: 0;
+  border-radius: 8px;
+  background: none;
+  color: var(--ma-text-primary);
+  font: inherit;
+  font-size: 13.5px;
+  font-weight: 650;
+  text-align: left;
+  cursor: pointer;
+}
+.sv-menu button:hover,
+.sv-menu button:focus-visible {
+  background: var(--ma-surface-fill);
+  outline: none;
+}
+/* After 100 ms with no answer, a 2 px accent line runs along the top of the view (spec 4, "Pressing"). */
+.sv-progress {
+  position: absolute;
+  top: 0;
+  left: 0;
+  right: 0;
+  z-index: 2;
+  height: 2px;
+  background: var(--ma-accent);
+  border-radius: 0 2px 2px 0;
+  transform-origin: 0 0;
+  animation: sv-progress 2.4s cubic-bezier(0.1, 0.7, 0.3, 1) forwards;
+}
+@keyframes sv-progress {
+  from {
+    transform: scaleX(0.04);
+  }
+  to {
+    transform: scaleX(0.9);
+  }
+}
+
+/* ---------------------------------------------------------------- a phone, or any narrow window (spec 2, 3) */
+/* Under 1100 px there's no rail: the site's own contents stay in the site row's Menu (spec 4). */
+@container sv (max-width: 1099px) {
+  .sv-docs-grid {
+    display: block;
+  }
+  .sv-rail {
+    display: none;
+  }
+  .sv-page.sv-docs .sv-sact[data-kind='contents'] {
+    display: inline-flex;
+  }
+}
+@container sv (max-width: 600px) {
+  .sv-page {
+    padding: 0 18px 72px;
+    font-size: 17px;
+    line-height: 1.66;
+  }
+  .sv-site {
+    margin-bottom: 20px;
+  }
+  .sv-site-row {
+    height: 48px;
+  }
+  /* Icons only, with their words kept for screen readers. */
+  .sv-wordy {
+    position: absolute;
+    width: 1px;
+    height: 1px;
+    overflow: hidden;
+    clip-path: inset(50%);
+    white-space: nowrap;
+  }
+  .sv-sact {
+    padding: 0 7px;
+  }
+  /* The page's own name is the first thing to go (T47O-3): on a phone it goes, so the domain is never cut beside a
+     stray letter of it. */
+  .sv-site-also {
+    display: none;
+  }
+  .sv-h1,
+  .sv-listing .sv-h1 {
+    font-size: 27px;
+    line-height: 1.2;
+  }
+  /* Photos and islands run edge to edge, with square corners. */
+  .sv-page > .sv-figure,
+  .sv-page > .sv-island-row {
+    margin-left: -18px;
+    margin-right: -18px;
+    max-width: none;
+  }
+  .sv-page > .sv-figure .sv-img,
+  .sv-page > .sv-figure .sv-figure-link,
+  .sv-page > .sv-island-row .sv-isl {
+    border-radius: 0;
+  }
+  .sv-cards-product {
+    gap: 18px 12px;
+  }
+  .sv-cards-video {
+    grid-template-columns: repeat(2, minmax(0, 1fr));
+  }
+  .sv-cards-result .sv-card-img {
+    width: 84px;
+    height: 64px;
+  }
+  .sv-cards-result .sv-card-title {
+    font-size: 17px;
+  }
+  .sv-pop {
+    right: -8px;
+    width: min(300px, calc(100cqw - 24px));
+  }
+  .sv-n2 {
+    padding-left: 24px;
+    background-position: 0 0, 10px 0;
+  }
+  .sv-n3,
+  .sv-n4,
+  .sv-n5,
+  .sv-n6 {
+    padding-left: 34px;
+    background-position: 0 0, 10px 0, 20px 0;
+  }
+  .sv-more-replies {
+    padding-left: 34px;
+  }
+}
+/* Under 360 px (400% of a 1280 px window), a shop's grid is one card across. */
+@container sv (max-width: 360px) {
+  .sv-cards-product,
+  .sv-cards-video {
+    grid-template-columns: minmax(0, 1fr);
+  }
+  .sv-filters-row {
+    flex-wrap: wrap;
+  }
+  /* The site's name keeps room to be read (T47O-3): its actions go to a second line rather than squeeze it out. */
+  .sv-site-row {
+    flex-wrap: wrap;
+    row-gap: 4px;
+  }
+  .sv-site-also {
+    display: none;
+  }
+}
+@media (prefers-reduced-motion: reduce) {
+  .sv-page,
+  .sv-img img,
+  .sv-card-img img,
+  .sv-isl-video,
+  .sv-isl-shade,
+  .sv-isl-ctl,
+  .sv-isl-knob,
+  .sv-isl-volume,
+  .sv-tog::after {
+    transition: none;
+  }
+  .sv-progress,
+  .sv-isl-load::after {
+    animation: none;
+    transform: scaleX(0.5);
+  }
+  /* No spinner and no moving line: the still holds, and a still label says Starting (the spec's 29). */
+  .sv-isl-spin,
+  .sv-isl-load {
+    display: none;
+  }
+  .sv-isl-startlabel {
+    display: block;
+  }
+  .sv-fold-chev {
+    transition: none;
+  }
+}

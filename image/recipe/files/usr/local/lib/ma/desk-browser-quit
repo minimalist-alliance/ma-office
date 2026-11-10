@@ -1,0 +1,18 @@
+#!/bin/bash
+# desk-browser-quit: the second ExecStop of desk-browser-thaw.service, so it runs as root on every stop of desk-browser, a
+# restart's and a shutdown's included, after the thaw and before systemd signals Chromium. It runs `desk-browser-close
+# --quit`: Chromium is asked to quit as its own Exit would, over CDP (Browser.close), which writes the cookies it hasn't
+# committed yet, and given up to 31 s to go (with no answer on CDP, 31 s for its own cookie commit). SIGTERM, which
+# systemd sends next to whatever is left, ends the session without them (TD-110; ADR 0035; the Security Analyst's IMG-1).
+# It runs outside desk-browser's cgroup on purpose: see desk-browser-thaw.service.
+#
+# Only while desk-browser has a stop or a restart queued, which a stop of it always does by then (PartOf= and After=), so a
+# stop of desk-browser-thaw alone, or its restart, never closes the Browser. It never fails the stop.
+# Test hooks: MA_JOBS (else systemctl list-jobs for desk-browser), MA_BROWSER_CLOSE (the helper it runs).
+set -u
+jobs=${MA_JOBS-$(timeout 5 systemctl list-jobs --no-legend desk-browser.service 2>/dev/null)}
+if ! awk '$2 == "desk-browser.service" && $3 ~ /^(stop|restart|try-restart|reload-or-restart)$/ { found = 1 } END { exit !found }' <<<"$jobs"; then
+  echo "desk-browser-quit: desk-browser isn't stopping"; exit 0
+fi
+"${MA_BROWSER_CLOSE:-/usr/local/lib/ma/desk-browser-close}" --quit
+exit 0

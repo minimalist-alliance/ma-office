@@ -1,0 +1,34 @@
+# Payment providers whose frames hold card fields: a frame from one of these shows as "pay on <origin>" in the stream,
+# never as part of the simplified page (Security T47-1). A host is on the list if it is an entry or under one.
+js.stripe.com
+m.stripe.network
+checkout.stripe.com
+hooks.stripe.com
+pay.google.com
+payments.google.com
+www.paypal.com
+www.sandbox.paypal.com
+paypal.com
+braintreegateway.com
+braintree-api.com
+adyen.com
+squareup.com
+squarecdn.com
+authorize.net
+recurly.com
+chargebee.com
+klarna.com
+klarnaservices.com
+affirm.com
+cybersource.com
+checkout.com
+razorpay.com
+pay.amazon.com
+payments.amazon.com
+paddle.com
+shopifycs.com
+worldpay.com
+globalpay.com
+secure.checkout.visa.com
+src.mastercard.com
+apple-pay-gateway.apple.com

@@ -1,0 +1,89 @@
+/* The demo's own page: the calm ground and a window like the prototype's Notebook sheet.
+   Inside the Desk app, the app draws the ground and the window, so none of this ships. */
+@font-face {
+  font-family: "Nunito Fallback";
+  src: local("Arial"), local("Liberation Sans"), local("Arimo"), local("Helvetica");
+  size-adjust: 102.7%;
+  ascent-override: 98.4%;
+  descent-override: 34.6%;
+  line-gap-override: 0%;
+}
+:root {
+  --ma-font-ui: "Nunito Variable", "Nunito Fallback", system-ui, -apple-system, "Segoe UI", Roboto, sans-serif;
+}
+html,
+body,
+#root {
+  height: 100%;
+  margin: 0;
+}
+body {
+  background: var(--ma-surface-world-base);
+  color: var(--ma-text-primary);
+  font-family: var(--ma-font-ui);
+  font-weight: 600;
+  overflow: hidden;
+}
+.demo-ground {
+  height: 100%;
+  display: flex;
+  flex-direction: column;
+  align-items: center;
+  gap: 14px;
+  padding: 18px 28px 12px;
+  box-sizing: border-box;
+  background-image: radial-gradient(ellipse 120% 95% at 50% 26%, var(--ma-surface-world-hi) 0%, var(--ma-surface-world-base) 55%, var(--ma-surface-world-lo) 100%);
+}
+.demo-top {
+  display: flex;
+  align-items: center;
+  justify-content: space-between;
+  gap: 16px;
+  width: min(1180px, 100%);
+}
+.demo-brand {
+  font-size: 18px;
+  font-weight: 700;
+}
+.demo-window {
+  flex: 1;
+  min-height: 0;
+  width: min(1180px, 100%);
+  overflow: hidden;
+  border: 1px solid var(--ma-border-hairline);
+  border-radius: 24px;
+  background: var(--ma-surface-window);
+  box-shadow: var(--ma-elevation-window);
+}
+.demo-title {
+  display: flex;
+  align-items: center;
+  gap: 10px;
+  margin: 0;
+  font-size: 18px;
+  font-weight: 700;
+  white-space: nowrap;
+}
+.demo-desk {
+  font-size: 13px;
+  font-weight: 600;
+  color: var(--ma-text-tertiary);
+}
+.demo-close {
+  width: 34px;
+  height: 34px;
+  background: var(--ma-surface-sunken);
+}
+.demo-foot {
+  margin: 0;
+  font-size: 12.5px;
+  color: var(--ma-text-tertiary);
+}
+@media (max-width: 720px) {
+  .demo-ground {
+    padding: 10px;
+  }
+  .demo-desk {
+    display: none;
+  }
+}

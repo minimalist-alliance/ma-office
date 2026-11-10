@@ -1,0 +1,19 @@
+[Unit]
+Description=One desk-batch request (offer, status or hold)
+CollectMode=inactive-or-failed
+
+[Service]
+ExecStart=/usr/local/lib/ma/desk-batch serve
+StandardInput=socket
+StandardOutput=journal
+StandardError=journal
+# An offer runs openssl once per trusted key; a status reads one file.
+TimeoutStartSec=60
+StateDirectory=ma/batch
+StateDirectoryMode=0755
+NoNewPrivileges=yes
+ProtectSystem=strict
+ProtectHome=yes
+PrivateTmp=yes
+PrivateNetwork=yes
+RestrictAddressFamilies=AF_UNIX

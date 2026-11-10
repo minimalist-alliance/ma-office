@@ -1,0 +1,18 @@
+[Unit]
+Description=PulseAudio null sink for the desk
+After=desk-datadirs.service
+
+[Service]
+User=kiosk
+Group=kiosk
+# PulseAudio makes its runtime path 0700, so the socket lives one level up, where desk-stream (user stream)
+# can reach it. Nothing else on the host needs it, and agent's container doesn't mount it.
+RuntimeDirectory=desk-audio desk-audio/pulse
+Environment=PULSE_RUNTIME_PATH=/run/desk-audio/pulse HOME=/run/desk-audio/pulse XDG_RUNTIME_DIR=/run/desk-audio/pulse
+ExecStart=/usr/bin/pulseaudio --daemonize=no --exit-idle-time=-1 --log-target=journal -n --disallow-module-loading=no \
+  --load="module-null-sink sink_name=desk rate=48000 sink_properties=device.description=desk" \
+  --load="module-native-protocol-unix socket=/run/desk-audio/native auth-anonymous=1"
+# PulseAudio needs a moment to create its socket: wait for it (up to 20 s) before setting the default sink
+ExecStartPost=/bin/sh -c 'export PULSE_SERVER=unix:/run/desk-audio/native; for i in $(seq 1 40); do pactl info >/dev/null 2>&1 && exec pactl set-default-sink desk; sleep 0.5; done; exit 1'
+Restart=on-failure
+RestartSec=2

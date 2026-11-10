@@ -1,0 +1,58 @@
+[Unit]
+Description=commons-server (Commons on a guild desk: the room link from deskd's socket, boards, chat and voice)
+# Installed by ma-update from the commons-server release (apps/commons/release.sh); skipped until one is. The image
+# enables it on guild desks only (DeskKind=guild), where desk-xorg, desk-browser and desk-stream stay off.
+ConditionPathExists=/opt/ma/commons-server/current/run
+Requires=desk-datadirs.service
+After=desk-datadirs.service network-online.target commons-server-address.service
+Wants=network-online.target commons-server-address.service
+# deskd connects to commons.sock with backoff, and its health never needs this unit, so neither waits for the other.
+
+[Service]
+User=commons
+Group=commons
+UMask=0077
+# The socket's directory is 2750 commons:desk, as /run/desk-notebook is: deskd (uid 1100, group desk) reaches
+# commons.sock (0660) by group desk, and commons stays out of group desk, which would open rtc.sock to it. Commons also
+# checks the peer is uid 1100 by SO_PEERCRED. The data directory is commons' alone. Both are made here, as root (+).
+ExecStartPre=+/usr/bin/install -d -m 2750 -o commons -g desk /run/desk-commons
+ExecStartPre=+/usr/bin/install -d -m 0755 -o root -g root /data/guild
+ExecStartPre=+/usr/bin/install -d -m 0700 -o commons -g commons /data/guild/commons
+Environment=RELEASE_DIR=/opt/ma/commons-server/current
+EnvironmentFile=/opt/ma/commons-server/current/commons-server.env
+# This desk's own settings, if any (a fixed public address, other ports): key=value lines, root-owned.
+EnvironmentFile=-/etc/ma/commons-server.env
+ExecStart=/opt/ma/commons-server/current/run
+# SIGTERM flushes and syncs every board and chat thread, then exits: a few hundred ms.
+TimeoutStopSec=20
+Restart=always
+RestartSec=2
+# Every port is above 1024 (443 is desk-rtc's, which relays to 127.0.0.1:8799), so no capability at all.
+CapabilityBoundingSet=
+NoNewPrivileges=yes
+ProtectSystem=strict
+ProtectHome=yes
+PrivateTmp=yes
+PrivateDevices=yes
+ProtectKernelTunables=yes
+ProtectKernelModules=yes
+ProtectControlGroups=yes
+RestrictAddressFamilies=AF_UNIX AF_INET AF_INET6 AF_NETLINK
+# No instance metadata service (Security's GDS-4): its public address comes from commons-server-address.service. The
+# rest stays open on purpose: members' browsers send voice from anywhere, and Commons answers them where they are. Its
+# other listeners are loopback only (the relay socket is a Unix socket; 8790 and desk-rtc's relay on 8799 are bound to
+# 127.0.0.1), and the image's nftables keeps 8799 to desk-rtc (GDS-3).
+IPAddressDeny=169.254.169.254 fd00:ec2::254
+RestrictNamespaces=yes
+LockPersonality=yes
+MemoryDenyWriteExecute=yes
+SystemCallArchitectures=native
+ReadWritePaths=/data/guild/commons /run/desk-commons
+# MA_APP_MEMORY_MAX (the env file) sets Go's soft limit to 90% of it; this is the hard ceiling above that. The load
+# test had 200 members at 151 MiB; boards are held in memory, so an old guild with many big boards needs more.
+MemoryMax=1G
+CPUWeight=400
+LimitNOFILE=65536
+
+[Install]
+WantedBy=multi-user.target

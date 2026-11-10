@@ -1,0 +1,28 @@
+#!/bin/sh
+# Exit 0 only when commons-server answers /healthz on loopback and its relay socket is in place (desk-runtime.md
+# section 6). ma-update and the smoke test run this as root, on the host, where the image always has python3.
+# On a member's desk (no /run/ma/guild, which desk-kind writes only on a Guild Desk) commons-server's unit is skipped,
+# so there is nothing to check: exit 0 there, or a pinned release would roll back every update on every member's desk.
+# COMMONS_HTTP, COMMONS_RELAY_SOCKET and COMMONS_GUILD_FLAG are only for tests.
+[ -e "${COMMONS_GUILD_FLAG:-/run/ma/guild}" ] || exit 0
+exec python3 -I -c '
+import os, stat, sys, urllib.request
+
+def fail(why):
+    print("commons-server health: " + why, file=sys.stderr)
+    sys.exit(1)
+
+addr = os.environ.get("COMMONS_HTTP", "127.0.0.1:8790")
+sock = os.environ.get("COMMONS_RELAY_SOCKET", "/run/desk-commons/commons.sock")
+try:
+    with urllib.request.urlopen("http://" + addr + "/healthz", timeout=5) as r:
+        if r.status != 200 or r.read().strip() != b"ok":
+            fail("not healthy")
+except OSError as e:
+    fail(type(e).__name__)
+try:
+    if not stat.S_ISSOCK(os.stat(sock).st_mode):
+        fail("the relay socket is not a socket")
+except OSError:
+    fail("no relay socket")
+'

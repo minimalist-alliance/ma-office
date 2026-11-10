@@ -1,0 +1,32 @@
+[Unit]
+Description=commons-server's data directory, /data/guild/commons, on a Guild Desk only (image/README.md, Guild Desk)
+# The directories apps/commons/deploy's unit makes in ExecStartPre=+, in a unit of their own: systemd 257 sets up
+# commons-server's mount namespace (ReadWritePaths=, BindPaths=) for an ExecStartPre=+ too, and a path that isn't there
+# fails it at step NAMESPACE, so they have to exist before commons-server starts at all.
+# Only on a Guild Desk, so a member's /data never has the directory.
+ConditionPathExists=/run/ma/guild
+Requires=desk-datadirs.service
+After=desk-datadirs.service desk-kind.service
+Wants=desk-kind.service
+Before=commons-server.service
+
+[Service]
+Type=oneshot
+RemainAfterExit=yes
+# install -d puts the owner and mode back at every start if anything changed them. /data/guild is root's, as deploy/ has it.
+ExecStart=/usr/bin/install -d -o root -g root -m 0755 /data/guild
+ExecStart=/usr/bin/install -d -o commons -g commons -m 0700 /data/guild/commons
+CapabilityBoundingSet=CAP_CHOWN CAP_FOWNER
+NoNewPrivileges=yes
+ProtectSystem=strict
+ReadWritePaths=/data
+InaccessiblePaths=-/data/browser
+ProtectHome=yes
+PrivateTmp=yes
+PrivateDevices=yes
+PrivateNetwork=yes
+RestrictAddressFamilies=AF_UNIX
+SystemCallArchitectures=native
+
+[Install]
+WantedBy=multi-user.target

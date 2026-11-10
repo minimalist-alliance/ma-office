@@ -1,0 +1,119 @@
+#!/usr/bin/python3 -I
+"""desk-preread: read what the Browser loads, once per root, so a member's first open doesn't wait on EBS.
+
+A new root loads its blocks from the snapshot as they're first read. For a snapshot nobody has restored lately, that's
+5 to 22 MB/s at the queue depth a starting Chromium makes (7 to 34 ms a read): 16 to 79 s to Chromium's port on a fresh
+root, against 3 s on a loaded one. Reads in parallel are what EBS rewards. See spikes/first-open/README.md for the numbers.
+
+The list comes from a real start traced at bake (recipe/first-open/trace). Whole files, because a first page uses more of
+Chromium than its start does. Everything is best effort: a file that's gone is skipped, and nothing depends on this.
+It reads only regular files on the root filesystem, never another filesystem, and never /data (ADR 0035). The unit runs it
+as an unprivileged dynamic user, with /data inaccessible as well. It runs until the list is done, then leaves a stamp on the root, so a desk does
+this once per root and a warm boot doesn't start it at all. A root swap brings a root with no stamp.
+"""
+import collections
+import os
+import stat
+import sys
+import threading
+import time
+
+LIST = "/usr/local/share/ma/preread.list"
+WORKERS = 16
+CHUNK = 1 << 20
+GIVE_UP_S = 900  # about 700 MB, at any rate EBS has shown. Past this, the next boot tries again.
+
+
+class Reader:
+    def __init__(self, paths, root_dev, deadline):
+        self.work = collections.deque((p, 0, None) for p in paths)
+        self.lock = threading.Lock()
+        self.root_dev = root_dev
+        self.deadline = deadline
+        self.bytes = 0
+        self.files = 0
+        self.skipped = 0
+
+    def first_chunk(self, path):
+        """Opens a path from the list. Pushes its later chunks to the front, so all the workers read one big file together."""
+        if not path.startswith("/") or path == "/data" or path.startswith("/data/"):
+            with self.lock:
+                self.skipped += 1
+            return None
+        try:
+            fd = os.open(path, os.O_RDONLY | os.O_CLOEXEC | os.O_NOFOLLOW | os.O_NONBLOCK)
+        except OSError:
+            with self.lock:
+                self.skipped += 1
+            return None
+        st = os.fstat(fd)
+        if not stat.S_ISREG(st.st_mode) or st.st_dev != self.root_dev:
+            os.close(fd)
+            with self.lock:
+                self.skipped += 1
+            return None
+        with self.lock:
+            self.files += 1
+            for off in range((st.st_size - 1) // CHUNK * CHUNK, 0, -CHUNK):
+                self.work.appendleft((path, off, st.st_size))
+        return fd
+
+    def read(self, fd, off, buf):
+        try:
+            n = os.preadv(fd, [buf], off)
+        except OSError:
+            n = 0
+        with self.lock:
+            self.bytes += n
+
+    def worker(self):
+        buf = bytearray(CHUNK)
+        while time.monotonic() < self.deadline:
+            with self.lock:
+                if not self.work:
+                    return
+                path, off, size = self.work.popleft()
+            fd = None
+            try:
+                if size is None:
+                    fd = self.first_chunk(path)
+                else:
+                    fd = os.open(path, os.O_RDONLY | os.O_CLOEXEC | os.O_NOFOLLOW)
+                if fd is not None:
+                    self.read(fd, off, buf)
+            except OSError:
+                pass
+            finally:
+                if fd is not None:
+                    os.close(fd)
+
+
+def main():
+    state = os.environ.get("STATE_DIRECTORY", "/var/lib/desk-preread")
+    try:
+        paths = open(LIST).read().split("\n")
+    except OSError as e:
+        print(f"desk-preread: no list: {e}", flush=True)
+        return 0
+    paths = [p for p in paths if p]
+    began = time.monotonic()
+    r = Reader(paths, os.stat("/").st_dev, began + GIVE_UP_S)
+    threads = [threading.Thread(target=r.worker, daemon=True) for _ in range(WORKERS)]
+    for t in threads:
+        t.start()
+    for t in threads:
+        t.join()
+    took = time.monotonic() - began
+    finished = not r.work
+    print(f"desk-preread: {r.bytes / 1e6:.0f} MB from {r.files} files in {took:.1f} s, {r.skipped} skipped, {'done' if finished else 'gave up'}", flush=True)
+    if finished:
+        try:
+            with open(os.path.join(state, "done"), "w") as f:
+                f.write(f"{r.bytes} bytes, {r.files} files, {took:.1f} s\n")
+        except OSError as e:
+            print(f"desk-preread: no stamp: {e}", flush=True)
+    return 0
+
+
+if __name__ == "__main__":
+    sys.exit(main())

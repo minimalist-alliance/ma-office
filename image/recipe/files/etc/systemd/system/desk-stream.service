@@ -1,0 +1,27 @@
+[Unit]
+Description=desk-stream (capture and encode; desk-runtime.md section 8)
+ConditionPathExists=/opt/ma/desk-stream/current/run
+Requires=desk-xorg.service
+Wants=desk-audio.service
+After=desk-xorg.service desk-audio.service desk-rtc.service
+
+[Service]
+User=stream
+Group=stream
+# GStreamer's plugin registry lives here for the boot. The first start of a boot copies the one made at bake, so no start
+# scans every plugin, which read 100 MB and took 1.5 s on a loaded root and most of the time from here to the first frame
+# on a fresh one (image/README.md, First open). If the copy fails, GStreamer scans as it always did.
+RuntimeDirectory=desk-stream
+RuntimeDirectoryPreserve=yes
+ExecStartPre=-/bin/sh -c '[ -e "$GST_REGISTRY_1_0" ] || exec cp /usr/local/lib/ma/gst-registry.bin "$GST_REGISTRY_1_0"'
+Environment=DISPLAY=:99 PULSE_SERVER=unix:/run/desk-audio/native RELEASE_DIR=/opt/ma/desk-stream/current
+Environment=HOME=/run/desk-stream GST_REGISTRY_1_0=/run/desk-stream/registry.bin
+ExecStart=/opt/ma/desk-stream/current/run
+Restart=on-failure
+RestartSec=1
+MemoryMax=384M
+# Encode ahead of the page when the CPU is short: a late frame is worse than a slower page.
+CPUWeight=400
+NoNewPrivileges=yes
+ProtectSystem=strict
+ProtectHome=yes

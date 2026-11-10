@@ -1,0 +1,47 @@
+{
+  "name": "ma-desk-commons",
+  "version": "0.1.0",
+  "private": true,
+  "description": "Minimalist Alliance Commons: the guild's always-open room, with voice and a live whiteboard. A standalone module (Yjs boards, WebRTC voice) that the Desk app adopts later; the stand-in guild server is ../server.",
+  "type": "module",
+  "engines": {
+    "node": ">=24"
+  },
+  "exports": {
+    ".": "./src/index.ts",
+    "./commons.css": "./src/ui/commons.css",
+    "./vite-plugin": "./vite-plugins/commonsThemes.ts"
+  },
+  "scripts": {
+    "build": "vite build",
+    "demo": "bash ../run.sh",
+    "dev": "vite --host 127.0.0.1 --port 5191 --strictPort",
+    "typecheck": "tsc --noEmit -p tsconfig.json",
+    "lint": "eslint . && node ../../../web/scripts/check-css-literals.mjs",
+    "test": "vitest run",
+    "e2e": "vite build && playwright test",
+    "perf": "vite build && node tests/perf/perf.mjs",
+    "record": "vite build && node tests/perf/record.mjs",
+    "check": "npm run typecheck && npm run lint && npm run test && npm run e2e"
+  },
+  "dependencies": {
+    "@fontsource-variable/inter": "5.3.0",
+    "perfect-freehand": "1.2.3",
+    "react": "19.3.1",
+    "react-dom": "19.3.1",
+    "yjs": "13.6.33"
+  },
+  "devDependencies": {
+    "@playwright/test": "1.64.1",
+    "@types/node": "24.19.2",
+    "@types/react": "19.3.0",
+    "@types/react-dom": "19.3.0",
+    "@vitejs/plugin-react": "6.2.1",
+    "eslint": "10.14.0",
+    "eslint-plugin-react-hooks": "7.1.1",
+    "typescript": "5.9.3",
+    "typescript-eslint": "8.72.1",
+    "vite": "8.3.5",
+    "vitest": "5.1.0"
+  }
+}

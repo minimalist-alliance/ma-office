@@ -1,0 +1,94 @@
+# Sites the simplified view never simplifies: they open as the stream, and no AI path may read them (Security T47-7).
+# A host is on the list if it is an entry or under one. Only ever adds sensitivity: a member can mark more sites, never
+# fewer. A starting list, shipped in deskd's release: banks, brokerages, exchanges, payments, webmail, password
+# managers, government identity and health portals. Grow it by review, not by anything a desk fetches.
+#
+# Webmail
+mail.google.com
+outlook.live.com
+outlook.office.com
+outlook.office365.com
+mail.yahoo.com
+mail.aol.com
+mail.proton.me
+account.proton.me
+app.fastmail.com
+www.icloud.com
+mail.zoho.com
+# Password managers
+vault.bitwarden.com
+my.1password.com
+lastpass.com
+app.dashlane.com
+keepersecurity.com
+# Identity and accounts
+accounts.google.com
+login.microsoftonline.com
+login.live.com
+appleid.apple.com
+id.me
+login.gov
+sa.www4.irs.gov
+secure.ssa.gov
+studentaid.gov
+healthcare.gov
+account.gov.uk
+tax.service.gov.uk
+my.gov.au
+# Banks
+chase.com
+bankofamerica.com
+wellsfargo.com
+citi.com
+online.citi.com
+usbank.com
+pnc.com
+capitalone.com
+truist.com
+tdbank.com
+ally.com
+discover.com
+americanexpress.com
+schwab.com
+navyfederal.org
+usaa.com
+hsbc.com
+barclays.co.uk
+lloydsbank.co.uk
+natwest.com
+santander.com
+rbc.com
+td.com
+scotiabank.com
+commbank.com.au
+ing.com
+revolut.com
+monzo.com
+chime.com
+sofi.com
+# Payments
+paypal.com
+venmo.com
+cash.app
+wise.com
+dashboard.stripe.com
+squareup.com
+# Brokerages and exchanges
+fidelity.com
+vanguard.com
+etrade.com
+robinhood.com
+interactivebrokers.com
+merrilledge.com
+coinbase.com
+kraken.com
+binance.com
+binance.us
+gemini.com
+# Health portals
+mychart.com
+mychartweb.com
+myhealth.va.gov
+patient.labcorp.com
+myquest.questdiagnostics.com
+kp.org

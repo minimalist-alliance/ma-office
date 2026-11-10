@@ -1,0 +1,432 @@
+#!/usr/bin/python3 -I
+"""desk-units: starts, stops, freezes and thaws the on-demand units for deskd (desk-runtime.md section 8.3).
+
+Runs as root, one process per connection on /run/desk/units.sock, with the connection on stdin.
+Only uid 1100 (deskd), only the four verbs, only the units below, and freeze and thaw only for desk-browser
+(ADR 0045). No shell.
+
+The freeze is the kernel's cgroup v2 freezer, written in desk-browser's own cgroup (cgroup.freeze), not systemctl freeze.
+systemd 257 runs no job on a unit it froze: a stop fails ("Cannot stop frozen unit"), a start of a running one says ok and
+leaves it frozen, and a thaw over D-Bus is refused while a job is pending, so a shutdown couldn't thaw it and Chromium was
+killed without writing its session (ADR 0035; measured, docs/sub-status/desk-units-freeze.md). A freeze systemd didn't
+make leaves its state "running", so its jobs run, and desk-browser-thaw.service, part of every stop or restart of
+desk-browser and ordered before it, thaws Chromium before systemd signals it. A stop of desk-browser, desk-xorg or
+desk-audio (which stops it too) and a start of desk-browser here also thaw it first. Never `systemctl freeze` it.
+
+No freeze lands in a stop's quit (the Security Analyst's T46L-1). desk-browser stays "active" while desk-browser-thaw's stop
+thaws Chromium and quits it over CDP (up to about 47 s), and a freeze then would hold Chromium mid-quit until systemd killed it
+without its session. So a freeze is refused (err busy stopping) while systemctl list-jobs shows a stop or restart of
+desk-browser or desk-browser-thaw, queued or running, and is asked again after the write, and undone if one has come since.
+From that first check to its answer it holds an flock on desk-browser's cgroup directory, which desk-browser-thaw's first
+ExecStop waits for before it thaws: a freeze under way when a stop is queued has answered (seeing the stop, and undoing
+itself) or died before the thaw and the quit begin, and any later one sees the stop. desk-browser-close writes 0 again on every
+pass of the quit's wait, for anything that gets past both.
+
+desk-adblock (ADR 0076) is a oneshot: a start runs it again and answers when it has finished. It confirms with
+Chromium over CDP, which a frozen Chromium can't answer, so a start of desk-adblock thaws desk-browser first, as a
+start of desk-browser does.
+
+A Guild Desk has no Browser (image/README.md, "Guild Desk"). There every unit here is the Browser's, so every verb on one
+is answered "err unsupported", a clear no for deskd rather than a start systemd would skip in silence. The test is
+/run/ma/guild, which desk-kind writes at boot only for an exact DeskKind=guild: without it, nothing here changes.
+"""
+import fcntl
+import os
+import re
+import socket
+import struct
+import subprocess
+import sys
+import time
+
+DESKD_UID = 1100
+KIOSK_UID = 1102
+# desk-adblock (ADR 0076): a oneshot, so "start" runs it again each time and answers when it has finished.
+UNITS = {"desk-xorg", "desk-audio", "desk-browser", "desk-stream", "desk-adblock"}
+FREEZABLE = {"desk-browser"}
+STOPS_BROWSER = {"desk-browser", "desk-xorg", "desk-audio"}  # desk-browser Requires= the other two
+STARTS_THAW = {"desk-browser", "desk-adblock"}  # a start of either needs Chromium to answer
+REQUEST = re.compile(r"\A(start|stop|freeze|thaw) ([a-z-]+)\n\Z")
+MAX_REQUEST = 64
+# desk-kind's answer (image/README.md, "Guild Desk"): there only on a Guild Desk.
+GUILD_FLAG = "/run/ma/guild"
+SYSTEMCTL = "/usr/bin/systemctl"
+SETPRIV = "/usr/bin/setpriv"
+# A stop of desk-browser: desk-browser-thaw's thaw and quit (TimeoutStopSec=55: up to 5 s for a freeze under way, 31 s for
+# Chromium to go after CDP), then desk-browser's own SIGTERM (TimeoutStopSec=30). Typical: under half a second.
+SYSTEMCTL_TIMEOUT_S = 90
+# ADR 0035: desk-browser is Type=simple, so systemctl says ok even when its wrapper refuses to start. Ask first, as kiosk.
+BROWSER_START = "/usr/local/lib/ma/desk-browser-start"
+BROWSER_REFUSED = 78
+# ADR 0045. Each step of a freeze or a thaw is bounded, and a freeze that doesn't end frozen is thawed at once.
+BROWSER_CGROUP = "/sys/fs/cgroup/system.slice/desk-browser.service"
+FREEZER_TIMEOUT_S = 5
+# T46L-1: the jobs that mean Chromium is on its way down, a restart's stop included. desk-browser-thaw gets a stop or a
+# restart with every stop or restart of desk-browser (PartOf=), and runs the thaw and the quit as its stop.
+STOP_WATCH = ("desk-browser.service", "desk-browser-thaw.service")
+STOP_JOBS = {"stop", "restart", "try-restart"}
+# No sound check: deskd asks for a freeze only once no session has had the desk's media for 60 s, so nobody hears a sound
+# that's playing then (ADR 0045, the Desk and UI/UX Engineers' change of 2026-11-07). A call or a stream is held off by
+# the network check.
+# Chromium's DownloadDirectory (ma.json). Only its entries' names and times are read: nothing opened, no link followed,
+# nothing under /data/browser/profile looked at.
+DOWNLOADS = "/data/browser/downloads"
+DOWNLOAD_FRESH_S = 30
+MAX_DOWNLOAD_ENTRIES = 4096
+# The network: bytes in and out of the outside interfaces of Chromium's network namespace (the ones with a default
+# route), read from procfs, so this helper's own namespace and address families stay as they are. Over the window, more
+# than this is busy: 16 KiB in 0.5 s is 64 KiB in 2 s. The window is short because deskd makes every freeze and thaw on
+# one thread, so a look that comes during a freeze waits for it. It counts the desk's whole outside traffic, which on a
+# desk nobody looks at is Chromium's and a little control traffic (no media flows to anyone).
+PROC = "/proc"
+NETWORK_WINDOW_S = 0.5
+NETWORK_BYTES = 16 * 1024
+SLEEP = time.sleep
+
+
+def reply(conn, line):
+    conn.sendall(line.encode() + b"\n")
+
+
+def read_request(conn):
+    data = b""
+    while b"\n" not in data and len(data) <= MAX_REQUEST:
+        chunk = conn.recv(MAX_REQUEST + 1 - len(data))
+        if not chunk:
+            break
+        data += chunk
+    return data
+
+
+def as_kiosk(*cmd):
+    return [SETPRIV, f"--reuid={KIOSK_UID}", f"--regid={KIOSK_UID}", "--clear-groups", *cmd]
+
+
+def systemctl(*args, timeout):
+    return subprocess.run([SYSTEMCTL, "--no-ask-password", *args], capture_output=True, text=True, timeout=timeout,
+                          stdin=subprocess.DEVNULL)
+
+
+def browser_refusal():
+    """The wrapper's own reason if it would refuse to start, else None. A check that can't run isn't a refusal: the wrapper checks again."""
+    try:
+        r = subprocess.run(as_kiosk(BROWSER_START, "--check"), capture_output=True, text=True, timeout=10, stdin=subprocess.DEVNULL)
+    except (OSError, subprocess.TimeoutExpired):
+        return None
+    return " ".join((r.stderr or "").split())[:200] if r.returncode == BROWSER_REFUSED else None
+
+
+def download_fresh():
+    """True while a .crdownload directly in DOWNLOADS was written in the last 30 s, and whenever that can't be told."""
+    try:
+        fd = os.open(DOWNLOADS, os.O_RDONLY | os.O_DIRECTORY | os.O_NOFOLLOW | os.O_CLOEXEC)
+    except FileNotFoundError:
+        return False
+    except OSError:
+        return True
+    try:
+        now = time.time()
+        with os.scandir(fd) as entries:
+            for n, e in enumerate(entries):
+                if n >= MAX_DOWNLOAD_ENTRIES:
+                    return True
+                if e.name.endswith(".crdownload") and now - e.stat(follow_symlinks=False).st_mtime < DOWNLOAD_FRESH_S:
+                    return True
+        return False
+    except OSError:
+        return True
+    finally:
+        os.close(fd)
+
+
+def outside_bytes():
+    """Bytes received and sent so far on the outside interfaces of Chromium's network namespace."""
+    with open(BROWSER_CGROUP + "/cgroup.procs") as f:
+        pid = next((line.strip() for line in f if line.strip().isdigit()), None)
+    if pid is None:
+        raise OSError("no process in desk-browser")
+    net = f"{PROC}/{pid}/net"
+    outside = set()
+    with open(net + "/route") as f:
+        for line in f:
+            c = line.split()
+            if len(c) >= 8 and c[1] == "00000000" and c[7] == "00000000":
+                outside.add(c[0])
+    try:
+        with open(net + "/ipv6_route") as f:
+            for line in f:
+                c = line.split()
+                if len(c) == 10 and c[0] == "0" * 32 and c[1] == "00":
+                    outside.add(c[9])
+    except FileNotFoundError:
+        pass
+    outside.discard("lo")  # IPv6's unreachable defaults are on lo
+    total, counted = 0, 0
+    with open(net + "/dev") as f:
+        for line in f:
+            name, colon, rest = line.partition(":")
+            name = name.strip()
+            if not colon or name == "lo" or (outside and name not in outside):
+                continue
+            c = rest.split()
+            total += int(c[0]) + int(c[8])
+            counted += 1
+    if not counted:
+        raise OSError("no outside interface")
+    return total
+
+
+def network_sample():
+    try:
+        return time.monotonic(), outside_bytes()
+    except (OSError, ValueError, IndexError):
+        return None
+
+
+def network_busy(first):
+    """True when the desk moved more than NETWORK_BYTES over the window that began at the first sample, and whenever that can't be told."""
+    if first is None:
+        return True
+    SLEEP(max(0.0, first[0] + NETWORK_WINDOW_S - time.monotonic()))
+    second = network_sample()
+    if second is None:
+        return True
+    moved = second[1] - first[1]
+    return moved < 0 or moved > NETWORK_BYTES
+
+
+def cgroup_frozen():
+    """What the kernel says of desk-browser's cgroup: "1" frozen, "0" not, None when there's no cgroup or no answer."""
+    try:
+        with open(BROWSER_CGROUP + "/cgroup.events") as f:
+            for line in f:
+                key, _, value = line.partition(" ")
+                if key == "frozen":
+                    return value.strip()
+    except OSError:
+        pass
+    return None
+
+
+def write_freeze(value):
+    fd = os.open(BROWSER_CGROUP + "/cgroup.freeze", os.O_WRONLY | os.O_NOFOLLOW | os.O_CLOEXEC)
+    try:
+        os.write(fd, value.encode())
+    finally:
+        os.close(fd)
+
+
+def wait_frozen(value):
+    """Waits for cgroup.events to say value, up to FREEZER_TIMEOUT_S. Whether it did."""
+    end = time.monotonic() + FREEZER_TIMEOUT_S
+    while cgroup_frozen() != value:
+        if time.monotonic() >= end:
+            return False
+        SLEEP(0.002)
+    return True
+
+
+def set_freeze(value):
+    """Writes cgroup.freeze, then waits for cgroup.events to say so, up to FREEZER_TIMEOUT_S. Whether it did."""
+    write_freeze(value)
+    return wait_frozen(value)
+
+
+def thaw_quietly():
+    """Thaws desk-browser if it has a cgroup, and doesn't say how it went: whoever needs to know asks cgroup.events."""
+    try:
+        set_freeze("0")
+    except OSError:
+        pass
+
+
+def lock_browser():
+    """An exclusive flock on desk-browser's cgroup directory: the one desk-browser-thaw's first ExecStop waits for before it
+    thaws (T46L-1). The fd, or None if it couldn't be had within FREEZER_TIMEOUT_S. The kernel lets go if this process dies."""
+    fd = os.open(BROWSER_CGROUP, os.O_RDONLY | os.O_DIRECTORY | os.O_NOFOLLOW | os.O_CLOEXEC)
+    end = time.monotonic() + FREEZER_TIMEOUT_S
+    while True:
+        try:
+            fcntl.flock(fd, fcntl.LOCK_EX | fcntl.LOCK_NB)
+            return fd
+        except BlockingIOError:
+            if time.monotonic() >= end:
+                os.close(fd)
+                return None
+            time.sleep(0.01)
+
+
+def jobs_check():
+    """Starts systemctl list-jobs for desk-browser and desk-browser-thaw, for stopping() to read. Started, not waited for, so
+    it runs alongside the network window, or alongside the kernel's freeze, and adds little to a freeze's time."""
+    return subprocess.Popen([SYSTEMCTL, "--no-ask-password", "list-jobs", "--no-legend", *STOP_WATCH], stdout=subprocess.PIPE,
+                            stderr=subprocess.DEVNULL, stdin=subprocess.DEVNULL, text=True)
+
+
+def stopping(proc):
+    """True when proc saw a stop or restart of desk-browser or desk-browser-thaw, queued or running; None when it can't be told."""
+    try:
+        out, _ = proc.communicate(timeout=FREEZER_TIMEOUT_S)
+    except subprocess.TimeoutExpired:
+        reap(proc)
+        return None
+    if proc.returncode != 0:
+        return None
+    for line in out.splitlines():
+        c = line.split()   # JOB UNIT TYPE STATE
+        if len(c) >= 3 and c[1] in STOP_WATCH and c[2] in STOP_JOBS:
+            return True
+    return False
+
+
+def reap(proc):
+    """Ends a list-jobs whose answer isn't wanted, as subprocess.run does on a timeout: killed, waited for, its pipe closed."""
+    if proc.poll() is None:
+        proc.kill()
+    proc.wait()
+    proc.stdout.close()
+
+
+def freeze(unit):
+    """None when frozen, else (code, text). Busy and inactive are a clear no; on anything else it's left thawed."""
+    try:
+        if systemctl("is-active", "--quiet", unit + ".service", timeout=FREEZER_TIMEOUT_S).returncode != 0:
+            return "inactive", f"{unit} isn't running"
+    except subprocess.TimeoutExpired:
+        return "timeout", f"is-active {unit} took over {FREEZER_TIMEOUT_S} s"
+    try:
+        lock = lock_browser()
+    except FileNotFoundError:   # stopped since is-active
+        return "inactive", f"{unit} isn't running"
+    if lock is None:
+        return "timeout", f"freeze {unit} waited over {FREEZER_TIMEOUT_S} s for its lock"
+    try:
+        return freeze_locked(unit)
+    finally:
+        os.close(lock)
+
+
+def freeze_locked(unit):
+    first = network_sample()  # the window runs while downloads are looked at, and the jobs are asked for
+    jobs = jobs_check()
+    if download_fresh():
+        reap(jobs)
+        return "busy", "download"
+    net = network_busy(first)
+    stop = stopping(jobs)
+    if stop is None:
+        return "timeout", f"list-jobs took over {FREEZER_TIMEOUT_S} s, or failed"
+    if stop:
+        return "busy", "stopping"
+    if net:
+        return "busy", "network"
+    try:
+        write_freeze("1")
+    except OSError as e:
+        thaw_quietly()
+        return "failed", f"freeze {unit}: {type(e).__name__}, frozen {cgroup_frozen()}"
+    # Asked again once the 1 is written: a stop queued since the first answer is seen here, and the freeze undone.
+    try:
+        again = jobs_check()
+    except OSError as e:
+        thaw_quietly()
+        return "failed", f"freeze {unit}: list-jobs: {type(e).__name__}"
+    if not wait_frozen("1"):
+        reap(again)
+        thaw_quietly()
+        return "timeout", f"freeze {unit} took over {FREEZER_TIMEOUT_S} s"
+    stop = stopping(again)
+    if stop is None:
+        thaw_quietly()
+        return "timeout", f"list-jobs took over {FREEZER_TIMEOUT_S} s, or failed"
+    if stop:
+        thaw_quietly()
+        return "busy", "stopping"
+    return None
+
+
+def thaw(unit):
+    """None when running, or not running at all (no cgroup), else (code, text)."""
+    try:
+        if set_freeze("0"):
+            return None
+    except FileNotFoundError:
+        if cgroup_frozen() is None:
+            return None
+    except OSError:
+        pass
+    return "failed", f"thaw {unit}: frozen {cgroup_frozen()}"
+
+
+def freezer(conn, verb, unit):
+    t0 = time.monotonic()
+    try:
+        err = freeze(unit) if verb == "freeze" else thaw(unit)
+    except OSError as e:  # systemctl itself couldn't run
+        err = "failed", f"{verb} {unit}: {type(e).__name__}"
+    # The log says ok, busy or the code, never why a freeze was declined: /health and the heartbeat don't either.
+    print(f"desk-units: {verb} {unit}: {err[0] if err else 'ok'} in {(time.monotonic() - t0) * 1000:.0f} ms", file=sys.stderr)
+    reply(conn, f"err {err[0]} {err[1]}" if err else "ok")
+
+
+def handle(conn):
+    uid = struct.unpack("3i", conn.getsockopt(socket.SOL_SOCKET, socket.SO_PEERCRED, 12))[1]
+    if uid != DESKD_UID:
+        print(f"desk-units: refused uid {uid}", file=sys.stderr)
+        reply(conn, "err denied only deskd may use this socket")
+        return
+    conn.settimeout(5)
+    try:
+        data = read_request(conn)
+    except OSError:
+        return
+    m = REQUEST.match(data.decode("ascii", "replace")) if len(data) <= MAX_REQUEST else None
+    if m is None:
+        reply(conn, "err bad_request expected: start|stop|freeze|thaw <unit>")
+        return
+    verb, unit = m.group(1), m.group(2)
+    if unit not in UNITS or (verb in ("freeze", "thaw") and unit not in FREEZABLE):
+        print(f"desk-units: refused {verb} {unit}", file=sys.stderr)
+        reply(conn, "err denied unit not allowed")
+        return
+    if os.path.exists(GUILD_FLAG):  # as systemd's ConditionPathExists= tests it
+        print(f"desk-units: refused {verb} {unit}: a Guild Desk has no Browser", file=sys.stderr)
+        reply(conn, f"err unsupported guild desk has no Browser: {verb} {unit}")
+        return
+    if verb in ("freeze", "thaw"):
+        freezer(conn, verb, unit)
+        return
+    if (verb == "stop" and unit in STOPS_BROWSER) or (verb == "start" and unit in STARTS_THAW):
+        thaw_quietly()
+    if verb == "start" and unit == "desk-browser":
+        refusal = browser_refusal()
+        if refusal is not None:
+            print(f"desk-units: {refusal}", file=sys.stderr)
+            reply(conn, f"err failed start desk-browser: {refusal}")
+            return
+    try:
+        r = systemctl(verb, unit + ".service", timeout=SYSTEMCTL_TIMEOUT_S)
+    except subprocess.TimeoutExpired:
+        reply(conn, f"err timeout {verb} {unit} took over {SYSTEMCTL_TIMEOUT_S} s")
+        return
+    print(f"desk-units: {verb} {unit}: exit {r.returncode}", file=sys.stderr)
+    if r.returncode != 0:
+        text = " ".join((r.stderr or "").split())[:200]
+        reply(conn, f"err failed {verb} {unit}: {text}")
+        return
+    reply(conn, "ok")
+
+
+def main():
+    conn = socket.socket(fileno=0)
+    try:
+        handle(conn)
+    finally:
+        try:
+            conn.shutdown(socket.SHUT_RDWR)
+        except OSError:
+            pass
+
+
+if __name__ == "__main__":
+    main()

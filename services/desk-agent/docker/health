@@ -1,0 +1,13 @@
+#!/bin/sh
+# Exit 0 only when GET /health on desk-agent's admin socket answers 200 (desk-runtime.md section 6). /opt/ma/smoke-test
+# calls this as root. desk-agent answers 503 only if it can't keep its records (data directory, ledger, audit log),
+# because then it refuses every model call. No key bound is healthy. DESK_AGENT_ADMIN_SOCKET is only for tests.
+socket=${DESK_AGENT_ADMIN_SOCKET:-/run/desk-agent/agent-admin.sock}
+
+code=$(curl --silent --show-error --max-time 5 --unix-socket "$socket" \
+  --output /dev/null --write-out '%{http_code}' http://localhost/health) || exit 1
+
+[ "$code" = 200 ] || {
+  echo "desk-agent /health answered $code" >&2
+  exit 1
+}

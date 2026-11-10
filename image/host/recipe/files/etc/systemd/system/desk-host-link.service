@@ -1,0 +1,21 @@
+[Unit]
+Description=desk-host-link: the shared host's one outbound link to Platform (hello, reports, orders) and each running slot's metadata stand-in (ma-platform contract shared-host.md)
+Requires=desk-host-boot.service
+# After desk-host-shutdown too, so at a shutdown the link stops first and starts nothing while every desk is being stopped.
+After=desk-host-boot.service desk-host-shutdown.service network-online.target nftables.service
+Wants=network-online.target
+
+[Service]
+Type=simple
+ExecStart=/usr/local/lib/desk-host/desk-host-link
+Restart=always
+RestartSec=30
+# Root in the host's own namespaces, deliberately: it runs desk-host, whose mounts, namespace binds, ruleset and runc
+# containers must be the host's. ProtectSystem, PrivateTmp and the like would put desk-host in a mount namespace of its own.
+NoNewPrivileges=yes
+# A stop of the link leaves an operation it started (desk-host's own per-slot lock serializes the next one) and every desk running.
+KillMode=process
+TimeoutStopSec=30
+
+[Install]
+WantedBy=multi-user.target

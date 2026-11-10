@@ -1,0 +1,15 @@
+[Unit]
+Description=Desk data volume: find it, format only if blank
+DefaultDependencies=no
+After=systemd-udevd.service systemd-udev-settle.service
+Before=data.mount local-fs.target
+Conflicts=shutdown.target
+
+[Service]
+Type=oneshot
+RemainAfterExit=yes
+ExecStart=/usr/local/lib/ma/desk-firstboot
+TimeoutStartSec=300
+
+[Install]
+WantedBy=local-fs.target

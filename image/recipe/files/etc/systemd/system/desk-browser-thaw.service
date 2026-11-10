@@ -1,0 +1,40 @@
+[Unit]
+Description=Thaws Chromium, then quits it over CDP, before any stop of desk-browser (ADR 0045, ADR 0035)
+# desk-units freezes desk-browser's cgroup itself (cgroup.freeze), so systemd's own state stays "running" and its jobs run.
+# A frozen Chromium can't take SIGTERM: it would be killed at TimeoutStopSec without writing its session. PartOf= brings
+# this unit's stop into every stop or restart of desk-browser, a shutdown's included, and After= puts that stop first.
+# Its ExecStop thaws Chromium by writing the cgroup file (a thaw over D-Bus is refused while desk-browser has a job
+# pending, which it has by then), then asks it to quit as its own Exit would (desk-browser-quit, which runs desk-browser-close
+# --quit), which writes the cookies SIGTERM doesn't (TD-110; the Security Analyst's IMG-1). systemd's SIGTERM follows for whatever is left.
+# This lives here, outside desk-browser's cgroup, on purpose: never give desk-browser.service an ExecStop, ExecStopPost or
+# ExecReload. systemd starts those inside its cgroup, with vfork, and if the cgroup is frozen then, PID 1 itself waits on
+# the frozen child, in D state, until something thaws it (measured on systemd 257: no logins, no shutdown).
+After=desk-browser.service
+PartOf=desk-browser.service
+# Nothing may freeze Chromium during the quit (the Security Analyst's T46L-1). deskd is the only thing that asks for a freeze
+# (units.sock takes uid 1100 alone). On systemd 257 an ordering between two units applies to their stop jobs in reverse, when
+# both have one queued, as at a shutdown: with Before=deskd.service, this unit's stop waits until deskd's has finished (its
+# container gone), so deskd can't ask for a freeze during the thaw and the quit. desk-browser is Before=deskd too, for the same
+# reason. Ordering only: it pulls in neither, and it costs a boot nothing, since this unit starts only with desk-browser, on
+# demand. A stop with deskd still up (an update, a move's hold, a restart) isn't ordered, and doesn't need to be: desk-units
+# refuses a freeze while it sees this stop (err busy stopping). What ordering can't reach is a freeze already in a desk-units
+# when the stop is queued (one instance per connection, each a unit with no stop job to order against, and at a shutdown it's
+# killed wherever it is): the flock below waits for it. desk-units holds that lock, on desk-browser's cgroup directory, from its
+# check for a stop to its answer, and undoes its own freeze if it sees the stop after writing it; if it dies, the kernel lets go.
+# So once the lock is had, no freeze is held and none can start: the 0 is the last word before the quit.
+Before=deskd.service
+
+[Service]
+Type=oneshot
+RemainAfterExit=yes
+ExecStart=/bin/true
+# The thaw: wait up to 5 s for a freeze under way to answer (about 0.6 s at most, usually none), then 0 into cgroup.freeze.
+# "-": a cgroup gone meanwhile (Chromium already quit) never skips the quit below.
+ExecStop=-/bin/sh -c 'd=/sys/fs/cgroup/system.slice/desk-browser.service; [ -e "$d/cgroup.freeze" ] || exit 0; flock -w 5 "$d" true; echo 0 > "$d/cgroup.freeze"'
+ExecStop=-/usr/local/lib/ma/desk-browser-quit
+# The thaw's 5 s, then desk-browser-quit: up to 5 s for list-jobs, about 11 s of asking CDP, and 31 s for Chromium to go.
+# desk-browser's own 30 s follow, so a stop of it can take up to about 85 s: desk-units waits 90 s, deskd 95 s.
+TimeoutStopSec=55
+
+[Install]
+WantedBy=desk-browser.service

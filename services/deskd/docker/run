@@ -1,0 +1,56 @@
+#!/bin/sh
+# ExecStart of deskd.service. Stays in the foreground as the docker client; the unit stops the container with
+# docker stop, so the JVM (PID 1) gets SIGTERM. Flags: desk-runtime.md section 5 and ADR 0040, plus no core files
+# (keys) and a journal tag. The image goes by ID, which ma-update wrote at install, because a loaded image has no
+# repo digest. Hello's imageVersion is the release the AMI was built from, so it comes from the host's /etc/ma-release:
+# the same artifact goes to desks on different AMIs, so deskd.env can't hold it. MA_RELEASE_FILE is only for tests.
+set -eu
+
+image_id=$(cat "${RELEASE_DIR:?RELEASE_DIR is not set}/image-id")
+image_version=$(sed -n 's/^version=//p' "${MA_RELEASE_FILE:-/etc/ma-release}" 2>/dev/null || true)
+
+# Memory goes by the desk's kind, which only the host can read: its IMDS tag, as deskd reads it. A personal, work or test
+# desk (and any desk whose kind can't be read in 2 s) keeps jvm.options' heap and 512m. A guild desk holds up to 600 sessions
+# and has its own sizes, measured by the guild load gate (docs/sub-status/deskd-guild-sessions.md): the image's
+# heap-guild.options (-Xmx168m) after jvm.options, whose -Xmx the later one replaces, and 400m. MA_DESK_KIND is for tests.
+# GDS-5: the image's boot unit reads the tag once and writes /run/ma/desk-kind, "guild" or "member" (MA_DESK_KIND_FILE is
+# for tests). "guild" means the guild heap, here and in deskd (which gets the file read-only at the same path, and checks
+# IMDS against it); "member" or no file keeps the logic below, so IMDS is asked as before. The file is mounted only when it
+# exists, because docker would otherwise make a directory of the missing path.
+imds=${DESKD_IMDS_URL:-http://169.254.169.254}
+kind=${MA_DESK_KIND:-}
+kind_file=${MA_DESK_KIND_FILE:-/run/ma/desk-kind}
+kind_mount=
+if [ -f "$kind_file" ]; then
+  kind_mount="type=bind,src=$kind_file,dst=/run/ma/desk-kind,readonly"
+  [ -n "$kind" ] || kind=$(tr -d ' \n\r' <"$kind_file" 2>/dev/null || true)
+  [ "$kind" = member ] && kind=
+fi
+if [ -z "$kind" ]; then
+  imds_token=$(curl -fsS -m 2 -X PUT -H 'X-aws-ec2-metadata-token-ttl-seconds: 60' "$imds/latest/api/token" 2>/dev/null || true)
+  if [ -n "$imds_token" ]; then
+    kind=$(curl -fsS -m 2 -H "X-aws-ec2-metadata-token: $imds_token" "$imds/latest/meta-data/tags/instance/DeskKind" 2>/dev/null || true)
+  fi
+fi
+if [ "$kind" = guild ]; then
+  memory=400m
+  set -- --entrypoint java
+  jvm_args="@/app/jvm.options @/app/heap-guild.options -jar /app/deskd.jar"
+else
+  memory=512m
+  set --
+  jvm_args=
+fi
+
+# The Files app's tree (docker/deskd.env, DESKD_FILES_ROOT). desk-datadirs makes it at boot; a deskd restarted by ma-update
+# without a reboot gets it here, because docker would otherwise make the missing mount source as root and deskd would
+# refuse to use it. An existing one is never touched.
+files_dir=${MA_FILES_DIR:-/data/files}
+[ -d "$files_dir" ] || install -d -o 1100 -g 1100 -m 0700 "$files_dir" 2>/dev/null || true
+
+exec docker run --rm --name deskd --network host --user 1100:1100 --read-only --tmpfs /tmp \
+  --cap-drop=ALL --security-opt=no-new-privileges --log-driver=journald --log-opt tag=deskd \
+  --memory="$memory" --memory-swap="$memory" --cpu-shares=512 --pids-limit=256 --stop-timeout=60 --ulimit core=0 \
+  -v /run/desk:/run/desk -v /run/desk-agent:/run/desk-agent -v /run/desk-notebook:/run/desk-notebook -v /run/desk-commons:/run/desk-commons -v /data/desk:/data/desk -v "$files_dir:/data/files" ${kind_mount:+--mount "$kind_mount"} --env-file "$RELEASE_DIR/deskd.env" \
+  ${image_version:+-e "DESKD_IMAGE_VERSION=$image_version"} \
+  "$@" "$image_id" $jvm_args

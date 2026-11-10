@@ -1,0 +1,1359 @@
+/* The Notebook's styles, ported from prototype/src/styles.css (the look the owner has seen) onto the
+   Desk app's token names (--ma-*, from docs/assets/brand/ui/tokens.json) plus the Notebook's own
+   (--ma-nb-*, src/theme/tokens.ts). No color literals: scripts/check-css-literals.mjs checks.
+   Everything is under .ma-nb (or .ma-nb-portal for menus and print), so nothing leaks into the app.
+   Type follows docs/assets/brand/ui/type.txt: 600 for UI text, 700 for titles, 500 for running text. */
+
+.ma-nb,
+.ma-nb-portal {
+  --nb-font: var(--ma-font-ui, "Nunito Variable", "Nunito Fallback", system-ui, -apple-system, "Segoe UI", Roboto, sans-serif);
+  --nb-mono: ui-monospace, "SF Mono", "Cascadia Mono", "JetBrains Mono", Menlo, Consolas, "DejaVu Sans Mono", monospace;
+  font-family: var(--nb-font);
+  font-size: 14px;
+  font-weight: 600;
+  color: var(--ma-text-primary);
+  -webkit-font-smoothing: antialiased;
+  accent-color: var(--ma-accent);
+}
+.ma-nb *,
+.ma-nb *::before,
+.ma-nb *::after,
+.ma-nb-portal *,
+.ma-nb-portal *::before,
+.ma-nb-portal *::after {
+  box-sizing: border-box;
+}
+/* No specificity, as the prototype's bare `button` rule had none: a scoped `.ma-nb button` outranked
+   every one-class rule below, so tools, icon buttons, text buttons and the calendar lost their
+   own sizes and colors. */
+:where(.ma-nb, .ma-nb-portal) :where(button, input) {
+  font: inherit;
+  color: inherit;
+}
+.ma-nb button,
+.ma-nb-portal button {
+  cursor: pointer;
+}
+.ma-nb :focus-visible,
+.ma-nb-portal :focus-visible {
+  outline: 2px solid var(--ma-focus-ring);
+  outline-offset: 2px;
+}
+.ma-nb b,
+.ma-nb strong {
+  font-weight: 700;
+}
+.ma-nb {
+  display: flex;
+  flex-direction: column;
+  height: 100%;
+  min-height: 0;
+  background: var(--ma-surface-window);
+}
+.nb-muted {
+  color: var(--ma-text-tertiary);
+}
+
+/* ------------------------------------------------------------ header */
+.nb-head {
+  display: flex;
+  align-items: center;
+  gap: 12px;
+  padding: 10px 14px 10px 20px;
+  border-bottom: 1px solid var(--ma-border-hairline);
+  flex: none;
+}
+.nb-head-controls {
+  display: flex;
+  align-items: center;
+  gap: 8px;
+  margin-left: auto;
+  min-width: 0;
+}
+.nb-body {
+  flex: 1;
+  min-height: 0;
+  display: flex;
+}
+.nb-body > * {
+  flex: 1;
+  min-width: 0;
+}
+.nb-seg {
+  display: inline-flex;
+  align-items: stretch;
+  padding: 3px;
+  gap: 2px;
+  border: 1px solid var(--ma-border);
+  border-radius: 999px;
+  background: var(--ma-surface-sunken);
+}
+.nb-seg button {
+  display: inline-flex;
+  align-items: center;
+  justify-content: center;
+  gap: 6px;
+  border: 0;
+  border-radius: 999px;
+  background: transparent;
+  padding: 5px 12px;
+  font-size: 13px;
+  white-space: nowrap;
+}
+.nb-seg button:hover {
+  background: var(--ma-surface-fill);
+}
+.nb-seg button.on {
+  background: var(--ma-surface-tile);
+  box-shadow: var(--ma-elevation-tile);
+  font-weight: 700;
+}
+:root[data-theme="dusk"] .nb-seg button.on,
+:root[data-theme="dark"] .nb-seg button.on {
+  box-shadow: inset 0 0 0 1px var(--ma-border-strong);
+}
+.nb-seg-xs button {
+  padding: 3px 10px;
+  font-size: 12px;
+}
+.nb-search-btn {
+  display: inline-flex;
+  align-items: center;
+  gap: 6px;
+  height: 34px;
+  padding: 0 8px 0 10px;
+  border: 1px solid var(--ma-border);
+  border-radius: 999px;
+  background: var(--ma-surface-window);
+  color: var(--ma-text-secondary);
+  font-size: 13px;
+}
+.nb-search-btn:hover {
+  background: var(--ma-surface-fill);
+  color: var(--ma-text-primary);
+}
+/* Generated text, so the button's name is "Search notes", with the shortcut in aria-keyshortcuts. */
+.nb-search-btn kbd::after {
+  content: attr(data-keys);
+}
+.nb-search-btn kbd {
+  padding: 1px 6px;
+  border-radius: 6px;
+  background: var(--ma-surface-fill);
+  font: inherit;
+  font-size: 11.5px;
+  color: var(--ma-text-tertiary);
+}
+
+/* The app glyph (icons.tsx NotebookGlyph), as the canvas draws it. */
+.nb-glyph-page {
+  fill: var(--ma-glyph-page);
+  stroke: var(--ma-glyph-soft);
+  stroke-opacity: 0.5;
+}
+.nb-glyph-fold {
+  fill: var(--ma-glyph-soft);
+  opacity: 0.45;
+}
+.nb-glyph-block {
+  fill: var(--ma-glyph);
+}
+.nb-glyph-line {
+  stroke: var(--ma-glyph-soft);
+  stroke-width: 2.2;
+  stroke-linecap: round;
+}
+.nb-glyph-accent {
+  stroke: var(--ma-accent);
+  stroke-width: 2.2;
+  stroke-linecap: round;
+}
+/* ------------------------------------------------------------ shared controls */
+.nb-icon,
+.nb-glyph {
+  flex: none;
+  display: block;
+}
+.nb-icon-btn {
+  display: inline-grid;
+  place-items: center;
+  width: 30px;
+  height: 30px;
+  padding: 0;
+  border: 0;
+  border-radius: 999px;
+  background: transparent;
+  color: var(--ma-text-secondary);
+}
+.nb-icon-btn:hover:not(:disabled) {
+  background: var(--ma-surface-fill);
+  color: var(--ma-text-primary);
+}
+.nb-icon-btn:disabled {
+  opacity: 0.35;
+  cursor: default;
+}
+.nb-btn {
+  display: inline-flex;
+  align-items: center;
+  justify-content: center;
+  gap: 6px;
+  height: 34px;
+  padding: 0 14px;
+  border: 1px solid var(--ma-border);
+  border-radius: 12px;
+  background: var(--ma-surface-window);
+  font-size: 14px;
+  font-weight: 700;
+  white-space: nowrap;
+}
+.nb-btn:hover:not(:disabled) {
+  background: var(--ma-surface-sunken);
+}
+.nb-btn.primary {
+  background: var(--ma-accent);
+  border-color: var(--ma-accent);
+  color: var(--ma-text-on-accent);
+}
+.nb-btn.primary:hover:not(:disabled) {
+  background: var(--ma-accent-hover);
+}
+.nb-btn:disabled {
+  opacity: 0.45;
+  cursor: default;
+}
+.nb-text-btn {
+  display: inline-flex;
+  align-items: center;
+  gap: 4px;
+  padding: 6px 8px;
+  border: 0;
+  border-radius: 8px;
+  background: none;
+  color: var(--ma-text-link);
+  font-size: 13px;
+  font-weight: 600;
+}
+.nb-text-btn:hover {
+  background: var(--ma-accent-subtle);
+}
+.nb-text-btn.danger {
+  color: var(--ma-text-danger);
+}
+.nb-field {
+  display: grid;
+  gap: 6px;
+  font-size: 12px;
+  color: var(--ma-text-secondary);
+}
+.nb-field input,
+.nb-inline-name {
+  height: 36px;
+  padding: 0 10px;
+  border: 1px solid var(--ma-border-strong);
+  border-radius: 10px;
+  background: var(--ma-surface-window);
+  color: var(--ma-text-primary);
+  font-size: 14px;
+  min-width: 0;
+}
+.nb-inline-name {
+  height: 26px;
+  width: 100%;
+  padding: 0 6px;
+  border-radius: 6px;
+}
+.nb-name {
+  min-width: 0;
+  overflow: hidden;
+  text-overflow: ellipsis;
+  white-space: nowrap;
+}
+.nb-hint {
+  padding: 8px 10px;
+  font-size: 13px;
+  color: var(--ma-text-tertiary);
+}
+.nb-count {
+  margin-left: auto;
+  font-size: 12px;
+  color: var(--ma-text-tertiary);
+  font-variant-numeric: tabular-nums;
+}
+.ma-nb mark,
+.ma-nb-portal mark {
+  background: var(--ma-nb-highlight-yellow);
+  color: inherit;
+  border-radius: 3px;
+}
+
+/* ------------------------------------------------------------ menu */
+.nb-menu {
+  position: fixed;
+  z-index: 1000;
+  min-width: 200px;
+  max-height: min(70vh, 480px);
+  overflow: auto;
+  padding: 6px;
+  border: 1px solid var(--ma-border-hairline);
+  border-radius: 14px;
+  background: var(--ma-surface-overlay);
+  box-shadow: var(--ma-elevation-menu);
+  display: grid;
+  gap: 1px;
+}
+.nb-menu-item {
+  display: flex;
+  align-items: center;
+  gap: 10px;
+  width: 100%;
+  padding: 7px 10px;
+  border: 0;
+  border-radius: 9px;
+  background: none;
+  text-align: left;
+  font-size: 14px;
+}
+.nb-menu-item:hover,
+.nb-menu-item:focus-visible {
+  background: var(--ma-surface-fill);
+  outline: none;
+}
+.nb-menu-item[aria-checked="true"] {
+  font-weight: 700;
+}
+.nb-menu-item.danger {
+  color: var(--ma-text-danger);
+}
+.nb-menu-heading {
+  padding: 8px 10px 2px;
+  font-size: 11px;
+  font-weight: 700;
+  letter-spacing: 0.06em;
+  text-transform: uppercase;
+  color: var(--ma-text-tertiary);
+}
+.nb-swatch {
+  width: 10px;
+  height: 10px;
+  border-radius: 50%;
+  background: var(--tab);
+}
+
+/* ------------------------------------------------------------ sidebars */
+.nb-side {
+  display: flex;
+  flex-direction: column;
+  gap: 4px;
+  min-height: 0;
+  overflow: auto;
+  padding: 12px 10px;
+  border-right: 1px solid var(--ma-border-hairline);
+  background: var(--ma-surface-sunken);
+}
+.nb-side-head {
+  display: flex;
+  align-items: center;
+  justify-content: space-between;
+  gap: 8px;
+  padding: 6px 4px 4px 10px;
+}
+.nb-side-head h3 {
+  margin: 0;
+  font-size: 11.5px;
+  font-weight: 700;
+  letter-spacing: 0.06em;
+  text-transform: uppercase;
+  color: var(--ma-text-tertiary);
+  white-space: nowrap;
+  overflow: hidden;
+  text-overflow: ellipsis;
+}
+.nb-side-head:not(:first-child) {
+  margin-top: 10px;
+}
+.nb-list,
+.nb-pages {
+  list-style: none;
+  margin: 0;
+  padding: 0;
+  display: grid;
+  gap: 2px;
+}
+.nb-list-btn,
+.nb-page-btn {
+  display: flex;
+  align-items: center;
+  gap: 10px;
+  width: 100%;
+  padding: 8px 10px;
+  border: 0;
+  border-radius: 12px;
+  background: none;
+  text-align: left;
+  font-size: 14px;
+  color: var(--ma-text-primary);
+  cursor: pointer;
+}
+.nb-list-btn:hover,
+.nb-page-btn:hover {
+  background: var(--ma-surface-fill);
+}
+.nb-list-btn.on,
+.nb-page-btn.on {
+  background: var(--ma-accent-subtle);
+}
+.nb-spine {
+  flex: none;
+  width: 4px;
+  height: 18px;
+  border-radius: 2px;
+  background: var(--ma-accent);
+  opacity: 0.55;
+}
+.nb-page-btn {
+  display: grid;
+  gap: 2px;
+}
+.nb-page-title {
+  font-weight: 700;
+  overflow: hidden;
+  text-overflow: ellipsis;
+  white-space: nowrap;
+}
+.nb-page-meta {
+  font-size: 12px;
+  color: var(--ma-text-tertiary);
+  overflow: hidden;
+  text-overflow: ellipsis;
+  white-space: nowrap;
+}
+.nb-page-snip {
+  margin-left: 6px;
+}
+.nb-drop-before {
+  box-shadow: 0 -2px 0 var(--ma-accent);
+  border-radius: 2px;
+}
+.nb-trash {
+  margin-top: auto;
+  padding-top: 10px;
+}
+.nb-trash-row {
+  display: flex;
+  align-items: center;
+  justify-content: space-between;
+  gap: 8px;
+  padding: 2px 4px 2px 10px;
+}
+
+/* ------------------------------------------------------------ tab view */
+.nb-tabview {
+  display: grid;
+  grid-template-columns: 260px minmax(0, 1fr);
+  /* A fixed row, so the page's height never feeds back into the grid's layout. */
+  grid-template-rows: minmax(0, 1fr);
+  min-height: 0;
+}
+.nb-main {
+  display: flex;
+  flex-direction: column;
+  min-width: 0;
+  min-height: 0;
+  padding: 14px 20px 18px;
+  background: var(--ma-surface-sunken);
+}
+/* The tablist holds only tabs. The tabs and the add button lay out together in `.nb-tabs`. */
+.nb-tablist {
+  display: contents;
+}
+.nb-tabs {
+  display: flex;
+  align-items: flex-end;
+  gap: 4px;
+  padding: 0 14px;
+  overflow-x: auto;
+  scrollbar-width: none;
+  flex: none;
+}
+.nb-tab {
+  --tab: var(--ma-nb-tab-blue);
+  position: relative;
+  top: 1px;
+  display: flex;
+  align-items: center;
+  gap: 7px;
+  max-width: 220px;
+  padding: 8px 14px;
+  border: 1px solid var(--ma-border-hairline);
+  border-bottom: 0;
+  border-radius: 12px 12px 0 0;
+  background: color-mix(in srgb, var(--tab) 16%, var(--ma-surface-sunken));
+  color: var(--ma-text-secondary);
+  font-size: 13.5px;
+  font-weight: 600;
+  white-space: nowrap;
+  cursor: pointer;
+}
+.nb-tab::before {
+  content: "";
+  width: 8px;
+  height: 8px;
+  border-radius: 50%;
+  background: var(--tab);
+  flex: none;
+}
+.nb-tab.on {
+  z-index: 1;
+  background: var(--ma-surface-tile);
+  color: var(--ma-text-primary);
+  box-shadow: inset 0 3px 0 var(--tab);
+  font-weight: 700;
+}
+.nb-tab.drop {
+  background: color-mix(in srgb, var(--tab) 34%, var(--ma-surface-sunken));
+}
+.nb-tab.add {
+  padding: 8px 10px;
+  border-style: dashed;
+  border-color: var(--ma-border);
+  background: transparent;
+  color: var(--ma-text-secondary);
+}
+.nb-tab.add::before {
+  display: none;
+}
+/* After .nb-tab, which sets the blue default with the same specificity, as in the prototype. */
+[data-color="blue"] { --tab: var(--ma-nb-tab-blue); }
+[data-color="green"] { --tab: var(--ma-nb-tab-green); }
+[data-color="amber"] { --tab: var(--ma-nb-tab-amber); }
+[data-color="rose"] { --tab: var(--ma-nb-tab-rose); }
+[data-color="violet"] { --tab: var(--ma-nb-tab-violet); }
+[data-color="slate"] { --tab: var(--ma-nb-tab-slate); }
+.nb-paper {
+  flex: 1;
+  min-height: 0;
+  display: flex;
+  flex-direction: column;
+  overflow: hidden;
+  border: 1px solid var(--ma-border-hairline);
+  border-radius: 16px;
+  background: var(--ma-surface-tile);
+  box-shadow: var(--ma-elevation-tile);
+}
+.nb-editor {
+  flex: 1;
+  min-height: 0;
+  display: flex;
+  flex-direction: column;
+}
+.nb-toolbar {
+  display: flex;
+  flex-wrap: wrap;
+  gap: 6px 10px;
+  padding: 8px 12px;
+  border-bottom: 1px solid var(--ma-border-hairline);
+  flex: none;
+}
+.nb-tool-group {
+  display: flex;
+  gap: 2px;
+  padding-right: 10px;
+  border-right: 1px solid var(--ma-border-hairline);
+}
+.nb-tool-group:last-child {
+  border-right: 0;
+}
+.nb-tool {
+  display: inline-grid;
+  place-items: center;
+  min-width: 32px;
+  height: 32px;
+  padding: 0 6px;
+  border: 0;
+  border-radius: 8px;
+  background: transparent;
+  color: var(--ma-text-secondary);
+  font-size: 15px;
+}
+.nb-tool.wide {
+  padding: 0 10px;
+  font-size: 13px;
+}
+.nb-tool:hover {
+  background: var(--ma-surface-fill);
+  color: var(--ma-text-primary);
+}
+.nb-tool.on {
+  background: var(--ma-accent-subtle);
+  color: var(--ma-text-link);
+}
+.nb-scroll {
+  flex: 1;
+  min-height: 0;
+  overflow: auto;
+  overscroll-behavior: contain;
+}
+.nb-foot {
+  display: flex;
+  flex-wrap: wrap;
+  align-items: center;
+  justify-content: space-between;
+  gap: 4px 12px;
+  padding: 4px 8px 4px 18px;
+  border-top: 1px solid var(--ma-border-hairline);
+  font-size: 12px;
+  color: var(--ma-text-tertiary);
+  font-variant-numeric: tabular-nums;
+  flex: none;
+}
+.nb-foot-actions,
+.nb-confirm {
+  display: inline-flex;
+  align-items: center;
+  gap: 2px;
+}
+.nb-confirm {
+  gap: 4px;
+  color: var(--ma-text-secondary);
+}
+.nb-paper-empty,
+.nb-empty-state {
+  margin: auto;
+  display: grid;
+  justify-items: center;
+  gap: 8px;
+  padding: 24px;
+  color: var(--ma-text-secondary);
+  text-align: center;
+}
+.nb-paper-empty p {
+  margin: 0;
+  max-width: 44ch;
+}
+
+/* ------------------------------------------------------------ the page (ProseMirror) */
+/* TipTap's own base rules, which it would inject as a <style> tag (not allowed by the Desk app's CSP). */
+.ma-nb .ProseMirror,
+.ma-nb-portal .ProseMirror {
+  position: relative;
+  word-wrap: break-word;
+  white-space: pre-wrap;
+  white-space: break-spaces;
+  font-variant-ligatures: none;
+  font-feature-settings: "liga" 0;
+}
+.ma-nb .ProseMirror [contenteditable="false"] {
+  white-space: normal;
+}
+.ma-nb .ProseMirror [contenteditable="false"] [contenteditable="true"] {
+  white-space: pre-wrap;
+}
+.ma-nb .ProseMirror pre {
+  white-space: pre-wrap;
+}
+.ma-nb img.ProseMirror-separator {
+  display: inline !important;
+  border: none !important;
+  margin: 0 !important;
+  width: 0 !important;
+  height: 0 !important;
+}
+.ma-nb .ProseMirror-gapcursor {
+  display: none;
+  pointer-events: none;
+  position: absolute;
+  margin: 0;
+}
+.ma-nb .ProseMirror-gapcursor::after {
+  content: "";
+  display: block;
+  position: absolute;
+  top: -2px;
+  width: 20px;
+  border-top: 1px solid var(--ma-text-primary);
+}
+.ma-nb .ProseMirror-focused .ProseMirror-gapcursor {
+  display: block;
+}
+.ma-nb .ProseMirror-hideselection *::selection {
+  background: transparent;
+}
+.ma-nb .ProseMirror-hideselection * {
+  caret-color: transparent;
+}
+
+.nb-prose {
+  min-height: 100%;
+  padding: 22px clamp(18px, 4vw, 44px) 48px;
+  outline: none;
+  font-size: 16px;
+  line-height: 1.6;
+  font-weight: 500;
+  color: var(--ma-text-primary);
+  caret-color: var(--ma-accent);
+  overflow-wrap: anywhere;
+}
+.nb-prose > * {
+  max-width: 70ch;
+  /* No content-visibility here, though it made typing in a 150,000-word page 60 fps on a slow core:
+     Chromium then moves the caret wrongly through blocks it hasn't rendered (PageDown, Ctrl+End),
+     and keys can land in the wrong place or nowhere. README, Performance. */
+}
+.nb-prose h1 {
+  margin: 0 0 0.5em;
+  font-size: 26px;
+  font-weight: 700;
+  line-height: 1.25;
+  letter-spacing: -0.01em;
+}
+.nb-prose h2 {
+  margin: 1.1em 0 0.35em;
+  font-size: 19px;
+  font-weight: 700;
+  line-height: 1.3;
+}
+.nb-prose h3 {
+  margin: 1em 0 0.3em;
+  font-size: 16px;
+  font-weight: 700;
+  line-height: 1.35;
+}
+.nb-prose p {
+  margin: 0 0 0.6em;
+}
+.nb-prose ul,
+.nb-prose ol {
+  margin: 0 0 0.8em;
+  padding-left: 1.6em;
+}
+.nb-prose li {
+  margin: 0.15em 0;
+}
+.nb-prose li p {
+  margin: 0;
+}
+.nb-prose strong {
+  font-weight: 700;
+}
+.nb-prose a {
+  color: var(--ma-text-link);
+  text-decoration: underline;
+  text-underline-offset: 2px;
+}
+.nb-prose blockquote {
+  margin: 0 0 0.8em;
+  padding-left: 14px;
+  border-left: 3px solid var(--ma-border);
+  color: var(--ma-text-secondary);
+}
+.nb-prose code {
+  padding: 1px 5px;
+  border-radius: 5px;
+  background: var(--ma-surface-fill);
+  font-family: var(--nb-mono);
+  font-size: 0.88em;
+}
+.nb-prose pre {
+  margin: 0 0 0.8em;
+  padding: 12px 14px;
+  border-radius: 10px;
+  background: var(--ma-surface-sunken);
+  font-family: var(--nb-mono);
+  font-size: 14px;
+  line-height: 1.5;
+}
+.nb-prose pre code {
+  padding: 0;
+  background: none;
+  font-size: inherit;
+}
+.nb-prose hr {
+  margin: 1.2em 0;
+  border: 0;
+  border-top: 1px solid var(--ma-border);
+}
+.nb-prose mark {
+  padding: 0 1px;
+}
+/* Inside a highlight, links and ticked items read in text.primary (links keep their underline): look 7 of 9. */
+.nb-prose mark a,
+.nb-prose a mark,
+.nb-prose li[data-checked="true"] > div mark {
+  color: var(--ma-text-primary);
+}
+.nb-prose .nb-empty-title::before {
+  content: attr(data-placeholder);
+  float: left;
+  height: 0;
+  pointer-events: none;
+  color: var(--ma-text-disabled);
+}
+/* Checklists: Apple Notes' round boxes, as in the prototype. TipTap's task item is
+   li > label > input, then a div with the text. */
+.nb-prose ul[data-type="taskList"] {
+  list-style: none;
+  padding-left: 0;
+}
+.nb-prose ul[data-type="taskList"] ul[data-type="taskList"] {
+  margin: 0;
+  padding-left: 28px;
+}
+.nb-prose li[data-checked] {
+  display: flex;
+  align-items: flex-start;
+  gap: 10px;
+}
+.nb-prose li[data-checked] > label {
+  position: relative;
+  flex: none;
+  margin-top: 0.22em;
+  width: 19px;
+  height: 19px;
+  user-select: none;
+}
+.nb-prose li[data-checked] > label > input {
+  appearance: none;
+  -webkit-appearance: none;
+  display: block;
+  width: 19px;
+  height: 19px;
+  margin: 0;
+  border: 1.6px solid var(--ma-text-tertiary);
+  border-radius: 50%;
+  background: transparent;
+  cursor: pointer;
+}
+.nb-prose li[data-checked="true"] > label > input {
+  border-color: var(--ma-accent);
+  background: var(--ma-accent);
+}
+.nb-prose li[data-checked="true"] > label::after {
+  content: "";
+  position: absolute;
+  left: 7px;
+  top: 3.5px;
+  width: 4.5px;
+  height: 9px;
+  border: solid var(--ma-text-on-accent);
+  border-width: 0 2px 2px 0;
+  transform: rotate(45deg);
+  pointer-events: none;
+}
+.nb-prose li[data-checked] > div {
+  flex: 1;
+  min-width: 0;
+}
+.nb-prose li[data-checked="true"] > div {
+  color: var(--ma-text-tertiary);
+}
+.nb-prose.readonly {
+  caret-color: transparent;
+}
+
+/* ------------------------------------------------------------ history and "as of" */
+.nb-history,
+.nb-asof {
+  flex: 1;
+  min-height: 0;
+  display: flex;
+  flex-direction: column;
+}
+.nb-history-bar {
+  display: flex;
+  flex-wrap: wrap;
+  align-items: center;
+  justify-content: space-between;
+  gap: 8px 12px;
+  padding: 8px 12px 8px 18px;
+  border-bottom: 1px solid var(--ma-border-hairline);
+  flex: none;
+}
+.nb-history-title {
+  min-width: 0;
+  color: var(--ma-text-secondary);
+}
+.nb-history-title strong {
+  color: var(--ma-text-primary);
+}
+.nb-history-actions {
+  display: inline-flex;
+  gap: 8px;
+}
+.nb-history-body {
+  flex: 1;
+  min-height: 0;
+  display: grid;
+  grid-template-columns: minmax(0, 1fr) 250px;
+}
+.nb-history-preview {
+  min-height: 0;
+  display: flex;
+  flex-direction: column;
+}
+.nb-history-list {
+  list-style: none;
+  margin: 0;
+  padding: 8px;
+  overflow: auto;
+  border-left: 1px solid var(--ma-border-hairline);
+  background: var(--ma-surface-sunken);
+}
+.nb-history-day {
+  padding: 10px 10px 4px;
+  font-size: 11px;
+  font-weight: 700;
+  letter-spacing: 0.06em;
+  text-transform: uppercase;
+  color: var(--ma-text-tertiary);
+}
+.nb-history-item {
+  display: grid;
+  gap: 1px;
+  width: 100%;
+  padding: 7px 10px;
+  border: 0;
+  border-radius: 10px;
+  background: none;
+  text-align: left;
+}
+.nb-history-item:hover {
+  background: var(--ma-surface-fill);
+}
+.nb-history-item.on {
+  background: var(--ma-accent-subtle);
+}
+.nb-history-time {
+  font-weight: 700;
+  font-variant-numeric: tabular-nums;
+}
+.nb-history-why,
+.nb-history-words {
+  font-size: 12px;
+  color: var(--ma-text-tertiary);
+  overflow: hidden;
+  text-overflow: ellipsis;
+  white-space: nowrap;
+}
+.nb-asof-body {
+  flex: 1;
+  min-height: 0;
+  display: flex;
+  padding: 16px 20px 20px;
+}
+.nb-asof-paper {
+  max-width: 900px;
+}
+
+/* ------------------------------------------------------------ temporal view */
+.nb-temporal {
+  display: grid;
+  grid-template-columns: 330px minmax(0, 1fr);
+  grid-template-rows: minmax(0, 1fr);
+  min-height: 0;
+}
+.nb-tl-side {
+  gap: 14px;
+  padding: 16px;
+}
+.nb-cal-head {
+  display: flex;
+  align-items: center;
+  gap: 2px;
+  margin-bottom: 6px;
+}
+.nb-cal-month {
+  flex: 1;
+  text-align: center;
+  font-size: 15px;
+  font-weight: 700;
+}
+.nb-cal-grid {
+  display: grid;
+  grid-template-columns: repeat(7, minmax(0, 1fr));
+  gap: 2px;
+}
+.nb-cal-dow {
+  padding: 4px 0;
+  font-size: 10.5px;
+  letter-spacing: 0.05em;
+  text-transform: uppercase;
+  text-align: center;
+  color: var(--ma-text-tertiary);
+}
+.nb-cal-day {
+  display: flex;
+  flex-direction: column;
+  align-items: center;
+  justify-content: center;
+  gap: 2px;
+  aspect-ratio: 1;
+  max-width: 100%;
+  border: 0;
+  border-radius: 10px;
+  background: transparent;
+  font-size: 13px;
+  font-variant-numeric: tabular-nums;
+}
+.nb-cal-day:hover {
+  background: var(--ma-surface-fill);
+}
+.nb-cal-day.out {
+  color: var(--ma-text-tertiary);
+  opacity: 0.6;
+}
+.nb-cal-day.today span {
+  color: var(--ma-text-link);
+  font-weight: 700;
+}
+.nb-cal-day.on {
+  background: var(--ma-accent);
+  color: var(--ma-text-on-accent);
+}
+.nb-cal-day.on span {
+  color: var(--ma-text-on-accent);
+}
+.nb-cal-dots {
+  display: flex;
+  gap: 2px;
+  height: 4px;
+}
+.nb-cal-dots b {
+  width: 4px;
+  height: 4px;
+  border-radius: 50%;
+  background: var(--ma-accent);
+}
+.nb-cal-day.on .nb-cal-dots b {
+  background: var(--ma-text-on-accent);
+}
+.nb-day-list .nb-list-btn {
+  padding: 7px 10px;
+}
+.nb-tl-main {
+  min-height: 0;
+  overflow: auto;
+  outline: none;
+  padding: 22px clamp(18px, 3vw, 32px);
+}
+.nb-tl-head {
+  display: flex;
+  align-items: center;
+  justify-content: space-between;
+  gap: 12px;
+  max-width: 760px;
+  margin-bottom: 16px;
+}
+.nb-tl-day {
+  margin: 0;
+  font-size: 22px;
+  font-weight: 500;
+  text-wrap: balance;
+}
+.nb-tl-step {
+  display: inline-flex;
+  gap: 2px;
+}
+.nb-tl-entries {
+  list-style: none;
+  margin: 0;
+  padding: 0;
+  display: grid;
+  gap: 10px;
+  max-width: 760px;
+}
+.nb-tl-entry {
+  position: relative;
+}
+.nb-tl-open {
+  display: grid;
+  gap: 3px;
+  width: 100%;
+  padding: 14px 16px;
+  border: 1px solid var(--ma-border-hairline);
+  border-radius: 14px;
+  background: var(--ma-surface-tile);
+  text-align: left;
+}
+.nb-tl-open:hover {
+  border-color: var(--ma-focus-ring);
+  box-shadow: 0 0 0 3px var(--ma-accent-subtle);
+}
+.nb-tl-asof {
+  position: absolute;
+  top: 8px;
+  right: 8px;
+}
+.nb-tl-kind {
+  font-size: 11px;
+  font-weight: 700;
+  letter-spacing: 0.05em;
+  text-transform: uppercase;
+  color: var(--ma-text-tertiary);
+}
+.nb-tl-kind.created {
+  color: var(--ma-text-link);
+}
+.nb-tl-title {
+  font-size: 16px;
+  font-weight: 700;
+}
+.nb-tl-path {
+  font-size: 12px;
+  color: var(--ma-text-tertiary);
+}
+.nb-tl-snip {
+  font-size: 13.5px;
+  color: var(--ma-text-secondary);
+}
+.nb-tl-empty {
+  display: grid;
+  justify-items: start;
+  gap: 4px;
+  padding: 24px 0;
+  color: var(--ma-text-secondary);
+}
+.nb-tl-empty p {
+  margin: 0;
+}
+
+/* ------------------------------------------------------------ search */
+.nb-overlay {
+  position: fixed;
+  inset: 0;
+  z-index: 900;
+  display: grid;
+  justify-items: center;
+  align-items: start;
+  padding: 12vh 20px 20px;
+  background: var(--ma-surface-scrim);
+}
+.nb-search {
+  display: flex;
+  flex-direction: column;
+  width: min(640px, 100%);
+  max-height: 70vh;
+  overflow: hidden;
+  border: 1px solid var(--ma-border-hairline);
+  border-radius: 18px;
+  background: var(--ma-surface-overlay);
+  box-shadow: var(--ma-elevation-window);
+}
+.nb-search-field {
+  display: flex;
+  align-items: center;
+  gap: 10px;
+  padding: 12px 14px;
+  border-bottom: 1px solid var(--ma-border-hairline);
+  color: var(--ma-text-secondary);
+}
+.nb-search-field input {
+  flex: 1;
+  min-width: 0;
+  height: 32px;
+  border: 0;
+  background: transparent;
+  color: var(--ma-text-primary);
+  font-size: 16px;
+  outline: none;
+}
+.nb-search-results {
+  list-style: none;
+  margin: 0;
+  padding: 6px;
+  overflow: auto;
+}
+.nb-search-hit {
+  display: grid;
+  gap: 2px;
+  padding: 9px 12px;
+  border-radius: 12px;
+  cursor: pointer;
+}
+.nb-search-hit.on {
+  background: var(--ma-accent-subtle);
+}
+.nb-search-title {
+  font-weight: 700;
+}
+.nb-search-path {
+  font-size: 12px;
+  color: var(--ma-text-tertiary);
+}
+.nb-search-snip {
+  font-size: 13px;
+  color: var(--ma-text-secondary);
+  overflow: hidden;
+  display: -webkit-box;
+  -webkit-line-clamp: 2;
+  -webkit-box-orient: vertical;
+}
+
+/* ------------------------------------------------------------ print (one page alone) */
+.nb-print {
+  display: none;
+}
+@media print {
+  body > *:not(.nb-print) {
+    display: none !important;
+  }
+  .nb-print {
+    display: block;
+  }
+  .nb-print .nb-scroll {
+    overflow: visible;
+  }
+  .nb-print .nb-prose,
+  .nb-print .nb-prose * {
+    color: CanvasText !important;
+  }
+  .nb-print .nb-prose {
+    padding: 0;
+  }
+}
+
+/* ------------------------------------------------------------ narrow windows */
+@media (max-width: 720px) {
+  /* As the prototype's sheet on a phone: the view switch gets a row of its own, full width,
+     and the host's title and close stay on the first. */
+  .nb-head {
+    flex-wrap: wrap;
+    padding: 10px 12px 10px 16px;
+  }
+  .nb-head-controls {
+    order: 3;
+    flex-basis: 100%;
+    margin-left: 0;
+  }
+  .nb-head-controls .nb-seg {
+    flex: 1;
+  }
+  .nb-head-controls .nb-seg button {
+    flex: 1;
+  }
+  .nb-head-controls ~ * {
+    margin-left: auto;
+  }
+  .nb-tabview,
+  .nb-temporal {
+    grid-template-columns: minmax(0, 1fr);
+    grid-template-rows: auto minmax(0, 1fr);
+  }
+  .nb-side {
+    max-height: 30vh;
+    border-right: 0;
+    border-bottom: 1px solid var(--ma-border-hairline);
+  }
+  /* A short window (200% zoom, a phone on its side) keeps a page to write in, and the column
+     scrolls to it, rather than the toolbar and footer folding over each other. */
+  .nb-main {
+    padding: 10px 10px 12px;
+    overflow-y: auto;
+  }
+  .nb-paper {
+    min-height: 240px;
+  }
+  .nb-tabs {
+    padding: 0 8px;
+  }
+  .nb-toolbar {
+    gap: 4px 6px;
+    padding: 6px 8px;
+  }
+  .nb-tool-group {
+    padding-right: 6px;
+  }
+  .nb-search-btn span,
+  .nb-search-btn kbd {
+    display: none;
+  }
+  .nb-history-body {
+    grid-template-columns: minmax(0, 1fr);
+    grid-template-rows: minmax(0, 1fr) 30%;
+  }
+}
+
+/* The prototype's motion (look 9 of 9): menus fade in over 120 ms, sheets rise over 160 ms, and none under reduced motion. */
+@keyframes nb-fade-in {
+  from {
+    opacity: 0;
+  }
+}
+@keyframes nb-rise-in {
+  from {
+    opacity: 0;
+    transform: translateY(8px);
+  }
+}
+.nb-menu {
+  animation: nb-fade-in 120ms ease-out;
+}
+.nb-search {
+  animation: nb-rise-in 160ms ease-out;
+}
+
+@media (prefers-reduced-motion: reduce) {
+  .ma-nb *,
+  .ma-nb-portal,
+  .ma-nb-portal * {
+    transition: none !important;
+    animation: none !important;
+  }
+}
+
+/* Other members' carets on a shared page (remoteCarets.ts). Colour is one of the six tab tokens, by member; the label is on the
+   window's own surface with the colour as its edge, so its text keeps text.primary in every theme. It fades 4 s after the caret
+   was drawn (each move draws a new one) and comes back on hover. */
+.nb-caret,
+.nb-remote-sel {
+  --caret: var(--ma-nb-tab-blue);
+}
+.nb-caret[data-c="1"], .nb-remote-sel[data-c="1"] { --caret: var(--ma-nb-tab-green); }
+.nb-caret[data-c="2"], .nb-remote-sel[data-c="2"] { --caret: var(--ma-nb-tab-amber); }
+.nb-caret[data-c="3"], .nb-remote-sel[data-c="3"] { --caret: var(--ma-nb-tab-rose); }
+.nb-caret[data-c="4"], .nb-remote-sel[data-c="4"] { --caret: var(--ma-nb-tab-violet); }
+.nb-caret[data-c="5"], .nb-remote-sel[data-c="5"] { --caret: var(--ma-nb-tab-slate); }
+.nb-caret {
+  position: relative;
+  margin-left: -1px;
+  margin-right: -1px;
+  border-left: 2px solid var(--caret);
+  pointer-events: auto;
+  word-break: normal;
+}
+.nb-caret-label {
+  position: absolute;
+  bottom: 100%;
+  left: -2px;
+  z-index: 3;
+  max-width: 16em;
+  padding: 1px 6px;
+  overflow: hidden;
+  border: 1px solid var(--caret);
+  border-radius: 6px 6px 6px 0;
+  background: var(--ma-surface-overlay);
+  color: var(--ma-text-primary);
+  font: 600 11px/1.4 var(--ma-font-ui);
+  white-space: nowrap;
+  text-overflow: ellipsis;
+  user-select: none;
+  pointer-events: none;
+  animation: nb-caret-fade 0.4s ease 4s forwards;
+}
+.nb-caret:hover .nb-caret-label {
+  animation: none;
+  opacity: 1;
+}
+.nb-remote-sel {
+  background: color-mix(in srgb, var(--caret) 30%, transparent);
+}
+@keyframes nb-caret-fade {
+  to {
+    opacity: 0;
+  }
+}
+@media (prefers-reduced-motion: reduce) {
+  .nb-caret-label {
+    animation-duration: 1ms;
+  }
+}

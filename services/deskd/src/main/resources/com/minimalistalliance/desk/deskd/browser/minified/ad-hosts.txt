@@ -1,0 +1,32 @@
+# Hosts of ad and tracker frames, a short built-in list (task 47). A frame from one is never content: it doesn't count
+# as another site's frame over the page, and the distiller drops it. The desk's network blocklist is the image's.
+doubleclick.net
+googlesyndication.com
+googleadservices.com
+googletagservices.com
+amazon-adsystem.com
+adnxs.com
+criteo.com
+criteo.net
+taboola.com
+outbrain.com
+rubiconproject.com
+pubmatic.com
+openx.net
+casalemedia.com
+moatads.com
+adsrvr.org
+teads.tv
+sharethrough.com
+yieldmo.com
+3lift.com
+smartadserver.com
+adform.net
+gumgum.com
+media.net
+indexww.com
+sonobi.com
+33across.com
+adsafeprotected.com
+doubleverify.com
+imasdk.googleapis.com

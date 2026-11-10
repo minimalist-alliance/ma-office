@@ -1,0 +1,150 @@
+Minimalist Alliance apps: type (2026-11-05)
+Covers the Desk, Platform and Guild apps and the sign-in pages, not the landing page. Draft: nothing is committed.
+
+FONT STACK
+  "Nunito Variable", "Nunito Fallback", system-ui, -apple-system, "Segoe UI", Roboto, sans-serif
+The desk's etched name stays Jost 600 (ADR 0064), with the stack above as its fallback.
+
+PACKAGE
+  @fontsource-variable/nunito@5.3.0 (pin it exactly, as Inter and Jost are)
+  import '@fontsource-variable/nunito/wght.css';   in src/main.tsx, in place of Inter's import
+Files, as Vite emits them:
+  nunito-latin-wght-normal.woff2       39,128 bytes (38.2 KB)  the only Nunito file a Latin page fetches
+  nunito-latin-ext-wght-normal.woff2   35,588 bytes            only if a name needs it (unicode-range)
+  cyrillic, vietnamese and the rest                            same, on demand
+  Italic is a separate import: leave it out. Nothing in the app is italic.
+One variable file covers weights 200 to 1000, so 500, 600, 700 and 800 cost nothing extra, and canvas text can use them too.
+First paint, Latin: today Inter 48.3 KB + Jost 500 10.5 KB = 58.7 KB. Final Nunito 39.1 KB + Jost 600 10.5 KB = 49.6 KB.
+Don't vendor anything: it arrives through npm, like Inter and Jost.
+
+CSP
+Works with no change. Checked in a release build behind the harness's default policy, in all three themes:
+  default-src 'self'; connect-src 'self'; img-src 'self' data: blob:; media-src 'self' blob:; worker-src 'self' blob:; frame-ancestors 'none'
+Result: Nunito and Jost load from 'self' with status 200, no console or CSP errors, and Inter isn't requested. No CDN. No data: fonts, because vite.config.ts keeps assetsInlineLimit at 0.
+Fonts follow default-src. Platform's real loader wasn't tested. If its policy differs from the harness, font-src must still allow 'self'.
+Sign-in pages: self-host the same file on each app's host. The Google Fonts link in mock.html is for the mock only.
+
+LICENSE
+SIL Open Font License 1.1 (OFL-1.1): free for commercial use, embedding and self-hosting. Copyright 2014 The Nunito Project Authors. The package's LICENSE file holds the text. Its copyright line declares no Reserved Font Name. Fonts can't be sold on their own. If the project keeps a third-party notices list, add it there beside Inter and Jost. This is a reading of the license, not legal advice.
+
+FALLBACK WITH METRIC ADJUSTMENT
+  @font-face {
+    font-family: "Nunito Fallback";
+    src: local("Arial"), local("Liberation Sans"), local("Arimo"), local("Helvetica");
+    size-adjust: 102.7%; ascent-override: 98.4%; descent-override: 34.6%; line-gap-override: 0%;
+  }
+Measured against Arimo, which has Arial's metrics, for Nunito at 600, the weight most UI text uses. Arial itself isn't installed on this machine.
+Ascent and descent match exactly. Width as a share of Nunito's:
+  text                                           plain  adjusted
+  Your notes will live on this desk, and only     0.974  0.999
+  Notebook isn't built yet                        0.945  0.971
+  Personal                                        0.989  1.016
+  Plain background                                0.974  1.001
+  No gradient behind the desks. On by default     0.972  0.997
+  switch desks, scroll to zoom, drag to pan, p    0.978  1.004
+  Sam: the draft is ready for a look              0.977  1.001
+Worst case -3% to +1.6%, against -5.5% without it. Put this rule in the app's own CSS, since the package doesn't ship it.
+Limits: a device with none of those local fonts (some Android and Linux) falls to system-ui, unadjusted. Canvas doesn't benefit much: fontsReady waits up to 800 ms before the first draw, and tile text drawn on a fallback stays until the next redraw, which is today's behavior with Inter.
+
+WEIGHTS BY ROLE: the rule
+  11-14 px: 600. Titles at those sizes: 700.
+  15-16 px: running text 500 (sign-in only; the app has none at this size), controls 600, headings and selected states 700.
+  24 px: 500 for the app's quiet h1. The 26 px sign-in h1 is 700, because it carries the page.
+Judged by eye at 1x and 2x on Light and Dark, in DOM and canvas. 500 read thin at 1x beside Inter 400. 600 matched its color. See final-small-text.png.
+No tracking was added. One size changed: the desk nav's small line, 11 to 12 px, because Nunito's x-height is lower than Inter's.
+
+DOM (src/styles/app.css)
+  selector                             size      today  final
+  body (default for everything below)  14 px     400    600
+  .segmented button                    15 px     500    600
+  .segmented button.on                 15 px     600    700
+  .segmented.theme-switch button       13 px     500    600 (selected 700)
+  .hints                               13 px     400    600
+  .desk-nav-label                      14 px     400    600
+  .desk-nav-label small                11 -> 12  400    600
+  .zoom-label                          13 px     400    600
+  .notice                              13 px     400    600
+  .menu-who                            14 px     600    700
+  .menu-label                          13 px     400    600
+  .menu-item                           14 px     400    600
+  .about, .about-line                  13 px     400    600
+  .switch-text                         14 px     400    600
+  .switch-text small                   12 px     400    600
+  .btn, .btn.primary                   14 px     500    700
+  .window-title                        14 px     600    700
+  .window-desk                         13 px     400    600
+  .empty-app h3                        16 px     600    700
+  .empty-app p                         14 px     400    600
+  .empty-app .empty-note               13 px     400    600
+  .calm-brand                          13 px     400    600
+  .calm-card h1                        24 px     400    500
+  .desk-notice h2                      16 px     600    700
+  .desk-notice p, .calm-card p         14 px     400    600
+Tooltips are native title attributes, so the OS sets their font. The only drawn tooltip is the canvas hover label below.
+Digits: Nunito's are the same width with or without tabular-nums (checked at 600), so the zoom label and "1 of 3" don't jitter.
+
+KONVA CANVAS (fontStyle, or ctx.font)
+  site                                 size      today   final
+  ItemTile app label                   13        normal  600
+  ItemTile widget.title                14        600     700
+  ItemTile widget.text                 13        normal  600
+  ItemTile widget.foot                 13        normal  600
+  ItemTile hover label                 12        normal  600
+  ItemTile badge number                13        600     700
+  glyphs.ts provider letter            r         700     800
+  DeskPanel status line, and           13        normal  600
+    STATUS_FONT in etch.ts, which must match
+  DeskPanel "Undo"                     13        normal  700  (not seen in a shot)
+  etched name, etch.ts                 14        Jost 500  Jost 600 (ADR 0064)
+Canvas text scales with the camera, so one weight has to serve every zoom. 600 is right at 100%, and a little strong at 175% and up, where the rule would pick 500. The variable font would allow a swap on settle, as the etch does with settledLod, but I don't think it's worth the code.
+font.ts: set CANVAS_FONT to the stack above. fontsReady must load "Nunito Variable" at 600, 700 and 800, and Jost at 600.
+
+WIDTHS AGAINST TODAY
+Measured in every theme at 1440x900: no DOM text overflows or clips in the desk, window, menu or bars. The scope switch grows 1 px (305 to 306). The hints pill shrinks 29 px. Nunito runs narrower than Inter even at 600.
+Canvas text, in px:
+  size    text                                    Inter Nunito
+   13 px  couldn't wake · Retry                   131.0  124.0
+   13 px  waiting for capacity · #12              153.0  149.0
+   13 px  going to sleep · 12:34                  134.0  127.0
+   13 px  paused · limit reached                  137.0  128.0
+   13 px  asleep · Give Back until Nov 12         191.0  182.0
+   13 px  can't reach desk                        103.0   94.0
+   13 px  not connected yet                       113.0  104.0
+   13 px  reconnecting…                            93.0   84.0
+   13 px  Sam: the draft is ready for a look      203.0  191.0
+   14 px  Trip notes                               70.0   65.0
+   13 px  3 unread channels                       116.0  106.0
+   12 px  Notebook                                 55.0   53.0
+   13 px  Today: $0.42 of $5                      118.0  111.0
+So the longest status line still fits the smallest desk, which was sized for Inter (web/CLAUDE.md).
+
+SIGN-IN PAGES (mock.html)
+  role                                 size      today  final
+  body, line under heading             15 px     400    500
+  h1                                   26 px     650    700, tracking -0.016em -> -0.008em
+  labels                               13 px     500    600
+  field text                           16 px     400    500
+  code field                           20 px     500    600
+  buttons                              15 px     600    700, tracking -0.01em -> 0
+  links, Show, Copy                    13 px     500    600
+  field error                          13 px     400    600
+  alert                                14 px     400    600
+  "or", footer line                    13 px     400    600
+  step line                            14 px     500    700
+  fixed email in the can't-sign-in box 14 px     500    600
+Sizes are unchanged. The fields stay 16 px, so iOS doesn't zoom on focus.
+One copy fix: Nunito's narrower set broke "6-digit" across two lines on the code screen, so that word now can't wrap. Check the same sentence in the real page.
+
+WHAT HAS TO CHANGE WITH THIS
+- docs/assets/signin/README.md: the font row, the color table (tokens.json, signin_only) and the contrast line. Its tokens were the site's, and the landing page isn't moving, so sign-in and landing will now differ in font and color.
+- src/theme/tokens.test.ts: two value pins, Dusk text.primary and --ma-surface-tile.
+- ADR 0050 stays: Dusk keeps its neutral whites (#FAFAFA, #E2E2E2, #DADADA). ADR 0029 and design section 3.12 hold the old values. The kit adoption itself needs an ADR, and only the System Engineer writes the design doc and the ADR index.
+- ADR 0064's table holds etch values set against the old panels; tokens.json replaces them.
+- Inter and its import can leave web/ once this lands.
+
+NOT CHECKED
+- Platform and Guild apps: I found no code for them to look at. Their tokens and weights are carried over from the Desk app, unseen.
+- Rendering outside headless Chromium on Linux: Safari, Firefox, Windows ClearType and real Retina screens can make Nunito look lighter or heavier. Check small text on a real desk.
+- ADR 0064's cut is a scratch patch in these shots. It isn't at constant size, and main doesn't draw it yet. The hidden-count icon and overlapping tiles weren't shown.
+- npm run perf wasn't run. Swapping a font and weights shouldn't touch the camera, but the rule asks for it after canvas changes.
+- The Google G in mock.html is Google's button-template path, typed from memory. Compare it with Google's download. Google's guidelines also name Roboto Medium for the label; the mock uses Nunito, as it used Inter.

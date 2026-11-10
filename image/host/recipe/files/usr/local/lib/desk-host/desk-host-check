@@ -1,0 +1,528 @@
+#!/usr/bin/python3 -I
+"""desk-host-check [--only <name>,...] [--list]: the shared host's own checks (image/host/verify.sh runs them on a booted
+image; desk-host runs the quick ones before every start). One PASS or FAIL line each; exit 1 on any FAIL.
+
+Each check reads the thing it judges and can fail: image/host/verify.sh breaks each one on purpose after the clean run
+(its "mutation" pass) and requires the FAIL, then puts it back and requires the PASS again.
+"""
+import glob
+import hashlib
+import importlib.util
+import json
+import os
+import re
+import stat
+import subprocess
+import sys
+import urllib.request
+
+LIB = "/usr/local/lib/desk-host"
+DH = "/srv/desk-host"
+T = f"{DH}/template"
+SLOTS_MAX = 29
+RUNC = "/usr/local/sbin/runc"
+DESK_UNITS = ("desk-firstboot.service data.mount desk-units@.service desk-data@.service desk-datadirs.service desk-rtc.service deskd.service "
+              "desk-agent.service desk-agent-filter.service desk-notebook.service desk-egress.service desk-units.socket desk-data.socket "
+              "desk-preread.service desk-xorg.service desk-audio.service desk-browser.service desk-stream.service desk-browser-thaw.service "
+              "desk-adblock.service desk-kind.service desk-guild-net.service desk-guild-rtc.service commons-data.service "
+              "commons-server-address.service commons-server.service docker.service docker.socket containerd.service zramswap.service").split()
+DESK_UIDS = range(1100, 1113)
+
+
+def sh(*a, **kw):
+    return subprocess.run(a, capture_output=True, text=True, **kw)
+
+
+def rd(p):
+    try:
+        return open(p).read().strip()
+    except OSError:
+        return None
+
+
+def conf():
+    out = {}
+    for f in ("/etc/desk-host/desk-host.conf",):
+        try:
+            for line in open(f):
+                line = line.strip()
+                if line and not line.startswith("#") and "=" in line:
+                    k, v = line.split("=", 1)
+                    out[k.strip()] = v.strip().strip('"')
+        except OSError:
+            pass
+    return out
+
+
+C = conf()
+TEST_ACCESS = "--allow-verify-access" in sys.argv   # image/host/verify.sh's own SSH (one key, one address); nothing else
+
+
+def classes():
+    """classes.py (the size classes' code), loaded by path: -I keeps this directory off sys.path."""
+    spec = importlib.util.spec_from_file_location("desk_host_classes", f"{LIB}/classes.py")
+    m = importlib.util.module_from_spec(spec)
+    spec.loader.exec_module(m)
+    return m
+
+
+def instance_type():
+    try:
+        t = urllib.request.urlopen(urllib.request.Request("http://169.254.169.254/latest/api/token", method="PUT",
+                                                          headers={"X-aws-ec2-metadata-token-ttl-seconds": "60"}), timeout=3).read().decode()
+        return urllib.request.urlopen(urllib.request.Request("http://169.254.169.254/latest/meta-data/instance-type",
+                                                             headers={"X-aws-ec2-metadata-token": t}), timeout=3).read().decode()
+    except OSError:
+        return "unknown"
+
+
+def slots():
+    try:
+        h = json.load(open("/var/lib/desk-host/hosting.json"))
+        return int(h.get("slotsPerHost") or h["desksPerHost"])
+    except (OSError, ValueError, KeyError):
+        return 6
+
+
+def c_runc():
+    want = rd(f"{LIB}/runc.sha256")
+    got = hashlib.sha256(open(RUNC, "rb").read()).hexdigest() if os.path.exists(RUNC) else None
+    ver = sh(RUNC, "--version").stdout.split("\n")[0] if got else ""
+    others = [p for p in ("/usr/sbin/runc", "/usr/bin/runc", "/sbin/runc", "/bin/runc") if os.path.exists(p)]
+    ok = want and got == want.split()[0] and ver == f"runc version {C.get('RUNC_VERSION', '1.5.2')}" and not others
+    return ok, f"{RUNC} {ver.split()[-1] if ver else 'missing'}, sha256 {str(got)[:12]} (pinned {str(want)[:12]}), others {others or 'none'}"
+
+
+def c_kernel():
+    r = os.uname().release
+    ok = r.endswith("-arm64") and "cloud" not in r and os.path.isdir("/sys/module/zswap")
+    cloud = glob.glob("/boot/vmlinuz-*cloud*")
+    return ok and not cloud, f"kernel {r}, zswap {'built in' if os.path.isdir('/sys/module/zswap') else 'absent'}, cloud kernels in /boot: {len(cloud)}"
+
+
+def c_zswap():
+    p = "/sys/module/zswap/parameters"
+    got = {k: rd(f"{p}/{k}") for k in ("enabled", "compressor", "zpool", "max_pool_percent", "shrinker_enabled")}
+    want = {"enabled": "Y", "compressor": "lz4", "zpool": "zsmalloc", "max_pool_percent": "50", "shrinker_enabled": "N"}
+    return got == want, " ".join(f"{k}={v}" for k, v in got.items())
+
+
+def c_swap():
+    lines = [l.split() for l in (rd("/proc/swaps") or "").splitlines()[1:]]
+    want = C.get("SWAP_FILE", "/var/lib/desk-host/swap")
+    gb = int(C.get("SWAP_GB", "8"))
+    ok = len(lines) == 1 and lines[0][0] == want and int(lines[0][2]) >= gb * (1 << 20) - 8 and not os.path.exists("/sys/block/zram0")
+    return ok, f"swap devices {[l[0] + ' ' + l[2] + 'K' for l in lines]}, zram0 {'present' if os.path.exists('/sys/block/zram0') else 'absent'}"
+
+
+SYSCTL = {"kernel.yama.ptrace_scope": "2", "dev.tty.ldisc_autoload": "0", "net.ipv4.ip_forward": "1", "net.ipv6.conf.all.forwarding": "0",
+          "kernel.core_pattern": "|/bin/false", "fs.suid_dumpable": "0", "net.core.rmem_max": "4194304", "net.core.wmem_max": "4194304",
+          "kernel.unprivileged_bpf_disabled": "1", "kernel.dmesg_restrict": "1", "kernel.kptr_restrict": "2"}
+
+
+def c_sysctl():
+    bad = {}
+    for k, v in SYSCTL.items():
+        got = rd("/proc/sys/" + k.replace(".", "/"))
+        if got != v:
+            bad[k] = got
+    ct = rd("/proc/sys/net/netfilter/nf_conntrack_max")
+    if ct is None or int(ct) < max(65536, slots() * int(C.get("CT_HOST", "4608"))):   # every slot's host limit fits
+        bad["net.netfilter.nf_conntrack_max"] = ct
+    return not bad, f"{len(SYSCTL) + 1} sysctls" + (f"; wrong: {bad}" if bad else " as set")
+
+
+def blacklist():
+    mods = set()
+    for line in open("/etc/modprobe.d/desk-host.conf"):
+        f = line.split()
+        if len(f) == 3 and f[0] == "install" and f[2] == "/bin/false":
+            mods.add(f[1])
+    return mods
+
+
+def c_modules():
+    mods = blacklist()
+    loaded = {l.split()[0] for l in open("/proc/modules")}
+    kv = os.uname().release
+    ldisc = set()
+    for line in open(f"/lib/modules/{kv}/modules.alias"):
+        f = line.split()
+        if len(f) == 3 and f[1].startswith("tty-ldisc-"):
+            ldisc.add(f[2].replace("-", "_"))
+    norm = {m.replace("-", "_") for m in mods}
+    missing = sorted(ldisc - norm)
+    on = sorted(norm & {m.replace("-", "_") for m in loaded})
+    dry = {m: sh("modprobe", "-n", "-v", m).stdout.strip() for m in ("sctp", "n_hdlc", "tipc")}
+    ok = len(mods) >= 64 and not missing and not on and all("/bin/false" in v for v in dry.values())
+    return ok, f"{len(mods)} modules blacklisted ({len(ldisc)} tty line disciplines among them, missing {missing or 'none'}); loaded {on or 'none'}; modprobe -n: " \
+               + ", ".join(f"{m} {'install /bin/false' if '/bin/false' in v else repr(v)}" for m, v in dry.items())
+
+
+def c_units():
+    out = sh("systemctl", "is-enabled", *DESK_UNITS).stdout.split()
+    bad = [u for u, s in zip(DESK_UNITS, out) if s != "masked"]
+    docker = [p for p in ("/usr/bin/docker", "/usr/bin/dockerd", "/usr/bin/containerd", "/usr/sbin/runc") if os.path.exists(p)]
+    files = [u for u in DESK_UNITS if os.path.exists(f"/etc/systemd/system/{u}") and not os.path.islink(f"/etc/systemd/system/{u}")]
+    return not bad and not docker and not files and len(out) == len(DESK_UNITS), \
+        f"{len(DESK_UNITS)} desk units masked: {'yes' if not bad else 'NO: ' + ' '.join(bad)}; unit files on the host {files or 'none'}; Docker {docker or 'absent'}"
+
+
+def c_uids():
+    lo, hi = 100000 + 65536, 100000 + (SLOTS_MAX + 1) * 65536
+    probs = []
+    for f in ("/etc/subuid", "/etc/subgid"):
+        ent = [l.split(":") for l in open(f).read().split()]
+        slots = {n: int(s) for n, s, c in ent if n.startswith("desk-slot-")}
+        if any(slots.get(f"desk-slot-{k}") != 100000 + k * 65536 for k in range(1, SLOTS_MAX + 1)):
+            probs.append(f"{f}: a slot unreserved")
+        probs += [f"{f}: {n} overlaps" for n, s, c in ent if not n.startswith("desk-slot-") and int(s) < hi and int(s) + int(c) > lo]
+    for p in glob.glob("/proc/[0-9]*"):
+        try:
+            st = open(f"{p}/status").read()
+            uid = int(re.search(r"^Uid:\s+(\d+)", st, re.M).group(1))
+            cg = open(f"{p}/cgroup").read()
+        except (OSError, AttributeError):
+            continue
+        if (lo <= uid < hi and "/desk-host/" not in cg) or uid in DESK_UIDS:
+            probs.append(f"pid {p[6:]} uid {uid}")
+    users = [l.split(":")[0] for l in open("/etc/passwd") if int(l.split(":")[2]) in DESK_UIDS]
+    if users:
+        probs.append(f"desk users on the host: {users}")
+    return not probs, f"slots 1-{SLOTS_MAX} reserved in /etc/subuid and /etc/subgid, no other entry in a range, no host process in one, no desk uid on the host" \
+        + (f"; {probs[:6]}" if probs else "")
+
+
+def c_nft():
+    r = sh("nft", "-j", "list", "table", "inet", "host")
+    if r.returncode != 0:
+        return False, "no table inet host"
+    j = json.loads(r.stdout)["nftables"]
+    chains = {x["chain"]["name"]: x["chain"] for x in j if "chain" in x}
+    text = sh("nft", "list", "table", "inet", "host").stdout
+    inp = sh("nft", "list", "chain", "inet", "host", "input").stdout   # the chain alone: a set's braces end nothing here
+    ssh = [l.strip() for l in inp.splitlines() if re.search(r"dport (22|ssh)\b", l)]
+    ssh_ok = not ssh or (TEST_ACCESS and len(ssh) == 1 and re.fullmatch(r"(ip saddr \S+ )?tcp dport 22 accept", ssh[0]) is not None)
+    ok = chains.get("input", {}).get("policy") == "drop" and chains.get("forward", {}).get("policy") == "drop" \
+        and "ip daddr 169.254.169.254 meta skuid 0 accept" in text and re.search(r'iifname "dhv\*" meta nfproto ipv6 .*drop', text) is not None \
+        and ssh_ok
+    others = [t for t in sh("nft", "list", "tables").stdout.split("\n") if t and t not in ("table inet host", "table ip host_nat")]
+    return ok and not others, f"inet host input {chains.get('input', {}).get('policy')}, forward {chains.get('forward', {}).get('policy')}, IMDS uid 0 only, " \
+        f"IPv6 from desks dropped, SSH in {'from one address (the verify run' + chr(39) + 's own)' if ssh else 'none'}; other tables {others or 'none'}"
+
+
+def c_counters():
+    """A slot's byte counters see every packet of its flows, not only each flow's first: the forward chain jumps to desk_est (which only
+    counts) before it accepts established and related traffic, and each running slot's est_<k> counts both directions."""
+    fwd = [l.strip() for l in sh("nft", "list", "chain", "inet", "host", "forward").stdout.splitlines()]
+    est = re.compile(r"ct state [{ ]*(established[, ]+related|related[, ]+established)")
+    ji = next((i for i, l in enumerate(fwd) if est.search(l) and l.endswith("jump desk_est")), None)
+    ai = next((i for i, l in enumerate(fwd) if est.search(l) and l.endswith("accept")), None)
+    probs = []
+    if ji is None:
+        probs.append("forward has no 'ct state established,related jump desk_est'")
+    if ai is None:
+        probs.append("forward has no established,related accept")
+    if ji is not None and ai is not None and ji > ai:
+        probs.append("the established accept comes before the count")
+    if sh("nft", "list", "chain", "inet", "host", "desk_est").returncode != 0:
+        probs.append("no desk_est chain")
+    slots = sorted(int(m.group(1)) for m in (re.match(r"slot_(\d+)$", c) for c in
+                   re.findall(r"^\s*chain (\S+)", sh("nft", "list", "table", "inet", "host").stdout, re.M)) if m)
+    de = sh("nft", "list", "chain", "inet", "host", "desk_est").stdout
+    for k in slots:
+        out = sh("nft", "list", "chain", "inet", "host", f"slot_{k}").stdout
+        m = re.search(r'oifname "([^"]+)" counter name "?out_%d"? accept' % k, out)
+        e = sh("nft", "list", "chain", "inet", "host", f"est_{k}").stdout
+        if not m:
+            probs.append(f"slot_{k} has no out_{k} rule")
+            continue
+        i = m.group(1)
+        if not re.search(rf'iifname "dhv{k}" oifname "{re.escape(i)}" counter name "?out_{k}"?(\s|$)', e):
+            probs.append(f"est_{k} doesn't count out_{k}")
+        if not re.search(rf'iifname "{re.escape(i)}" oifname "dhv{k}" counter name "?rx_{k}"?(\s|$)', e):
+            probs.append(f"est_{k} doesn't count rx_{k}")
+        if f'iifname "dhv{k}" jump est_{k}' not in de or f'oifname "dhv{k}" jump est_{k}' not in de:
+            probs.append(f"desk_est doesn't jump to est_{k} both ways")
+    return not probs, (f"established flows counted before their accept; {len(slots)} slot(s) count out and rx" if not probs else f"{probs[:4]}")
+
+
+def c_store():
+    m = [l.split() for l in open("/proc/self/mounts") if l.split()[1] in (DH, T)]
+    store = [x for x in m if x[1] == DH]
+    tmpl = [x for x in m if x[1] == T]
+    try:
+        ro = "read-only" if os.statvfs(T).f_flag & os.ST_RDONLY else "WRITABLE"
+    except OSError as e:
+        ro = os.strerror(e.errno)
+    ok = bool(store) and "prjquota" in store[0][3] and "nosuid" in store[0][3] and "nodev" in store[0][3] and bool(tmpl) and "ro" in tmpl[-1][3].split(",") \
+        and ro == "read-only"
+    return ok, f"slot store {store[0][0] + ' ' + store[0][3] if store else 'NOT MOUNTED'}; template {'bound' if tmpl else 'not bound'}, {ro}"
+
+
+def c_template():
+    probs = []
+    if os.path.exists(f"{T}/var/lib/cloud"):
+        probs.append("cloud-init state")
+    if glob.glob(f"{T}/etc/ssh/ssh_host_*"):
+        probs.append("ssh host keys")
+    if any(os.path.isfile(os.path.join(d, f)) for d, _, fs in os.walk(f"{T}/var/log") for f in fs):
+        probs.append("host logs")
+    if glob.glob(f"{T}/home/*/.ssh/authorized_keys") + glob.glob(f"{T}/root/.ssh/authorized_keys"):
+        probs.append("authorized keys")
+    if (rd(f"{T}/etc/machine-id") or "") != "":
+        probs.append("machine-id")
+    if any(os.path.exists(f"{T}{p}") for p in ("/etc/desk-host", "/var/lib/desk-host", "/srv/desk-host")):
+        probs.append("desk-host config or records")
+    if os.stat(T).st_uid != 0:
+        probs.append("not host root's")
+    pw = {l.split(":")[0]: int(l.split(":")[2]) for l in open(f"{T}/etc/passwd")}
+    gr = {l.split(":")[0]: int(l.split(":")[2]) for l in open(f"{T}/etc/group")}
+    for u, i in (("desk-x", 1107), ("desk-snd", 1108), ("desk-dns", 1109), ("desk-data", 1112)):
+        if pw.get(u) != i:
+            probs.append(f"user {u} not {i}")
+    if gr.get("desk-audio") != 1111:
+        probs.append("group desk-audio not 1111")
+    link = os.readlink(f"{T}/etc/ma/desk-rtc.conf") if os.path.islink(f"{T}/etc/ma/desk-rtc.conf") else None
+    if link != "/run/desk-host/desk-rtc.conf":
+        probs.append("/etc/ma/desk-rtc.conf isn't the host's link")
+    try:
+        if json.load(open(f"{T}/etc/chromium/policies/managed/ma.json")).get("NativeMessagingUserLevelHosts") is not False:
+            probs.append("NativeMessagingUserLevelHosts not false")
+    except (OSError, ValueError):
+        probs.append("no managed policy")
+    if not os.path.isfile(f"{T}/.complete"):
+        probs.append("not complete")
+    return not probs, f"template {(rd(f'{T}/.complete') or '').splitlines()[0] if rd(f'{T}/.complete') else '-'}: " + ("12 of 12 (no cloud-init, host keys, logs, authorized keys or machine-id; no desk-host state; root's; "
+                                                            "desk-x, desk-snd, desk-dns, desk-data, desk-audio; desk-rtc.conf link; native messaging off; complete)" if not probs else f"{probs}")
+
+
+def in_template(path):
+    """A path inside the template, its links resolved inside the template (the desk's own absolute links point at its root)."""
+    p = T
+    for part in path.strip("/").split("/"):
+        q = os.path.join(p, part)
+        for _ in range(10):
+            if not os.path.islink(q):
+                break
+            t = os.readlink(q)
+            q = os.path.join(T, t.lstrip("/")) if t.startswith("/") else os.path.join(os.path.dirname(q), t)
+        p = q
+    return p
+
+
+def c_releases():
+    r = sh(f"{LIB}/desk-host-release", "verify")
+    lines = [l for l in r.stdout.splitlines() if l]
+    same = []
+    for comp in ("deskd", "desk-agent", "desk-notebook"):
+        a, b = rd(f"{DH}/releases/{comp}/current/image-id"), rd(in_template(f"/opt/ma/{comp}/current/image-id"))
+        if a != b:
+            same.append(f"{comp} store {str(a)[:19]} template {str(b)[:19]}")
+    for comp in ("desk-rtc", "desk-stream"):
+        a, b = rd(f"{DH}/releases/{comp}/current/artifact.sha256"), rd(in_template(f"/opt/ma/{comp}/current/artifact.sha256"))
+        if a != b:
+            same.append(f"{comp} store {str(a)[:12]} template {str(b)[:12]}")
+    return r.returncode == 0 and len(lines) == 5 and not same, f"{sum(l.startswith('PASS') for l in lines)} of {len(lines)} releases as pinned, " \
+        f"tree hashes as installed; same images as the template: {'yes' if not same else same}"
+
+
+def c_desk_svc():
+    want = (rd(f"{LIB}/desk-svc.sha256") or "").split()
+    got = hashlib.sha256(open(f"{LIB}/desk/desk-svc", "rb").read()).hexdigest() if os.path.exists(f"{LIB}/desk/desk-svc") else None
+    return bool(want) and got == want[0], f"desk-svc {str(got)[:12]} (built at bake {want[0][:12] if want else '?'})"
+
+
+def c_no_test():
+    found = [p for p in ("/etc/desk-host/test.conf", "/var/lib/desk-host/test") if os.path.exists(p)]
+    found += [p for p in glob.glob(f"{LIB}/desk/*") if re.search(r"forward|probe|test", os.path.basename(p))]
+    return not found, f"test tools on the host: {found or 'none'}"
+
+
+def c_apparmor():
+    en = rd("/sys/module/apparmor/parameters/enabled")
+    t = open(f"{LIB}/apparmor.tmpl").read().replace("@K@", "0")
+    r = subprocess.run(["apparmor_parser", "-Q", "-K"], input=t, capture_output=True, text=True)
+    return en == "Y" and r.returncode == 0, f"AppArmor enabled {en}; the slot profile parses: {'yes' if r.returncode == 0 else r.stderr.strip()[:200]}"
+
+
+def c_cgroup():
+    root = rd("/sys/fs/cgroup/cgroup.subtree_control") or ""
+    dh = rd("/sys/fs/cgroup/desk-host/cgroup.subtree_control") or ""
+    ok = all(c in root.split() for c in ("cpu", "memory", "pids", "io")) and all(c in dh.split() for c in ("cpu", "memory", "pids", "io"))
+    return ok, f"root controllers [{root}], desk-host [{dh}]"
+
+
+def c_boot():
+    s = sh("systemctl", "show", "-p", "ActiveState", "-p", "Result", "desk-host-boot.service", "desk-host-shutdown.service").stdout.split()
+    ok = s.count("ActiveState=active") == 2 and s.count("Result=success") == 2
+    return ok, f"desk-host-boot and desk-host-shutdown: {' '.join(s)}"
+
+
+def c_hosting():
+    try:
+        h = json.load(open("/var/lib/desk-host/hosting.json"))
+    except (OSError, ValueError):
+        return False, "no /var/lib/desk-host/hosting.json"
+    n, s = h.get("desksPerHost"), h.get("slotsPerHost", h.get("desksPerHost"))
+    return isinstance(n, int) and isinstance(s, int) and 1 <= n <= s <= SLOTS_MAX, f"hosting {h}"
+
+
+def c_classes():
+    """The size classes' table: valid, standard present and all 1s, host root's alone (ADR 0072, "Container sizes by tier")."""
+    p = "/etc/desk-host/classes.conf"
+    st = os.stat(p)
+    table, probs = classes().load(p)
+    if st.st_uid != 0 or st.st_mode & 0o022:
+        probs.append(f"{p} is uid {st.st_uid}, mode {stat.S_IMODE(st.st_mode):o}")
+    return not probs, (f"{len(table)} classes ({' '.join(table)}), standard all 1s, root's" if not probs else f"{probs[:4]}")
+
+
+def c_class_applied():
+    """Every running desk's cgroup is its class's, and the running desks' memory.max and disk shares fit DesksPerHost units."""
+    return classes().applied(instance_type())
+
+
+def c_ssh():
+    """The image has no SSH. A verify run reaches the box with its own key for admin, started by its user data, never enabled."""
+    s = sh("systemctl", "is-enabled", "ssh.service").stdout.strip()
+    keys = [k for k in glob.glob("/home/*/.ssh/authorized_keys") + glob.glob("/root/.ssh/authorized_keys") if os.path.getsize(k) > 0]   # cloud-init leaves empty ones
+    allowed = ["/home/admin/.ssh/authorized_keys"] if TEST_ACCESS else []
+    extra = [k for k in keys if k not in allowed]
+    nkeys = sum(1 for k in keys for l in open(k) if l.strip() and not l.startswith("#"))
+    ok = s != "enabled" and not extra and nkeys <= (1 if TEST_ACCESS else 0)
+    return ok, f"ssh {s or 'not installed'}, authorized keys {nkeys} in {keys or 'none'}"
+
+
+def c_link():
+    """desk-host-link (the host's link to Platform) runs, as root, from the image's own file, and reaches only the env's API."""
+    show = dict(l.split("=", 1) for l in sh("systemctl", "show", "-p", "ActiveState", "-p", "SubState", "-p", "MainPID", "-p", "UnitFileState",
+                                             "desk-host-link.service").stdout.split("\n") if "=" in l)
+    pid = show.get("MainPID", "0")
+    uid = cmd = None
+    if pid != "0":
+        try:
+            uid = int(re.search(r"^Uid:\s+(\d+)", open(f"/proc/{pid}/status").read(), re.M).group(1))
+            cmd = open(f"/proc/{pid}/cmdline").read().split("\0")
+        except (OSError, AttributeError):
+            pass
+    urls = C.get("LINK_API_staging") == "https://host-api.staging.minimalistalliance.com" and C.get("LINK_API_prod") == "https://host-api.minimalistalliance.com"
+    override = C.get("LINK_API", "")
+    override_ok = not override or (TEST_ACCESS and re.fullmatch(r"http://127\.0\.0\.1:\d{2,5}", override) is not None)
+    ok = show.get("ActiveState") == "active" and show.get("SubState") == "running" and show.get("UnitFileState") == "enabled" and uid == 0 \
+        and cmd is not None and f"{LIB}/desk-host-link" in cmd and urls and override_ok
+    return ok, f"desk-host-link {show.get('ActiveState')}/{show.get('SubState')}, {show.get('UnitFileState')}, pid {pid} uid {uid}; " \
+        f"the envs' APIs {'as built' if urls else 'NOT as built'}; override {'none' if not override else ('a test fake on the loopback' if override_ok else 'REFUSED')}"
+
+
+IN_ALLOWED = (r'iif "lo" accept', r"ct state established,related accept", r"icmpv6 type \{ (nd-[a-z-]+(, )?)+ \}( ip6 hoplimit 255)? accept",
+              r"ip6 hoplimit 255 icmpv6 type \{ (nd-[a-z-]+(, )?)+ \} accept", r"udp sport 67 udp dport 68 accept", r"udp sport 547 udp dport 546 accept")
+
+
+def c_inbound():
+    """PF-03: nothing new reaches the host's own address (ping included); IN-09: every desk packet meets its slot's source check
+    before any flow is let through (the established flows' counting after it is `counters`)."""
+    inp = sh("nft", "list", "chain", "inet", "host", "input").stdout
+    fwd = [l.strip() for l in sh("nft", "list", "chain", "inet", "host", "forward").stdout.splitlines()]
+    extra = []
+    for l in (x.strip() for x in inp.splitlines()):
+        if not re.search(r"\baccept$", l):
+            continue
+        if any(re.fullmatch(a, l) for a in IN_ALLOWED):
+            continue
+        if TEST_ACCESS and re.fullmatch(r"(ip saddr \S+ )?tcp dport 22 accept", l):
+            continue
+        extra.append(l)
+    pol = "policy drop" in inp
+    try:
+        order = fwd.index('iifname "dhv*" jump desk_src') < fwd.index("ct state established,related accept")
+    except ValueError:
+        order = False
+    return pol and not extra and order, f"input: policy {'drop' if pol else 'NOT drop'}, accepts beyond lo, flows, DHCP and ND: {extra or 'none'}; " \
+        f"forward: desks' source check before flows {'yes' if order else 'NO'}"
+
+
+def c_standin():
+    """IN-03, IN-04: a running slot reaches 169.254.169.254 only as its own stand-in, 10.98.<k>.1:STANDIN_PORT, by a DNAT keyed by
+    its veth and address; nothing else of the metadata address is let through, and no stand-in listens anywhere but a running
+    slot's own address."""
+    port = C.get("STANDIN_PORT", "9254")
+    running = {int(m.group(1)) for c in sh(RUNC, "list", "-q").stdout.split() if (m := re.fullmatch(r"dh-desk-(\d+)", c))}
+    starting = {int(f) for f in os.listdir("/run/desk-host/op") if f.isdigit()} if os.path.isdir("/run/desk-host/op") else set()
+    probs = []
+
+    def chains(text):
+        out, cur = {}, None
+        for l in text.splitlines():
+            m = re.match(r"\s*chain (\S+) \{", l)
+            if m:
+                cur = m.group(1)
+                out[cur] = []
+            elif cur and l.strip() and l.strip() != "}":
+                out[cur].append(re.sub(r" counter packets \d+ bytes \d+", " counter", l.strip()))
+        return out
+    nat, host = chains(sh("nft", "list", "table", "ip", "host_nat").stdout), chains(sh("nft", "list", "table", "inet", "host").stdout)
+    seen = set()
+    for ch, rules in nat.items():
+        for r in rules:
+            if "169.254.169.254" not in r and f":{port}" not in r:
+                continue
+            m = re.fullmatch(r"pre_(\d+)", ch)
+            k = int(m.group(1)) if m else None
+            want = f'iifname "dhv{k}" ip saddr 10.98.{k}.2 ip daddr 169.254.169.254 tcp dport 80 dnat to 10.98.{k}.1:{port}'
+            if k is None or r != want or k not in running | starting or k in seen:
+                probs.append(f"{ch}: {r}")
+            seen.add(k)
+    probs += [f"slot {k}: no stand-in DNAT" for k in sorted(running - seen)]
+    for k in running:
+        ins = host.get(f"in_{k}", [])
+        if f"ip saddr 10.98.{k}.2 ip daddr 10.98.{k}.1 tcp dport {port} ct original ip daddr 169.254.169.254 accept" not in ins:
+            probs.append(f"in_{k}: the stand-in's accept isn't as built")
+        if "ip daddr 169.254.169.254 counter drop" not in host.get(f"slot_{k}", []):
+            probs.append(f"slot_{k}: 169.254.169.254 not dropped")
+        if f"ip saddr != 10.98.{k}.2 counter drop" not in host.get(f"src_{k}", []):
+            probs.append(f"src_{k}: no source check")
+    for ch, rules in host.items():
+        for r in rules:
+            if f"dport {port}" in r and not re.fullmatch(r"in_\d+", ch):
+                probs.append(f"{ch}: {r}")
+    listen = []
+    for l in sh("ss", "-Hltn").stdout.splitlines():
+        a = l.split()[3] if len(l.split()) > 3 else ""
+        if a.endswith(f":{port}"):
+            m = re.fullmatch(rf"10\.98\.(\d+)\.1:{port}", a)
+            listen.append(a)
+            if not m or int(m.group(1)) not in running | starting:
+                probs.append(f"a stand-in listens on {a}")
+    return not probs, f"{len(running)} running slot(s), each with its own stand-in DNAT, accept and drops; listeners {listen or 'none'}" \
+        + (f"; {probs[:6]}" if probs else "")
+
+
+CHECKS = {"runc": c_runc, "kernel": c_kernel, "zswap": c_zswap, "swap": c_swap, "sysctl": c_sysctl, "modules": c_modules, "units": c_units,
+          "uids": c_uids, "nft": c_nft, "store": c_store, "template": c_template, "releases": c_releases, "desk-svc": c_desk_svc,
+          "no-test": c_no_test, "apparmor": c_apparmor, "cgroup": c_cgroup, "boot": c_boot, "hosting": c_hosting, "ssh": c_ssh,
+          "classes": c_classes, "class-applied": c_class_applied, "counters": c_counters, "link": c_link, "inbound": c_inbound, "standin": c_standin}
+QUICK = ("runc", "zswap", "swap", "sysctl", "store", "cgroup", "classes")
+
+
+def main():
+    names = list(CHECKS)
+    if "--list" in sys.argv:
+        print(" ".join(names))
+        return 0
+    if "--quick" in sys.argv:
+        names = list(QUICK)
+    if "--only" in sys.argv:
+        names = sys.argv[sys.argv.index("--only") + 1].split(",")
+    bad = 0
+    for n in names:
+        try:
+            ok, detail = CHECKS[n]()
+        except Exception as e:  # noqa: BLE001 - a check that can't run is a FAIL
+            ok, detail = False, f"{type(e).__name__}: {e}"
+        print(f"{'PASS' if ok else 'FAIL'} host {n}: {detail}", flush=True)
+        bad |= not ok
+    return bad
+
+
+sys.exit(main())

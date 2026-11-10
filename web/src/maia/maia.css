@@ -1,0 +1,655 @@
+/* Support Maia's widget (src/maia/). Her bubble sits in the right-most corner of the bottom bar's row, to the right of
+   the bandwidth circle, which moves over for her (and the bar makes room on that side, as it does for the circle);
+   on narrower screens she sits just above the circle, in the same corner. Collapsed, she's under app windows, which are the member's work; open, her panel is over them,
+   since the member asked for it. Every color is a token. */
+.maia {
+  position: absolute;
+  right: max(32px, env(safe-area-inset-right, 0px));
+  bottom: calc(16px + env(safe-area-inset-bottom, 0px));
+  z-index: 11; /* under the top bar (12), its open menu (30) and app windows (20 up); the corner is now the menu's side */
+  pointer-events: none;
+}
+.maia > * {
+  pointer-events: auto;
+}
+.maia.open {
+  z-index: 25;
+}
+/* Her panel is on the same side as the top bar's account menu now, so on a short screen they can meet. The menu is the
+   thing the member just asked for, so while it's open it is over her panel: the top bar's own rule (`.topbar:has(.menu)`
+   in app.css) puts it over every window and her. */
+/* Her 64 px and 12 px of gap, on the circle's side of the corner: the circle, its notice and the bar's zoom move left. */
+@media (min-width: 1200px) {
+  .ma-shell:has(> .maia) .bw,
+  .ma-shell:has(> .maia) .notice.bw-notice {
+    right: calc(max(32px, env(safe-area-inset-right, 0px)) + 76px);
+  }
+  .ma-shell:has(> .maia) .bottombar {
+    padding-right: calc(max(32px, env(safe-area-inset-right, 0px)) + 76px);
+  }
+  .ma-shell:has(> .maia):has(.bw) .bottombar {
+    padding-right: calc(max(32px, env(safe-area-inset-right, 0px)) + 76px + 52px);
+  }
+}
+
+/* ------------------------------------------------------------ her bubble */
+.maia-launcher {
+  display: block;
+  width: 64px;
+  height: 64px;
+  padding: 0;
+  border: 0;
+  border-radius: 50%;
+  background: none;
+}
+.maia-launcher:focus-visible {
+  outline: 2px solid var(--ma-focus-ring);
+  outline-offset: 3px;
+}
+/* Her canvas's positioned parent: the package puts her sleeping strip beside the canvas, inside this. */
+.maia-bubble {
+  position: relative;
+  display: block;
+  width: 64px;
+  height: 64px;
+  overflow: hidden;
+  border-radius: 50%;
+  background: var(--ma-surface-overlay);
+  box-shadow: 0 0 0 1px var(--ma-border), var(--ma-elevation-menu);
+}
+.maia-canvas {
+  display: block;
+  width: 64px;
+  height: 64px;
+}
+
+/* ------------------------------------------------------------ the panel */
+.maia-panel {
+  position: absolute;
+  right: 0;
+  bottom: 76px;
+  display: flex;
+  flex-direction: column;
+  width: 400px;
+  height: 560px;
+  max-height: calc(100dvh - 92px - 80px - env(safe-area-inset-bottom, 0px));
+  overflow: hidden;
+  border: 1px solid var(--ma-border);
+  border-radius: 16px;
+  background: var(--ma-surface-window);
+  color: var(--ma-text-primary);
+  box-shadow: var(--ma-elevation-window);
+  animation: maia-in 160ms ease-out;
+}
+@keyframes maia-in {
+  from {
+    opacity: 0;
+    transform: translateY(6px);
+  }
+}
+.maia-head {
+  flex: none;
+  padding: 10px 10px 10px 16px;
+  border-bottom: 1px solid var(--ma-border-hairline);
+}
+.maia-head-row {
+  display: flex;
+  align-items: center;
+  gap: 8px;
+  min-height: 32px;
+}
+.maia-head-row .maia-tool:first-child {
+  margin-left: -8px;
+}
+.maia-title {
+  min-width: 0;
+  font-size: 15px;
+  line-height: 22px;
+  font-weight: 600;
+  white-space: nowrap;
+  overflow: hidden;
+  text-overflow: ellipsis;
+}
+.maia-model {
+  flex: none;
+  max-width: 150px;
+  padding: 1px 8px;
+  overflow: hidden;
+  border-radius: 999px;
+  background: var(--ma-surface-fill);
+  color: var(--ma-text-secondary);
+  font-size: 11px;
+  line-height: 16px;
+  white-space: nowrap;
+  text-overflow: ellipsis;
+}
+.maia-tools {
+  display: flex;
+  gap: 2px;
+  margin-left: auto;
+}
+.maia-tool {
+  display: inline-grid;
+  place-items: center;
+  width: 32px;
+  height: 32px;
+  padding: 0;
+  border: 0;
+  border-radius: 8px;
+  background: transparent;
+  color: var(--ma-text-secondary);
+}
+.maia-tool:hover:not(:disabled),
+.maia-tool[aria-pressed='true'] {
+  background: var(--ma-surface-fill);
+  color: var(--ma-text-primary);
+}
+.maia-tool:disabled {
+  opacity: 0.35;
+  cursor: default;
+}
+.maia-sub {
+  margin-top: 2px;
+  padding-right: 6px;
+  font-size: 12px;
+  line-height: 17px;
+  color: var(--ma-text-tertiary);
+}
+
+/* ------------------------------------------------------------ the conversation */
+.maia-log {
+  flex: 1;
+  min-height: 0;
+  display: flex;
+  flex-direction: column;
+  gap: 14px;
+  padding: 14px 16px 16px;
+  overflow-y: auto;
+  overscroll-behavior: contain;
+}
+.maia-intro {
+  color: var(--ma-text-secondary);
+}
+.maia-me {
+  align-self: flex-end;
+  max-width: 85%;
+  padding: 8px 12px;
+  border-radius: 14px 14px 4px 14px;
+  background: var(--ma-surface-fill);
+}
+.maia-me-text {
+  white-space: pre-wrap;
+  overflow-wrap: anywhere;
+}
+.maia-her {
+  min-width: 0;
+}
+.maia-md {
+  overflow-wrap: anywhere;
+}
+.maia-md > * + *,
+.maia-md li > * + * {
+  margin-top: 8px;
+}
+.maia-md h3,
+.maia-md h4,
+.maia-md h5 {
+  margin: 0;
+  font-size: 14px;
+  line-height: 20px;
+  font-weight: 600;
+}
+.maia-md h3 {
+  font-size: 15px;
+}
+.maia-md ul,
+.maia-md ol {
+  margin: 0;
+  padding-left: 20px;
+}
+.maia-md li + li {
+  margin-top: 3px;
+}
+.maia-md code {
+  padding: 1px 4px;
+  border-radius: 4px;
+  background: var(--ma-surface-sunken);
+  font-family: ui-monospace, SFMono-Regular, Menlo, Consolas, monospace;
+  font-size: 12.5px;
+}
+.maia-md pre {
+  margin: 0;
+  padding: 8px 10px;
+  overflow-x: auto;
+  border: 1px solid var(--ma-border-hairline);
+  border-radius: 8px;
+  background: var(--ma-surface-sunken);
+}
+.maia-md pre code {
+  padding: 0;
+  background: none;
+  white-space: pre;
+}
+.maia-md blockquote {
+  margin: 0;
+  padding-left: 10px;
+  border-left: 2px solid var(--ma-border);
+  color: var(--ma-text-secondary);
+}
+.maia-md hr {
+  margin: 4px 0;
+  border: 0;
+  border-top: 1px solid var(--ma-border);
+}
+.maia-md a {
+  color: var(--ma-text-link);
+  text-decoration: underline;
+  text-underline-offset: 2px;
+}
+/* Her stop text, exactly as it came. */
+.maia-stop {
+  color: var(--ma-text-secondary);
+  white-space: pre-wrap;
+  overflow-wrap: anywhere;
+}
+.maia-md + .maia-stop {
+  margin-top: 8px;
+}
+.maia-her > .maia-btn {
+  margin-top: 10px;
+}
+.maia-note {
+  align-self: center;
+  max-width: 90%;
+  font-size: 12px;
+  line-height: 17px;
+  text-align: center;
+  color: var(--ma-text-tertiary);
+}
+.maia-note-link {
+  color: var(--ma-text-link);
+  text-decoration: underline;
+  text-underline-offset: 2px;
+}
+.maia-note-link:focus-visible {
+  outline: 2px solid var(--ma-focus-ring);
+  outline-offset: 2px;
+  border-radius: 2px;
+}
+.maia-status {
+  font-size: 13px;
+  color: var(--ma-text-tertiary);
+}
+.maia-md + .maia-status {
+  margin-top: 8px;
+}
+.maia-dots {
+  display: inline-flex;
+  gap: 4px;
+  padding: 6px 0;
+}
+.maia-dots i {
+  width: 6px;
+  height: 6px;
+  border-radius: 50%;
+  background: var(--ma-text-tertiary);
+  animation: maia-dot 1.2s ease-in-out infinite;
+}
+.maia-dots i:nth-child(2) {
+  animation-delay: 0.15s;
+}
+.maia-dots i:nth-child(3) {
+  animation-delay: 0.3s;
+}
+@keyframes maia-dot {
+  0%,
+  60%,
+  100% {
+    opacity: 0.35;
+  }
+  30% {
+    opacity: 1;
+  }
+}
+
+/* ------------------------------------------------------------ cards */
+.maia-card {
+  margin-top: 10px;
+  padding: 12px;
+  border: 1px solid var(--ma-border);
+  border-radius: 12px;
+  background: var(--ma-surface-overlay);
+}
+.maia-card-label {
+  margin-bottom: 2px;
+  font-size: 12px;
+  line-height: 16px;
+  color: var(--ma-text-tertiary);
+}
+.maia-card-title {
+  font-weight: 600;
+}
+.maia-card-quote {
+  margin: 6px 0 0;
+  padding-left: 10px;
+  border-left: 2px solid var(--ma-accent);
+  white-space: pre-wrap;
+  overflow-wrap: anywhere;
+}
+.maia-card-body {
+  margin-top: 2px;
+  font-size: 13px;
+  line-height: 18px;
+  color: var(--ma-text-secondary);
+}
+.maia-card-actions {
+  display: flex;
+  flex-wrap: wrap;
+  gap: 8px;
+  margin-top: 10px;
+}
+.maia-card-line {
+  margin-top: 6px;
+  font-size: 13px;
+  line-height: 18px;
+  color: var(--ma-text-secondary);
+}
+.maia-btn {
+  display: inline-flex;
+  align-items: center;
+  justify-content: center;
+  height: 32px;
+  padding: 0 12px;
+  border: 1px solid var(--ma-border-strong);
+  border-radius: 10px;
+  background: var(--ma-surface-window);
+  color: var(--ma-text-primary);
+  font-size: 13px;
+  font-weight: 500;
+  text-decoration: none;
+  white-space: nowrap;
+}
+.maia-btn:hover:not([aria-disabled='true']) {
+  background: var(--ma-surface-sunken);
+}
+.maia-btn.primary {
+  border-color: var(--ma-accent);
+  background: var(--ma-accent);
+  color: var(--ma-text-on-accent);
+}
+.maia-btn.primary:hover:not([aria-disabled='true']) {
+  border-color: var(--ma-accent-hover);
+  background: var(--ma-accent-hover);
+}
+.maia-btn[aria-disabled='true'] {
+  opacity: 0.5;
+  cursor: default;
+}
+
+/* ------------------------------------------------------------ composing */
+.maia-line {
+  flex: none;
+  padding: 0 16px 8px;
+  font-size: 13px;
+  line-height: 18px;
+  color: var(--ma-text-secondary);
+}
+/* Free Maia (ma-platform ADR 0104): one quiet line while she answers on her free model. Never a warning colour. */
+.maia-free {
+  flex: none;
+  display: flex;
+  align-items: center;
+  gap: 6px;
+  padding: 0 16px 8px;
+  font-size: 12px;
+  line-height: 17px;
+  color: var(--ma-text-secondary);
+  white-space: nowrap;
+  overflow: hidden;
+  text-overflow: ellipsis;
+}
+.maia-free-dot {
+  flex: none;
+  width: 6px;
+  height: 6px;
+  border-radius: 50%;
+  background: var(--ma-text-tertiary);
+}
+.maia-compose {
+  position: relative;
+  flex: none;
+  display: flex;
+  align-items: flex-end;
+  flex-wrap: wrap;
+  gap: 8px;
+  padding: 10px 12px 12px;
+  border-top: 1px solid var(--ma-border-hairline);
+}
+/* ------------------------------------------------------------ attached files */
+.maia-attach-row {
+  flex: 0 0 100%;
+  min-width: 0;
+}
+.maia-attach-line {
+  padding: 0;
+}
+.maia-attach-line:empty {
+  display: none;
+}
+.maia-chips {
+  display: flex;
+  flex-wrap: wrap;
+  gap: 6px;
+  margin: 0 0 6px;
+  padding: 0;
+  list-style: none;
+}
+.maia-chip {
+  display: inline-flex;
+  align-items: center;
+  gap: 6px;
+  max-width: 100%;
+  min-height: 26px;
+  padding: 2px 4px 2px 10px;
+  border: 1px solid var(--ma-border);
+  border-radius: 13px;
+  background: var(--ma-surface-sunken);
+  font-size: 12px;
+  line-height: 17px;
+  color: var(--ma-text-secondary);
+}
+.maia-chip-name {
+  min-width: 0;
+  overflow: hidden;
+  text-overflow: ellipsis;
+  white-space: nowrap;
+  color: var(--ma-text-primary);
+}
+.maia-chip-size {
+  flex: none;
+  color: var(--ma-text-tertiary);
+}
+.maia-chip-x {
+  flex: none;
+  display: inline-grid;
+  place-items: center;
+  width: 20px;
+  height: 20px;
+  padding: 0;
+  border: 0;
+  border-radius: 50%;
+  background: transparent;
+  color: var(--ma-text-secondary);
+}
+.maia-chip-x:hover {
+  background: var(--ma-surface-fill);
+}
+.maia-chip-x:focus-visible,
+.maia-attach:focus-visible {
+  outline: 2px solid var(--ma-focus-ring);
+  outline-offset: 1px;
+}
+.maia-chips-sent {
+  margin: 6px 0 0;
+}
+.maia-chips-sent .maia-chip {
+  padding-right: 10px;
+  background: transparent;
+}
+.maia-attach {
+  flex: none;
+  display: inline-grid;
+  place-items: center;
+  width: 40px;
+  height: 40px;
+  padding: 0;
+  border: 1px solid var(--ma-border);
+  border-radius: 12px;
+  background: transparent;
+  color: var(--ma-text-secondary);
+}
+.maia-attach:hover {
+  background: var(--ma-surface-fill);
+}
+.maia-over {
+  outline: 2px dashed var(--ma-focus-ring);
+  outline-offset: -4px;
+}
+.maia-input {
+  flex: 1;
+  min-width: 0;
+  height: 40px;
+  max-height: 132px;
+  padding: 9px 12px;
+  resize: none;
+  border: 1px solid var(--ma-border);
+  border-radius: 12px;
+  background: var(--ma-surface-sunken);
+  font-size: 14px;
+  line-height: 20px;
+}
+.maia-input::placeholder {
+  color: var(--ma-text-tertiary);
+}
+.maia-input:focus-visible {
+  outline: 2px solid var(--ma-focus-ring);
+  outline-offset: -1px;
+}
+.maia-count {
+  position: absolute;
+  right: 64px;
+  top: -18px;
+  font-size: 11px;
+  line-height: 16px;
+  color: var(--ma-text-tertiary);
+  font-variant-numeric: tabular-nums;
+}
+.maia-send {
+  flex: none;
+  display: inline-grid;
+  place-items: center;
+  width: 40px;
+  height: 40px;
+  padding: 0;
+  border: 0;
+  border-radius: 12px;
+  background: var(--ma-accent);
+  color: var(--ma-text-on-accent);
+}
+.maia-send:hover:not([aria-disabled='true']) {
+  background: var(--ma-accent-hover);
+}
+.maia-send[aria-disabled='true'] {
+  opacity: 0.45;
+  cursor: default;
+}
+
+/* ------------------------------------------------------------ what she remembers */
+.maia-mem-list {
+  display: grid;
+  gap: 8px;
+  margin: 0;
+  padding: 0;
+  list-style: none;
+}
+.maia-mem {
+  display: flex;
+  align-items: flex-start;
+  gap: 12px;
+  padding: 10px 10px 10px 12px;
+  border: 1px solid var(--ma-border);
+  border-radius: 12px;
+}
+.maia-mem-main {
+  flex: 1;
+  min-width: 0;
+}
+.maia-mem-meta {
+  font-size: 12px;
+  line-height: 16px;
+  color: var(--ma-text-tertiary);
+}
+.maia-mem-text {
+  margin-top: 2px;
+  overflow-wrap: anywhere;
+}
+.maia-forget-all {
+  align-self: flex-start;
+}
+.maia-confirm {
+  padding: 12px;
+  border: 1px solid var(--ma-border);
+  border-radius: 12px;
+}
+
+/* ------------------------------------------------------------ narrower screens */
+/* Under 1200 px her row would crowd the zoom and the desk switch, so she sits just above the bar, over the circle's
+   column. On a phone with several desks the bar has two rows, and app.css moves her above both. */
+@media (max-width: 1199px) {
+  .maia {
+    bottom: calc(72px + env(safe-area-inset-bottom, 0px));
+  }
+  .maia-panel {
+    max-height: calc(100dvh - 148px - 80px - env(safe-area-inset-bottom, 0px));
+  }
+  /* Her column is the circle's now, so its heads-up moves left of her, as the stack of notices does on a phone. */
+  .ma-shell:has(> .maia) .notice.bw-notice {
+    right: calc(max(32px, env(safe-area-inset-right, 0px)) + 76px);
+    max-width: min(340px, calc(100% - 32px - 76px));
+  }
+}
+/* Where a centered notice (up to 460 px) would reach her column, the stack ends before it. */
+@media (max-width: 699px) {
+  .ma-shell:has(> .maia) .notices {
+    right: calc(max(32px, env(safe-area-inset-right, 0px)) + 72px);
+  }
+}
+/* Phones: the panel is a sheet over the office, above her bubble. */
+@media (max-width: 599px) {
+  .maia {
+    right: max(16px, env(safe-area-inset-right, 0px));
+  }
+  .ma-shell:has(> .maia) .notices {
+    right: calc(max(16px, env(safe-area-inset-right, 0px)) + 72px);
+  }
+  .ma-shell:has(> .maia) .notice.bw-notice {
+    right: calc(max(16px, env(safe-area-inset-right, 0px)) + 76px);
+  }
+  .maia-panel {
+    position: fixed;
+    top: calc(8px + env(safe-area-inset-top, 0px));
+    left: 8px;
+    right: 8px;
+    bottom: calc(148px + env(safe-area-inset-bottom, 0px));
+    width: auto;
+    height: auto;
+    max-height: none;
+  }
+}
+
+@media (prefers-reduced-motion: reduce) {
+  .maia-panel,
+  .maia-dots i {
+    animation: none;
+  }
+}

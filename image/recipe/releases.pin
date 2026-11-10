@@ -1,0 +1,24 @@
+# The component releases baked into the image (runtime spec section 6). One line each: component, version, and the
+# sha256 of <component>-<version>.tgz exactly as scripts/desk-service-release.sh published it (meta.json and .sha256 in
+# s3://ma-lambda-artifacts-<account-id>/desk/<component>/<version>/). bake.sh refuses a line those two files don't
+# match, or a version with no passed-test.json; build.sh refuses an artifact whose hash isn't the one here.
+# Each one is installed with ma-update, so the layout is the one a rollout makes: /opt/ma/<component>/releases/<version>,
+# with current pointing at it and no previous. A later ma-update rolls forward from it and --rollback comes back to it.
+#
+# Never desk-rtc 0.2.0 on image 0.2.2 or later: characters go missing and one reloads the page. build.sh refuses it.
+# desk-stream's release is packed from recipe/desk-stream by package-desk-stream.sh, and build.sh refuses to bake if the
+# two differ: publish a new desk-stream release from the recipe, roll it to a test desk, and pin it here.
+# desk-notebook is the one optional line. With none, its unit is skipped by its condition. Adding its line is all it
+# takes: bake.sh and build.sh then fetch, hash-check, install, load and tag it like desk-agent (image/README.md, desk-notebook).
+#
+# desk-agent-filter isn't published: bake.sh builds it from recipe/desk-agent-filter with package-desk-agent-filter.sh,
+# which names the Go version, and refuses a hash that isn't this one (ADR 0070). A source change needs a new version here.
+#
+# component   version              sha256
+desk-rtc      0.4.2                8695cc39d3e6f8089d3976d980b00206e9da8b55a4e4f13024e28300ac8fdf48
+desk-stream   0.3.3                9ce9638a4e2ade5511b259351aadbf126e4694a4b9da7abd547d79bf2707c46c
+deskd         2026.11.10-5535d52   c7942505c1debd13f96bde7de0613453f4fb158d74e6f10de506c6ca0fa3f068
+desk-agent    2026.11.10-35df59e   db0cfa4c1f3b4dd87094d2c024316bd602ff1854c1a9c434bc1d0067b5d78fc8
+desk-notebook 2026.11.08-f435ef9   b929760ef2c7ddd17ee0ab6397200b8622a65a43ea9d95a84cfa0390dfb2cd1a
+desk-agent-filter 0.1.1            2c67e073c5a19ed758a8eadf88ad6e471fce3804657f0f0ef1eb83275e5afeeb
+commons-server 0.2.0-eb755719   60254e69e132caac2af9a5bdab41f356f395516fb6dc9401fc3473004230e0fb

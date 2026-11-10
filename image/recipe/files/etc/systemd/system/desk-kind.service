@@ -1,0 +1,49 @@
+[Unit]
+Description=The desk's kind from its DeskKind tag: a member's desk, or a Guild Desk with no Browser (image/README.md, Guild Desk)
+# IMDS needs the interface up. /run/ma/desk-kind is the desk's one answer (desk-runtime.md section 3.1): deskd reads it, not
+# IMDS, so everything that depends on the kind starts after this (the Security Analyst's GDS-5), deskd included.
+# Nothing Requires= it: if it fails or times out there's no /run/ma/guild, and that's a member's desk with its Browser.
+After=network-online.target nftables.service
+Wants=network-online.target
+Before=desk-rtc.service deskd.service desk-preread.service desk-guild-net.service desk-guild-rtc.service commons-data.service commons-server-address.service commons-server.service
+
+[Service]
+Type=oneshot
+RemainAfterExit=yes
+ExecStart=/usr/local/lib/ma/desk-kind
+# desk-kind gives up on IMDS after 30 s and answers member; this is only a backstop.
+TimeoutStartSec=60
+RuntimeDirectory=ma
+RuntimeDirectoryMode=0755
+RuntimeDirectoryPreserve=yes
+UMask=0022
+# Root only because nftables lets uid 0 and 1100 reach IMDS, and so that the answer is root's. No capability at all:
+# root owns /run/ma, so it can write there without one.
+CapabilityBoundingSet=
+AmbientCapabilities=
+NoNewPrivileges=yes
+ProtectSystem=strict
+ProtectHome=yes
+PrivateTmp=yes
+PrivateDevices=yes
+InaccessiblePaths=-/data
+ProtectKernelTunables=yes
+ProtectKernelModules=yes
+ProtectKernelLogs=yes
+ProtectControlGroups=yes
+ProtectClock=yes
+ProtectHostname=yes
+RestrictAddressFamilies=AF_INET AF_UNIX
+IPAddressDeny=any
+IPAddressAllow=169.254.169.254/32
+RestrictNamespaces=yes
+RestrictRealtime=yes
+RestrictSUIDSGID=yes
+LockPersonality=yes
+MemoryDenyWriteExecute=yes
+SystemCallArchitectures=native
+SystemCallFilter=@system-service
+SystemCallErrorNumber=EPERM
+
+[Install]
+WantedBy=multi-user.target

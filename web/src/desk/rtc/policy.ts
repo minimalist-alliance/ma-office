@@ -1,0 +1,132 @@
+// What the link does about each thing the desk or gateway can say (design 3.9, 4.2.7), as data.
+import { siblingUrl } from '../../platform/hosts';
+import type { DeskRefusal } from '../deskLink';
+
+export type CloseAction =
+  | 'reconnect' // a new connection, with a fresh token
+  | 'deny' // drop the desk: access denied
+  | 'replaced' // a newer session from this tab took over: leave it be
+  | 'reload' // this bundle is out of date
+  | 'hold' // rate limited: reconnect, but not for 30 s
+  | 'recheck' // deskd is going away, and maybe coming straight back: retry, the first at about 2 s
+  | 'stopping'; // `connect` or the gateway reports the desk going down: stop retrying
+
+/**
+ * Why `recheck` isn't `stopping`: no close proves a stop. deskd sent 4503 on every SIGTERM up to
+ * 2026.11.05-d0cc217, so the first update past that version still does, and a stop it wasn't told about
+ * sends 4002. Only `connect` and the gateway know, so the link keeps trying until one of them says so.
+ * The first try waits about 2 s (this backoff step): deskd takes longer than that to return, and sooner
+ * `session.open` could reach its link on the way out. A `phase: ready` from the watch ends any wait.
+ */
+export const RECHECK_FIRST_ATTEMPT = 2;
+
+const NOT_READY_FIRST_MS = 3_000;
+const NOT_READY_MAX_MS = 10_000;
+
+/**
+ * Until the next `connect` when the last said the desk isn't ready and set no pace of its own. `checks`
+ * counts those answers since the last open. A wake stays at 3 s: a link that has had no session has no
+ * watch, so no `phase: ready` is coming, and these checks are how it finds out.
+ */
+export function notReadyRetryMs(checks: number, waking: boolean): number {
+  return waking ? NOT_READY_FIRST_MS : Math.min(NOT_READY_FIRST_MS * 1.5 ** checks, NOT_READY_MAX_MS);
+}
+
+/** `CLOSE {code}` on `ctl`. */
+export function closeCodeAction(code: number): CloseAction {
+  switch (code) {
+    case 4403:
+      return 'deny';
+    case 4409:
+      return 'replaced';
+    case 4426:
+      return 'reload';
+    case 4429:
+      return 'hold';
+    case 4002: // `deskd_restarting`, or `internal`
+    case 4503:
+      return 'recheck';
+    default:
+      return 'reconnect'; // 4401, and the desk's other 4000-4399
+  }
+}
+
+/** `session.closed {reason}` from the gateway. A revoked member hears it from the next `connect`. */
+export function sessionClosedAction(reason: string): CloseAction {
+  if (reason === 'desk_stopping' || reason === 'closed_by_desk') return 'recheck';
+  if (reason === 'replaced') return 'replaced';
+  return 'reconnect'; // `desk_disconnected` too: the gateway knows the link is gone, and `connect` will say so
+}
+
+/** The codes `refusalOf` knows. */
+export const REFUSAL_CODES: ReadonlySet<string> = new Set(['desk_unavailable', 'account_suspended', 'account_inactive', 'data_guard']);
+
+/**
+ * A refusal from `connect` the member should see (contract desks.md, 0.3.11), or null for anything else. None is
+ * retried. `desk_unavailable` keeps nothing of what came with it, since the page may say nothing about why.
+ */
+export function refusalOf(code: string | null | undefined, details: unknown, hostname: string, message?: string | null): DeskRefusal | null {
+  let kind: DeskRefusal['kind'];
+  switch (code) {
+    case 'data_guard': {
+      // The data guard (ma-platform ADR 0110): the platform's words as given, and the member's next billing day.
+      const resumes = details && typeof details === 'object' ? (details as Record<string, unknown>)['resumesAt'] : null;
+      const at = typeof resumes === 'string' && !Number.isNaN(Date.parse(resumes)) ? resumes : null;
+      return { kind: 'data_guard', billingUrl: null, message: typeof message === 'string' && message.trim() ? message : null, resumesAt: at };
+    }
+    case 'desk_unavailable':
+      return { kind: 'unavailable', billingUrl: null };
+    case 'account_suspended':
+      kind = 'suspended';
+      break;
+    case 'account_inactive':
+      kind = 'inactive';
+      break;
+    default:
+      return null;
+  }
+  const raw = details && typeof details === 'object' ? (details as Record<string, unknown>)['billingUrl'] : null;
+  return { kind, billingUrl: siblingUrl(raw, hostname)?.href ?? null };
+}
+
+/**
+ * Whether `GET /v1/me`'s `membership.status` says `connect` would no longer refuse for the membership: it refuses only
+ * `suspended` and `ended` (desks.md, 0.3.11). Anything else unknown or missing waits for the next look.
+ */
+export function membershipBack(status: unknown): boolean {
+  return status === 'active' || status === 'past_due' || status === 'canceling';
+}
+
+const MISSES_DOWN = 3;
+
+/** `ctl` liveness: three missed pongs mark the link down, unless the tab is hidden and timers lie. */
+export class PongWatch {
+  private misses = 0;
+  private sawPong = true;
+
+  /** Each 10 s, before sending a PING. True means the link is down. */
+  tick(hidden: boolean): boolean {
+    if (!this.sawPong) this.misses += 1;
+    this.sawPong = false;
+    return this.misses >= MISSES_DOWN && !hidden;
+  }
+
+  pong(): void {
+    this.misses = 0;
+    this.sawPong = true;
+  }
+
+  /** On tab focus: are there misses worth looking at again? */
+  anyMissed(): boolean {
+    return this.misses > 0;
+  }
+
+  /** After a grace period since focus. */
+  isDown(): boolean {
+    return this.misses >= MISSES_DOWN;
+  }
+
+  reset(): void {
+    this.pong();
+  }
+}

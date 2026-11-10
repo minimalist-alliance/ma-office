@@ -1,0 +1,75 @@
+#!/usr/bin/env bash
+# batch-build: writes a desk batch manifest (format ma-desk-batch/1, docs/interfaces/desk-runtime.md section 6.1) from
+# published releases. Read-only on S3: each release's sha256 comes from its meta.json in the release bucket, which must
+# match its .sha256, and a release that hasn't passed on a test desk (passed-test.json; passed-guild.json for a guild-only
+# component, as bake.sh takes) is refused. Nothing is signed here: batch-sign does that.
+#
+#   tools/batch/batch-build --seq <n> --id <id> [--urgent] [--image <version>] [--note <text> | --note-file <file>]
+#                           [--created <UTC time>] -o <manifest.json> <component>@<version> ...
+#
+# The components are activated in the order given. --seq must be above every batch the desks have seen; a rollback batch
+# is a higher seq naming older versions. The manifest must stay within 4096 bytes, AWS KMS's limit for a RAW message.
+# Needs: aws, jq. Exit 0 written, 1 refused, 2 usage.
+set -euo pipefail
+HERE=$(cd "$(dirname "$0")" && pwd)
+. "$HERE/../../image/lib.sh"   # pass_records, GUILD_ONLY_COMPONENTS
+BUCKET=${RELEASE_BUCKET:-ma-lambda-artifacts-$(aws sts get-caller-identity --query Account --output text)}
+usage() { sed -n '2,13p' "$0" | sed 's/^# \{0,1\}//' >&2; exit 2; }
+fail() { echo "batch-build: $*" >&2; exit 1; }
+seq= id= urgent=false image= note= created= out= pairs=()
+while [ $# -gt 0 ]; do
+  case "$1" in
+    --seq) seq=${2:-}; shift 2 ;;
+    --id) id=${2:-}; shift 2 ;;
+    --urgent) urgent=true; shift ;;
+    --image) image=${2:-}; shift 2 ;;
+    --note) note=${2:-}; shift 2 ;;
+    --note-file) note=$(cat "${2:-/dev/null}"); shift 2 ;;
+    --created) created=${2:-}; shift 2 ;;
+    -o) out=${2:-}; shift 2 ;;
+    -h|--help) usage ;;
+    -*) usage ;;
+    *) pairs+=("$1"); shift ;;
+  esac
+done
+[ -n "$seq" ] && [ -n "$id" ] && [ -n "$out" ] && [ ${#pairs[@]} -gt 0 ] || usage
+[[ $seq =~ ^[1-9][0-9]{0,15}$ ]] || fail "--seq must be a whole number from 1"
+[[ $id =~ ^[A-Za-z0-9._-]{1,64}$ ]] || fail "--id: letters, digits, '.', '_' and '-', up to 64"
+[ -z "$image" ] || [[ $image =~ ^[A-Za-z0-9._+-]{1,64}$ ]] || fail "bad --image"
+created=${created:-$(date -u +%FT%TZ)}
+[[ $created =~ ^[0-9]{4}-[0-9]{2}-[0-9]{2}T[0-9]{2}:[0-9]{2}:[0-9]{2}Z$ ]] || fail "--created must be like 2026-11-09T18:00:00Z"
+command -v aws >/dev/null && command -v jq >/dev/null || fail "needs aws and jq"
+
+comps='[]' seen=" "
+for pair in "${pairs[@]}"; do
+  comp=${pair%%@*} ver=${pair#*@}
+  [ "$comp" != "$pair" ] || fail "$pair: expected <component>@<version>"
+  [[ $comp =~ ^[a-z][a-z0-9-]{0,40}$ ]] && [ "$comp" != bin ] && [ "$comp" != etc ] || fail "bad component '$comp'"
+  [[ $ver =~ ^[A-Za-z0-9._+-]{1,64}$ ]] || fail "bad version '$ver'"
+  case "$seen" in *" $comp "*) fail "$comp is named twice" ;; esac
+  seen="$seen$comp "
+  [ "$comp $ver" != "desk-rtc 0.2.0" ] || fail "desk-rtc 0.2.0 must never run on a desk from image 0.2.2 on"
+  p="s3://$BUCKET/desk/$comp/$ver"
+  meta=$(aws s3 cp --only-show-errors "$p/meta.json" -) || fail "$comp $ver: no meta.json in $p (not published?)"
+  sha=$(jq -r .sha256 <<<"$meta")
+  [[ $sha =~ ^[0-9a-f]{64}$ ]] || fail "$comp $ver: meta.json has no sha256"
+  [ "$(jq -r '.component + " " + .version + " " + .file' <<<"$meta")" = "$comp $ver $comp-$ver.tgz" ] || fail "$comp $ver: meta.json names another release"
+  [ "$(aws s3 cp --only-show-errors "$p/$comp-$ver.tgz.sha256" - | awk 'NF{print tolower($1); exit}')" = "$sha" ] \
+    || fail "$comp $ver: meta.json and $comp-$ver.tgz.sha256 disagree"
+  passed=
+  for rec in $(pass_records "$comp"); do
+    aws s3api head-object --bucket "$BUCKET" --key "desk/$comp/$ver/$rec" >/dev/null 2>&1 && { passed=$rec; break; }
+  done
+  [ -n "$passed" ] || fail "$comp $ver hasn't passed ($(pass_records "$comp" | paste -sd' ')): roll it to a test desk first"
+  echo "batch-build: $comp $ver sha256 ${sha:0:12} ($passed)" >&2
+  comps=$(jq -c --arg n "$comp" --arg v "$ver" --arg s "$sha" '. + [{name: $n, version: $v, sha256: $s}]' <<<"$comps")
+done
+
+jq -n --argjson seq "$seq" --arg id "$id" --arg created "$created" --argjson urgent "$urgent" --arg image "$image" \
+  --arg note "$note" --argjson components "$comps" \
+  '{format: "ma-desk-batch/1", seq: $seq, id: $id, created: $created, urgent: $urgent}
+   + (if $image == "" then {} else {image: $image} end) + {components: $components, note: $note}' > "$out.tmp"
+size=$(stat -c %s "$out.tmp")
+[ "$size" -le 4096 ] || { rm -f "$out.tmp"; fail "the manifest is $size bytes, over KMS's 4096 for a RAW message: shorten the note"; }
+mv "$out.tmp" "$out"
+echo "batch-build: wrote $out ($size bytes, seq $seq, ${#pairs[@]} components)" >&2

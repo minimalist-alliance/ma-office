@@ -1,0 +1,40 @@
+[Unit]
+Description=commons-server's public address (the guild desk's public IPv4, for voice; read here because Commons may not reach the metadata service)
+# The Guild Engineer's apps/commons/deploy/commons-server-address.service (main 4eb00473), with the image's changes marked
+# "Image:" (image/README.md, "Guild Desk"). It runs the release's own `address` script, as root, which asks IMDSv2 with
+# bounded retries (10 tries of 2 s timeouts, 2 s apart, cut at 40 s by TimeoutStartSec) and writes
+# /run/commons-server.address, or removes it and says why.
+ConditionPathExists=/opt/ma/commons-server/current/address
+# Image: only on a Guild Desk, after desk-kind's answer, like commons-server itself.
+ConditionPathExists=/run/ma/guild
+After=network-online.target desk-kind.service
+Wants=network-online.target desk-kind.service
+Before=commons-server.service
+
+[Service]
+Type=oneshot
+RemainAfterExit=yes
+ExecStart=/opt/ma/commons-server/current/address
+TimeoutStartSec=40
+ProtectSystem=strict
+ProtectHome=yes
+ReadWritePaths=/run
+NoNewPrivileges=yes
+# Image: IMDS and nothing else, no capability, no /data: what desk-kind gets.
+CapabilityBoundingSet=
+AmbientCapabilities=
+RestrictAddressFamilies=AF_INET AF_UNIX
+IPAddressDeny=any
+IPAddressAllow=169.254.169.254/32
+PrivateTmp=yes
+PrivateDevices=yes
+InaccessiblePaths=-/data
+ProtectKernelTunables=yes
+ProtectKernelModules=yes
+ProtectControlGroups=yes
+RestrictNamespaces=yes
+LockPersonality=yes
+SystemCallArchitectures=native
+
+[Install]
+WantedBy=multi-user.target

@@ -1,0 +1,60 @@
+# desk-agent's JVM flags: the image starts java @/app/jvm.options. The Dockerfile's training run uses this file too,
+# so the CDS archive matches what runs. Each comment is the reason for the flag below it. deskd's jvm.options is the
+# model; what differs says why.
+#
+# Worst case against run's --memory=320m, in MiB: heap 128, metaspace 64, code cache 32, direct 16, CDS archives 40,
+# SQLite's two page caches 4 and its library 2, JVM internals, stacks and libraries about 50: about 330, and the parse
+# child (attach/Parsers, one at a time, up to 76 MiB RSS) is on top. None of those caps is reached together. Measured
+# (scripts/measure-attach.sh, README.md Footprint): the worst the caps allow peaks at 254 MiB of RSS for desk-agent and
+# its child, 209 of it anonymous; two members sending 12 MiB of pictures at once peak at 204. Confirm on c7g.large.
+
+# One GC thread and the least bookkeeping. With a heap this small, pauses stay short.
+-XX:+UseSerialGC
+# Starts small, because eden is a share of the heap and every eden page stays in RSS once touched.
+-Xms16m
+# Caps the heap. desk-agent holds at most two runs (design 9.2), each a thread of up to a model's context, about
+# 2 MiB of UTF-16 at 200k tokens, twice over while its request is built, plus Spring's own few MiB. Files attached to
+# a message (ADR 0049) are why this is 128 and not 96: 12 MiB of pictures is 12 MiB staged, then base64, then JSON, then
+# the send, and with a second member's 12 MiB waiting in staging that ended the process at 96 and passed at 128
+# (attach/ImageBudget keeps it to one such request at a time).
+-Xmx128m
+# Caps class metadata: a few MiB with the archives, about 25 without, so losing them still fits.
+-XX:MaxMetaspaceSize=64m
+# Caps the part of metaspace holding class headers.
+-XX:CompressedClassSpaceSize=16m
+# Caps compiled code. If it ever fills, the JVM stops compiling and keeps running.
+-XX:ReservedCodeCacheSize=32m
+# Caps NIO's native buffers and the keys, which sit in direct buffers of their own (KeyRing): a few KiB.
+-XX:MaxDirectMemorySize=16m
+# Stack limit for platform and carrier threads (arm64's default is 2 MiB). Only touched pages cost RSS.
+-Xss512k
+# C1 only: no C2 thread or its memory spikes. desk-agent mostly waits on the network.
+-XX:TieredStopAtLevel=1
+# Dies rather than limping along half-broken: the unit restarts it, which brings its keys back from the vault.
+-XX:+ExitOnOutOfMemoryError
+# No heap image on disk: it would hold keys in the clear (ADR 0040, ADR 0042).
+-XX:-HeapDumpOnOutOfMemoryError
+# No core file on a crash, for the same reason. run also sets --ulimit core=0.
+-XX:-CreateCoredumpOnCrash
+# A crash report can hold raw memory near the registers. This puts it in the container's /tmp, a tmpfs in RAM that
+# goes with the container, never on a disk. The journal gets the summary.
+-XX:ErrorFile=/tmp/desk-agent-hs_err.log
+# Nothing can attach to the process and read its memory (ADR 0040).
+-XX:+DisableAttachMechanism
+# No file in /tmp and no sampling task waking the JVM 20 times a second.
+-XX:-UsePerfData
+# Uses the bean wiring generated at build time instead of working it out at each boot.
+-Dspring.aot.enabled=true
+# Holds desk.agent.version, from the Dockerfile's VERSION build arg. It overrides the value inside the jar.
+-Dspring.config.additional-location=optional:file:/app/desk-agent.properties
+# SQLite's library, extracted at build time. Otherwise sqlite-jdbc writes it to /tmp at every start, and the
+# container's /tmp is noexec.
+-Dorg.sqlite.lib.path=/app/native
+-Dorg.sqlite.lib.name=libsqlitejdbc.so
+# Uses the archive if it's valid, and otherwise just starts without it.
+-Xshare:auto
+# The AppCDS archive the Dockerfile trains, through an answer: classes load from it mapped, parsed and verified.
+-XX:SharedArchiveFile=/app/desk-agent.jsa
+# A stale archive would warn on stdout at every start, and training lists every class it skips.
+-Xlog:cds=off
+-Xlog:cds+dynamic=off

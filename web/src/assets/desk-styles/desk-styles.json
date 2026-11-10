@@ -1,0 +1,253 @@
+{
+  "_about": "Desk styles from the Product Designer (design-drafts/desk-textures/spec.md, final 2026-11-08). Texture is the owner's Grok grain; colour is the MA palette. Dusk desks sit below the live Dusk ground #585E68 (main 001ef256).",
+  "default": "oak",
+  "order": [
+    "oak",
+    "ash",
+    "walnut",
+    "linoleum"
+  ],
+  "scale": {
+    "tilePx": 1024,
+    "deskUnits": 512,
+    "pxPerUnit": 2,
+    "why": "One tile covers 512 desk units, so a 600-unit desk shows at most one repeat and the grain keeps the size the stills were judged at. Above 2 px per unit the image is magnified, which a soft grain hides. Anchor at the desk top-left, offset by a hash of the desk id mod 512 (spec, Filling the panel)."
+  },
+  "etchNotes": {
+    "light": "light letters: fill lighter than the desk; wall is a 1 px darker line above each stroke; no highlight",
+    "dusk": "medium letters: fill lighter than the desk; wall darker line above; no highlight",
+    "dark": "dark letters: fill darker than the desk; the wall merges with the fill; the highlight (1 px lighter line below each stroke) is the line that reads, so fillVsGrooveLine is measured against highlight in Dark and against wall elsewhere"
+  },
+  "deskTextNotes": "deskText replaces text.secondary for text drawn on the desk (the strip status line). text.secondary fails 4.5:1 on mid-tone desks, and mid-tone desks are what the owner's etch rule needs (light letters must be lighter than the desk). moreContrast is for prefers-contrast: more.",
+  "darkTiles": "In Dark, resting app tiles on a textured desk wear a 1 px rgba(255,255,255,0.12) edge (elevation.tileStacked).",
+  "styles": {
+    "oak": {
+      "name": "Light oak",
+      "light": {
+        "base": "#A5A6A2",
+        "etch": {
+          "fill": "#E3E3E0",
+          "wall": "#5E5F5D",
+          "highlight": null
+        },
+        "deskText": "#2A2E35",
+        "moreContrast": "#1F1D1A",
+        "kb": 99.4,
+        "checks": {
+          "fillVsBase": 1.9,
+          "fillVsGrooveLine": 4.99,
+          "deskTextVsBase": 5.57,
+          "deskTextWorstSpot": 4.83,
+          "moreContrastVsBase": 6.87
+        }
+      },
+      "dusk": {
+        "base": "#444B58",
+        "etch": {
+          "fill": "#777C86",
+          "wall": "#2A2D34",
+          "highlight": null
+        },
+        "deskText": "#E2E2E2",
+        "moreContrast": "#FAFAF7",
+        "kb": 47.0,
+        "checks": {
+          "fillVsBase": 2.09,
+          "fillVsGrooveLine": 3.29,
+          "deskTextVsBase": 6.77,
+          "deskTextWorstSpot": 6.5,
+          "moreContrastVsBase": 8.39
+        }
+      },
+      "dark": {
+        "base": "#3B3F48",
+        "etch": {
+          "fill": "#07080A",
+          "wall": "#040506",
+          "highlight": "#585B62"
+        },
+        "deskText": "#BEC2C9",
+        "moreContrast": "#FAFAF7",
+        "kb": 64.3,
+        "checks": {
+          "fillVsBase": 1.9,
+          "fillVsGrooveLine": 2.95,
+          "deskTextVsBase": 5.9,
+          "deskTextWorstSpot": 5.61,
+          "moreContrastVsBase": 10.09
+        }
+      }
+    },
+    "ash": {
+      "name": "White ash",
+      "light": {
+        "base": "#BFC0BC",
+        "etch": {
+          "fill": "#FDFDFB",
+          "wall": "#6E6F6D",
+          "highlight": null
+        },
+        "deskText": "#2A2E35",
+        "moreContrast": "#1F1D1A",
+        "kb": 91.2,
+        "checks": {
+          "fillVsBase": 1.8,
+          "fillVsGrooveLine": 4.96,
+          "deskTextVsBase": 7.45,
+          "deskTextWorstSpot": 6.83,
+          "moreContrastVsBase": 9.19
+        }
+      },
+      "dusk": {
+        "base": "#4A5059",
+        "etch": {
+          "fill": "#7E8289",
+          "wall": "#2E3136",
+          "highlight": null
+        },
+        "deskText": "#E2E2E2",
+        "moreContrast": "#FAFAF7",
+        "kb": 34.2,
+        "checks": {
+          "fillVsBase": 2.11,
+          "fillVsGrooveLine": 3.38,
+          "deskTextVsBase": 6.28,
+          "deskTextWorstSpot": 6.06,
+          "moreContrastVsBase": 7.78
+        }
+      },
+      "dark": {
+        "base": "#454A53",
+        "etch": {
+          "fill": "#1A1D21",
+          "wall": "#131517",
+          "highlight": "#666A71"
+        },
+        "deskText": "#BEC2C9",
+        "moreContrast": "#FAFAF7",
+        "kb": 49.8,
+        "checks": {
+          "fillVsBase": 1.9,
+          "fillVsGrooveLine": 3.11,
+          "deskTextVsBase": 4.98,
+          "deskTextWorstSpot": 4.75,
+          "moreContrastVsBase": 8.52
+        }
+      }
+    },
+    "walnut": {
+      "name": "Walnut",
+      "light": {
+        "base": "#3E4553",
+        "etch": {
+          "fill": "#6B6F76",
+          "wall": "#20242C",
+          "highlight": null
+        },
+        "deskText": "#FAFAF7",
+        "moreContrast": "#FAFAF7",
+        "kb": 80.2,
+        "checks": {
+          "fillVsBase": 1.91,
+          "fillVsGrooveLine": 3.08,
+          "deskTextVsBase": 9.21,
+          "deskTextWorstSpot": 8.36,
+          "moreContrastVsBase": 9.21
+        }
+      },
+      "dusk": {
+        "base": "#2A2E35",
+        "etch": {
+          "fill": "#5B5E64",
+          "wall": "#181A1E",
+          "highlight": null
+        },
+        "deskText": "#E2E2E2",
+        "moreContrast": "#FAFAF7",
+        "kb": 41.1,
+        "checks": {
+          "fillVsBase": 2.1,
+          "fillVsGrooveLine": 2.68,
+          "deskTextVsBase": 10.52,
+          "deskTextWorstSpot": 10.19,
+          "moreContrastVsBase": 13.03
+        }
+      },
+      "dark": {
+        "base": "#383C45",
+        "etch": {
+          "fill": "#030304",
+          "wall": "#020202",
+          "highlight": "#54575E"
+        },
+        "deskText": "#BEC2C9",
+        "moreContrast": "#FAFAF7",
+        "kb": 68.1,
+        "checks": {
+          "fillVsBase": 1.87,
+          "fillVsGrooveLine": 2.85,
+          "deskTextVsBase": 6.18,
+          "deskTextWorstSpot": 5.76,
+          "moreContrastVsBase": 10.57
+        }
+      }
+    },
+    "linoleum": {
+      "name": "Linoleum",
+      "light": {
+        "base": "#A8B0BB",
+        "etch": {
+          "fill": "#EEEFEF",
+          "wall": "#61656B",
+          "highlight": null
+        },
+        "deskText": "#2A2E35",
+        "moreContrast": "#1F1D1A",
+        "kb": 113.6,
+        "checks": {
+          "fillVsBase": 1.9,
+          "fillVsGrooveLine": 5.09,
+          "deskTextVsBase": 6.23,
+          "deskTextWorstSpot": 5.91,
+          "moreContrastVsBase": 7.68
+        }
+      },
+      "dusk": {
+        "base": "#404D5F",
+        "etch": {
+          "fill": "#757E8D",
+          "wall": "#282F39",
+          "highlight": null
+        },
+        "deskText": "#E2E2E2",
+        "moreContrast": "#FAFAF7",
+        "kb": 10.8,
+        "checks": {
+          "fillVsBase": 2.1,
+          "fillVsGrooveLine": 3.29,
+          "deskTextVsBase": 6.63,
+          "deskTextWorstSpot": 6.55,
+          "moreContrastVsBase": 8.21
+        }
+      },
+      "dark": {
+        "base": "#3E4756",
+        "etch": {
+          "fill": "#14181F",
+          "wall": "#0E1115",
+          "highlight": "#5E6572"
+        },
+        "deskText": "#BEC2C9",
+        "moreContrast": "#FAFAF7",
+        "kb": 40.7,
+        "checks": {
+          "fillVsBase": 1.9,
+          "fillVsGrooveLine": 3.03,
+          "deskTextVsBase": 5.24,
+          "deskTextWorstSpot": 5.08,
+          "moreContrastVsBase": 8.96
+        }
+      }
+    }
+  }
+}

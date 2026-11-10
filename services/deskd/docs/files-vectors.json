@@ -1,0 +1,214 @@
+{
+ "about": "Golden frames for services/deskd/docs/files.md (section 9). Each frameHex is one whole wire frame: byte 0 version 1, byte 1 kind (REQ 7, RES 8, ERR 9, CHUNK 15, CREDIT 16), byte 2 flags (BIN 2, END 4), byte 3 zero, bytes 4-7 id and 8-11 seq (u32 big-endian), then the payload. deskd answers these exactly (FilesVectorsTest). The reply values (uploadId, expiresAt, mtime) are the ones a test fixes with its own clock and ids.",
+ "frameHeaderBytes": 12,
+ "kinds": {
+  "REQ": 7,
+  "RES": 8,
+  "ERR": 9,
+  "CHUNK": 15,
+  "CREDIT": 16
+ },
+ "sha256OfFile": "9f9f5111f7b27a781f1f1ddde5ebc2dd2b796bfc7365c9c28b548e564176929f",
+ "file": {
+  "utf8": "0123456789abcdef",
+  "size": 16
+ },
+ "vectors": [
+  {
+   "name": "upload.begin request",
+   "channel": "rpc",
+   "direction": "client->desk",
+   "kind": "REQ",
+   "flags": 0,
+   "id": 21,
+   "seq": 0,
+   "frameHex": "0107000000000015000000007b226d223a2266696c65732e75706c6f61642e626567696e222c2270223a7b2270617468223a2250686f746f732f323032362f612e747874222c2273697a65223a31362c226d74696d654d73223a313736323536303030303030307d2c226964656d223a226964656d2d30303031227d",
+   "payloadJson": {
+    "m": "files.upload.begin",
+    "p": {
+     "path": "Photos/2026/a.txt",
+     "size": 16,
+     "mtimeMs": 1762560000000
+    },
+    "idem": "idem-0001"
+   }
+  },
+  {
+   "name": "upload.begin reply",
+   "channel": "rpc",
+   "direction": "desk->client",
+   "kind": "RES",
+   "flags": 0,
+   "id": 21,
+   "seq": 0,
+   "frameHex": "0108000000000015000000007b2275706c6f61644964223a2230314a4338584b334d364e3151395432565742355a3752484441222c227472616e736665724964223a332c226f6666736574223a302c2277696e646f77223a313034383537362c2273697a65223a31362c22657870697265734174223a22323032362d31312d30395431383a30303a30305a227d",
+   "payloadJson": {
+    "uploadId": "01JC8XK3M6N1Q9T2VWB5Z7RHDA",
+    "transferId": 3,
+    "offset": 0,
+    "window": 1048576,
+    "size": 16,
+    "expiresAt": "2026-11-09T18:00:00Z"
+   }
+  },
+  {
+   "name": "first CHUNK",
+   "channel": "bulk",
+   "direction": "client->desk",
+   "kind": "CHUNK",
+   "flags": 2,
+   "id": 3,
+   "seq": 0,
+   "frameHex": "010f0200000000030000000030313233343536373839616263646566",
+   "payloadHex": "30313233343536373839616263646566",
+   "note": "the whole 16-byte file in one frame; real frames carry up to 16372 bytes; flags 2 = BIN, no END"
+  },
+  {
+   "name": "progress CREDIT",
+   "channel": "bulk",
+   "direction": "desk->client",
+   "kind": "CREDIT",
+   "flags": 0,
+   "id": 3,
+   "seq": 0,
+   "frameHex": "0110000000000003000000007b226279746573223a302c22636f6d6d6974746564223a31367d",
+   "payloadJson": {
+    "bytes": 0,
+    "committed": 16
+   },
+   "note": "sent once at least 256 KiB more is written, or once a second while bytes arrive, and when the last byte is down. Credit never goes past the file size, so for this 16-byte file it is a pure acknowledgement: bytes 0"
+  },
+  {
+   "name": "upload.finish request",
+   "channel": "rpc",
+   "direction": "client->desk",
+   "kind": "REQ",
+   "flags": 0,
+   "id": 22,
+   "seq": 0,
+   "frameHex": "0107000000000016000000007b226d223a2266696c65732e75706c6f61642e66696e697368222c2270223a7b2275706c6f61644964223a2230314a4338584b334d364e3151395432565742355a3752484441222c22736861323536223a2239663966353131316637623237613738316631663164646465356562633264643262373936626663373336356339633238623534386535363431373639323966222c2273697a65223a31367d2c226964656d223a226964656d2d30303032227d",
+   "payloadJson": {
+    "m": "files.upload.finish",
+    "p": {
+     "uploadId": "01JC8XK3M6N1Q9T2VWB5Z7RHDA",
+     "sha256": "9f9f5111f7b27a781f1f1ddde5ebc2dd2b796bfc7365c9c28b548e564176929f",
+     "size": 16
+    },
+    "idem": "idem-0002"
+   }
+  },
+  {
+   "name": "upload.finish reply",
+   "channel": "rpc",
+   "direction": "desk->client",
+   "kind": "RES",
+   "flags": 0,
+   "id": 22,
+   "seq": 0,
+   "frameHex": "0108000000000016000000007b2270617468223a2250686f746f732f323032362f612e747874222c2273697a65223a31362c226d74696d654d73223a313736323536303030303030302c22736861323536223a2239663966353131316637623237613738316631663164646465356562633264643262373936626663373336356339633238623534386535363431373639323966222c227265706c61636564223a6e756c6c7d",
+   "payloadJson": {
+    "path": "Photos/2026/a.txt",
+    "size": 16,
+    "mtimeMs": 1762560000000,
+    "sha256": "9f9f5111f7b27a781f1f1ddde5ebc2dd2b796bfc7365c9c28b548e564176929f",
+    "replaced": null
+   }
+  },
+  {
+   "name": "terminal CREDIT, credit violation",
+   "channel": "bulk",
+   "direction": "desk->client",
+   "kind": "CREDIT",
+   "flags": 0,
+   "id": 3,
+   "seq": 0,
+   "frameHex": "0110000000000003000000007b226279746573223a302c22636f6d6d6974746564223a31362c226572726f72223a226372656469745f76696f6c6174696f6e227d",
+   "payloadJson": {
+    "bytes": 0,
+    "committed": 16,
+    "error": "credit_violation"
+   },
+   "note": "the transfer is over, the session stays up, the partial is kept"
+  },
+  {
+   "name": "check_required",
+   "channel": "rpc",
+   "direction": "desk->client",
+   "kind": "ERR",
+   "flags": 0,
+   "id": 23,
+   "seq": 0,
+   "frameHex": "0109000000000017000000007b22636f6465223a22636865636b5f7265717569726564222c226d657373616765223a22416e20696d616765206e656564732061207665726469637420746f6b656e222c2264657461696c73223a7b22666f726d6174223a226a706567227d7d",
+   "payloadJson": {
+    "code": "check_required",
+    "message": "An image needs a verdict token",
+    "details": {
+     "format": "jpeg"
+    }
+   }
+  },
+  {
+   "name": "no_space",
+   "channel": "rpc",
+   "direction": "desk->client",
+   "kind": "ERR",
+   "flags": 0,
+   "id": 24,
+   "seq": 0,
+   "frameHex": "0109000000000018000000007b22636f6465223a226e6f5f7370616365222c226d657373616765223a224e6f7420656e6f75676820726f6f6d222c2264657461696c73223a7b22667265654279746573223a323530303030303030302c22666c6f6f724279746573223a323134373438333634382c226e6565644279746573223a3438323131333030307d7d",
+   "payloadJson": {
+    "code": "no_space",
+    "message": "Not enough room",
+    "details": {
+     "freeBytes": 2500000000,
+     "floorBytes": 2147483648,
+     "needBytes": 482113000
+    }
+   }
+  },
+  {
+   "name": "files.list request",
+   "channel": "rpc",
+   "direction": "client->desk",
+   "kind": "REQ",
+   "flags": 0,
+   "id": 25,
+   "seq": 0,
+   "frameHex": "0107000000000019000000007b226d223a2266696c65732e6c697374222c2270223a7b2270617468223a2250686f746f73227d7d",
+   "payloadJson": {
+    "m": "files.list",
+    "p": {
+     "path": "Photos"
+    }
+   }
+  },
+  {
+   "name": "files.list reply",
+   "channel": "rpc",
+   "direction": "desk->client",
+   "kind": "RES",
+   "flags": 0,
+   "id": 25,
+   "seq": 0,
+   "frameHex": "0108000000000019000000007b22656e7472696573223a5b7b226e616d65223a2232303236222c2274797065223a22646972222c2273697a65223a6e756c6c2c226d74696d654d73223a313736323536303030303030307d2c7b226e616d65223a22612e747874222c2274797065223a2266696c65222c2273697a65223a31362c226d74696d654d73223a313736323536303030303030307d5d2c226e657874223a6e756c6c2c22736b6970706564223a307d",
+   "payloadJson": {
+    "entries": [
+     {
+      "name": "2026",
+      "type": "dir",
+      "size": null,
+      "mtimeMs": 1762560000000
+     },
+     {
+      "name": "a.txt",
+      "type": "file",
+      "size": 16,
+      "mtimeMs": 1762560000000
+     }
+    ],
+    "next": null,
+    "skipped": 0
+   }
+  }
+ ]
+}

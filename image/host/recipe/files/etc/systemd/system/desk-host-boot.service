@@ -1,0 +1,12 @@
+[Unit]
+Description=desk-host: the shared host's own setup (zswap, swap file, slot store, cgroups, hosting tags), before any desk (ADR 0072)
+After=local-fs.target network-online.target nftables.service systemd-modules-load.service systemd-sysctl.service
+Wants=network-online.target nftables.service
+
+[Service]
+Type=oneshot
+RemainAfterExit=yes
+ExecStart=/usr/local/lib/desk-host/desk-host-boot
+
+[Install]
+WantedBy=multi-user.target

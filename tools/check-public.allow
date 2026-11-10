@@ -1,0 +1,22 @@
+# Reviewed exceptions for tools/check-public.sh: rule<TAB>path-glob<TAB>reason. Identity hits can't be allowed.
+# Keep reasons generic and never quote a value. Prefer fixing the content over adding a line here.
+private-ip	image/host/tests/test_link.py	made-up addresses for the shared host's desk network, in unit tests
+private-ip	image/host/verify.sh	the shared host's internal desk network, which the image configures
+private-ip	image/tests/test_desk_adblock.py	made-up private address in a unit test
+private-ip	image/tests/test_host_classes.py	made-up private address in a unit test
+private-ip	image/verify-adblock.sh	a private address the ad blocker must refuse
+private-ip	image/verify-agent-filter.sh	private addresses the agent's network filter must refuse
+private-ip	image/recipe/desk-agent-filter/*_test.go	private address ranges the agent's network filter must refuse, in unit tests
+public-ip	image/recipe/desk-agent-filter/*_test.go	public resolver and CDN addresses the agent's network filter must allow, in unit tests
+public-ip	image/recipe/desk-agent-filter/names.go	well-known special-purpose ranges the filter refuses
+private-ip	desk-rtc/*_test.go	made-up private addresses for ICE candidates, in unit tests
+public-ip	desk-rtc/third_party/pion-webrtc/*	vendored Pion code: version and specification numbers that look like addresses
+private-ip	services/deskd/src/test/*	made-up private addresses in unit tests
+public-ip	services/deskd/src/test/*	made-up public addresses in unit tests
+public-ip	tools/desk-move/internal/move/move_test.go	Chromium version numbers that look like addresses
+private-ip	web/src/browser/address.test.ts	made-up private address in a unit test
+public-ip	web/src/browser/address.ts	a worked example of how URL parses a short address, in a comment
+business	services/desk-agent/src/main/java/com/minimalistalliance/desk/agent/service/GuildLimits.java	a guild agent's default spending limits per member, a product setting members see
+business	services/deskd/src/main/java/com/minimalistalliance/desk/deskd/guild/GuildSettings.java	a guild agent's default spending limits per member, a product setting members see
+business	web/tests/e2e/guild.shell.spec.ts	a guild agent's spending limit per member, a product setting, in a test
+business	services/desk-agent/src/test/java/com/minimalistalliance/desk/agent/team/AgentMessagesTest.java	a share of an agent's own dollar limit, in a unit test
