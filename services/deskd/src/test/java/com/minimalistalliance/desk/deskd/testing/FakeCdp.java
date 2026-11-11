@@ -59,6 +59,11 @@ public final class FakeCdp implements AutoCloseable {
         String errorCode;
         /** What a script wrote over the error page, or null. */
         String written;
+        /** Made with {@code hidden}: in no window, not discovered or listed, as Chrome 156's hidden targets. */
+        boolean hidden;
+        String context = "ctx";
+        /** The target that opened this one, as a pop-up's, or null. */
+        String opener;
 
         Target(String id, String type, String subtype, String url, String title) {
             this.id = id;
@@ -79,7 +84,10 @@ public final class FakeCdp implements AutoCloseable {
             info.put("title", title);
             info.put("url", url);
             info.put("attached", false);
-            info.put("browserContextId", "ctx");
+            info.put("browserContextId", context);
+            if (opener != null) {
+                info.put("openerId", opener);
+            }
             return info;
         }
     }
@@ -105,6 +113,8 @@ public final class FakeCdp implements AutoCloseable {
     private final Map<String, Runnable> afterReply = new ConcurrentHashMap<>();
     private final Map<String, Integer> splitReplies = new ConcurrentHashMap<>();
     private final Map<String, java.util.function.Function<Command, Object>> answers = new ConcurrentHashMap<>();
+    /** Runtime.evaluate's scripted answers, by a piece of the expression, ahead of the three scripts below. */
+    private final Map<String, java.util.function.Function<Command, Object>> expressionAnswers = new ConcurrentHashMap<>();
     private final AtomicInteger upgrades = new AtomicInteger();
     private final AtomicInteger nextTarget = new AtomicInteger(1);
     private final ReentrantLock writeLock = new ReentrantLock();
@@ -117,6 +127,11 @@ public final class FakeCdp implements AutoCloseable {
     private volatile boolean refuseUpgrade;
     private volatile boolean closed;
     private volatile List<Map<String, Object>> cookies = List.of();
+    private final Set<String> contexts = ConcurrentHashMap.newKeySet();
+    /** As a Chromium that doesn't know {@code hidden}: every target is an ordinary one. */
+    private volatile boolean ignoreHidden;
+    /** As a Chromium whose getTargets lists hidden targets too. */
+    private volatile boolean listHidden;
 
     public FakeCdp() throws IOException {
         this(0);
@@ -156,6 +171,10 @@ public final class FakeCdp implements AutoCloseable {
         lock.lock();
         try {
             targets.add(target);
+            if (target.hidden) {
+                // Chromium tells nobody of a hidden target, and it's never on screen.
+                return;
+            }
             if ("page".equals(target.type)) {
                 activation.add(0, target.id);
                 if (foreground) {
@@ -198,6 +217,57 @@ public final class FakeCdp implements AutoCloseable {
     }
 
     /** A hung renderer: the target's still listed and can be attached to, and commands on it get no reply. */
+    /** A pop-up a page opened: a new page in that context, with that opener, as Chromium tells of one. */
+    public void addPopup(String id, String url, String opener, String context) {
+        Target target = new Target(id, "page", null, url, "");
+        target.opener = opener;
+        target.context = context;
+        add(target, false);
+    }
+
+    /** The default context's id, as every ordinary target has it. */
+    public static final String DEFAULT_CONTEXT = "ctx";
+
+    /** As a Chromium that doesn't know {@code Target.createTarget}'s {@code hidden}: it makes ordinary tabs. */
+    public void ignoreHidden(boolean on) {
+        ignoreHidden = on;
+    }
+
+    /** As a Chromium whose Target.getTargets lists hidden targets. */
+    public void listHidden(boolean on) {
+        listHidden = on;
+    }
+
+    /** The browser contexts made and not disposed of. */
+    public Set<String> contexts() {
+        return Set.copyOf(contexts);
+    }
+
+    /** Whether a target is there now, hidden or not. */
+    public boolean has(String id) {
+        return find(id) != null;
+    }
+
+    /** The ids of the targets now, hidden ones too. */
+    public List<String> targetIds() {
+        List<String> ids = new ArrayList<>();
+        for (Target target : snapshot()) {
+            ids.add(target.id);
+        }
+        return ids;
+    }
+
+    /** The context a target is in, or null if it isn't there. */
+    public String contextOf(String id) {
+        Target target = find(id);
+        return target == null ? null : target.context;
+    }
+
+    public boolean hidden(String id) {
+        Target target = find(id);
+        return target != null && target.hidden;
+    }
+
     public void hangTab(String id, boolean on) {
         if (on) {
             hungTabs.add(id);
@@ -265,7 +335,9 @@ public final class FakeCdp implements AutoCloseable {
         String session = sessionOf(id);
         event("Page.frameStartedLoading", Map.of("frameId", id), session);
         event("Page.frameNavigated", Map.of("frame", frame(id, url, loader, errorCode != null)), session);
-        event("Target.targetInfoChanged", Map.of("targetInfo", target.info()), null);
+        if (!target.hidden) {
+            event("Target.targetInfoChanged", Map.of("targetInfo", target.info()), null);
+        }
         event("Page.frameStoppedLoading", Map.of("frameId", id), session);
     }
 
@@ -404,6 +476,14 @@ public final class FakeCdp implements AutoCloseable {
         answers.put(method, result);
     }
 
+    /**
+     * Runtime.evaluate of an expression holding {@code piece} answers with what the function gives (the reply's
+     * {@code result}), and every other expression as before: for Chromium's own pages, which the sign-ins wait on.
+     */
+    public void answerExpression(String piece, java.util.function.Function<Command, Object> result) {
+        expressionAnswers.put(piece, result);
+    }
+
     /** This method answers with a CDP error of this code. */
     public void forceError(String method, int code) {
         forcedErrors.put(method, code);
@@ -459,6 +539,31 @@ public final class FakeCdp implements AutoCloseable {
         }
         sendRaw(new String(Json.bytes(message), StandardCharsets.UTF_8));
     }
+
+    /**
+     * As deskd's isolated world in the tab calls the binding deskd last added on the tab's session, which is what its
+     * protected-media listener does once the page is refused (deskd's {@code ProtectedMedia}).
+     */
+    public void bindingCalled(String targetId, String payload) {
+        String session = sessionOf(targetId);
+        Command added = null;
+        for (Command command : commands("Runtime.addBinding")) {
+            if (session.equals(command.sessionId())) {
+                added = command;
+            }
+        }
+        if (added == null) {
+            throw new IllegalStateException("no binding on " + targetId);
+        }
+        bindingCalled(targetId, (String) added.params().get("name"), payload);
+    }
+
+    /** A binding of any name called on the tab's session. */
+    public void bindingCalled(String targetId, String name, String payload) {
+        event("Runtime.bindingCalled", Map.<String, Object>of("name", name, "payload", payload, "executionContextId", 1), sessionOf(targetId));
+    }
+
+    private final java.util.concurrent.atomic.AtomicInteger scriptIds = new java.util.concurrent.atomic.AtomicInteger();
 
     /** Cuts the WebSocket, as Chromium crashing would. */
     public void dropConnections() throws IOException {
@@ -583,8 +688,10 @@ public final class FakeCdp implements AutoCloseable {
                 }
             }
             for (Target target : targets) {
-                if (!"page".equals(target.type)) {
-                    list.add(Map.of("id", target.id, "type", target.type, "url", target.url, "title", escapedForHtml(target.title)));
+                if (!"page".equals(target.type) || target.hidden) {
+                    // A hidden target is listed here, as "other", and nowhere else (Chrome 156).
+                    list.add(Map.of("id", target.id, "type", target.hidden ? "other" : target.type, "url", target.url,
+                            "title", escapedForHtml(target.title)));
                 }
             }
             String wrapped = new String(Json.bytes(Map.of("l", list)), StandardCharsets.UTF_8);
@@ -799,15 +906,59 @@ public final class FakeCdp implements AutoCloseable {
                 case "Target.setDiscoverTargets" -> {
                     reply.put("result", Map.of());
                     for (Target target : snapshot()) {
-                        event("Target.targetCreated", Map.of("targetInfo", target.info()), null);
+                        if (!target.hidden) {
+                            event("Target.targetCreated", Map.of("targetInfo", target.info()), null);
+                        }
                     }
                 }
                 case "Target.getTargets" -> {
                     List<Map<String, Object>> infos = new ArrayList<>();
                     for (Target target : snapshot()) {
-                        infos.add(target.info());
+                        if (!target.hidden || listHidden) {
+                            infos.add(target.info());
+                        }
                     }
                     reply.put("result", Map.of("targetInfos", infos));
+                }
+                case "Target.createBrowserContext" -> {
+                    String context = "CTX" + nextTarget.getAndIncrement();
+                    contexts.add(context);
+                    reply.put("result", Map.of("browserContextId", context));
+                }
+                case "Target.disposeBrowserContext" -> {
+                    String context = Json.string(params, "browserContextId");
+                    if (context == null || !contexts.remove(context)) {
+                        reply.put("error", Map.of("code", -32602, "message", "Failed to find context with id"));
+                    } else {
+                        lock.lock();
+                        try {
+                            targets.removeIf(target -> context.equals(target.context));
+                        } finally {
+                            lock.unlock();
+                        }
+                        reply.put("result", Map.of());
+                    }
+                }
+                case "Target.getTargetInfo" -> {
+                    Target target = find(targetId);
+                    if (target == null) {
+                        reply.put("error", Map.of("code", -32602, "message", "No target with given id found"));
+                    } else {
+                        lock.lock();
+                        try {
+                            reply.put("result", Map.of("targetInfo", target.info()));
+                        } finally {
+                            lock.unlock();
+                        }
+                    }
+                }
+                case "Browser.getWindowForTarget" -> {
+                    Target target = find(targetId);
+                    if (target == null || target.hidden) {
+                        reply.put("error", Map.of("code", -32000, "message", "Browser window not found"));
+                    } else {
+                        reply.put("result", Map.of("windowId", 1, "bounds", Map.of("left", 0, "top", 0, "width", 1920, "height", 1080)));
+                    }
                 }
                 case "Target.attachToTarget" -> {
                     if (find(targetId) == null) {
@@ -826,15 +977,25 @@ public final class FakeCdp implements AutoCloseable {
                 }
                 case "Target.createTarget" -> {
                     String id = "T" + nextTarget.getAndIncrement();
-                    add(new Target(id, "page", null, Json.string(params, "url"), ""));
+                    Target created = new Target(id, "page", null, Json.string(params, "url"), "");
+                    created.hidden = Boolean.TRUE.equals(params.get("hidden")) && !ignoreHidden;
+                    if (params.get("browserContextId") instanceof String context) {
+                        created.context = context;
+                    }
+                    // A hidden one is never on screen and nobody is told of it (add); Chromium's own pages
+                    // (ChromiumPages) and the Agent's (AgentBrowsing) both make them.
+                    add(created, !created.hidden);
                     reply.put("result", Map.of("targetId", id));
                 }
                 case "Target.closeTarget" -> {
-                    if (find(targetId) == null) {
+                    Target closing = find(targetId);
+                    if (closing == null) {
                         reply.put("error", Map.of("code", -32602, "message", "No target with given id found"));
                     } else {
                         removeQuietly(targetId);
-                        event("Target.targetDestroyed", Map.of("targetId", targetId), null);
+                        if (!closing.hidden) {
+                            event("Target.targetDestroyed", Map.of("targetId", targetId), null);
+                        }
                         reply.put("result", Map.of("success", true));
                     }
                 }
@@ -903,6 +1064,8 @@ public final class FakeCdp implements AutoCloseable {
                     event("Target.targetInfoChanged", Map.of("targetInfo", onSession.info()), null);
                     reply.put("result", Map.of());
                 }
+                case "Page.addScriptToEvaluateOnNewDocument" ->
+                    reply.put("result", Map.of("identifier", "script-" + scriptIds.incrementAndGet()));
                 case "Storage.getCookies" -> reply.put("result", Map.of("cookies", cookies));
                 default -> reply.put("result", Map.of());
             }
@@ -916,6 +1079,12 @@ public final class FakeCdp implements AutoCloseable {
      */
     private void evaluate(Target onSession, Map<String, Object> params, Map<String, Object> reply) {
         String expression = Json.string(params, "expression");
+        for (Map.Entry<String, java.util.function.Function<Command, Object>> scripted : expressionAnswers.entrySet()) {
+            if (expression != null && expression.contains(scripted.getKey())) {
+                reply.put("result", scripted.getValue().apply(new Command("Runtime.evaluate", onSession == null ? null : sessionOf(onSession.id), params)));
+                return;
+            }
+        }
         World world = params.get("contextId") instanceof Number id ? isolatedWorlds.get(id.longValue()) : null;
         lock.lock();
         try {

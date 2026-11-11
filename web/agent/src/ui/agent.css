@@ -156,6 +156,11 @@
     box-shadow: var(--ma-elevation-menu);
   }
 }
+@container ag (max-width: 440px) {
+  .ag-drawer {
+    top: 100px; /* .ag-head's min-height with two rows (its phone rule, in main below) */
+  }
+}
 /* A small window: the rail goes behind a button. */
 @container ag (max-width: 719.98px) {
   .ag-shell {
@@ -235,9 +240,9 @@
   border-color: var(--ma-accent-hover);
 }
 .ag-btn.danger {
-  background: var(--ma-badge-bg);
-  border-color: var(--ma-badge-bg);
-  color: var(--ma-badge-fg);
+  background: var(--ma-text-danger);
+  border-color: var(--ma-text-danger);
+  color: var(--ma-surface-window);
 }
 .ag-btn.sm {
   height: 32px;
@@ -305,6 +310,8 @@
 }
 .ag-seg {
   display: inline-flex;
+  flex-wrap: wrap; /* at 400 % zoom (320 CSS px and under) the words wrap to a second row instead of leaving the window */
+  max-width: 100%;
   align-items: stretch;
   flex: none;
   padding: 3px;
@@ -704,6 +711,24 @@
   text-overflow: ellipsis;
   white-space: nowrap;
 }
+/* A phone's column: the agent's name keeps the head's first row, and the detail buttons go to a second row at its end,
+   as the Browser's switch does on a phone held upright. Beside them the name had about 55 px ("Man…" for Manager on a
+   360 px phone). At 440 px or less the rail is always folded away, so this column is the whole window, and the drawer
+   opens under both rows (top, above). A head with no buttons (a Guild Desk's member without the guild's limits) keeps
+   its one row. After the rules above, which it changes. */
+@container agmain (max-width: 440px) {
+  .ag-head:has(.ag-tabs) {
+    flex-wrap: wrap;
+    row-gap: 6px;
+    min-height: 100px; /* two rows: the name (or a focused window's 40 px mark) and the buttons; the drawer's top */
+  }
+  .ag-head-text {
+    flex-basis: 50%; /* too wide to share a row with the buttons, so they wrap */
+  }
+  .ag-tabs {
+    margin-left: auto;
+  }
+}
 .ag-thread {
   flex: 1;
   min-height: 0;
@@ -983,6 +1008,39 @@
 .ag-limits-form {
   display: grid;
   gap: 12px;
+}
+/* The key form's one button stays in view while the form scrolls under it (a 480 px window on an 800 px screen), on the
+   window's own surface so the words slide beneath it. */
+.ag-keyform-actions {
+  position: sticky;
+  bottom: -24px;
+  z-index: 1;
+  margin: 0 -4px;
+  padding: 10px 4px 24px;
+  background: var(--ma-surface-window);
+}
+.ag-travel {
+  display: grid;
+  gap: 6px;
+}
+.ag-travel summary {
+  display: inline-block;
+  list-style: none;
+  cursor: pointer;
+  color: var(--ma-text-secondary);
+  text-decoration: underline;
+  text-underline-offset: 2px;
+}
+.ag-travel summary::-webkit-details-marker {
+  display: none;
+}
+.ag-travel summary:focus-visible {
+  outline: 2px solid var(--ma-focus-ring);
+  outline-offset: 2px;
+  border-radius: 4px;
+}
+.ag-travel details[open] summary {
+  margin-bottom: 4px;
 }
 .ag-bind.compact {
   gap: 10px;
@@ -1679,5 +1737,948 @@
   .ag-msg-meta,
   .ag-msg-foot {
     color: var(--ma-text-secondary);
+  }
+}
+
+/* S-14: tools, approvals and memory in the Agent app (Product Designer spec, ~/ma-coord/design-drafts/agent-tools/README.md).
+   For UI/UX: append to web/agent/src/ui/agent.css as it stands. Every color is a --ma-* token from web/src/theme/tokens.ts;
+   status-error (red) is used only for a failure, never for a risk level. Weights as the Agent app's today in Inter Variable:
+   text 400, buttons and labels 500, titles 600. Motion is opacity only, and none under reduced motion. */
+
+/* ------------------------------------------------------------ the risk level chip (cards, strip rows, Activity) */
+.ag-level {
+  display: inline-flex;
+  align-items: center;
+  gap: 6px;
+  flex: none;
+  height: 24px;
+  padding: 0 10px 0 8px;
+  border-radius: 999px;
+  background: var(--ma-surface-fill);
+  color: var(--ma-text-secondary);
+  font-size: 12px;
+  line-height: 16px;
+  font-weight: 600;
+  white-space: nowrap;
+}
+.ag-level .ag-icon {
+  color: var(--ma-text-secondary);
+}
+.ag-level[data-level="send"],
+.ag-level[data-level="spend"] {
+  background: color-mix(in srgb, var(--ma-status-warn) 16%, var(--ma-surface-window));
+  color: var(--ma-text-primary);
+}
+.ag-level[data-level="send"] .ag-icon,
+.ag-level[data-level="spend"] .ag-icon {
+  color: var(--ma-status-warn);
+}
+
+/* ------------------------------------------------------------ 1. the approval card */
+/* A reply that holds a card takes the column's width, up to 600 px, so the card's rows have room. */
+.ag-msg.agent:has(.ag-approval) {
+  max-width: min(100%, 600px);
+  width: 100%;
+}
+.ag-approvals {
+  display: grid;
+  gap: 10px;
+  width: 100%;
+  margin-top: 6px;
+}
+.ag-approval {
+  display: grid;
+  gap: 12px;
+  width: 100%;
+  padding: 14px 16px;
+  border: 1px solid var(--ma-border-strong);
+  border-radius: 14px;
+  background: var(--ma-surface-window);
+}
+/* Send outside and Spend: a 4 px edge in warn, on a waiting card only (taste call 1, option B). */
+.ag-approval[data-state="pending"]:is([data-level="send"], [data-level="spend"]) {
+  padding-left: 20px;
+  box-shadow: inset 4px 0 0 var(--ma-status-warn);
+}
+.ag-approval-top {
+  display: flex;
+  flex-wrap: wrap;
+  align-items: center;
+  justify-content: space-between;
+  gap: 6px 10px;
+}
+.ag-approval-when {
+  font-size: 12px;
+  line-height: 16px;
+  color: var(--ma-text-tertiary);
+  font-variant-numeric: tabular-nums;
+}
+.ag-approval-title {
+  display: grid;
+  gap: 2px;
+}
+.ag-approval h4 {
+  margin: 0;
+  font-size: 15px;
+  line-height: 21px;
+  font-weight: 600;
+  overflow-wrap: anywhere;
+}
+.ag-approval-origin {
+  margin: 0;
+  font-size: 12px;
+  line-height: 16px;
+  font-weight: 600;
+  color: var(--ma-text-secondary);
+}
+.ag-approval-rows {
+  display: grid;
+  gap: 5px;
+  margin: 0;
+}
+.ag-approval-rows > div {
+  display: grid;
+  grid-template-columns: minmax(72px, 20%) minmax(0, 1fr);
+  gap: 10px;
+  font-size: 13px;
+  line-height: 18px;
+}
+.ag-approval-rows dt {
+  color: var(--ma-text-tertiary);
+}
+.ag-approval-rows dd {
+  margin: 0;
+  min-width: 0;
+  overflow-wrap: anywhere;
+}
+.ag-val-mono {
+  font-family: ui-monospace, "SFMono-Regular", Menlo, Consolas, monospace;
+  font-size: 12.5px;
+  line-height: 18px;
+}
+/* What leaves the desk, for an address: every query part on its own line. */
+.ag-leaves {
+  display: grid;
+  gap: 4px;
+  padding: 8px 12px 9px;
+  border-radius: 10px;
+  background: var(--ma-surface-sunken);
+}
+.ag-leaves h5 {
+  margin: 0;
+  font-size: 12px;
+  line-height: 16px;
+  font-weight: 600;
+  color: var(--ma-text-secondary);
+}
+.ag-leaves dl {
+  display: grid;
+  gap: 2px;
+  margin: 0;
+}
+.ag-leaves dl > div {
+  display: flex;
+  gap: 8px;
+  min-width: 0;
+}
+.ag-leaves dt {
+  flex: none;
+  color: var(--ma-text-tertiary);
+}
+.ag-leaves dd {
+  margin: 0;
+  min-width: 0;
+  overflow-wrap: anywhere;
+  color: var(--ma-text-primary);
+}
+/* The agent's own words: the one place they appear on a card, as a quote, under the app's label. */
+.ag-approval-says {
+  margin: 0;
+  padding: 1px 0 1px 10px;
+  border-left: 2px solid var(--ma-border-strong);
+  font-size: 13px;
+  line-height: 19px;
+  color: var(--ma-text-secondary);
+  overflow-wrap: anywhere;
+}
+.ag-approval-says b {
+  font-weight: 600;
+  color: var(--ma-text-primary);
+}
+.ag-approval-note {
+  display: flex;
+  align-items: flex-start;
+  gap: 8px;
+  margin: 0;
+  font-size: 12.5px;
+  line-height: 18px;
+  color: var(--ma-text-secondary);
+}
+.ag-approval-note .ag-icon {
+  margin-top: 1px;
+  color: var(--ma-text-tertiary);
+}
+.ag-approval .ag-check {
+  min-height: 28px;
+  font-size: 13px;
+  line-height: 18px;
+  color: var(--ma-text-secondary);
+}
+.ag-approval-actions {
+  display: flex;
+  flex-wrap: wrap;
+  align-items: center;
+  justify-content: flex-end;
+  gap: 8px;
+}
+.ag-approval-actions .ag-why {
+  margin: 0 auto 0 -8px;
+}
+.ag-approval-foot {
+  margin: -4px 0 0;
+  font-size: 12px;
+  line-height: 16px;
+  color: var(--ma-text-tertiary);
+  text-align: right;
+}
+.ag-why-field {
+  display: grid;
+  gap: 6px;
+}
+.ag-why-field .ag-textarea {
+  min-height: 60px;
+}
+.ag-why-field .ag-row-between small {
+  font-size: 12px;
+  color: var(--ma-text-tertiary);
+  font-variant-numeric: tabular-nums;
+}
+/* Answered: neutral, short, the state on one line; the payload under "What it was". */
+.ag-approval:not([data-state="pending"]) {
+  gap: 6px;
+  padding: 10px 14px;
+  border-color: var(--ma-border);
+}
+.ag-approval-state {
+  display: flex;
+  flex-wrap: wrap;
+  align-items: center;
+  gap: 4px 6px;
+  margin: 0;
+  font-size: 13px;
+  line-height: 18px;
+}
+.ag-approval-state b {
+  font-weight: 600;
+}
+.ag-approval-state .ag-icon {
+  color: var(--ma-text-secondary);
+}
+.ag-approval-state .ag-icon.ok {
+  color: var(--ma-status-online);
+}
+.ag-approval-state[data-result="failed"] b {
+  color: var(--ma-status-error);
+}
+.ag-approval-sub {
+  margin: 0;
+  font-size: 12.5px;
+  line-height: 18px;
+  color: var(--ma-text-secondary);
+  overflow-wrap: anywhere;
+}
+.ag-approval-was {
+  font-size: 13px;
+}
+.ag-approval-was > summary {
+  cursor: pointer;
+  color: var(--ma-text-link);
+  font-size: 12.5px;
+}
+.ag-approval-was[open] > summary {
+  margin-bottom: 8px;
+}
+/* Approve ignores a press for 500 ms after the card appears or changes (no data attribute: the button is disabled). */
+
+/* "1 request waiting", over the thread when the oldest waiting card is out of view. */
+.ag-thread-wrap {
+  position: relative;
+  flex: 1;
+  min-height: 0;
+  display: flex;
+  flex-direction: column;
+}
+.ag-waiting-pill {
+  position: absolute;
+  left: 50%;
+  bottom: 12px;
+  z-index: 2;
+  transform: translateX(-50%);
+  display: inline-flex;
+  align-items: center;
+  gap: 8px;
+  height: 34px;
+  padding: 0 14px 0 12px;
+  border: 1px solid var(--ma-border);
+  border-radius: 999px;
+  background: var(--ma-surface-overlay);
+  box-shadow: var(--ma-elevation-menu);
+  color: var(--ma-text-primary);
+  font-size: 13px;
+  font-weight: 500;
+  white-space: nowrap;
+}
+
+/* ------------------------------------------------------------ 2. tools in the thread, and the running strip */
+.ag-tools-done {
+  min-width: 0;
+  max-width: 100%;
+  display: flex;
+  flex-wrap: wrap;
+  gap: 6px;
+  margin: 2px 0 0;
+  padding: 0;
+  list-style: none;
+}
+.ag-tool-chip {
+  display: inline-flex;
+  align-items: center;
+  gap: 6px;
+  max-width: 100%;
+  min-height: 26px;
+  padding: 2px 10px 2px 8px;
+  border: 1px solid var(--ma-border);
+  border-radius: 13px;
+  font-size: 12px;
+  line-height: 16px;
+  color: var(--ma-text-secondary);
+}
+.ag-tool-chip .ag-icon {
+  color: var(--ma-text-tertiary);
+}
+.ag-tool-word {
+  flex: none;
+  font-weight: 500;
+  color: var(--ma-text-primary);
+}
+.ag-tool-target {
+  min-width: 0;
+  overflow: hidden;
+  text-overflow: ellipsis;
+  white-space: nowrap;
+}
+.ag-tool-time {
+  flex: none;
+  color: var(--ma-text-tertiary);
+  font-variant-numeric: tabular-nums;
+}
+.ag-tool-chip[data-result="failed"] .ag-tool-word {
+  color: var(--ma-status-error);
+}
+
+.ag-running {
+  margin: 0 16px 10px;
+  border: 1px solid var(--ma-border);
+  border-radius: 12px;
+  background: var(--ma-surface-sunken);
+}
+.ag-running-list {
+  margin: 0;
+  padding: 0;
+  list-style: none;
+}
+.ag-run-row {
+  display: grid;
+  grid-template-columns: auto minmax(0, 1fr) auto auto;
+  align-items: center;
+  gap: 10px;
+  min-height: 44px;
+  padding: 5px 6px 5px 12px;
+}
+.ag-run-row + .ag-run-row {
+  border-top: 1px solid var(--ma-border-hairline);
+}
+.ag-run-row > .ag-icon {
+  color: var(--ma-text-secondary);
+}
+.ag-run-row[data-level="send"] > .ag-icon,
+.ag-run-row[data-level="spend"] > .ag-icon {
+  color: var(--ma-status-warn);
+}
+.ag-run-text {
+  display: flex;
+  align-items: baseline;
+  gap: 8px;
+  min-width: 0;
+}
+.ag-run-label {
+  flex: none;
+  font-size: 13px;
+  line-height: 18px;
+  font-weight: 600;
+  white-space: nowrap;
+}
+.ag-run-target {
+  min-width: 0;
+  font-size: 12px;
+  line-height: 16px;
+  color: var(--ma-text-tertiary);
+  overflow: hidden;
+  text-overflow: ellipsis;
+  white-space: nowrap;
+}
+.ag-run-time {
+  min-width: 36px;
+  font-size: 12.5px;
+  color: var(--ma-text-secondary);
+  font-variant-numeric: tabular-nums;
+  text-align: right;
+}
+.ag-run-row .ag-btn.sm {
+  height: 30px;
+  padding: 0 12px;
+}
+.ag-run-row[data-state="stopping"] .ag-run-label {
+  color: var(--ma-text-tertiary);
+}
+.ag-running-also {
+  display: flex;
+  flex-wrap: wrap;
+  align-items: center;
+  gap: 4px 6px;
+  min-height: 36px;
+  padding: 4px 12px;
+  border-top: 1px solid var(--ma-border-hairline);
+  font-size: 12px;
+  line-height: 16px;
+  color: var(--ma-text-secondary);
+}
+.ag-running-also .ag-text-btn {
+  padding: 2px 6px;
+  font-size: 12px;
+}
+.ag-running-sum {
+  display: flex;
+  align-items: center;
+  gap: 8px;
+  min-height: 44px;
+  padding: 0 6px 0 12px;
+  font-size: 13px;
+}
+.ag-running-sum b {
+  font-weight: 600;
+}
+.ag-running-sum .ag-run-time {
+  min-width: 0;
+  text-align: left;
+}
+.ag-running-sum .ag-text-btn {
+  margin-left: auto;
+  min-height: 36px;
+}
+.ag-running-gone {
+  margin: 0;
+  padding: 10px 12px;
+  font-size: 12.5px;
+  color: var(--ma-text-secondary);
+}
+
+/* ------------------------------------------------------------ 3. the memory panel (drawer tab "Memory") */
+.ag-memory {
+  display: grid;
+  gap: 14px;
+  padding-top: 6px;
+}
+.ag-memory > .ag-switch-row {
+  padding: 4px 0;
+}
+.ag-search {
+  position: relative;
+  display: block;
+}
+.ag-search .ag-icon {
+  position: absolute;
+  left: 10px;
+  top: 10px;
+  color: var(--ma-text-tertiary);
+  pointer-events: none;
+}
+.ag-search input {
+  width: 100%;
+  height: 36px;
+  padding: 0 10px 0 32px;
+  border: 1px solid var(--ma-border-strong);
+  border-radius: 10px;
+  background: var(--ma-surface-window);
+  color: var(--ma-text-primary);
+  font-size: 14px;
+}
+.ag-search input::placeholder {
+  color: var(--ma-text-disabled);
+}
+.ag-memory-bar {
+  display: flex;
+  align-items: center;
+  justify-content: space-between;
+  gap: 8px;
+  margin: -4px 0 -6px;
+}
+.ag-memory-bar .ag-text-btn {
+  margin-right: -8px;
+}
+.ag-memory-count {
+  margin: 0;
+  font-size: 12px;
+  line-height: 16px;
+  color: var(--ma-text-tertiary);
+  font-variant-numeric: tabular-nums;
+}
+.ag-mem-list {
+  display: grid;
+  margin: 0;
+  padding: 0;
+  list-style: none;
+}
+.ag-mem {
+  display: grid;
+  gap: 3px;
+  padding: 10px 0 6px;
+  border-bottom: 1px solid var(--ma-border-hairline);
+}
+.ag-mem-text {
+  margin: 0;
+  font-size: 14px;
+  line-height: 20px;
+  white-space: pre-wrap;
+  overflow-wrap: anywhere;
+}
+.ag-mem-text mark {
+  border-radius: 3px;
+  background: color-mix(in srgb, var(--ma-accent) 24%, transparent);
+  color: inherit;
+}
+.ag-mem-meta {
+  display: flex;
+  flex-wrap: wrap;
+  align-items: center;
+  gap: 2px 6px;
+  margin: 0;
+  font-size: 12px;
+  line-height: 16px;
+  color: var(--ma-text-tertiary);
+}
+.ag-mem-actions {
+  display: flex;
+  gap: 2px;
+  margin-left: -8px;
+}
+.ag-text-btn.danger {
+  color: var(--ma-text-danger);
+}
+.ag-text-btn.danger:hover:not(:disabled) {
+  background: color-mix(in srgb, var(--ma-text-danger) 10%, transparent);
+}
+.ag-mem-edit {
+  display: grid;
+  gap: 6px;
+  padding-top: 2px;
+}
+.ag-forget {
+  display: grid;
+  gap: 10px;
+  padding: 12px 14px;
+  border: 1px solid var(--ma-border-strong);
+  border-radius: 12px;
+}
+.ag-forget p {
+  margin: 0;
+  font-size: 13px;
+  line-height: 19px;
+  color: var(--ma-text-secondary);
+}
+.ag-forget p.ag-forget-q {
+  font-size: 14px;
+  line-height: 20px;
+  font-weight: 600;
+  color: var(--ma-text-primary);
+}
+.ag-memory-foot {
+  display: grid;
+  gap: 4px;
+}
+
+/* ------------------------------------------------------------ 4. Activity: filters and tool rows */
+.ag-activity-filters {
+  display: flex;
+  flex-wrap: wrap;
+  gap: 8px;
+}
+.ag-activity-filters .ag-select {
+  flex: 1 1 0;
+  min-width: 0;
+}
+.ag-select {
+  height: 32px;
+  max-width: 100%;
+  padding: 0 28px 0 10px;
+  border: 1px solid var(--ma-border-strong);
+  border-radius: 10px;
+  background-color: var(--ma-surface-window);
+  color: var(--ma-text-primary);
+  font-size: 13px;
+}
+/* A row: what, then what it was done to, then who, when and who let it happen. */
+.ag-audit .ag-audit-target {
+  font-size: 12.5px;
+  line-height: 18px;
+  color: var(--ma-text-secondary);
+}
+.ag-audit .ag-audit-who {
+  display: flex;
+  flex-wrap: wrap;
+  align-items: center;
+  gap: 0 10px;
+  color: var(--ma-text-tertiary);
+}
+.ag-audit-ok {
+  display: inline-flex;
+  align-items: center;
+  gap: 5px;
+  font-size: 12px;
+  line-height: 16px;
+  color: var(--ma-text-secondary);
+}
+.ag-audit-ok .ag-icon {
+  color: var(--ma-text-tertiary);
+}
+.ag-audit-ok[data-by="member"] .ag-icon {
+  color: var(--ma-status-online);
+}
+.ag-audit li[data-level="send"] .ag-audit-what::before,
+.ag-audit li[data-level="spend"] .ag-audit-what::before {
+  content: "";
+  display: inline-block;
+  width: 6px;
+  height: 6px;
+  margin: 0 7px 2px 0;
+  border-radius: 50%;
+  background: var(--ma-status-warn);
+}
+
+/* ------------------------------------------------------------ the rules list in Settings ("Asks first") */
+.ag-rules-list {
+  display: grid;
+  margin: 0;
+  padding: 0;
+  list-style: none;
+}
+.ag-rules-list li {
+  display: flex;
+  align-items: center;
+  justify-content: space-between;
+  gap: 8px;
+  padding: 8px 0;
+  border-bottom: 1px solid var(--ma-border-hairline);
+  font-size: 13px;
+}
+
+/* ------------------------------------------------------------ a phone, or any thread column under 520 px */
+@container agmain (max-width: 520px) {
+  .ag-msg.agent:has(.ag-approval) {
+    max-width: 100%;
+  }
+  .ag-approval {
+    padding: 14px;
+  }
+  .ag-approval[data-state="pending"]:is([data-level="send"], [data-level="spend"]) {
+    padding-left: 18px;
+  }
+  .ag-approval-rows > div {
+    grid-template-columns: 72px minmax(0, 1fr);
+  }
+  .ag-approval-actions .ag-why {
+    flex: 1 0 100%;
+    margin: 0 0 0 -8px;
+    min-height: 36px;
+  }
+  .ag-approval-actions .ag-btn {
+    flex: 1 1 0;
+    height: 44px;
+  }
+  .ag-approval-foot {
+    text-align: left;
+  }
+  .ag-running {
+    margin: 0 12px 8px;
+  }
+  .ag-run-row .ag-btn.sm {
+    height: 36px;
+  }
+  /* The target goes under the label, so neither is cut to a few letters. */
+  .ag-run-text {
+    flex-direction: column;
+    align-items: flex-start;
+    gap: 0;
+  }
+  .ag-run-target {
+    max-width: 100%;
+  }
+}
+/* The head takes two rows: the agent, then the six tabs across the whole width, each a 44 px target. On the whole app's
+   width (`ag`), not the thread column's, so the drawer's top below moves with it: the drawer is the app's, and in a
+   column narrowed by the rail it would have covered the second row (LS-35). Under 520 px the rail is always folded away,
+   so the column is the app. */
+@container ag (max-width: 520px) {
+  .ag-head:has(.ag-tabs) {
+    flex-wrap: wrap;
+    row-gap: 6px;
+    padding: 8px 12px 6px;
+  }
+  .ag-head .ag-tabs {
+    order: 3;
+    flex: 1 0 100%;
+    justify-content: space-between;
+  }
+  .ag-head .ag-tabs button {
+    flex: 1 1 0;
+    min-height: 38px;
+  }
+  .ag-drawer {
+    top: 104px; /* the two-row head: 8 + 39 + 6 + 44 + 6 + 1 */
+  }
+}
+@container ag (max-width: 479.98px) {
+  .ag-drawer {
+    width: 100%;
+    border-left: 0;
+  }
+  .ag-memory .ag-text-btn,
+  .ag-activity-head .ag-btn {
+    min-height: 36px;
+  }
+}
+@media (pointer: coarse) {
+  .ag-run-row .ag-btn.sm,
+  .ag-mem-actions .ag-text-btn {
+    min-height: 44px;
+  }
+}
+
+/* The sixth tab (Memory): the tabs keep their icons only below 880 px of thread column, not 640, so the agent's name and its
+   badge keep their row. The spec said 760; at 804 px (a 1440 px screen with a drawer open) the six labels left the name about
+   150 px, and the badge wrapped under it. */
+@container agmain (max-width: 880px) {
+  .ag-tabs span {
+    display: none;
+  }
+  .ag-tabs button {
+    padding: 6px 10px;
+  }
+}
+
+/* #6, free models through OpenRouter (S-138): the key screen's free choice, its states, the "Free" and "Chats only"
+   tags, the empty thread's note, and the two-letter badge monogram. The Product Designer's spec,
+   `design-drafts/launch-features/agent-free-key/README.md`, its `agent-free.css` as given, after S-14's. Every color is a --ma-* token from
+   web/src/theme/tokens.ts. Red (status-error) is for failures only; a used-up free limit is a warn banner, as a limit is.
+   Weights as the app's: text 400, buttons and labels 500, titles 600. Nothing here moves. */
+
+/* ------------------------------------------------------------ the key screen's two choices */
+/* The titles of the two choices, "Try free models" and "Add your own key": one size, sentence case. As an h4, so it outranks
+   the small capitals of `.ag-setup-section h4` and `.ag-panel h4` ("Or add another" and the Keys tab hold it too). */
+h4.ag-setup-title {
+  margin: 0;
+  font-size: 15px;
+  line-height: 21px;
+  font-weight: 600;
+  letter-spacing: normal;
+  text-transform: none;
+  color: var(--ma-text-primary);
+}
+.ag-free {
+  display: grid;
+  gap: 12px;
+  padding: 16px;
+  border: 1px solid var(--ma-border-strong);
+  border-radius: 14px;
+  background: var(--ma-surface-window);
+}
+.ag-free-lead {
+  font-size: 14px;
+  line-height: 20px;
+  color: var(--ma-text-secondary);
+}
+.ag-free-facts {
+  display: grid;
+  gap: 4px;
+  margin: 0;
+  padding-left: 18px;
+  font-size: 13px;
+  line-height: 18px;
+  color: var(--ma-text-secondary);
+}
+.ag-free-facts li::marker {
+  color: var(--ma-text-tertiary);
+}
+/* The privacy line: where the member chooses, never folded away. */
+.ag-free-privacy {
+  display: flex;
+  align-items: flex-start;
+  gap: 8px;
+  padding: 10px 12px;
+  border-radius: 10px;
+  background: var(--ma-surface-sunken);
+  font-size: 12.5px;
+  line-height: 18px;
+  color: var(--ma-text-secondary);
+}
+.ag-free-privacy .ag-icon {
+  margin-top: 1px;
+  color: var(--ma-text-tertiary);
+}
+.ag-free-actions {
+  display: flex;
+  align-items: center;
+  flex-wrap: wrap;
+  gap: 8px 12px;
+}
+/* "Open OpenRouter" where the browser kept the window from opening: a real link, dressed as the button. */
+.ag-free-actions a.ag-btn {
+  text-decoration: none;
+}
+.ag-free-actions small {
+  font-size: 12px;
+  line-height: 16px;
+  color: var(--ma-text-tertiary);
+}
+/* Waiting for OpenRouter, and checking the key: a line and Cancel in place of the button. */
+.ag-free-wait {
+  display: flex;
+  align-items: flex-start;
+  gap: 10px;
+  padding: 10px 12px;
+  border-radius: 10px;
+  border: 1px dashed var(--ma-border-strong);
+  font-size: 13px;
+  line-height: 18px;
+  color: var(--ma-text-secondary);
+}
+.ag-free-wait .ag-icon {
+  margin-top: 1px;
+  color: var(--ma-text-tertiary);
+}
+.ag-free-wait b {
+  display: block;
+  font-weight: 600;
+  color: var(--ma-text-primary);
+}
+.ag-free-wait > span {
+  flex: 1;
+}
+.ag-free-wait .ag-text-btn {
+  align-self: center;
+}
+.ag-free .ag-error {
+  margin: 0;
+  font-size: 13px;
+  line-height: 18px;
+}
+/* "or" between the two choices. */
+.ag-or {
+  display: flex;
+  align-items: center;
+  gap: 12px;
+  font-size: 12px;
+  line-height: 16px;
+  color: var(--ma-text-tertiary);
+}
+.ag-or::before,
+.ag-or::after {
+  content: "";
+  flex: 1;
+  height: 1px;
+  background: var(--ma-border-hairline);
+}
+/* The key screen's choices with no key on the desk yet: the card column's own spacing, with no rule above. */
+.ag-setup-choices {
+  display: grid;
+  gap: 14px;
+}
+.ag-own {
+  display: grid;
+  gap: 12px;
+}
+.ag-own > p {
+  font-size: 13px;
+  line-height: 18px;
+  color: var(--ma-text-tertiary);
+}
+
+/* ------------------------------------------------------------ the Free and Chats only tags */
+.ag-free-tag {
+  display: inline-flex;
+  align-items: center;
+  height: 22px;
+  padding: 0 8px;
+  border-radius: 999px;
+  background: var(--ma-surface-fill);
+  color: var(--ma-text-secondary);
+  font-size: 12px;
+  line-height: 16px;
+  font-weight: 600;
+  white-space: nowrap;
+}
+.ag-model-notes {
+  display: grid;
+  gap: 8px;
+}
+.ag-model-notes .ag-tags {
+  display: flex;
+  flex-wrap: wrap;
+  gap: 6px;
+}
+.ag-model-notes p {
+  font-size: 12.5px;
+  line-height: 18px;
+  color: var(--ma-text-secondary);
+}
+.ag-key-free {
+  font-size: 12.5px;
+  line-height: 18px;
+  color: var(--ma-text-secondary);
+}
+
+/* ------------------------------------------------------------ the empty thread, first time on free models */
+.ag-thread-empty .ag-note {
+  text-align: left;
+  max-width: 360px;
+}
+
+/* ------------------------------------------------------------ a failed reply that is a limit, not a failure */
+.ag-msg-limit {
+  margin: 0 4px;
+  font-size: 12px;
+  line-height: 16px;
+  color: var(--ma-text-secondary);
+}
+
+/* ------------------------------------------------------------ OpenRouter's monogram is two letters ("OR") */
+.ag-badge-mono[data-letters="2"] {
+  font-size: 8px;
+  letter-spacing: -0.02em;
+}
+
+/* ------------------------------------------------------------ phone and coarse pointers */
+@container agmain (max-width: 440px) {
+  .ag-free {
+    padding: 14px;
+  }
+  .ag-free-actions .ag-btn {
+    width: 100%;
+    height: 44px;
+  }
+}
+@media (pointer: coarse) {
+  .ag-free-wait .ag-text-btn {
+    min-height: 44px;
   }
 }

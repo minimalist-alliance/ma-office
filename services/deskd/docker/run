@@ -48,6 +48,25 @@ fi
 files_dir=${MA_FILES_DIR:-/data/files}
 [ -d "$files_dir" ] || install -d -o 1100 -g 1100 -m 0700 "$files_dir" 2>/dev/null || true
 
+# The desk app contract (API.md section 19), each mounted only where the image has made it, as docker would otherwise make
+# a missing source as root: /data/apps (deskd's, 0700, which desk-datadirs makes with the apps' helper), /run/ma-apps (each
+# app's socket directory, 2750 app:desk), and the review keys, read-only. With none of them deskd's apps stay inert
+# (reason no_storage, or no review key so nothing verifies). MA_APPS_* are for tests.
+apps_dir=${MA_APPS_DIR:-/data/apps}
+apps_run=${MA_APPS_RUN:-/run/ma-apps}
+app_keys=${MA_APP_KEYS_DIR:-/opt/ma/etc/app-keys}
+app_keys_dropin=${MA_APP_KEYS_DROPIN:-/etc/ma/app-keys.d}
+[ -d "$apps_dir" ] && set -- "$@" -v "$apps_dir:/data/apps"
+[ -d "$apps_run" ] && set -- "$@" -v "$apps_run:/run/ma-apps"
+[ -d "$app_keys" ] && set -- "$@" --mount "type=bind,src=$app_keys,dst=/opt/ma/etc/app-keys,readonly"
+[ -d "$app_keys_dropin" ] && set -- "$@" --mount "type=bind,src=$app_keys_dropin,dst=/etc/ma/app-keys.d,readonly"
+
+# Where the image's xdg-open stand-in hands deskd the links Chromium gives the OS (desk-runtime.md section 8.11). The image
+# makes it (desk:kiosk 2750); an image without the stand-in has none, and docker would otherwise make it as root, so it's
+# mounted only when it exists. MA_LINKS_DIR is for tests.
+links_dir=${MA_LINKS_DIR:-/run/desk-links}
+[ -d "$links_dir" ] && set -- "$@" --mount "type=bind,src=$links_dir,dst=/run/desk-links"
+
 exec docker run --rm --name deskd --network host --user 1100:1100 --read-only --tmpfs /tmp \
   --cap-drop=ALL --security-opt=no-new-privileges --log-driver=journald --log-opt tag=deskd \
   --memory="$memory" --memory-swap="$memory" --cpu-shares=512 --pids-limit=256 --stop-timeout=60 --ulimit core=0 \

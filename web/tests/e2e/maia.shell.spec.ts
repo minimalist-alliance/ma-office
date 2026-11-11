@@ -1,7 +1,7 @@
 // Support Maia in the office (src/maia/, contract maia.md), against the harness's fake Maia on this same origin.
 // The gate, opening and hiding her, a whole turn with a card, her memory, a stop, her Markdown, and her avatar.
 import { expect, test, type APIRequestContext, type Browser, type Locator, type Page } from '@playwright/test';
-import { canvasPainted, harness, signIn, watchConsole, type ThemeId } from './helpers';
+import { canvasPainted, harness, signIn, themeRadio, watchConsole, type ThemeId } from './helpers';
 
 const THEMES: ThemeId[] = ['light', 'dusk', 'dark'];
 
@@ -29,7 +29,7 @@ const maiaLog = async (request: APIRequestContext): Promise<string[]> => (await 
 const stats = (page: Page): Promise<Stats> => page.evaluate(() => (window as unknown as { __maMaia: { stats: () => Stats } }).__maMaia.stats());
 
 const launcher = (page: Page): Locator => page.locator('.maia-launcher');
-const panel = (page: Page): Locator => page.getByRole('dialog', { name: /^(Maia|What Maia remembers)$/ });
+const panel = (page: Page): Locator => page.getByRole('dialog', { name: /^(Maia|What Maia remembers|Your chats)$/ });
 const composer = (page: Page): Locator => page.getByRole('textbox', { name: 'Message to Maia' });
 
 /** Signed in, with Maia on, her bubble showing. */
@@ -149,6 +149,118 @@ test('open, hide and open again: focus moves in and back, Esc hides, and the off
   await page.reload();
   await expect(panel(page)).toBeVisible();
   await expect(composer(page)).toHaveValue('');
+  expect(errors).toEqual([]);
+});
+
+test('the info circle after "pass through us": a press, a tap or keyboard focus opens it, Esc closes it alone (the owner, Nov 10)', async ({ page, request }) => {
+  const errors = watchConsole(page);
+  await arrive(page, request);
+  await openPanel(page);
+  const circle = panel(page).getByRole('button', { name: 'How Maia keeps chats' });
+  const tip = panel(page).getByTestId('maia-kept-tip');
+  // In the line, right after "pass through us", and the line's words are as they were.
+  await expect(panel(page).getByTestId('maia-kept')).toHaveText('Chats are kept 30 days and pass through us, so keep private things with your desk agents.');
+  expect(await panel(page).getByTestId('maia-kept').evaluate((p) => p.firstChild?.textContent)).toBe('Chats are kept 30 days and pass through us');
+  await expect(circle).toHaveAttribute('aria-expanded', 'false');
+  await expect(tip).toBeHidden();
+
+  // A press opens it: the server's days, what's kept and why, and nothing trains a model.
+  await circle.click();
+  await expect(circle).toHaveAttribute('aria-expanded', 'true');
+  await expect(tip).toBeVisible();
+  await expect(tip).toHaveAttribute('role', 'status');
+  await expect(tip).toContainText('Nothing you send through Maia is used to train AI models.');
+  await expect(tip).toContainText('We keep chats for 30 days');
+  await expect(tip).toContainText('We never keep files you attach: your chat keeps only their names.');
+  expect(await circle.getAttribute('aria-controls')).toBe(await tip.getAttribute('id'));
+  // It sits inside the panel.
+  const [pb, tb] = await Promise.all([panel(page).boundingBox(), tip.boundingBox()]);
+  expect(tb!.x).toBeGreaterThanOrEqual(pb!.x);
+  expect(tb!.x + tb!.width).toBeLessThanOrEqual(pb!.x + pb!.width + 0.5);
+  expect(tb!.y + tb!.height).toBeLessThanOrEqual(pb!.y + pb!.height + 0.5);
+
+  // Esc closes the tip and leaves Maia open; a second Esc hides her as before.
+  await circle.press('Escape');
+  await expect(tip).toBeHidden();
+  await expect(circle).toHaveAttribute('aria-expanded', 'false');
+  await expect(panel(page)).toBeVisible();
+
+  // A press again toggles it; a press elsewhere closes it.
+  await circle.click();
+  await expect(tip).toBeVisible();
+  await circle.click();
+  await expect(tip).toBeHidden();
+  await circle.click();
+  await expect(tip).toBeVisible();
+  await composer(page).click();
+  await expect(tip).toBeHidden();
+
+  // From the keyboard: focus opens it, and moving on closes it.
+  await composer(page).focus();
+  await circle.focus();
+  await page.keyboard.press('Shift+Tab');
+  await page.keyboard.press('Tab');
+  await expect(circle).toBeFocused();
+  await expect(tip).toBeVisible();
+  await page.keyboard.press('Tab');
+  await expect(tip).toBeHidden();
+  expect(errors).toEqual([]);
+});
+
+test("Your chats: every chat listed, newest first; open one to go back to it; delete one, or the open one, for good (Security's maia-2)", async ({ page, request }) => {
+  const errors = watchConsole(page);
+  await arrive(page, request);
+  await openPanel(page);
+  await ask(page, 'What is a desk?');
+  await panel(page).getByRole('button', { name: 'New chat' }).click();
+  await ask(page, 'How do guilds work?');
+
+  const chatsButton = panel(page).getByRole('button', { name: 'Your chats' });
+  await chatsButton.click();
+  await expect(panel(page).getByRole('heading', { name: 'Your chats' })).toBeVisible();
+  await expect(panel(page).getByRole('button', { name: 'Back to the chat' })).toBeFocused();
+  await expect(panel(page).locator('.maia-head .maia-sub')).toHaveText('Chats are kept 30 days. Open one to go back to it, or delete it sooner.');
+  const rows = panel(page).locator('.maia-chat-open');
+  await expect(rows).toHaveCount(2);
+  // Newest first, and the open one says so.
+  await expect(rows.nth(0)).toContainText('How do guilds work?');
+  await expect(rows.nth(0)).toContainText('Open now');
+  await expect(rows.nth(0)).toHaveAttribute('aria-current', 'true');
+  await expect(rows.nth(1)).toContainText('What is a desk?');
+
+  // Back returns to the control that opened it.
+  await panel(page).getByRole('button', { name: 'Back to the chat' }).click();
+  await expect(chatsButton).toBeFocused();
+
+  // Open the older chat: it's the chat now, as she kept it, and the composer has focus.
+  await chatsButton.click();
+  await rows.nth(1).click();
+  await expect(panel(page).getByRole('heading', { name: 'Maia' })).toBeVisible();
+  await expect(composer(page)).toBeFocused();
+  await expect(page.locator('.maia-me')).toHaveText(['What is a desk?']);
+  // The next message goes on in that chat.
+  const before = (await read(request)).maiaTurns.length;
+  await ask(page, 'And a guild desk?');
+  const turns = (await read(request)).maiaTurns;
+  expect(turns.length).toBe(before + 1);
+  const kept = (await (await request.get('/__harness')).json()).maiaConversations as Record<string, { title: string }>;
+  const deskChat = Object.entries(kept).find(([, c]) => c.title === 'What is a desk?')?.[0];
+  expect(deskChat).toBeTruthy();
+  expect(turns.at(-1)!.conversationId).toBe(deskChat);
+
+  // Delete the other one: it's gone from the list and the server, and focus moves on.
+  await chatsButton.click();
+  await expect(rows).toHaveCount(2);
+  await panel(page).getByRole('button', { name: 'Delete "How do guilds work?"' }).click();
+  await expect(rows).toHaveCount(1);
+  await expect(panel(page).getByRole('button', { name: 'Delete "What is a desk?"' })).toBeFocused();
+  expect(Object.values((await (await request.get('/__harness')).json()).maiaConversations ?? {}).length).toBe(1);
+
+  // Delete the open one: the chat empties and the list says there's nothing.
+  await panel(page).getByRole('button', { name: 'Delete "What is a desk?"' }).click();
+  await expect(panel(page)).toContainText('No chats yet.');
+  await panel(page).getByRole('button', { name: 'Back to the chat' }).click();
+  await expect(page.locator('.maia-me')).toHaveCount(0);
   expect(errors).toEqual([]);
 });
 
@@ -647,12 +759,12 @@ async function expectSits(page: Page, v: { width: number; height: number }, open
   }
 }
 
-const THEME_LABEL: Record<ThemeId, string> = { light: 'Light', dusk: 'Dusk', dark: 'Dark' };
+const THEME_LABEL: Record<ThemeId, string> = { light: 'Light', dusk: 'Zen', dark: 'Dark' };
 
 /** Through the account menu, as a member does, so she has to follow the change live. */
 async function pickTheme(page: Page, theme: ThemeId): Promise<void> {
   await page.getByRole('button', { name: 'Account' }).click();
-  await page.getByRole('radio', { name: THEME_LABEL[theme] }).click();
+  await themeRadio(page, THEME_LABEL[theme]).click();
   await page.keyboard.press('Escape');
   await expect(page.locator('#account-panel')).toHaveCount(0);
   await expect(page.locator('html')).toHaveAttribute('data-theme', theme);
@@ -714,7 +826,7 @@ const CASES = [
 
 // The right-most corner, to the right of the bandwidth circle, at each size, with one desk, several (the two-row bar on
 // a phone) and none (the welcome card), in all three themes, collapsed and open.
-test.describe('where she sits, in Light, Dusk and Dark', () => {
+test.describe('where she sits, in Light, Zen and Dark', () => {
   test.setTimeout(120_000);
   for (const size of SIZES) {
     for (const c of CASES) {
@@ -759,21 +871,50 @@ test.describe('how she sits with the rest of the office', () => {
     await launcher(page).click();
     await expect(panel(page)).toBeVisible();
     await page.getByRole('button', { name: 'Account' }).click();
-    for (const name of ['System', 'Light', 'Dusk', 'Dark']) {
-      const r = await rectOf(page.getByRole('radio', { name }));
+    for (const name of ['System', 'Light', 'Zen', 'Dark']) {
+      const r = await rectOf(themeRadio(page, name));
       const top = await page.evaluate(([x, y]) => document.elementFromPoint(x!, y!)?.closest('#account-panel') !== null, [(r.left + r.right) / 2, (r.top + r.bottom) / 2]);
       expect(top, `${name} is on top of her panel`).toBe(true);
     }
     await page.keyboard.press('Escape');
     await panel(page).getByRole('button', { name: 'Hide Maia' }).click();
     await page.setViewportSize({ width: 375, height: 640 });
-    // An open Browser window is above her collapsed bubble, as it always was, and on a phone it covers her.
+    // An open Browser is above her collapsed bubble, as it always was, and on a phone it covers her. On a phone an app opens
+    // full screen in its desk's carousel (carousel.phone.shell.spec.ts), which is the window there.
     await page.getByRole('button', { name: /^Browser/ }).first().evaluate((el) => (el as HTMLButtonElement).click());
     await expect(page.getByTestId('browser-chrome')).toBeVisible();
     await page.waitForTimeout(300);
-    expect(await z('.ma-window'), 'a window is above her').toBeGreaterThan(bubble);
-    const covered = await page.evaluate(([x, y]) => document.elementFromPoint(x!, y!)?.closest('.ma-window') !== null, [(her.left + her.right) / 2, (her.top + her.bottom) / 2]);
+    const sheet = '.carousel-stage.phone';
+    expect(await z(sheet), 'a window is above her').toBeGreaterThan(bubble);
+    const covered = await page.evaluate(([x, y, sel]) => document.elementFromPoint(Number(x), Number(y))?.closest(String(sel)) !== null, [(her.left + her.right) / 2, (her.top + her.bottom) / 2, sheet]);
     expect(covered, 'the full-screen window covers her bubble').toBe(true);
     await page.screenshot({ path: 'test-results/shots/maia-window-375.png' });
   });
+});
+
+test('the first asks: three quiet buttons while the chat is empty, one sends as a turn, and they go; a new chat brings them back', async ({ page, request }) => {
+  const errors = watchConsole(page);
+  await arrive(page, request);
+  await openPanel(page);
+  const asks = panel(page).getByTestId('maia-asks');
+  await expect(asks).toHaveAccessibleName('Things to ask');
+  // Three desks: the Work desk is there, and the adult has an Agent.
+  await expect(asks.getByRole('button')).toHaveText(['Show me around my office', 'Open my Work desk', 'How do I give my Agent a key?']);
+
+  await asks.getByRole('button', { name: 'Open my Work desk' }).click();
+  await expect(page.locator('.maia-me')).toHaveCount(1);
+  await expect(page.locator('.maia-me')).toContainText('Open my Work desk');
+  await expect(asks).toHaveCount(0);
+  await expect(page.locator('.maia-msg[aria-busy="true"]')).toHaveCount(0, { timeout: 10_000 });
+  await expect(asks).toHaveCount(0);
+
+  await panel(page).getByRole('button', { name: 'New chat' }).click();
+  await expect(asks.getByRole('button')).toHaveCount(3);
+  expect(errors).toEqual([]);
+});
+
+test('the first asks on one desk: no Work desk, so no ask to open it', async ({ page, request }) => {
+  await arrive(page, request, '/?fixture=one');
+  await openPanel(page);
+  await expect(panel(page).getByTestId('maia-asks').getByRole('button')).toHaveText(['Show me around my office', 'How do I give my Agent a key?']);
 });

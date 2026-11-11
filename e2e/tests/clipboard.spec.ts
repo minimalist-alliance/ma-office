@@ -94,7 +94,7 @@ test('paste and copy through the real Browser window', async () => {
   const keys = win.getByLabel("Keyboard for the page in this desk's browser", { exact: true });
   const address = win.getByRole('textbox', { name: 'Address' });
   const tabs = win.getByTestId('browser-tab');
-  const activeTab = win.getByRole('tab', { selected: true });
+  const activeTab = win.getByRole('group', { name: 'Tabs on this desk' }).locator('[aria-current="true"]');
   const nonce = randomBytes(4).toString('hex');
   const member = {
     set: (t: string) => page.evaluate((x) => navigator.clipboard.writeText(x), t),
@@ -169,7 +169,7 @@ test('paste and copy through the real Browser window', async () => {
     const before = await tabs.count();
     await win.getByRole('button', { name: 'New tab', exact: true }).click();
     await expect(tabs).toHaveCount(before + 1, { timeout: 20_000 });
-    tabToClose = tabs.filter({ has: page.getByRole('tab', { selected: true }) }).getByRole('button', { name: /^Close K\{/ });
+    tabToClose = tabs.filter({ has: page.locator('[aria-current="true"]') }).getByRole('button', { name: /^Close K\{/ });
     await address.click();
     await address.fill(pageUrl(`clip.html?n=${nonce}&copy=${encodeURIComponent(`desk copy check: ü 中文 🎉 ${nonce}`)}`));
     await address.press('Enter');

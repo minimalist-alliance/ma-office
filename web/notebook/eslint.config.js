@@ -18,6 +18,6 @@ export default tseslint.config(
       'ma/no-color-literals': 'error',
     },
   },
-  // The one file allowed to hold colors, and the tests that check them.
-  { files: ['src/theme/tokens.ts', 'tests/**/*.ts'], rules: { 'ma/no-color-literals': 'off' } },
+  // The files allowed to hold colors (the tokens, and the palette that notes' colors map to), and the tests that check them.
+  { files: ['src/theme/tokens.ts', 'src/ui/palette.ts', 'tests/**/*.ts'], rules: { 'ma/no-color-literals': 'off' } },
 );

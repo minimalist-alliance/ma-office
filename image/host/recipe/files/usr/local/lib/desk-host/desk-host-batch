@@ -1,0 +1,139 @@
+#!/usr/bin/python3 -I
+"""desk-host-batch: service batches on a shared host (ADR 0078). Root. batches.py has the rules; desk-host's switch and relroot use it.
+
+  fetch <order.json>                    one batch_target (1.3) in desk-host-upd: exit 0 installed (the candidate), 3 refused, 4 URLs
+                                        wanted, 1 failed
+  promote <seq> | halt <seq> [<reason>] Platform's batch_promote and batch_halt (3.3)
+  state | report-host | floor | switches | gc
+  plan <k> [--no-claim]                 one JSON line: the batch slot k moves to and its changed components in the manifest's order
+                                        (exit 1 when nothing is due); the candidate's canary is claimed unless --no-claim
+  due <k>                               exit 0 when slot k is behind its batch (live switches: the link; the stop path: desk-host stop)
+  may <k> [--urgent-since <utc>]        exit 0 when a live switch may run now: idle (downloads don't hold it), cpu.pressure, no re-root
+  copy <k> <svc> <version> <gen>        the store's release into slots/<k>/rel/.new-<svc>, paced, tree-hash checked
+  smoke <k> <svc> <since epoch s>       3.2's host-side smoke test: exit 0 passed, 1 failed
+  record <k> fresh | switching <json> | verify <json> | finish <plan json> | rolled-back <plan json> <why> | copy-failed <plan json> <why>
+                                        slot k's record's batch fields (desk-host holds the slot's lock, or the slot is stopped)
+  may-copy <k> <plan json>              exit 0 unless the plan's copy failed 3 times, or less than an hour ago
+"""
+import json
+import os
+import sys
+import time
+
+sys.dont_write_bytecode = True
+sys.path.insert(0, os.path.dirname(os.path.abspath(__file__)))
+import batches as BT  # noqa: E402
+import batchsig as B  # noqa: E402
+import smoke  # noqa: E402
+import templates as T  # noqa: E402
+
+
+def out(o):
+    print(json.dumps(o, separators=(",", ":")), flush=True)
+
+
+def main(a):
+    if not a:
+        print(__doc__, file=sys.stderr)
+        return 2
+    if os.geteuid() != 0 and not T.test_mode():
+        print("desk-host-batch: root only", file=sys.stderr)
+        return 1
+    cmd = a[0]
+    if cmd == "fetch":
+        order = json.load(open(a[1]))
+        try:
+            BT.fetch(order)
+            return 0
+        except B.Refused:
+            return 3
+        except BT.UrlsWanted:
+            return 4
+        except BT.Failed:
+            return 1
+    if cmd == "promote":
+        r = BT.promote(int(a[1]))
+        print(r)
+        return 0 if r in ("promoted", "already current") or r.startswith("promote ordered") else 1
+    if cmd == "halt":
+        r = BT.halt(int(a[1]), a[2] if len(a) > 2 else "batch_halt")
+        print(r)
+        return 0
+    if cmd == "state":
+        print(json.dumps(BT.load_state(), indent=1, sort_keys=True))
+        return 0
+    if cmd == "report-host":
+        out(BT.report_host())
+        return 0
+    if cmd == "floor":
+        print(BT.floor())
+        return 0
+    if cmd == "switches":
+        out(BT.switches())
+        return 0
+    if cmd == "gc":
+        g = BT.gc()
+        print(f"removed {', '.join(g) or 'nothing'}")
+        return 0
+    if cmd == "plan":
+        p = BT.plan(int(a[1]), claim="--no-claim" not in a)
+        if not p:
+            return 1
+        out(p)   # no components: the set is there already, only the record moves
+        return 0
+    if cmd == "due":
+        return 0 if BT.due(int(a[1])) else 1
+    if cmd == "may":
+        us = a[a.index("--urgent-since") + 1] if "--urgent-since" in a else None
+        ok, why = BT.switch_may(int(a[1]), us)
+        out({"may": ok, "reason": why})
+        return 0 if ok else 1
+    if cmd == "copy":
+        k, svc, ver, gen = int(a[1]), a[2], a[3], a[4]
+        try:
+            n, s = BT.copy_release(k, svc, ver, gen)
+        except (BT.Failed, OSError, T.Failed) as e:
+            print(f"desk-host-batch: slot {k}: copying {svc} {ver}: {e}", file=sys.stderr)
+            return 1
+        print(f"slot {k}: {svc} {ver} copied into rel/.new-{svc}: {n} paths in {s} s, its tree the store's")
+        return 0
+    if cmd == "smoke":
+        k, svc, since = int(a[1]), a[2], float(a[3])
+        t = smoke.window(k)
+        if os.environ.get("DESK_HOST_SMOKE_S") and T.test_mode():
+            t = int(os.environ["DESK_HOST_SMOKE_S"])
+        t0 = time.monotonic()
+        ok, why = smoke.check(k, svc, since, t, rtc_ports=smoke.rtc_ports(k))
+        print(f"slot {k}: {svc}'s smoke test {'passed' if ok else 'FAILED'} in {time.monotonic() - t0:.1f} s: {why}")
+        return 0 if ok else 1
+    if cmd == "record":
+        k, what = int(a[1]), a[2]
+        if what == "fresh":
+            BT.record_fresh(k)
+            return 0
+        if what in ("switching", "verify"):
+            v = json.loads(a[3]) if len(a) > 3 else None
+
+            def f(r):
+                if v is None:
+                    r.pop(what, None)
+                else:
+                    r[what] = v
+            return 0 if BT.record_update(k, f) is not False else 1
+        if what == "finish":
+            print(BT.finish(k, json.loads(a[3])))
+            return 0
+        if what == "rolled-back":
+            print(BT.rolled_back(k, json.loads(a[3]), a[4] if len(a) > 4 else "smoke test failed"))
+            return 0
+        if what == "copy-failed":
+            print(f"copy tries: {BT.copy_failed(k, json.loads(a[3]), a[4] if len(a) > 4 else 'copy failed')}")
+            return 0
+    if cmd == "may-copy":
+        return 0 if BT.copy_may(int(a[1]), json.loads(a[2])) else 1
+    print(__doc__, file=sys.stderr)
+    return 2
+
+
+if __name__ == "__main__":
+    sys.exit(main(sys.argv[1:]))

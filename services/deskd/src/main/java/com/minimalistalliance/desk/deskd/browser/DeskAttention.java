@@ -44,6 +44,7 @@ final class DeskAttention implements Topic {
     private final EventHub hub;
     private final Predicate<String> sessionLive;
     private final Runnable lookChanged;
+    private final Said device;
     private final Timing timing;
     /** What each session last said, by session id. Read under the stream's lock, so it's never locked itself. */
     private final Map<String, Boolean> said = new ConcurrentHashMap<>();
@@ -60,9 +61,16 @@ final class DeskAttention implements Topic {
     private boolean closed;
     private Map<String, Object> lastPublished;
 
+    /** Hears what each session says, its device included, for the phone view ({@link BrowserView#said}). Must not block. */
+    @FunctionalInterface
+    interface Said {
+        void said(String sessionId, boolean seen, BrowserView.Device device);
+    }
+
     /**
      * @param sessionLive so a call that loses a race with its session's end leaves nothing behind
      * @param lookChanged runs, outside any lock here, after {@link #seen} has changed. Must not block
+     * @param device hears each call, outside any lock here, before the desk's look is worked out again
      */
     DeskAttention(
             BrowserStream stream,
@@ -70,12 +78,14 @@ final class DeskAttention implements Topic {
             EventHub hub,
             Predicate<String> sessionLive,
             Runnable lookChanged,
+            Said device,
             Timing timing) {
         this.stream = stream;
         this.freeze = freeze;
         this.hub = hub;
         this.sessionLive = sessionLive;
         this.lookChanged = lookChanged;
+        this.device = device;
         this.timing = timing;
         this.unseenSince = System.nanoTime();
     }
@@ -120,11 +130,15 @@ final class DeskAttention implements Topic {
         if (!(params.get("seen") instanceof Boolean looking)) {
             throw new RpcException(RpcException.BAD_REQUEST, "seen must be true or false", Map.of("reason", "seen"));
         }
+        // Checked before anything changes, so a bad device leaves the call as if it never came.
+        BrowserView.Device on = BrowserView.Device.parse(params.get("device"));
         String sessionId = context.principal().sessionId();
         boolean first = said.put(sessionId, looking) == null;
         // Its end may have come first, and then nothing else would take this away.
         if (!sessionLive.test(sessionId)) {
             said.remove(sessionId);
+        } else {
+            device.said(sessionId, looking, on);
         }
         if (first) {
             stream.attendedChanged();

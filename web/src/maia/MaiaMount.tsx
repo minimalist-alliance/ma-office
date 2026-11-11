@@ -3,6 +3,7 @@
 // included, means no widget, never a broken office.
 import { Component, lazy, Suspense, useEffect, useMemo, useState, type ReactNode } from 'react';
 import { useSession } from '../platform/session';
+import { useFree } from '../free/door';
 import { fetchMaiaState, maiaBase, type MaiaState } from './gate';
 
 const MaiaWidget = lazy(() => import('./MaiaWidget'));
@@ -21,21 +22,25 @@ export function MaiaMount() {
   const config = useSession((s) => s.config);
   const base = useMemo(() => maiaBase(config, window.location, import.meta.env.MODE !== 'production'), [config]);
   const [ready, setReady] = useState<{ base: string; state: MaiaState } | null>(null);
+  // An upgrade from the free tier asks again, and she wakes (`free/door.ts`).
+  const again = useFree((s) => s.maia);
 
   useEffect(() => {
     if (!base) return undefined;
     const ctl = new AbortController();
     void fetchMaiaState(base, ctl.signal).then((state) => {
-      if (!ctl.signal.aborted && state?.enabled) setReady({ base, state });
+      // A free member whose trial is over still has her, asleep, with the trial's last word (`trial`).
+      // An upgrade to a tier without her takes her away (no state to show).
+      if (!ctl.signal.aborted && state) setReady(state.enabled || state.trial ? { base, state } : null);
     });
     return () => ctl.abort();
-  }, [base]);
+  }, [base, again]);
 
   if (!base || ready?.base !== base) return null;
   return (
     <Quiet>
       <Suspense fallback={null}>
-        <MaiaWidget key={ready.base} base={ready.base} initial={ready.state} />
+        <MaiaWidget key={`${ready.base}${again ?? ''}${ready.state.trial ? JSON.stringify((ready.state.trial as { status?: unknown }).status) : ''}`} base={ready.base} initial={ready.state} woke={again !== undefined} />
       </Suspense>
     </Quiet>
   );

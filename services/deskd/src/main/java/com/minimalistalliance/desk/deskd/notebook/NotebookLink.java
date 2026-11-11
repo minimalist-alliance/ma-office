@@ -610,7 +610,6 @@ final class NotebookLink {
             }
             current = connection;
             upSince = System.nanoTime();
-            backoff = timing.minBackoff().toNanos();
             settleTree();
         } finally {
             lock.unlock();
@@ -652,6 +651,11 @@ final class NotebookLink {
                     failing.add(connection.inHand);
                 }
                 if (current == connection) {
+                    // Only a connection that lasted starts the backoff again, so a peer that accepts and drops at once
+                    // is tried with the backoff, not at the shortest gap (audit D7).
+                    backoff = System.nanoTime() - upSince >= timing.healthyAfter().toNanos()
+                            ? timing.minBackoff().toNanos()
+                            : Math.min(backoff * 2, timing.maxBackoff().toNanos());
                     countDown();
                     current = null;
                 }

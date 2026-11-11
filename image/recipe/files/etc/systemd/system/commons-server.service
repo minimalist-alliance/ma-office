@@ -36,6 +36,9 @@ ExecStart=/opt/ma/commons-server/current/run
 TimeoutStopSec=20
 Restart=always
 RestartSec=2
+RestartSteps=8
+RestartMaxDelaySec=300
+OOMScoreAdjust=-200
 # Every port is above 1024 (443 is desk-rtc's, which relays to 127.0.0.1:8799), so no capability at all.
 CapabilityBoundingSet=
 AmbientCapabilities=

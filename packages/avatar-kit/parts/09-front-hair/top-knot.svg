@@ -1,0 +1,6 @@
+<g data-part="top-knot" data-crown="60">
+  <path fill="{{hair}}" opacity="0.62" d="M80.5,118 C79.5,98 85,79 99,65 C94,76 91.5,88 93,100 C88,104 84,110 80.5,118 Z"/>
+  <path fill="{{hair}}" opacity="0.62" d="M175.5,118 C176.5,98 171,79 157,65 C162,76 164.5,88 163,100 C168,104 172,110 175.5,118 Z"/>
+  <path fill="{{hair}}" d="M93,100 C91,78 107,58 128,58 C149,58 165,78 163,100 C150,94.5 106,94.5 93,100 Z"/>
+  <g data-min-size="40" fill="none" stroke="{{hairStep}}" stroke-width="2.4" stroke-linecap="round" stroke-linejoin="round"><path d="M108,96 C111,82 117,69 124,61"/><path d="M148,96 C145,82 139,69 132,61"/><path d="M128,95 V61"/></g>
+</g>

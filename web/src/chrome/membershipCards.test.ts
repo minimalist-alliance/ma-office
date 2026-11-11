@@ -1,23 +1,28 @@
 import { describe, expect, it } from 'vitest';
+import { TILE_G, TILE_G_QUIET_MS, tileGShows } from './membershipCards.draft';
 import {
+  allianceLine,
   calendarDate,
-  draftCardKind,
   EXPORT_TARGET,
+  inactiveCard,
   keptCard,
+  parentCard,
   pausedCard,
   RESTORE_REHEARSAL_PASSED,
-  TILE_G,
-  TILE_G_QUIET_MS,
-  tileGShows,
+  SOON,
+  teenWelcomeCard,
+  waitlistCard,
   welcomeBackCard,
-} from './membershipCards.draft';
-import { allianceLine, inactiveCard, parentCard, SOON, teenWelcomeCard, waitlistCard, welcomeCard, type NoticeCard } from './membershipCards';
+  welcomeCard,
+  type NoticeCard,
+} from './membershipCards';
 
 const ACCOUNT = 'https://platform.minimalistalliance.com/account';
 const OPEN = { open: true, allianceMonthlyUsd: null };
 const CLOSED = { open: false, allianceMonthlyUsd: null };
 const SUPPORT = 'support@minimalistalliance.com';
-const LINKS = { account: ACCOUNT, billing: 'https://platform.minimalistalliance.com/billing', support: SUPPORT };
+const LINKS = { account: ACCOUNT, billing: 'https://platform.minimalistalliance.com/billing', exportPage: '/export', support: SUPPORT };
+const NO_EXPORT = { ...LINKS, exportPage: null };
 const NOW = Date.parse('2026-11-20T12:00:00Z');
 
 /** Every word a card shows, to check the whole card at once. */
@@ -156,7 +161,8 @@ describe('every card', () => {
     inactiveCard(SUPPORT),
     pausedCard('2026-11-18T03:00:00Z', '2026-12-06T03:00:00Z', LINKS, NOW, 'America/Denver'),
     keptCard('2026-12-06T03:00:00Z', LINKS, NOW, 'America/Denver'),
-    welcomeBackCard('2026-11-01T03:00:00Z', { open: true, allianceMonthlyUsd: 10 }, LINKS, NOW, 'America/Denver'),
+    welcomeBackCard('2026-11-01T03:00:00Z', { open: true, allianceMonthlyUsd: 10 }, LINKS, NOW, { timeZone: 'America/Denver' }),
+    welcomeBackCard('2026-11-01T03:00:00Z', { open: true, allianceMonthlyUsd: 10 }, LINKS, NOW, { timeZone: 'America/Denver', teen: true }),
   ];
 
   it('is calm: no exclamation marks, no age, no trial or discount, no provider, no other tier name', () => {
@@ -171,21 +177,7 @@ describe('every card', () => {
   });
 });
 
-describe('drafts: cards C, D and E', () => {
-  const stop = (stoppedBy: 'payment' | 'member' | 'other', dataDeleteAt: string | null, stoppedAt: string | null = '2026-11-18T03:00:00Z') => ({ stoppedBy, stoppedAt, dataDeleteAt });
-
-  it('picks C, D or E from the proposed fields, and F (null) for anything else', () => {
-    expect(draftCardKind('suspended', stop('payment', '2026-12-06T00:00:00Z'), NOW)).toBe('paused');
-    expect(draftCardKind('unpaid', stop('payment', '2026-12-06T00:00:00Z'), NOW)).toBe('paused');
-    expect(draftCardKind('ended', stop('member', '2026-12-06T00:00:00Z'), NOW)).toBe('kept');
-    expect(draftCardKind('ended', stop('member', '2026-11-01T00:00:00Z'), NOW)).toBe('welcomeBack');
-    expect(draftCardKind('ended', stop('other', '2026-12-06T00:00:00Z'), NOW)).toBeNull();
-    expect(draftCardKind('suspended', stop('other', null, null), NOW)).toBeNull();
-    expect(draftCardKind('suspended', stop('payment', 'not a date'), NOW)).toBeNull();
-    expect(draftCardKind('suspended', stop('payment', '2026-12-06T00:00:00Z', null), NOW)).toBeNull();
-    expect(draftCardKind('ended', undefined, NOW)).toBeNull();
-  });
-
+describe('cards C, D and E', () => {
   it('dates are a calendar date in the member’s own time zone, with the year only when it differs', () => {
     // 03:00 UTC on the 6th is still the 5th in Denver.
     expect(calendarDate('2026-12-06T03:00:00Z', NOW, 'America/Denver')).toBe('December 5');
@@ -193,24 +185,63 @@ describe('drafts: cards C, D and E', () => {
     expect(calendarDate('2027-01-02T12:00:00Z', NOW, 'UTC')).toBe('January 2, 2027');
   });
 
-  it('C, D and E have the proposal’s words', () => {
+  it('C: the proposal’s words, Update payment to the billing page, and Write to us', () => {
     const c = pausedCard('2026-11-28T12:00:00Z', '2026-12-06T12:00:00Z', LINKS, NOW, 'UTC');
+    expect(c.title).toBe('Your desks are paused');
     expect(c.say).toBe("Your last payment didn't go through, so your desks stopped on November 28. Everything on them is kept until December 6. Update your payment method and they start again.");
-    expect([c.title, c.action?.label, c.link?.label, c.link?.href]).toEqual(['Your desks are paused', 'Update payment', 'Write to us', `mailto:${SUPPORT}`]);
-
-    const d = keptCard('2026-12-06T12:00:00Z', LINKS, NOW, 'UTC');
-    expect(RESTORE_REHEARSAL_PASSED).toBe(false);
-    expect(d.say).toBe("Your desks are kept until December 6. Rejoin before then and we'll restore them. After that we delete them, as our Terms say.");
-    expect([d.title, d.action?.label, d.link?.label]).toEqual(['Your membership has ended', 'Rejoin', 'Ask for an export']);
-    // By email until task 32's self-serve export ships, from the one constant that will point there.
-    expect(d.link?.href).toBe(EXPORT_TARGET(LINKS));
-    expect(EXPORT_TARGET(LINKS)).toMatch(/^mailto:support@minimalistalliance\.com\?subject=/);
-
-    const e = welcomeBackCard('2026-11-01T12:00:00Z', { open: true, allianceMonthlyUsd: 10 }, LINKS, NOW, 'UTC');
-    expect(e.say).toBe('Your earlier desks were deleted on November 1, as our Terms say, so rejoining starts with fresh ones.');
-    expect([e.title, e.action?.label, e.picture, e.alliance]).toEqual(['Welcome back', 'See membership', true, allianceLine(10)]);
+    expect(c.action).toEqual({ label: 'Update payment', href: LINKS.billing });
+    expect(c.link).toEqual({ label: 'Write to us', href: `mailto:${SUPPORT}` });
+    expect([c.letter, c.picture, c.soon, c.alliance]).toEqual(['C', false, false, null]);
   });
 
+  it('C with no good billing link: no button, and Write to us still', () => {
+    const c = pausedCard('2026-11-28T12:00:00Z', '2026-12-06T12:00:00Z', { ...LINKS, billing: null }, NOW, 'UTC');
+    expect(c.action).toBeNull();
+    expect(c.link?.label).toBe('Write to us');
+  });
+
+  it('D: the proposal’s words without the restore promise until TD-110 passes, Rejoin, and the export as easy to find', () => {
+    const d = keptCard('2026-12-06T12:00:00Z', LINKS, NOW, 'UTC');
+    expect(RESTORE_REHEARSAL_PASSED).toBe(false);
+    expect(d.title).toBe('Your membership has ended');
+    expect(d.say).toBe("Your desks are kept until December 6. Rejoin before then and we'll restore them. After that we delete them, as our Terms say.");
+    expect(d.say).not.toMatch(/tabs|sign-ins/);
+    expect(d.action).toEqual({ label: 'Rejoin', href: ACCOUNT });
+    expect(d.link).toEqual({ label: 'Ask for an export', href: '/export' });
+    expect([d.letter, d.picture, d.alliance]).toEqual(['D', false, null]);
+  });
+
+  it('D’s export goes to the office’s own export page where it’s on, and by email where it isn’t', () => {
+    expect(EXPORT_TARGET(LINKS)).toBe('/export');
+    expect(EXPORT_TARGET(NO_EXPORT)).toMatch(/^mailto:support@minimalistalliance\.com\?subject=/);
+    expect(keptCard('2026-12-06T12:00:00Z', NO_EXPORT, NOW, 'UTC').link?.href).toBe(EXPORT_TARGET(NO_EXPORT));
+  });
+
+  it('E: the proposal’s words, A’s picture, See membership and A’s Alliance line, all only while Pay is open', () => {
+    const e = welcomeBackCard('2026-11-01T12:00:00Z', { open: true, allianceMonthlyUsd: 10 }, LINKS, NOW, { timeZone: 'UTC' });
+    expect(e.title).toBe('Welcome back');
+    expect(e.say).toBe('Your earlier desks were deleted on November 1, as our Terms say, so rejoining starts with fresh ones.');
+    expect([e.letter, e.picture, e.oneDesk, e.action?.label, e.action?.href, e.alliance]).toEqual(['E', true, false, 'See membership', ACCOUNT, allianceLine(10)]);
+    for (const offer of [{ open: false, allianceMonthlyUsd: 10 }, null]) {
+      const shut = welcomeBackCard('2026-11-01T12:00:00Z', offer, LINKS, NOW, { timeZone: 'UTC' });
+      expect([shut.action, shut.alliance, shut.soon]).toEqual([null, null, false]);
+    }
+  });
+
+  it('E names the Alliance tier from the owner’s setting', () => {
+    const names = { alliance: 'Cadet', officer: 'Captain', lead: 'Pathfinder' };
+    expect(welcomeBackCard('2026-11-01T12:00:00Z', { open: true, allianceMonthlyUsd: 10 }, LINKS, NOW, { names }).alliance).toBe(allianceLine(10, 'Cadet'));
+  });
+
+  it('E for a teen: one desk in the picture, no Alliance line, and a button only while Alliance is on sale', () => {
+    const t = welcomeBackCard('2026-11-01T12:00:00Z', { open: true, allianceMonthlyUsd: 5 }, LINKS, NOW, { teen: true });
+    expect([t.oneDesk, t.alliance, t.action?.label]).toEqual([true, null, 'See membership']);
+    expect(welcomeBackCard('2026-11-01T12:00:00Z', { open: true, allianceMonthlyUsd: null }, LINKS, NOW, { teen: true }).action).toBeNull();
+    expect(words(t)).not.toMatch(/\bPro\b|Officer|Work\b|\$/);
+  });
+});
+
+describe('drafts: tile G', () => {
   it('tile G: its words, and "Not now" quiets it for 30 days', () => {
     expect(TILE_G.title).toBe('Room for work and life');
     expect(tileGShows(null, NOW)).toBe(true);

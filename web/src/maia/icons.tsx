@@ -20,6 +20,18 @@ const PATHS = {
   attach: <path d="m19 11.5-7 7a4.5 4.5 0 0 1-6.4-6.4l7.4-7.4a3 3 0 0 1 4.2 4.2l-7.4 7.4a1.5 1.5 0 0 1-2.1-2.1l6.7-6.7" />,
   close: <path d="M7 7l10 10M17 7 7 17" />,
   send: <path d="M12 18.5V6M6.5 11.5 12 6l5.5 5.5" />,
+  chats: (
+    <>
+      <path d="M9.5 7.5h9M9.5 12h9M9.5 16.5h9" />
+      <path d="M5.5 7.5h.01M5.5 12h.01M5.5 16.5h.01" />
+    </>
+  ),
+  info: (
+    <>
+      <circle cx="12" cy="12" r="8.5" />
+      <path d="M12 11v5.5M12 7.75v.01" />
+    </>
+  ),
 } satisfies Record<string, JSX.Element>;
 
 export type MaiaIconName = keyof typeof PATHS;

@@ -2,6 +2,7 @@ package com.minimalistalliance.desk.deskd;
 
 import com.minimalistalliance.desk.deskd.admin.AdminServer;
 import com.minimalistalliance.desk.deskd.agent.AgentModule;
+import com.minimalistalliance.desk.deskd.apps.AppsModule;
 import com.minimalistalliance.desk.deskd.browser.BrowserModule;
 import com.minimalistalliance.desk.deskd.gateway.GatewayLink;
 import com.minimalistalliance.desk.deskd.notebook.CommonsRelay;
@@ -27,6 +28,7 @@ final class DeskdHealth implements AdminServer.Health {
     private final AgentModule agent;
     private final NotebookModule notebook;
     private final CommonsRelay commons;
+    private final AppsModule apps;
     private final java.util.function.BooleanSupplier guildDesk;
     private final String version;
 
@@ -38,6 +40,7 @@ final class DeskdHealth implements AdminServer.Health {
             AgentModule agent,
             NotebookModule notebook,
             CommonsRelay commons,
+            AppsModule apps,
             java.util.function.BooleanSupplier guildDesk,
             String version) {
         this.volume = volume;
@@ -47,6 +50,7 @@ final class DeskdHealth implements AdminServer.Health {
         this.agent = agent;
         this.notebook = notebook;
         this.commons = commons;
+        this.apps = apps;
         this.guildDesk = guildDesk;
         this.version = version;
     }
@@ -79,6 +83,7 @@ final class DeskdHealth implements AdminServer.Health {
         if (guildDesk.getAsBoolean()) {
             details.putAll(commons.health());
         }
+        details.putAll(apps.health());
         return details;
     }
 }

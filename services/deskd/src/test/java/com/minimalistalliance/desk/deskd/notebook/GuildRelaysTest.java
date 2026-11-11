@@ -140,12 +140,18 @@ class GuildRelaysTest {
     }
 
     @Test
-    void aMemberMayUseTheNotebookButTheDesksZoneNeedsManageSpaces() throws Exception {
+    void aMemberMayUseThePagesButTheSpaceStructureAndTheZoneNeedManageSpaces() throws Exception {
         TestClient member = rig.connect("cs-1", rig.member("gm-aaaa0001", "member", List.of(), false));
-        assertThat(rig.call(member, "notebook.notebook.create", Map.of("title", "Ours"))).containsEntry("_kind", "RES");
-        Map<String, Object> refused = rig.call(member, "notebook.settings.set", Map.of("timeZone", "UTC"));
-        assertThat(refused).containsEntry("_kind", "ERR").containsEntry("code", "forbidden");
-        assertThat(Json.object(refused, "details")).containsEntry("reason", "grant");
+        for (String method : List.of("notebook.notebook.create", "notebook.notebook.rename", "notebook.tab.create",
+                "notebook.tab.rename", "notebook.tab.recolor", "notebook.tab.addAtPage", "notebook.settings.set")) {
+            Map<String, Object> refused = rig.call(member, method, Map.of("id", "x", "title", "Ours", "timeZone", "UTC"));
+            assertThat(refused).as(method).containsEntry("_kind", "ERR").containsEntry("code", "forbidden");
+            assertThat(Json.object(refused, "details")).containsEntry("reason", "grant");
+        }
+        TestClient spaces = rig.connect("cs-4", rig.member("gm-dddd0001", "officer", List.of("manage_spaces"), false));
+        assertThat(rig.call(spaces, "notebook.notebook.create", Map.of("title", "Ours"))).containsEntry("_kind", "RES");
+        // A page call is not gated here: it reaches the desk, which answers for its own page.
+        assertThat(rig.call(member, "notebook.page.trash", Map.of("pageId", "p1"))).containsEntry("code", "not_found");
         // collab from a member reaches desk-notebook, on the member's own connection.
         rig.sendCollab(member, new byte[] {1, 2, 3});
         assertThat(notebook.collabReceived.poll(5, TimeUnit.SECONDS)).containsExactly(1, 2, 3);

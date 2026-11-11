@@ -682,10 +682,19 @@ func (c *Conn) request(ctx context.Context, channel uint8, kind frame.Kind, v an
 
 // Call makes one RPC and returns the RES payload.
 func (c *Conn) Call(ctx context.Context, method string, params any) (json.RawMessage, error) {
+	return c.CallIdem(ctx, method, params, "")
+}
+
+// CallIdem is Call with the request's idem key (API.md section 4: every mutation needs one), when idem isn't empty.
+func (c *Conn) CallIdem(ctx context.Context, method string, params any, idem string) (json.RawMessage, error) {
 	if params == nil {
 		params = map[string]any{}
 	}
-	f, err := c.request(ctx, rtcsock.ChRPC, frame.Req, map[string]any{"m": method, "p": params})
+	req := map[string]any{"m": method, "p": params}
+	if idem != "" {
+		req["idem"] = idem
+	}
+	f, err := c.request(ctx, rtcsock.ChRPC, frame.Req, req)
 	if err != nil {
 		return nil, err
 	}

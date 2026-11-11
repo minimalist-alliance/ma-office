@@ -12,12 +12,16 @@ import { yXmlFragmentToProsemirrorJSON } from '@tiptap/y-tiptap';
 import { Awareness } from 'y-protocols/awareness';
 import * as Y from 'yjs';
 import type { NotebookBackend, PageSession } from '../../notebook/src/model/backend.ts';
+import type { PaletteId } from '../../notebook/src/model/colors.ts';
+import { collabToken, RELOAD_REASON } from '../../notebook/src/model/compat.ts';
+import type { ImportedPage } from '../../notebook/src/model/notebookFile.ts';
 import { DOC_FIELD, type PMNode } from '../../notebook/src/model/schema.ts';
 import { buildTree } from '../../notebook/src/model/tree.ts';
 import type { ActivityRow, NotebookRec, PageRec, SearchHit, SearchOptions, TabColor, TabRec, Tree, Version, VersionMeta } from '../../notebook/src/model/types.ts';
 import { DeskNotConnected, type DeskLink, type DeskRpc } from '../desk/deskLink';
 import { uuidv7 } from '../desk/idem';
 import { backoffMs } from '../desk/rtc/backoff';
+import { holdClose } from '../shell/closeGuard';
 import { collabSocketClass } from './collabSocket';
 
 export type NotebookLoad = 'loading' | 'ready' | 'missing' | 'unavailable';
@@ -29,6 +33,8 @@ export interface NotebookStatus {
   unsaved: boolean;
   /** An open page is full: the desk keeps what it has, and takes no more of it. */
   full: boolean;
+  /** The desk refused an open page's changes as this app is older than the page (ADR 0091): reload to keep editing. */
+  outdated: boolean;
   /** An open page holds more than can go at once, so it isn't saved yet. */
   tooLarge: boolean;
   /** A change or a read came back with no answer worth trusting. */
@@ -76,8 +82,11 @@ const RECONNECT_MS = 1_000;
  * link's: a session that ends, or `{"t":"reset"}`, closes the socket at once (API.md section 13).
  */
 const QUIET_SOCKET_MS = 24 * 60 * 60 * 1000;
-/** `deskd` has already authenticated the session: the contract's "any non-empty string". */
-const TOKEN = 'desk';
+/**
+ * `deskd` has already authenticated the session: the contract's "any non-empty string". It says this build's page schema, so
+ * the desk can refuse changes from an app older than a page's content (ADR 0091's guard), as a tab left open across a release is.
+ */
+const TOKEN = collabToken();
 /** Never dialled: `collabSocketClass` is what connects, and it goes over the link. */
 const NO_URL = 'wss://desk.invalid/collab';
 
@@ -101,6 +110,8 @@ interface OpenPage {
   /** Something typed here that the desk hasn't confirmed. */
   dirty: boolean;
   full: boolean;
+  /** Refused as older than the page (ADR 0091): read-only, like `full`, until a reload. */
+  outdated: boolean;
   tooLarge: boolean;
   /** The stored content has been applied, so this doc is the page, whether or not the link is up right now. */
   loaded: boolean;
@@ -114,25 +125,8 @@ interface OpenPage {
   awareness: Awareness | null;
 }
 
-/** A `beforeunload` guard shared by every desk: the browser's own prompt, only while text isn't on its desk. */
-const dirtyDesks = new Set<DeskBackend>();
-function onBeforeUnload(e: BeforeUnloadEvent): void {
-  for (const backend of dirtyDesks) {
-    if (backend.hasUnsavedText()) {
-      e.preventDefault();
-      e.returnValue = ''; // what older browsers need
-      return;
-    }
-  }
-}
-function setGuard(backend: DeskBackend, on: boolean): void {
-  if (typeof window === 'undefined') return;
-  const before = dirtyDesks.size;
-  if (on) dirtyDesks.add(backend);
-  else dirtyDesks.delete(backend);
-  if (!before && dirtyDesks.size) window.addEventListener('beforeunload', onBeforeUnload);
-  else if (before && !dirtyDesks.size) window.removeEventListener('beforeunload', onBeforeUnload);
-}
+/** Each desk's own hold on the close guard (`shell/closeGuard.ts`): asked as the page goes, so only text not on its desk counts. */
+let backendCount = 0;
 
 function browserStorage(): DeskBackendOptions['storage'] {
   try {
@@ -144,6 +138,7 @@ function browserStorage(): DeskBackendOptions['storage'] {
 
 export class DeskBackend implements NotebookBackend {
   private readonly link: DeskLink;
+  private readonly holdId = `notebook:${(backendCount += 1)}`;
   private readonly giveUpMs: number;
   private readonly unsavedAfterMs: number;
   private readonly retryMs: readonly number[];
@@ -163,7 +158,7 @@ export class DeskBackend implements NotebookBackend {
   private fetching: Promise<void> | null = null;
   private again = false;
 
-  private statusNow: NotebookStatus = { load: 'loading', unsaved: false, full: false, tooLarge: false, problem: false };
+  private statusNow: NotebookStatus = { load: 'loading', unsaved: false, full: false, outdated: false, tooLarge: false, problem: false };
   private readonly statusListeners = new Set<() => void>();
   private readonly treeListeners = new Set<() => void>();
   private offTopic: (() => void) | null = null;
@@ -595,6 +590,29 @@ export class DeskBackend implements NotebookBackend {
     await this.settle();
   }
 
+  // ---------------------------------------------------------------- colors (ADR 0091)
+
+  async setPageLabel(pageId: string, label: PaletteId | null): Promise<void> {
+    await this.mutate('notebook.page.label', { pageId, label });
+    await this.settle();
+  }
+
+  /** Like a create: the copy is in the tree at once, for the caller to select. */
+  async duplicatePage(pageId: string): Promise<PageRec> {
+    const { page } = await this.mutate('notebook.page.duplicate', { pageId });
+    this.merge({ page });
+    void this.settle();
+    return page;
+  }
+
+  /** One page per call, as a request is at most 1 MiB: a page over that is refused with `too_large` and the caller says so. */
+  async importPage(tabId: string, page: ImportedPage, opts: { after?: string } = {}): Promise<PageRec> {
+    const made = await this.mutate('notebook.page.import', { tabId, doc: page.doc, label: page.label, ...(opts.after ? { after: opts.after } : {}) });
+    this.merge({ page: made.page });
+    void this.settle();
+    return made.page;
+  }
+
   // ---------------------------------------------------------------- text
 
   openPage(pageId: string): PageSession {
@@ -610,7 +628,7 @@ export class DeskBackend implements NotebookBackend {
       ready: entry.ready,
       onReadOnly: (fn) => {
         entry.readOnlyListeners.add(fn);
-        fn(entry.full);
+        fn(entry.full || entry.outdated);
         return () => entry.readOnlyListeners.delete(fn);
       },
       close: () => {
@@ -669,6 +687,7 @@ export class DeskBackend implements NotebookBackend {
       refs: 0,
       dirty: false,
       full: false,
+      outdated: false,
       tooLarge: false,
       loaded: false,
       verifying: false,
@@ -690,13 +709,17 @@ export class DeskBackend implements NotebookBackend {
       last = number;
     });
     provider.on('close', ({ event }: { event?: { reason?: string } }) => {
-      if (event?.reason !== 'page_full' || page.full) return;
-      page.full = true;
+      if (event?.reason === RELOAD_REASON) {
+        if (page.outdated) return;
+        page.outdated = true;
+      } else if (event?.reason === 'page_full' && !page.full) {
+        page.full = true;
+      } else return;
       for (const fn of page.readOnlyListeners) fn(true);
       this.statusOfPages();
     });
     this.entries.set(pageId, page);
-    setGuard(this, true);
+    holdClose(this.holdId, () => this.hasUnsavedText());
     provider.attach();
     return page;
   }
@@ -759,7 +782,7 @@ export class DeskBackend implements NotebookBackend {
     entry.doc.destroy();
     if (entry.awareness) this.presenceChanged();
     if (this.entries.size) return;
-    setGuard(this, false);
+    holdClose(this.holdId, false);
     // Paging between notes drops one and opens the next in a moment, so the socket waits to see.
     this.socketTimer = setTimeout(() => {
       this.socketTimer = null;
@@ -773,13 +796,15 @@ export class DeskBackend implements NotebookBackend {
   private statusOfPages(): void {
     let unsaved = false;
     let full = false;
+    let outdated = false;
     let tooLarge = false;
     for (const e of this.entries.values()) {
       if (e.unsavedLong) unsaved = true;
       if (e.refs > 0 && e.full) full = true;
+      if (e.refs > 0 && e.outdated) outdated = true;
       if (e.refs > 0 && e.tooLarge) tooLarge = true;
     }
-    this.patchStatus({ unsaved, full, tooLarge });
+    this.patchStatus({ unsaved, full, outdated, tooLarge });
   }
 
   async pageContent(pageId: string): Promise<PMNode> {
@@ -835,7 +860,7 @@ export class DeskBackend implements NotebookBackend {
   }
 
   async search(query: string, opts: SearchOptions = {}): Promise<SearchHit[]> {
-    if (!query.trim()) return [];
+    if (!query.trim() && !opts.labels?.length) return [];
     return (await this.read('notebook.search', { query, ...opts })).hits;
   }
 }

@@ -274,6 +274,96 @@ class RealDeskAgentIT {
         return new LinkedHashMap<>((Map<String, Object>) view.get("policy"));
     }
 
+    /**
+     * A removed guild member's agent, end to end (ADR 0080's addendum of 2026-11-10): the member's session makes their
+     * agent in the real desk-agent, a newer roster drops them while desk-agent is down, and once it's back the purge
+     * goes and leaves nothing of them in its {@code agent.db} or WAL. Their session then gets a new, empty agent.
+     */
+    @Test
+    void aRemovedGuildMembersAgentIsGoneFromTheRealDeskAgent() throws Exception {
+        String memberId = "gm-aaaa0001";
+        TestClient member = rig.connect("m", rig.member(memberId, "member", List.of(), false));
+        assertThat(rig.call(member, "agent.list", Map.of()).toString()).contains(memberId);
+        rig.call(member, "agent.update", Map.of("agentId", memberId, "name", "Plans-of-A-7f3e"));
+        Path agentDb = dir.resolve("agent-data").resolve("agent.db");
+        await().until(() -> onDisk(agentDb, "Plans-of-A-7f3e"));
+
+        java.util.concurrent.atomic.AtomicReference<Map<String, Object>> served = new java.util.concurrent.atomic.AtomicReference<>();
+        Files.createDirectories(dir.resolve("desk"));
+        com.minimalistalliance.desk.deskd.guild.GuildRoster roster = new com.minimalistalliance.desk.deskd.guild.GuildRoster(
+                dir.resolve("desk"), served::get, () -> "gu-testguild01",
+                new com.minimalistalliance.desk.deskd.guild.GuildRoster.Sessions() {
+                    @Override
+                    public java.util.Collection<com.minimalistalliance.desk.deskd.rpc.Caller> callers() {
+                        return List.of();
+                    }
+
+                    @Override
+                    public void closeMember(String id) {}
+                }, new com.minimalistalliance.desk.deskd.guild.GuildRoster.Timing(Duration.ofMillis(20),
+                        Duration.ofMillis(100), Duration.ZERO), rig.clock);
+        try {
+            rig.module.memberPurges(roster.purges());
+            deskAgent.destroy();
+            deskAgent.waitFor();
+            await().atMost(Duration.ofSeconds(10)).until(() -> !rig.module.link().isConnected());
+            for (Map<String, Object> body : List.of(guildRoster(1, "gm-lead0001", memberId), guildRoster(2, "gm-lead0001"))) {
+                served.set(body);
+                long version = ((Number) body.get("version")).longValue();
+                roster.versionIs(version);
+                await().until(() -> roster.version() == version);
+            }
+            assertThat(rig.module.health().get("guildPurges").toString()).contains("owed=1");
+            startJar(System.getenv("DESK_AGENT_JAR"));
+            await().atMost(Duration.ofSeconds(20)).until(() -> rig.module.health().get("guildPurges").toString().contains("done=1"));
+            assertThat(onDisk(agentDb, "Plans-of-A-7f3e")).isFalse();
+            assertThat(onDisk(agentDb, memberId)).isFalse();
+        } finally {
+            roster.stop();
+        }
+    }
+
+    private static Map<String, Object> guildRoster(long version, String... ids) {
+        List<Map<String, Object>> members = new ArrayList<>();
+        for (int i = 0; i < ids.length; i++) {
+            Map<String, Object> m = new LinkedHashMap<>();
+            m.put("memberId", ids[i]);
+            m.put("role", i == 0 ? "lead" : "member");
+            m.put("grants", List.of());
+            m.put("name", "Name");
+            m.put("badge", null);
+            m.put("teen", false);
+            members.add(m);
+        }
+        Map<String, Object> body = new LinkedHashMap<>();
+        body.put("guildId", "gu-testguild01");
+        body.put("version", version);
+        body.put("closed", false);
+        body.put("members", members);
+        return body;
+    }
+
+    /** Whether the text is in a SQLite file or its WAL, byte for byte. */
+    private static boolean onDisk(Path file, String text) throws IOException {
+        byte[] needle = text.getBytes(StandardCharsets.UTF_8);
+        for (Path part : List.of(file, file.resolveSibling(file.getFileName() + "-wal"))) {
+            if (!Files.exists(part)) {
+                continue;
+            }
+            byte[] bytes = Files.readAllBytes(part);
+            outer:
+            for (int i = 0; i + needle.length <= bytes.length; i++) {
+                for (int j = 0; j < needle.length; j++) {
+                    if (bytes[i + j] != needle[j]) {
+                        continue outer;
+                    }
+                }
+                return true;
+            }
+        }
+        return false;
+    }
+
     private void restartOn(String jar) throws Exception {
         deskAgent.destroy();
         deskAgent.waitFor();

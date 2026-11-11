@@ -343,3 +343,83 @@ describe('RpcAgentClient: files on a message (ADR 0049)', () => {
     expect(e).toMatchObject({ reason: 'too_large', file: 'big.pdf', limit: 8388608 });
   });
 });
+
+describe('RpcAgentClient: S-14 on the wire (API.md section 18, desk-agent memory, the spec’s agent.tools)', () => {
+  it('decides with only what section 18 takes: a note only with a no, and the mutation key', async () => {
+    const { link, calls } = fakeLink(() => ({ approval: { id: 'ap-1', state: 'declined' } }));
+    const c = new RpcAgentClient(link);
+    const idem = newIdem();
+    await c.decideApproval('ap-1', { approve: true, sha256: 'ab', note: 'ignored with a yes' }, { idem });
+    await c.decideApproval('ap-1', { approve: false, sha256: 'ab', note: 'Not today' }, { idem: newIdem() });
+    expect(calls.map((x) => [x.method, x.params])).toEqual([
+      ['agent.approval.decide', { approvalId: 'ap-1', approve: true, sha256: 'ab' }],
+      ['agent.approval.decide', { approvalId: 'ap-1', approve: false, sha256: 'ab', note: 'Not today' }],
+    ]);
+    expect(calls[0]?.options).toEqual({ idem, deadlineMs: 15_000 });
+  });
+
+  it('lists and gets approvals by their wire names', async () => {
+    const { link, calls } = fakeLink((m) => (m === 'agent.approval.get' ? { approval: { id: 'ap-2' } } : { approvals: [], older: false }));
+    const c = new RpcAgentClient(link);
+    await c.listApprovals({ agentId: 'scout', state: 'all' });
+    expect((await c.getApproval('ap-2')).id).toBe('ap-2');
+    expect(calls.map((x) => [x.method, x.params])).toEqual([
+      ['agent.approvals.list', { agentId: 'scout', state: 'all' }],
+      ['agent.approval.get', { approvalId: 'ap-2' }],
+    ]);
+  });
+
+  it('carries a snapshot’s approvals and each approval event', () => {
+    const { link, subs } = fakeLink();
+    const got: unknown[] = [];
+    new RpcAgentClient(link).watchConversation('scout', (e) => got.push(e));
+    const fn = subs[0]!.fn;
+    fn({ seq: 1, type: 'snapshot', messages: [], approvals: [{ id: 'ap-1' }] });
+    fn({ seq: 2, type: 'approval', approval: { id: 'ap-1', state: 'approved' } });
+    expect(got).toEqual([
+      { type: 'snapshot', seq: 1, messages: [], approvals: [{ id: 'ap-1' }] },
+      { type: 'approval', seq: 2, approval: { id: 'ap-1', state: 'approved' } },
+    ]);
+  });
+
+  it('reads agent.tools, and a desk that doesn’t serve it is nothing running', () => {
+    let refuse: ((code: string) => void) | undefined;
+    const subs: { topic: string; fn: (m: TopicEvent) => void }[] = [];
+    const link: DeskTransport = {
+      call: vi.fn(async () => ({})),
+      subscribe: vi.fn((topic, fn, onRefused) => {
+        subs.push({ topic, fn });
+        refuse = onRefused;
+        return () => undefined;
+      }),
+    };
+    const got: unknown[] = [];
+    let absent = 0;
+    new RpcAgentClient(link).watchTools((e) => got.push(e), () => (absent += 1));
+    expect(subs[0]?.topic).toBe('agent.tools');
+    const call = { callId: 'c1', agentId: 'scout' };
+    subs[0]!.fn({ seq: 1, type: 'snapshot', serverNow: 5, calls: [call] });
+    subs[0]!.fn({ seq: 2, type: 'call', call });
+    subs[0]!.fn({ seq: 3, type: 'end', callId: 'c1', agentId: 'scout', result: 'stopped' });
+    expect(got).toEqual([
+      { type: 'snapshot', serverNow: 5, calls: [call] },
+      { type: 'call', call },
+      { type: 'end', callId: 'c1', agentId: 'scout', result: 'stopped' },
+    ]);
+    refuse?.('not_found');
+    expect(absent).toBe(1);
+  });
+
+  it('reads and deletes memory with desk-agent’s methods', async () => {
+    const { link, calls } = fakeLink((m) => (m === 'agent.memory.clear' ? { deleted: 3 } : m === 'agent.memory.list' ? { agentId: 'scout', memories: [], summary: null, limits: { items: 50, chars: 300 } } : { deleted: true }));
+    const c = new RpcAgentClient(link);
+    await c.listMemories('scout');
+    await c.deleteMemory('scout', 'mem-1', { idem: newIdem() });
+    expect(await c.clearMemories('scout', { idem: newIdem() })).toEqual({ deleted: 3 });
+    expect(calls.map((x) => [x.method, x.params])).toEqual([
+      ['agent.memory.list', { agentId: 'scout' }],
+      ['agent.memory.delete', { agentId: 'scout', memoryId: 'mem-1' }],
+      ['agent.memory.clear', { agentId: 'scout' }],
+    ]);
+  });
+});

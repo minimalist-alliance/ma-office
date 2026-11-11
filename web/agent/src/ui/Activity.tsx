@@ -1,9 +1,10 @@
 // The drawer's Activity tab: the desk's audit log (design 9.11), newest first, with its JSON export. Rows are
 // ids, decisions and costs only: the log never holds a prompt, a reply or a key.
-import { useEffect, useState } from 'react';
+import { useEffect, useId, useState } from 'react';
 import type { AgentClient } from '../client/agentClient';
 import type { Agent, AuditEntry, AuditPage, KeyMeta, LimitScope, Provider } from '../client/types';
 import { errorText } from '../model/agents';
+import { askedWord, doingWord, doneWord, levelOf, READ_TOOLS, shown, type Level } from '../model/approvals';
 import { usd, when } from '../model/format';
 import { SCOPE_LABEL } from '../model/limits';
 import { Icon } from './icons';
@@ -88,6 +89,136 @@ export function actionText(e: Pick<AuditEntry, 'action' | 'decision'> & Partial<
     }
     default:
       return e.action;
+  }
+}
+
+// ------------------------------------------------------------------ S-14: tools, approvals and memory (the spec's section 4)
+
+/** The Show filter's groups (spec 4.1). Team is agents, links, timers and messages between agents. */
+export type ActivityKind = 'tools' | 'memory' | 'keys' | 'team';
+
+export const KIND_LABEL: Record<ActivityKind | 'all', string> = { all: 'Everything', tools: 'Tools', memory: 'Memory', keys: 'Keys and limits', team: 'Team' };
+
+export function kindOf(action: string): ActivityKind | null {
+  if (action === 'tool.call' || action.startsWith('approval.') || action === 'browser.session.grant') return 'tools';
+  if (action.startsWith('memory.') || action === 'thread.compact') return 'memory';
+  if (action.startsWith('key.') || action === 'llm.call' || action === 'limit.hit' || action.startsWith('limits.') || action === 'agent.bind' || action.startsWith('attach.')) return 'keys';
+  if (action.startsWith('agent.') || action === 'links.set' || action.startsWith('proposal.') || action.startsWith('timer.') || action.startsWith('workspace.') || action === 'icon.upload' || action.startsWith('a2a.')) return 'team';
+  return null;
+}
+
+/** A target's `kind:id` part, such as the `tool:` or `approval:` of `tool:browser_open run:… approval:ap-…`. */
+const part = (target: string, kind: string): string | null => target.split(' ').find((x) => x.startsWith(`${kind}:`))?.slice(kind.length + 1) ?? null;
+
+/** Which agent a row is about: its actor, its words, or an `agent:` in its target. */
+export function rowAgent(e: Pick<AuditEntry, 'actor' | 'target' | 'detail'>): string | null {
+  return /^agent:(.+)$/.exec(e.actor)?.[1] ?? e.detail?.agentId ?? part(e.target, 'agent');
+}
+
+/**
+ * One row per tool call, carrying its approval (spec 4.3): an ask, a decision or an expiry is hidden when its call's row is on the
+ * page, and an ask when anything else of its approval is. The export keeps every row.
+ */
+export function foldAsks<T extends Pick<AuditEntry, 'action' | 'target'>>(entries: readonly T[]): T[] {
+  const calls = new Set<string>();
+  const answered = new Set<string>();
+  for (const e of entries) {
+    const id = part(e.target, 'approval');
+    if (!id) continue;
+    if (e.action === 'tool.call') calls.add(id);
+    if (e.action !== 'approval.ask') answered.add(id);
+  }
+  return entries.filter((e) => {
+    const id = part(e.target, 'approval');
+    if (!id || e.action === 'tool.call') return true;
+    if (e.action === 'approval.ask') return !answered.has(id);
+    return !calls.has(id);
+  });
+}
+
+/** How a call was let happen, the third line's last phrase. `by` picks its mark. */
+export interface LetBy {
+  text: string;
+  by: 'member' | 'rule' | 'none' | 'declined' | 'unanswered';
+}
+
+/** A tool, approval or memory row in three lines (spec 4.2). Null for any other row, which keeps its old shape. */
+export interface ToolRow {
+  what: string;
+  level: Level | null;
+  onWhat: string | null;
+  who: string;
+  letBy: LetBy | null;
+}
+
+const lowerFirst = (t: string): string => (t ? t.charAt(0).toLowerCase() + t.slice(1) : t);
+
+export function toolRow(e: AuditEntry, agents: readonly Pick<Agent, 'id' | 'name'>[]): ToolRow | null {
+  const d = e.detail ?? null;
+  const tool = d?.tool ?? part(e.target, 'tool') ?? '';
+  const asked = d?.asked ?? askedWord(tool);
+  const risk = d?.risk ?? (READ_TOOLS.has(tool) ? 'read' : null);
+  const level: Level | null = risk ? levelOf(risk) : null;
+  const agentName = (id: string | null): string => (id ? (agents.find((a) => a.id === id)?.name ?? 'An agent no longer here') : 'An agent');
+  const who = e.actor === 'user' || e.actor === 'member' ? 'You' : agentName(rowAgent(e));
+  const onWhat = d?.target ? shown(d.target) : null;
+  const approved: LetBy = { text: 'Approved by you', by: 'member' };
+  switch (e.action) {
+    case 'tool.call': {
+      const viaApproval = part(e.target, 'approval') !== null || d?.approvedBy === 'member';
+      if (e.decision === 'ok') {
+        const letBy: LetBy | null = viaApproval
+          ? approved
+          : d?.approvedBy === 'rule'
+            ? { text: 'Allowed by your rule', by: 'rule' }
+            : risk === 'read'
+              ? { text: 'No approval needed: it only reads', by: 'none' }
+              : risk === 'own' || tool === 'memory_save'
+                ? { text: 'No approval needed: you can delete it', by: 'none' }
+                : d?.undoable
+                  ? { text: 'No approval needed: you can undo it', by: 'none' }
+                  : null;
+        return { what: d?.done ?? doneWord(tool), level: level, onWhat, who, letBy };
+      }
+      if (e.decision === 'refused:declined') return { what: `Declined: ${asked}`, level: level, onWhat, who, letBy: { text: 'Declined by you', by: 'declined' } };
+      if (e.decision === 'refused:expired') {
+        const stopped = d?.approval === 'cancelled';
+        return { what: `Wanted to ${asked}`, level: level, onWhat, who, letBy: { text: stopped ? 'You stopped the task, so not done' : 'Not answered in time, so not done', by: 'unanswered' } };
+      }
+      if (e.decision.startsWith('refused:')) return { what: `Wanted to ${asked}`, level: level, onWhat, who, letBy: { text: 'Not allowed, so not done', by: 'none' } };
+      if (e.decision === 'error:stopped') return { what: `Stopped: ${lowerFirst(doingWord(tool))}`, level: level, onWhat, who: 'You', letBy: null };
+      return { what: `Didn’t finish: ${asked}`, level: level, onWhat, who, letBy: viaApproval ? approved : null };
+    }
+    case 'approval.ask':
+      return { what: `Wanted to ${asked}`, level: level, onWhat, who, letBy: { text: 'Waiting for you', by: 'unanswered' } };
+    case 'approval.decide':
+      return e.decision === 'declined'
+        ? { what: `Declined: ${asked}`, level: level, onWhat, who: 'You', letBy: null }
+        : { what: `Approved: ${asked}`, level: level, onWhat, who: 'You', letBy: null };
+    case 'approval.expire': {
+      const why = e.decision === 'stopped' ? 'You stopped the task, so not done' : e.decision === 'restart' ? 'The desk team restarted, so not done' : 'Not answered in time, so not done';
+      return { what: `Wanted to ${asked}`, level: level, onWhat, who, letBy: { text: why, by: 'unanswered' } };
+    }
+    case 'approval.interrupt':
+      return { what: `Didn’t finish: ${asked}`, level: level, onWhat, who, letBy: { text: 'The desk team restarted while doing it', by: 'none' } };
+    case 'browser.session.grant':
+      return { what: 'Used your signed-in session', level: 'send', onWhat: part(e.target, 'site') ? shown(part(e.target, 'site')!) : null, who, letBy: approved };
+    case 'memory.save':
+      return e.decision === 'ok'
+        ? { what: 'Saved a memory', level: null, onWhat, who, letBy: { text: 'No approval needed: you can delete it', by: 'none' } }
+        : { what: 'A memory wasn’t saved', level: null, onWhat, who, letBy: null };
+    case 'memory.forget':
+      return { what: 'Forgot a memory', level: null, onWhat, who, letBy: null };
+    case 'memory.delete':
+      return { what: 'Deleted a memory', level: null, onWhat: agentName(part(e.target, 'agent')), who: 'You', letBy: null };
+    case 'memory.clear': {
+      const n = /^deleted:(\d+)$/.exec(e.decision)?.[1];
+      return { what: n ? `Forgot everything (${n})` : 'Forgot everything', level: null, onWhat: agentName(part(e.target, 'agent')), who: 'You', letBy: null };
+    }
+    case 'thread.compact':
+      return { what: 'Summarized a long thread', level: null, onWhat: agentName(part(e.target, 'agent')), who, letBy: null };
+    default:
+      return null;
   }
 }
 
@@ -185,6 +316,9 @@ export function ActivityPanel({ client, agents, keys, providers, version, keysLa
   const [older, setOlder] = useState<AuditEntry[]>([]);
   const [busy, setBusy] = useState(false);
   const [failed, setFailed] = useState(false);
+  const [show, setShow] = useState<ActivityKind | 'all'>('all');
+  const [who, setWho] = useState<string>('all');
+  const ids = useId();
 
   useEffect(() => {
     let live = true;
@@ -199,6 +333,7 @@ export function ActivityPanel({ client, agents, keys, providers, version, keysLa
   }, [client, version]);
 
   const entries = page ? [...page.entries, ...older] : [];
+  const visible = foldAsks(entries.filter((e) => shownInActivity(e, keysLast))).filter((e) => (show === 'all' || kindOf(e.action) === show) && (who === 'all' || rowAgent(e) === who));
   const cursor = older.length ? older[older.length - 1]?.seq : page?.nextBeforeSeq;
   const more = async (): Promise<void> => {
     if (cursor == null) return;
@@ -239,17 +374,71 @@ export function ActivityPanel({ client, agents, keys, providers, version, keysLa
     <div className="ag-panel" data-testid="activity-panel">
       <div className="ag-activity-head">
         <p className="ag-muted ag-small">
-          Every key change, model call and limit, on this desk only. Kept a year. Never a prompt, a reply or a key.
+          Every tool, approval, memory, key change, model call and limit, on this desk only. Kept a year. Never a prompt, a reply or a key.
         </p>
         <button type="button" className="ag-btn sm" onClick={() => void exportAll()} disabled={!page}>
           <Icon name="download" size={14} /> Export
         </button>
       </div>
+      <div className="ag-activity-filters">
+        <label className="ag-sr" htmlFor={`${ids}-show`}>
+          Show
+        </label>
+        <select id={`${ids}-show`} className="ag-select" value={show} onChange={(e) => setShow(e.target.value as ActivityKind | 'all')} data-testid="activity-show">
+          {(['all', 'tools', 'memory', 'keys', 'team'] as const).map((k) => (
+            <option key={k} value={k}>
+              {KIND_LABEL[k]}
+            </option>
+          ))}
+        </select>
+        <label className="ag-sr" htmlFor={`${ids}-agent`}>
+          Agent
+        </label>
+        <select id={`${ids}-agent`} className="ag-select" value={who} onChange={(e) => setWho(e.target.value)} data-testid="activity-agent">
+          <option value="all">Every agent</option>
+          {agents.map((a) => (
+            <option key={a.id} value={a.id}>
+              {a.name}
+            </option>
+          ))}
+        </select>
+      </div>
       {!page && <p className="ag-muted">Loading…</p>}
       {failed && <p className="ag-error" role="alert">{errorText(null)}</p>}
+      {page && visible.length === 0 && entries.length > 0 && (
+        <p className="ag-muted" data-testid="activity-none">
+          Nothing like that in this stretch of the log.
+        </p>
+      )}
       <ol className="ag-audit" aria-label="Activity on this desk">
-        {entries.filter((e) => shownInActivity(e, keysLast)).map((e) => {
+        {visible.map((e) => {
           const next = nextStep(e);
+          const t = toolRow(e, agents);
+          if (t) {
+            return (
+              <li key={e.seq} data-action={e.action} data-level={t.level ?? undefined} data-testid="audit-tool-row">
+                <span className="ag-audit-what">{t.what}</span>
+                {t.onWhat && (
+                  <span className="ag-audit-target" data-testid="audit-target">
+                    {t.onWhat}
+                  </span>
+                )}
+                <span className="ag-audit-who">
+                  <span>
+                    {t.who} · {when(e.atMs)}
+                  </span>
+                  {t.letBy && (
+                    <span className="ag-audit-ok" data-by={t.letBy.by} data-testid="audit-let-by">
+                      {t.letBy.by === 'member' && <Icon name="check" size={13} />}
+                      {t.letBy.by === 'declined' && <Icon name="minus" size={13} />}
+                      {t.letBy.by === 'unanswered' && <Icon name="clock" size={13} />}
+                      {t.letBy.text}
+                    </span>
+                  )}
+                </span>
+              </li>
+            );
+          }
           return (
             <li key={e.seq} data-action={e.action}>
               <span className="ag-audit-what">{actionText(e)}</span>

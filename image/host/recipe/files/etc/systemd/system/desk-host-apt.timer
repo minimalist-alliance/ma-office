@@ -1,0 +1,10 @@
+[Unit]
+Description=desk-host-apt: the shared host's own security updates, at most once a day (ADR 0077 section 3)
+
+[Timer]
+OnCalendar=daily
+RandomizedDelaySec=4h
+Persistent=true
+
+[Install]
+WantedBy=timers.target

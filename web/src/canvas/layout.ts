@@ -2,7 +2,8 @@
 // apps have positions and sizes inside it, in the desk's coordinates. Below them runs a 44-unit strip.
 // Phones keep the old cell grid: there, positions come from first-fit, row-major packing of the
 // ordered list and aren't read at all. A cell pitch of 92 is a 76 tile plus a 16 gap.
-export type DetailLevel = 'icon' | 'small' | 'wide' | 'large';
+/** `open` is the live app docked to its tile (ADR 0053), above `large`; the phone grid draws it as `large`. */
+export type DetailLevel = 'icon' | 'small' | 'wide' | 'large' | 'open';
 /**
  * The apps a desk's panel can hold. `agent` is the lead agent's, which opens the whole desk team. `commons` is a Guild
  * Desk's room (task 48): only a guild's panel has it, as only a member's own desks have a Browser.
@@ -40,6 +41,16 @@ export interface LayoutDesk extends Rect {
   stack?: string[];
   /** The desk's style, which the member picks from its menu (`theme/deskStyles.ts`). Left out until they do: then it's the default. */
   style?: string;
+  /**
+   * Carousel mode (the owner, Nov 9): on, each app shows one at a time across the desk, and `app` is the one showing.
+   * Left out on a desk that never had it, so it saves as it always did; off keeps `app` for the next time it's on.
+   */
+  carousel?: DeskCarousel;
+}
+
+export interface DeskCarousel {
+  on: boolean;
+  app: AppId;
 }
 
 export interface Slot extends Rect {
@@ -78,10 +89,26 @@ export const CELLS: Record<DetailLevel, { w: number; h: number }> = {
   small: { w: 2, h: 2 },
   wide: { w: 4, h: 2 },
   large: { w: 4, h: 4 },
+  open: { w: 6, h: 5 },
 };
 
-/** The largest level that fits in both directions (ADR 0062). Below small it's an icon. */
-export function detailLevel(w: number, h: number): DetailLevel {
+/**
+ * Where a tile turns `open` (ADR 0053), in cells: 6 x 5, or an app's own minimum where its window needs more. The registry
+ * entry reads it as `openMin` (`apps/registry.tsx`); it's here because this file is pure and the registry holds the windows.
+ */
+const OPEN_MIN: Partial<Record<CoreAppId, { w: number; h: number }>> = { browser: { w: 7, h: 5 } };
+export const openMin = (app?: AppId): { w: number; h: number } => (app && OPEN_MIN[baseApp(app)]) || CELLS.open;
+
+let openLevel = true;
+/** The kill switch (client-config `openTiles`, `opentile/door.ts`): off, nothing goes past `large`. */
+export const setOpenLevel = (on: boolean): void => {
+  openLevel = on;
+};
+
+/** The largest level that fits in both directions (ADR 0062, 0053). Below small it's an icon. */
+export function detailLevel(w: number, h: number, app?: AppId): DetailLevel {
+  const open = openMin(app);
+  if (openLevel && w >= span(open.w) && h >= span(open.h)) return 'open';
   if (w >= span(4) && h >= span(4)) return 'large';
   if (w >= span(4) && h >= span(2)) return 'wide';
   if (w >= span(2) && h >= span(2)) return 'small';
@@ -93,7 +120,7 @@ export const iconGlyphSize = (w: number, h: number): number => Math.round((Math.
 
 export const levelSize = (level: DetailLevel): { w: number; h: number } => ({ w: span(CELLS[level].w), h: span(CELLS[level].h) });
 
-const SMALLER: Record<DetailLevel, DetailLevel | null> = { large: 'wide', wide: 'small', small: 'icon', icon: null };
+const SMALLER: Record<DetailLevel, DetailLevel | null> = { open: 'large', large: 'wide', wide: 'small', small: 'icon', icon: null };
 
 /** An item wider than its grid renders at the next level that fits. */
 export function fittedLevel(level: DetailLevel, cols: number): DetailLevel {
@@ -136,7 +163,7 @@ export function packItems(items: readonly { id: string; level: DetailLevel }[], 
   return { slots, rows };
 }
 
-const withLevels = (items: readonly LayoutItem[]): { id: string; level: DetailLevel }[] => items.map((i) => ({ id: i.id, level: detailLevel(i.w, i.h) }));
+const withLevels = (items: readonly LayoutItem[]): { id: string; level: DetailLevel }[] => items.map((i) => ({ id: i.id, level: detailLevel(i.w, i.h, i.app) }));
 
 export interface DeskGeometry {
   w: number;
@@ -150,7 +177,7 @@ export function deskGeometry(desk: LayoutDesk, phone = false): DeskGeometry {
     return { w: panelW(G.phoneCols), h: panelH(Math.max(rows, 1)), slots };
   }
   const slots: Record<string, Slot> = {};
-  for (const i of desk.items) slots[i.id] = { x: i.x, y: i.y, w: i.w, h: i.h, level: detailLevel(i.w, i.h) };
+  for (const i of desk.items) slots[i.id] = { x: i.x, y: i.y, w: i.w, h: i.h, level: detailLevel(i.w, i.h, i.app) };
   return { w: desk.w, h: desk.h, slots };
 }
 
@@ -225,15 +252,21 @@ export function placeNewDesk(existing: readonly LayoutDesk[]): { x: number; y: n
 }
 
 // ----- the strip along a desk's bottom edge (ADR 0064). Its status line is in desk units and scales with the
-// camera, at the strip's left. The etched name and icons are in CSS pixels at every zoom: they hang from the
-// desk's bottom edge, the name at its center and the icons at its right, and only their position follows the
-// camera. Everything here that says px is on screen.
+// camera, at the strip's left. The etched name (at its center) and icons (at its right) are part of the desk's surface
+// and scale with it (ADR 0064, Nov 9 note): the sizes here are at 100 %, in desk units, and on screen they're times the
+// zoom. Both hide when the name would be under ETCH_MIN_PX.
 
-/** The etched name's size. */
+/** The etched name's size at 100 % zoom; on screen it's this times the zoom. */
 export const ETCH_SIZE = 14;
+/** Under this many CSS px on screen the name hides: it can't be read. */
+export const ETCH_MIN_PX = 7;
+/** Does the name show at this zoom? */
+export const nameShows = (s: number): boolean => ETCH_SIZE * s >= ETCH_MIN_PX;
+/** The raster scale for the name at this zoom: the device scale, doubled each time the zoom passes a power of two above 100 %, so a zoom in stays sharp without a bitmap per wheel tick. */
+export const nameRaster = (q: number, s: number): number => q * (s <= 1 ? 1 : Math.min(4, 2 ** Math.ceil(Math.log2(s))));
 /** An etched icon's box. */
 export const ETCH_ICON = 16;
-/** The name's baseline above the desk's bottom edge. */
+/** The name's baseline above the desk's bottom edge at 100 % zoom; on screen it's this times the zoom. */
 export const ETCH_BASELINE = 17;
 /** How far the cut goes, at every raster scale: a CSS pixel, so 2 device pixels at 2x. */
 export const ETCH_DEPTH = 1;
@@ -245,7 +278,7 @@ export const STRIP = {
   markW: 20,
   /** How close the name comes to the status line, the icons or the desk's edges. */
   clear: 12,
-  /** Under either of these on screen the icons hide, which clears the way for the name. */
+  /** A desk under either of these, in desk units, has no icons, which clears the way for the name. */
   iconsMinW: 290,
   iconsMinH: 72,
   /** Every icon's center above the bottom edge: the name's center line, with its lip. */
@@ -258,6 +291,12 @@ export const STRIP = {
   /** What the hidden count's slot adds to an icon's target for its number. With a digit centered in it, the count's ink is as far from cleanup's as cleanup's is from the grip's. */
   countNumber: 18,
   padRadius: 8,
+  /**
+   * Under this width, in desk units, the carousel's switch isn't in the row, and its slot isn't held: the row is the grip,
+   * cleanup and the count as it always was. The icons scale with the desk, so this is the desk's own size and no zoom's.
+   * Past it, the longest status line still fits beside the switch (`layout.test.ts`).
+   */
+  switchMinW: 300,
 } as const;
 
 export const stripTarget = (touch: boolean): number => (touch ? STRIP.targetTouch : STRIP.target);
@@ -268,17 +307,34 @@ export const countSlotW = (touch: boolean): number => stripTarget(touch) + STRIP
 /** Do the icons show at all? The first thing to go when there's no room. */
 export const iconsFit = (wPx: number, hPx: number): boolean => wPx >= STRIP.iconsMinW && hPx >= STRIP.iconsMinH;
 
+/** The longest status line, in desk units: what `G.minDeskW` was made to hold between its dot and the grip. */
+export const STATUS_LONGEST = 161;
+
 /**
- * Each icon's slot, from the desk's right edge to the slot's right end: the grip, cleanup, then the hidden count,
- * a gap apart, so the row is even and has no hole in it. `heldW` is how wide cleanup's slot is held, and 0 when it
- * isn't: with a mouse it's held whenever the desk needs cleaning up, at rest too, so the count doesn't move when the
- * pointer comes and the sparkle with it. Like the grip's slot, which is held at rest.
+ * Is the carousel's switch in the row of a desk `w` by `h` units? Only with its icons showing, at least `switchMinW` wide,
+ * and with the longest status line still fitting beside it. The icons scale with the desk, so no zoom comes into it.
  */
-export function slotRight(slot: 'grip' | 'cleanup' | 'count', touch: boolean, heldW = 0): number {
+export function switchFits(w: number, h: number): boolean {
+  if (!iconsFit(w, h) || w < STRIP.switchMinW) return false;
+  const clear = slotRight('carousel', false) + (STRIP.target + ETCH_ICON) / 2;
+  return w - STRIP.textX - clear >= STATUS_LONGEST;
+}
+
+/**
+ * Each icon's slot, from the desk's right edge to the slot's right end: the grip, the carousel's switch (`withSwitch`,
+ * on a desk wide enough on screen for it: `switchFits`), cleanup, then the hidden count, a gap apart, so the row is even
+ * and has no hole in it. `heldW` is how wide cleanup's slot is held,
+ * and 0 when it isn't: with a mouse it's held whenever the desk needs cleaning up, at rest too, so the count doesn't
+ * move when the pointer comes and the sparkle with it. Like the grip's and the switch's slots, which are held at rest,
+ * so the switch is in the same place in both modes.
+ */
+export function slotRight(slot: 'grip' | 'carousel' | 'cleanup' | 'count', touch: boolean, heldW = 0, withSwitch = false): number {
   const grip = touch ? 0 : STRIP.gripRight;
   if (slot === 'grip') return grip;
   const gap = touch ? 0 : STRIP.gap;
-  const cleanup = grip + stripTarget(touch) + gap;
+  const carousel = grip + stripTarget(touch) + gap;
+  if (slot === 'carousel') return carousel;
+  const cleanup = withSwitch ? carousel + stripTarget(touch) + gap : carousel;
   if (slot === 'cleanup') return cleanup;
   return heldW ? cleanup + heldW + gap : cleanup;
 }
@@ -302,10 +358,10 @@ export function cornerInset(s: number): number {
  * reserved even at rest, so the name doesn't change when the pointer enters the desk, and so does cleanup's
  * while it's held. `heldW` is that slot's width, and 0 when it isn't held. `count` is whether the hidden count shows.
  */
-export function iconsLeft(touch: boolean, inset: number, heldW: number, count: boolean): number {
-  if (count) return slotRight('count', touch, heldW) + countSlotW(touch) + inset;
-  if (heldW) return slotRight('cleanup', touch) + heldW + inset;
-  return slotRight('grip', touch) + stripTarget(touch) + inset;
+export function iconsLeft(touch: boolean, inset: number, heldW: number, count: boolean, withSwitch = false): number {
+  if (count) return slotRight('count', touch, heldW, withSwitch) + countSlotW(touch) + inset;
+  if (heldW) return slotRight('cleanup', touch, 0, withSwitch) + heldW + inset;
+  return slotRight(withSwitch ? 'carousel' : 'grip', touch) + stripTarget(touch) + inset;
 }
 
 /** How wide the name can be: centered on the desk, and `clear` from everything at either side. 0 on either side is the desk's edge. */
@@ -314,11 +370,22 @@ export function nameRoom(deskPx: number, leftEndPx: number, rightPx: number): nu
   return Math.max(0, 2 * (half - Math.max(leftEndPx, rightPx) - STRIP.clear));
 }
 
-/** Where the status text stops, from the desk's right edge: the hidden count, cleanup's slot while it's held, or the grip's glyph. */
-export function statusClear(touch: boolean, inset: number, heldW: number, count: boolean): number {
-  if (count || heldW) return iconsLeft(touch, inset, heldW, count);
-  return slotRight('grip', touch) + (stripTarget(touch) + ETCH_ICON) / 2 + inset;
+/** Where the status text stops, from the desk's right edge: the hidden count, cleanup's slot while it's held, or the glyph of the carousel's switch or the grip. */
+export function statusClear(touch: boolean, inset: number, heldW: number, count: boolean, withSwitch = false): number {
+  if (count || heldW) return iconsLeft(touch, inset, heldW, count, withSwitch);
+  return slotRight(withSwitch ? 'carousel' : 'grip', touch) + (stripTarget(touch) + ETCH_ICON) / 2 + inset;
 }
+
+/** How far the carousel's stage stands in from the desk's top and sides, in desk units. Its bottom is the strip's top. */
+export const CAROUSEL_INSET = 12;
+
+/** The carousel's stage on a desk of this size, in the desk's own units: all of the panel above the strip, a little in. */
+export const carouselStage = (w: number, h: number): Rect => ({
+  x: CAROUSEL_INSET,
+  y: CAROUSEL_INSET,
+  w: Math.max(0, w - 2 * CAROUSEL_INSET),
+  h: Math.max(0, h - CAROUSEL_INSET - G.strip),
+});
 
 /** How much of the strip the status text can use, in desk units, up to `rightPx` from the desk's right edge on screen. */
 export const statusRoom = (deskW: number, textX: number, s: number, rightPx: number): number => deskW - textX - rightPx / s;

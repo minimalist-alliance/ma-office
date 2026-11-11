@@ -1,0 +1,48 @@
+{
+  "category": "top",
+  "layer": "04-top",
+  "colorSlot": "topColor",
+  "default": "crew",
+  "parts": [
+    {
+      "id": "crew",
+      "name": "Crew neck"
+    },
+    {
+      "id": "v-neck",
+      "name": "V-neck"
+    },
+    {
+      "id": "collar-shirt",
+      "name": "Collar shirt"
+    },
+    {
+      "id": "hoodie",
+      "name": "Hoodie"
+    },
+    {
+      "id": "turtleneck",
+      "name": "Turtleneck"
+    },
+    {
+      "id": "jacket",
+      "name": "Jacket"
+    },
+    {
+      "id": "cardigan",
+      "name": "Cardigan"
+    },
+    {
+      "id": "overalls",
+      "name": "Overalls"
+    },
+    {
+      "id": "tee-mark",
+      "name": "Tee with a mark"
+    },
+    {
+      "id": "dress-neckline",
+      "name": "Dress neckline"
+    }
+  ]
+}

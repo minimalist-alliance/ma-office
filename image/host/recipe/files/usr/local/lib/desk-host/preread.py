@@ -13,6 +13,11 @@ The read is capped: it runs in its own cgroup (/sys/fs/cgroup/desk-host-pre, not
 io.max rbps on the slot store at PREREAD_SHARE (desk-host.conf, default 0.2) of the instance's EBS baseline. Every desk's io.max sums to at
 most 0.8 of the baseline, so the host's read fits in the part nobody holds (0.8 + 0.2). Nothing is written but that cgroup's limits.
 Prints one line: bytes read, files, seconds, rate.
+
+Template generations (ADR 0077): the list's byte ranges were traced on g1. On a slot whose root is another generation, a file whose
+content isn't g1's (/var/lib/desk-host/templates/<gen>.changed, written at the seal) is read whole, since its ranges are stale.
+While any pre-read runs, desk-host-upd (fetches, re-roots, the host's apt) is frozen, so the host's own I/O stays within the 0.2
+of the baseline the desks leave (ADR 0077 section 4).
 """
 import os
 import sys
@@ -101,6 +106,28 @@ def cap(store_dev, itype_bps):
         return False
 
 
+def stale_ranges(k):
+    """Template paths (rootfs/...) whose traced ranges don't fit the slot's generation: files changed from g1."""
+    try:
+        import json
+        gen = json.load(open(f"/var/lib/desk-host/slots/{k}.json")).get("template")
+        if not isinstance(gen, str) or gen == "g1" or not gen[1:].isdigit():
+            return set()
+        with open(f"/var/lib/desk-host/templates/{gen}.changed") as fh:
+            return {"rootfs/" + line.strip() for line in fh if line.strip()}
+    except (OSError, ValueError):
+        return set()
+
+
+def freeze_upd(on):
+    try:
+        sys.path.insert(0, os.path.dirname(os.path.abspath(__file__)))
+        import templates
+        templates.upd_freeze(on)
+    except Exception as e:  # noqa: BLE001 - a freeze that can't be set never stops a wake
+        print(f"preread: desk-host-upd's freeze not set ({type(e).__name__})", file=sys.stderr)
+
+
 def main(a):
     if not a or not a[0].isdigit():
         print(__doc__, file=sys.stderr)
@@ -127,12 +154,25 @@ def main(a):
     if "--dry" not in a and not cap(cl.store_dev(), rate):
         return 1
     gate = a[a.index("--gate") + 1] if "--gate" in a else None
+    stale = stale_ranges(k)
+    if "--dry" not in a:
+        freeze_upd(True)
+    try:
+        return run(a, k, slot, root, rel, rate, gate, stale)
+    finally:
+        if "--dry" not in a:
+            freeze_upd(False)
+
+
+def run(a, k, slot, root, rel, rate, gate, stale):
     t0, total, n, seen, stage = time.monotonic(), 0, 0, set(), 1
     def open_gate():
         if gate:
             with open(gate, "w") as fh:
                 fh.write("1\n")
     for top, st, ranges in listed(slot) + [(None, 2, None)]:
+        if top is not None and ranges and os.path.relpath(top, slot) in stale:
+            ranges = None   # changed from g1: its traced ranges are stale, so the whole file
         if st == 2 and stage == 1:
             stage = 2
             print(f"preread: stage 1 (before the start): {total / 1048576:.0f} MB in {n} files, {time.monotonic() - t0:.1f} s", flush=True)

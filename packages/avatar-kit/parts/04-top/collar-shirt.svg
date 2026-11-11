@@ -1,0 +1,7 @@
+<g data-part="top-collar-shirt">
+  <path fill="{{top}}" d="M30,256 C30,222 60,201 104,195 L128,214 L152,195 C196,201 226,222 226,256 Z"/>
+  <path fill="none" stroke="{{topShade}}" stroke-width="3" d="M128,216 V256"/>
+  <g data-min-size="40" fill="{{topShade}}"><circle cx="133.5" cy="230" r="2.6"/><circle cx="133.5" cy="247" r="2.6"/></g>
+  <path fill="{{topHi}}" d="M105,191 C109,199 117,207 127,213 L114,222 C107,215 101,206 98,196 Z"/>
+  <path fill="{{topHi}}" d="M151,191 C147,199 139,207 129,213 L142,222 C149,215 155,206 158,196 Z"/>
+</g>

@@ -3,7 +3,7 @@
 // the format and its migration.
 import { create } from 'zustand';
 import { readJson, writeJson } from '../lib/util';
-import { fitDeskSize, isPlaced, levelSize, restacked, roundUnit, settleDesk, stackOrder, withStack, workArea, type DetailLevel, type LayoutDesk, type Rect } from '../canvas/layout';
+import { fitDeskSize, isPlaced, levelSize, restacked, roundUnit, settleDesk, stackOrder, withStack, workArea, type DeskCarousel, type DetailLevel, type LayoutDesk, type Rect } from '../canvas/layout';
 import { createDeskPush, separateDesks, separation, type DeskAt } from '../canvas/deskPush';
 import { clearLayoutDoc, fitDeskToBand, fitDocToBand, freshDesk, LAYOUT_KEY, LAYOUT_KEY_V1, migrateLayoutV1, readLayoutDoc, type LayoutDoc } from '../canvas/layoutDoc';
 import { currentBand } from '../platform/age';
@@ -229,6 +229,20 @@ export function setDeskStyle(id: string, style: string): boolean {
   useLayoutStore.setState((s) => {
     const cur = s.desks[id];
     return cur ? { desks: { ...s.desks, [id]: { ...cur, style } } } : s;
+  });
+  return true;
+}
+
+/**
+ * The desk's carousel (`carousel/model.ts`): the member's own change, so it saves like any other, and only on this desk.
+ * False, and nothing stored, if it's already so.
+ */
+export function setCarousel(id: string, carousel: DeskCarousel): boolean {
+  const d = useLayoutStore.getState().desks[id];
+  if (!d || (d.carousel?.on === carousel.on && d.carousel?.app === carousel.app)) return false;
+  useLayoutStore.setState((s) => {
+    const cur = s.desks[id];
+    return cur ? { desks: { ...s.desks, [id]: { ...cur, carousel: { on: carousel.on, app: carousel.app } } } } : s;
   });
   return true;
 }

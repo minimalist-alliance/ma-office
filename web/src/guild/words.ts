@@ -10,13 +10,15 @@ export interface DeskWords {
   asleep: string;
   stopping: string;
   failed: string;
+  wake: string;
 }
 
-const DESK: DeskWords = {
+export const DESK_WORDS: DeskWords = {
   waking: 'Waking this desk…',
   asleep: 'This desk is asleep',
   stopping: 'This desk is going to sleep',
   failed: "Couldn't wake this desk",
+  wake: 'Wake this desk',
 };
 
 /** The waking screen's line is the design's own (draft ADR, section 6): a Guild Desk takes about a minute. */
@@ -25,9 +27,10 @@ export const GUILD_WORDS: DeskWords = {
   asleep: 'The Guild Desk is asleep',
   stopping: 'The Guild Desk is going to sleep',
   failed: "Couldn't wake the Guild Desk",
+  wake: 'Wake the Guild Desk',
 };
 
-export const useDeskWords = (): DeskWords => (useOnGuildDesk() ? GUILD_WORDS : DESK);
+export const useDeskWords = (): DeskWords => (useOnGuildDesk() ? GUILD_WORDS : DESK_WORDS);
 
 export const REMOVED_TITLE = "You're no longer in this guild";
 export const REMOVED_LINE = 'Its Guild Desk, Commons and pages have closed here. Your own desks are just as they were.';

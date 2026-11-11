@@ -1,0 +1,4 @@
+<g data-part="coils" data-crown="39">
+  <path fill="{{hair}}" d="M80,112 C78,80 98,58 128,58 C158,58 178,80 176,112 C171,100 166,94 158,91 C148,87 138,86 128,86 C118,86 108,87 98,91 C90,94 85,100 80,112 Z"/>
+  <g data-min-size="40" fill="none" stroke="{{hairStep}}" stroke-width="2.2" stroke-linecap="round" stroke-linejoin="round"><path d="M108.2,73.1 A3.6,3.6 0 1 1 113.3,71.5"/><path d="M129.8,60.9 A3.6,3.6 0 1 1 124.7,62.5"/><path d="M149.1,71.8 A3.6,3.6 0 1 1 147.5,66.7"/></g>
+</g>

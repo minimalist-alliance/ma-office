@@ -199,6 +199,8 @@ type peerOpts struct {
 	// noRead is a client that never reads its channels, with a 64 KiB SCTP window: a member whose link or tab has
 	// stalled, so what the desk sends it stays unacknowledged.
 	noRead bool
+	// tcpOnly is a client whose network blocks UDP: ICE over TCP only (shared_test.go).
+	tcpOnly bool
 }
 
 func newPeer(t *testing.T, opts peerOpts) *peer {
@@ -207,6 +209,9 @@ func newPeer(t *testing.T, opts peerOpts) *peer {
 	se.SetIncludeLoopbackCandidate(true)
 	se.SetICEMulticastDNSMode(ice.MulticastDNSModeDisabled)
 	se.SetNetworkTypes([]webrtc.NetworkType{webrtc.NetworkTypeUDP4})
+	if opts.tcpOnly {
+		se.SetNetworkTypes([]webrtc.NetworkType{webrtc.NetworkTypeTCP4})
+	}
 	if opts.noRead {
 		se.DetachDataChannels()
 		se.SetSCTPMaxReceiveBufferSize(64 * 1024)

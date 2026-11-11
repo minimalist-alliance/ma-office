@@ -2,7 +2,7 @@
 .claude/
 
 # Dependencies / build output
-node_modules/
+node_modules
 target/
 dist/
 build/
@@ -14,12 +14,19 @@ out/
 *.pem
 # Desk batches' trusted signing keys (S-96) are public halves and belong in the image's recipe; build.sh fails on a private key there.
 !image/recipe/files/opt/ma/etc/batch-keys/*.pem
+!image/host/recipe/files/etc/desk-host/template-keys/*.pem
+!image/host/recipe/files/etc/desk-host/batch-keys/*.pem
+# The self-hosted release key's public half (selfhost/pin-release-key.sh).
+!selfhost/files/opt/ma/etc/selfhost-release-keys/*.pem
 *.p12
 *.pfx
 # OS / editor
 .DS_Store
 .vscode/
 .idea/
+
+# Prototype QA screenshots and reports
+prototype/qa/
 
 # The last image bake's log
 image/last-build.txt

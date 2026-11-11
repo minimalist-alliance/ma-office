@@ -1,0 +1,6 @@
+<g data-part="ears">
+  <ellipse cx="80" cy="121" rx="9.5" ry="12.5" fill="{{skin}}"/>
+  <ellipse cx="176" cy="121" rx="9.5" ry="12.5" fill="{{skin}}"/>
+  <ellipse cx="77.5" cy="121.5" rx="4" ry="6.5" fill="{{skinShade}}"/>
+  <ellipse cx="178.5" cy="121.5" rx="4" ry="6.5" fill="{{skinShade}}"/>
+</g>

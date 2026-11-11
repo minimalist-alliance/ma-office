@@ -1,0 +1,58 @@
+#!/usr/bin/python3 -I
+"""xdg-open and xdg-email on a desk: the link the kiosk Chromium gives the OS goes to deskd, for the member's own device.
+
+Chromium runs xdg-email for a mailto: link and xdg-open for any other scheme it doesn't handle itself (tel:, zoommtg:,
+msteams: and the like), with the URL as the one argument, once its own checks have passed: one launch per input from the
+member, and its prompt or the policy that skips it. A desk can't open any of them, so this hands the URL to deskd on
+/run/desk-links/links.sock, and the member's office offers to open it on the device they're holding. Installed as both
+names; it doesn't look at which (desk-runtime.md section 8.11).
+
+It decides nothing. deskd checks the scheme against its list, cleans the URL, limits the rate and drops the rest
+(services/deskd/docs/API.md section 10, "Links out"). Nothing here opens anything on the desk, starts a program or writes
+anything, and it never prints the URL.
+
+Protocol, one connection a link: "open <url>\\n", then deskd's one line, "ok\\n" or "dropped <reason>\\n".
+Exit status, as xdg-open's: 0 passed on, 1 not one URL, 3 deskd isn't listening, 4 dropped or no answer.
+MA_LINKS_SOCKET is for tests.
+"""
+import os
+import socket
+import sys
+
+SOCKET = os.environ.get("MA_LINKS_SOCKET") or "/run/desk-links/links.sock"
+TIMEOUT_S = 3
+NAME = "xdg-open (desk)"
+
+
+def say(message):
+    print(f"{NAME}: {message}", file=sys.stderr)
+
+
+def main(argv):
+    if len(argv) != 2 or argv[1].startswith("-"):
+        say("takes one URL, as Chromium gives it")
+        return 1
+    url = os.fsencode(argv[1])
+    if not url or b"\n" in url or b"\r" in url:
+        say("not a URL")
+        return 1
+    try:
+        with socket.socket(socket.AF_UNIX, socket.SOCK_STREAM) as link:
+            link.settimeout(TIMEOUT_S)
+            link.connect(SOCKET)
+            link.sendall(b"open " + url + b"\n")
+            reply = link.makefile("rb").readline(256)
+    except (FileNotFoundError, ConnectionRefusedError, PermissionError):
+        say("can't reach deskd: not listening, or not for this user")
+        return 3
+    except OSError as e:
+        say(f"no answer from deskd ({type(e).__name__})")
+        return 4
+    if reply == b"ok\n":
+        return 0
+    say(reply.decode("ascii", "replace").strip() or "no answer from deskd")
+    return 4
+
+
+if __name__ == "__main__":
+    sys.exit(main(sys.argv))

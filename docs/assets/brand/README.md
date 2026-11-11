@@ -4,5 +4,5 @@ The Minimalist Alliance name and logo are trademarks of Minimalist Alliance LLC 
 
 ## What's here
 - `ui/tokens.json`: the apps' color tokens for Light, Dusk and Dark (ADR 0065). `tokens.ts` in each app reads these values.
-- `ui/type.txt`: the type scale, in Nunito (ADR 0065).
+- `ui/type.txt`: the old Nunito type scale, kept for the record (ADR 0065 addendum); the apps now set their type in Inter Variable.
 - `ui/contrast.txt`: contrast checks for the tokens.

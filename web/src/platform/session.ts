@@ -1,8 +1,10 @@
 // The session state machine: signed out, signed in, or refused. Sign-in always comes first; an
 // account the API refuses learns it from a 403 after signing in.
 import { create } from 'zustand';
+import { dropLastMeter, showLastMeter } from '../bandwidth/store';
+import { initialsOf } from '../chrome/avatar';
 import { closeAllLinks, dropAdultOnlySummaries, syncLinks } from '../desk/liveStore';
-import { clearDeskMirror, guildDeskIds, renameDeskInStore, setDeskList, setDeskListDirect, setDeskListError, setUnpaid, useDeskStore, type DeskInfo } from '../state/deskStore';
+import { clearDeskMirror, dropMirroredDesks, guildDeskIds, renameDeskInStore, setDeskList, setDeskListDirect, setDeskListError, setUnpaid, useDeskStore, type DeskInfo } from '../state/deskStore';
 import { fitLayoutToBand, reconcileLayout, useLayoutStore } from '../state/layoutStore';
 import { closeAdultOnlyWindows } from '../state/windowStore';
 import { ageBandOf, ageRulesOn, awaitingParent, currentBand, setCurrentBand } from './age';
@@ -10,7 +12,9 @@ import { ApiError, getDesks, getMe, postSignOut, type DesksResponse, type Me } f
 import { answeredWithin, endSession, EVERYWHERE_WAIT_MS, finishSignIn, forAtMost, hasStoredSession, onMemberChange, ownSignInPath, retryRefreshNow, sessionWasRefused, SignInRequired, takeEndedChoice, startSignIn, usesManagedLogin } from './auth';
 import { accountUrl, getClientConfig, loadedConfig, type ClientConfig } from './clientConfig';
 import { dropExportSoon, keepExportFor } from './exportSweep';
+import { linkFromAddress, linksOn } from '../open/intent';
 import { clearLastScreens, keepLastScreens } from '../browser/lastScreen';
+import { checkedConfig, checkedLastMe, forgetLastKnown, lastKnownFor, lastMeOf, readLastKnown, rememberLastKnown } from './lastKnown';
 import { signInAddress } from './signInAddress';
 import { placeTokenFor } from './tokenStore';
 
@@ -38,10 +42,18 @@ export const useSession = create<SessionState>(() => ({
 
 const set = (p: Partial<SessionState>): void => useSession.setState(p);
 
+/**
+ * `me` is what this member's last visit drew (`platform/lastKnown.ts`), not yet Platform's word: the avatar and the menu
+ * draw from it, but nothing that decides waits on it (the age rules' wait, `waitsForBand`), and it has no status, age band
+ * or roles, so the no-desk cards, the tier and the owner's rows still wait for `/v1/me`.
+ */
+let meIsLastKnown = false;
+
 async function loadConfig(): Promise<ClientConfig | null> {
   try {
     const config = await getClientConfig();
     set({ config, configFailed: false });
+    rememberLastKnown('config', config);
     return config;
   } catch {
     set({ configFailed: true });
@@ -56,12 +68,14 @@ export function retryConfig(): void {
 /** What this browser keeps of a member for a quick start, which whoever signs in next mustn't see. */
 function forgetMember(): Promise<void> {
   clearDeskMirror();
+  forgetLastKnown();
   return forAtMost(clearLastScreens());
 }
 
 function goSignedOut(notice: string | null): void {
   stopPolling();
   closeAllLinks();
+  meIsLastKnown = false;
   set({ status: 'signedOut', notice, me: null, meFailed: false });
   void forgetMember();
   void loadConfig();
@@ -71,6 +85,7 @@ function refused(): void {
   stopPolling();
   closeAllLinks();
   clearDeskMirror();
+  forgetLastKnown();
   set({ status: 'refused' });
 }
 
@@ -130,6 +145,8 @@ let pollTimer = 0;
 let etag: string | null = null;
 /** The last full answer. A 304 says the list still reads this way, whatever a link has reported since. */
 let lastList: DesksResponse | null = null;
+/** When the last answer (a 304 included) was asked for: a link's word since then is newer (`setDeskList`). */
+let lastAskedAt: number | undefined;
 let polling = false;
 const RETRY_MS = 15_000;
 
@@ -146,7 +163,7 @@ function stopPolling(): void {
  */
 let waitingForBand = false;
 function waitsForBand(res: DesksResponse): boolean {
-  if (!ageRulesOn(loadedConfig()) || useSession.getState().me) return false;
+  if (!ageRulesOn(loadedConfig()) || (useSession.getState().me && !meIsLastKnown)) return false;
   const { desks } = useLayoutStore.getState();
   return res.desks.some((d) => !desks[d.deskId]);
 }
@@ -165,7 +182,7 @@ function applyDesks(res: DesksResponse): void {
   // The Guild Desks follow their own list (`guild/guildStore.ts`), and stay through this one.
   const ids = [...res.desks.map((d) => d.deskId), ...guildDeskIds()];
   reconcileLayout(ids);
-  setDeskList(res.desks);
+  setDeskList(res.desks, lastAskedAt);
   void syncLinks(ids);
 }
 
@@ -181,7 +198,9 @@ const withName = (res: DesksResponse, deskId: string, name: string): DesksRespon
 async function pollOnce(): Promise<number> {
   try {
     const asked = renames;
+    const askedAt = Date.now();
     const r = await getDesks(etag);
+    lastAskedAt = askedAt;
     if (r.data) {
       etag = r.etag;
       lastList = asked === renames ? r.data : [...renamedHere].reduce((res, [id, name]) => withName(res, id, name), r.data);
@@ -221,6 +240,7 @@ function startPolling(): void {
   polling = true;
   etag = null;
   lastList = null;
+  lastAskedAt = undefined;
   void pollOnce().then(schedule);
 }
 
@@ -293,13 +313,65 @@ function meUnknown(): void {
  */
 onMemberChange((sub, before) => {
   void keepExportFor(sub);
+  if (!lastKnownFor(sub)) dropLastKnown();
   if (before === null || useSession.getState().status !== 'signedIn') return;
+  meIsLastKnown = false;
   set({ me: null, meFailed: false });
   void loadMe();
 });
 
 /** Each read of `me`: an answer to an older one, for the member before, is dropped. */
 let meReads = 0;
+
+/** `/v1/me` again: the free tier's chunk asks on coming back to the tab, to notice an upgrade made in another one. */
+export const rereadMe = (): Promise<void> => loadMe();
+
+/**
+ * A returning visit (a token kept here): draw what this member's last visit drew, at once, while client-config, the
+ * token refresh, `/v1/me`, the meter and the list are on their way, and warm the connections they'll need. Each fresh
+ * answer replaces it. Not on `/export`, which waits for client-config's own word.
+ */
+function showLastKnown(): void {
+  const last = readLastKnown();
+  if (!last) return;
+  const me = checkedLastMe(last.me);
+  const config = /^\/export\/?$/.test(window.location.pathname) ? null : checkedConfig(last.config);
+  if (me && !useSession.getState().me) {
+    meIsLastKnown = true;
+    const { avatarUrl, avatar } = me;
+    set({ me: { userId: me.userId, displayName: me.displayName, membership: { badge: me.badge }, ...(avatarUrl ? { avatarUrl } : {}), ...(avatar ? { avatar } : {}) } as Me });
+  }
+  if (config && !useSession.getState().config) {
+    set({ config });
+    preconnect([config.auth.domain, config.api]);
+  }
+  if (last.usage) showLastMeter(last.usage);
+}
+
+/** The first token says this browser's kept record was someone else's: what was drawn from it goes. */
+function dropLastKnown(): void {
+  if (meIsLastKnown) {
+    meIsLastKnown = false;
+    set({ me: null });
+  }
+  dropLastMeter();
+  dropMirroredDesks();
+}
+
+/** Opens the connections a returning visit's first calls need (the token refresh's above all), before they're made. */
+function preconnect(urls: string[]): void {
+  for (const url of urls) {
+    try {
+      const link = document.createElement('link');
+      link.rel = 'preconnect';
+      link.href = new URL(url).origin;
+      link.crossOrigin = 'anonymous'; // fetch's CORS requests go on the anonymous connections
+      document.head.append(link);
+    } catch {
+      /* not a URL: nothing to warm */
+    }
+  }
+}
 
 async function loadMe(): Promise<void> {
   const read = ++meReads;
@@ -312,7 +384,9 @@ async function loadMe(): Promise<void> {
     }
     learnBand(r.data);
     placeTokenFor(r.data);
+    meIsLastKnown = false;
     set({ me: r.data, meFailed: false });
+    rememberLastKnown('me', lastMeOf(r.data, initialsOf(r.data.displayName, r.data.email)));
     if (waitingForBand && lastList) applyDesks(lastList);
   } catch (err) {
     if (read !== meReads) return;
@@ -328,6 +402,7 @@ async function loadMe(): Promise<void> {
  */
 export function memberChanged(): void {
   if (!ageRulesOn(loadedConfig())) return;
+  meIsLastKnown = false;
   set({ me: null, meFailed: false });
   void loadMe();
 }
@@ -357,8 +432,11 @@ export async function bootSession(): Promise<void> {
     setDeskListDirect(fixture.desks);
     void syncLinks(fixture.desks.map((d) => d.id));
     // `?age=teen` or `?age=adult` shows the office as that age band has it.
-    const ageBand = new URLSearchParams(window.location.search).get('age');
-    const me: Me = { userId: 'dev', email: 'dev@localhost', displayName: 'Dev', ...(ageBand ? { membership: { ageBand } } : {}) };
+    const q = new URLSearchParams(window.location.search);
+    const ageBand = q.get('age');
+    // `?tier=free` is the free tier's office (S-119), with the free chunk's own stand-ins for its wire (`free/wire.ts`).
+    const tier = q.get('tier');
+    const me: Me = { userId: 'dev', email: 'dev@localhost', displayName: 'Dev', ...(ageBand || tier ? { membership: { ...(ageBand ? { ageBand } : {}), ...(tier ? { tier, status: 'active' } : {}) } } : {}) };
     learnBand(me);
     set({ status: 'signedIn', me });
     return;
@@ -401,6 +479,7 @@ export async function bootSession(): Promise<void> {
     return;
   }
   if (await hasStoredSession()) {
+    showLastKnown();
     if (fixture) {
       // A test fixture replaces the desk list only: auth still runs for real.
       set({ status: 'signedIn', notice: null });
@@ -419,6 +498,12 @@ export async function bootSession(): Promise<void> {
   // go. Managed login can send them straight back with no code, so that way has the guard, and the card ends it.
   // Whoever signs in next may be someone else, so an unfinished export and the kept pictures go first.
   const [cfg] = await Promise.all([loadConfig(), dropExportSoon(), forgetMember()]);
+  // A link sent to the office (`/open`, #9) shows its own sign-in card first, which names the link, so this doesn't go
+  // off to sign in by itself (`chrome/CalmScreen.tsx`).
+  if (cfg && linkFromAddress() && linksOn(cfg)) {
+    goSignedOut(null);
+    return;
+  }
   if (cfg && ownSignInPath(cfg)) {
     // Replace, as for managed login: Back mustn't land on this page, which sends them straight back there.
     await startSignIn(cfg, undefined, 'replace');
@@ -482,6 +567,7 @@ export async function signOut(opts: { everywhere?: boolean } = {}): Promise<void
   }
   closeAllLinks();
   clearDeskMirror();
+  forgetLastKnown();
   await forAtMost(clearLastScreens()); // the next person on this computer sees none of the kept pictures
   const cfg = useSession.getState().config ?? (await loadConfig());
   await endSession(cfg);

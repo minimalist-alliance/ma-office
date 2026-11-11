@@ -98,7 +98,8 @@ async function aws(...args: string[]): Promise<string> {
 }
 
 // The owner's desk, refused by name as well as by its tags. W3 never goes near it.
-// Desks a test must never touch (the production desks), from the environment: comma-separated desk and instance IDs.
+// Desks a test must never touch (the production desks), from the environment: comma-separated desk and
+ instance IDs.
 const PROTECTED = new Set((process.env['W3_PROTECTED'] ?? '').split(',').map((x) => x.trim()).filter(Boolean));
 
 /** A desk the tags say is a staging test desk. The only way to get one is resolve(), and the only way to reach a desk is through one. */
@@ -285,7 +286,7 @@ export const installProbe = () => {
   const titles: [number, string][] = [];
   let lastTitle = '';
   setInterval(() => {
-    const t = (document.querySelector('[role="tab"][aria-selected="true"]') as HTMLElement | null)?.title ?? '';
+    const t = (document.querySelector('[role="group"][aria-label="Tabs on this desk"] [aria-current="true"]') as HTMLElement | null)?.title ?? '';
     if (t && t !== lastTitle) { lastTitle = t; titles.push([performance.now(), t]); if (titles.length > 5000) titles.shift(); }
   }, 200);
 
@@ -419,7 +420,7 @@ export class BrowserWin {
     this.keys = this.win.getByLabel("Keyboard for the page in this desk's browser", { exact: true });
     this.address = this.win.getByRole('textbox', { name: 'Address' });
     this.tabs = this.win.getByTestId('browser-tab');
-    this.activeTab = this.win.getByRole('tab', { selected: true });
+    this.activeTab = this.win.getByRole('group', { name: 'Tabs on this desk' }).locator('[aria-current="true"]');
   }
 
   /* eslint-disable-next-line @typescript-eslint/no-explicit-any */
@@ -486,7 +487,7 @@ export class BrowserWin {
   async closeOwnTab(): Promise<void> {
     if (!this.ownTab) return;
     this.ownTab = false;
-    const close = this.tabs.filter({ has: this.page.getByRole('tab', { selected: true }) }).getByRole('button', { name: /^Close / });
+    const close = this.tabs.filter({ has: this.page.locator('[aria-current="true"]') }).getByRole('button', { name: /^Close / });
     await close.click({ timeout: 5000 }).catch(() => {});
   }
 

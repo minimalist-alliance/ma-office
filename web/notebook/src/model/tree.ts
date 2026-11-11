@@ -1,5 +1,6 @@
 // Pure helpers over the notebook hierarchy (design 5.2): notebooks hold ordered tabs, tabs hold
 // ordered pages. Order is a numeric sort key, so a move rewrites one row.
+import { PALETTE_IDS, paletteId, type PaletteId } from './colors.ts';
 import type { NotebookRec, PageRec, TabRec, Tree } from './types.ts';
 
 const bySortKey = <T extends { sortKey: number; createdAt: number }>(a: T, b: T): number =>
@@ -63,4 +64,30 @@ export function pagesFrom(tree: Tree, pageId: string): PageRec[] {
   const list = tree.pages[page.tabId] ?? [];
   const i = list.findIndex((p) => p.id === pageId);
   return i < 0 ? [] : list.slice(i);
+}
+
+// ------------------------------------------------------------------ labels (ADR 0091)
+
+/** A page's label as a color's name, or null: a value this build doesn't know (a later palette's) reads as none, and is kept as stored. */
+export function labelOf(page: Pick<PageRec, 'label'>): PaletteId | null {
+  return paletteId(page.label);
+}
+
+/** The pages with one of these labels, in their order. No labels asked for keeps them all. */
+export function filterByLabels<T extends Pick<PageRec, 'label'>>(pages: readonly T[], labels: readonly PaletteId[]): T[] {
+  if (!labels.length) return [...pages];
+  const want = new Set<string>(labels);
+  return pages.filter((p) => {
+    const l = labelOf(p);
+    return l !== null && want.has(l);
+  });
+}
+
+/** Grouped by label in palette order, unlabeled last, each group keeping the order it had. */
+export function sortByLabel<T extends Pick<PageRec, 'label'>>(pages: readonly T[]): T[] {
+  const rank = (p: T): number => {
+    const l = labelOf(p);
+    return l === null ? PALETTE_IDS.length : PALETTE_IDS.indexOf(l);
+  };
+  return pages.map((p, i) => ({ p, i, r: rank(p) })).sort((a, b) => a.r - b.r || a.i - b.i).map((x) => x.p);
 }

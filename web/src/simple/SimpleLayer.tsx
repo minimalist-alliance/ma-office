@@ -326,7 +326,12 @@ function SimplePage({ view, controller, driver, deskId, ui }: { view: SimpleView
 
   // ----- the member's input, delegated: one listener for the whole page
 
-  const target = (e: { target: EventTarget }): HTMLElement | null => (e.target as HTMLElement).closest<HTMLElement>('[data-ref]');
+  // The nearest control pressed, if it's the page's. A control of this office's own, with no `data-ref` ("Sign in on" or
+  // "Use the real page", drawn inside a link), is never the link: the press stays its own (security review T47V-1).
+  const target = (e: { target: EventTarget }): HTMLElement | null => {
+    const el = (e.target as HTMLElement).closest<HTMLElement>('[data-ref], button, input, select, textarea');
+    return el?.dataset['ref'] ? el : null;
+  };
 
   const onClick = (e: MouseEvent<HTMLDivElement>): void => {
     const el = target(e);

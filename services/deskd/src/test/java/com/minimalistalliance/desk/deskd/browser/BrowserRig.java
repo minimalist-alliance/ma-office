@@ -3,10 +3,12 @@ package com.minimalistalliance.desk.deskd.browser;
 import static org.assertj.core.api.Assertions.assertThat;
 import static org.awaitility.Awaitility.await;
 
+import com.minimalistalliance.desk.deskd.data.Transfers;
 import com.minimalistalliance.desk.deskd.events.EventHub;
 import com.minimalistalliance.desk.deskd.events.TopicRegistry;
 import com.minimalistalliance.desk.deskd.platform.PlatformHttp;
 import com.minimalistalliance.desk.deskd.protocol.Channels;
+import com.minimalistalliance.desk.deskd.protocol.Frame;
 import com.minimalistalliance.desk.deskd.protocol.FrameKind;
 import com.minimalistalliance.desk.deskd.rpc.RpcDispatcher;
 import com.minimalistalliance.desk.deskd.rtc.RtcClient;
@@ -98,6 +100,8 @@ final class BrowserRig implements AutoCloseable {
     final SessionManager sessions;
     final PlatformHttp http = new PlatformHttp();
     final BrowserModule module;
+    /** The bulk channel's transfer table, as the data module has it on a desk: what a passwords file comes in through. */
+    final Transfers transfers;
     private final StubAuthorizer authorizer = new StubAuthorizer();
     private final AtomicLong nextId = new AtomicLong(10_000);
     private long nextHandle = 1;
@@ -201,6 +205,15 @@ final class BrowserRig implements AutoCloseable {
         if (forgetStartupThaw) {
             units.forgetStartupThaw();
         }
+        transfers = Transfers.withoutExportAccounting(sessions, Duration.ofSeconds(30));
+        sessions.registerChannelHandler(Channels.BULK, transfers);
+        // The data module does this on a desk, after the Browser: a session's end ends its transfers.
+        sessions.addSessionListener(new com.minimalistalliance.desk.deskd.session.SessionListener() {
+            @Override
+            public void onSessionEnded(String sessionId) {
+                transfers.sessionEnded(sessionId);
+            }
+        });
         rtc.start(sessions);
         await().until(rtc::isConfigured);
     }
@@ -273,6 +286,33 @@ final class BrowserRig implements AutoCloseable {
         }
         client.sendJson(Channels.RPC, FrameKind.REQ, id, body);
         return id;
+    }
+
+    /**
+     * browser.import.begin for these bytes, then every one of them on bulk, as CHUNK frames within the window begin gives.
+     * @return begin's reply
+     */
+    Map<String, Object> sendPasswords(TestClient client, byte[] bytes) throws Exception {
+        Map<String, Object> begun = call(client, "browser.import.begin", Map.of("kind", "passwords", "size", bytes.length));
+        if ("RES".equals(begun.get("_kind"))) {
+            long transferId = ((Number) begun.get("transferId")).longValue();
+            assertThat(((Number) begun.get("window")).longValue()).isEqualTo(bytes.length);
+            long seq = 0;
+            for (int at = 0; at < bytes.length; at += Frame.MAX_PAYLOAD_BYTES) {
+                byte[] piece = java.util.Arrays.copyOfRange(bytes, at, Math.min(bytes.length, at + Frame.MAX_PAYLOAD_BYTES));
+                client.sendFrame(Channels.BULK, FrameKind.CHUNK, Frame.BIN, transferId, seq++, piece);
+            }
+        }
+        return begun;
+    }
+
+    /** A passwords file in, the way the Desk app sends one: begin, its bytes on bulk, finish. @return finish's reply, or begin's error */
+    Map<String, Object> importPasswords(TestClient client, byte[] bytes) throws Exception {
+        Map<String, Object> begun = sendPasswords(client, bytes);
+        if (!"RES".equals(begun.get("_kind"))) {
+            return begun;
+        }
+        return call(client, "browser.import.finish", Map.of("uploadId", begun.get("uploadId")));
     }
 
     /** Sends SUB and returns, so a test can do things while it's answered. */

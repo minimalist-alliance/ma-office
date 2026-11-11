@@ -50,7 +50,7 @@ export function readFree(v: unknown): Free | null {
 export interface MaiaState {
   enabled: boolean;
   modelLabel: string;
-  limited: 'personal' | 'pool' | null;
+  limited: 'personal' | 'pool' | 'trial' | null;
   retentionDays: number | null;
   animation: { enabled: boolean; sleepAfterSec: number };
   memory: { enabled: boolean; maxItems: number };
@@ -62,6 +62,8 @@ export interface MaiaState {
   resetsAt: string | null;
   /** File attachments (contract maia.md `attachments`): null when absent or off, and then the feature isn't shown at all. */
   attachments: AttachCaps | null;
+  /** A free member's trial (contract maia.md, "The free tier's trial"), as it came: `free/wire.ts` reads it. */
+  trial?: unknown;
 }
 
 const SLEEP_DEFAULT_SEC = 300;
@@ -78,7 +80,7 @@ export function readState(body: unknown): MaiaState | null {
   return {
     enabled: b['enabled'] === true,
     modelLabel: typeof b['modelLabel'] === 'string' ? b['modelLabel'].slice(0, 60) : '',
-    limited: b['limited'] === 'personal' || b['limited'] === 'pool' ? b['limited'] : null,
+    limited: b['limited'] === 'personal' || b['limited'] === 'pool' || b['limited'] === 'trial' ? b['limited'] : null,
     retentionDays: Number.isInteger(retention) && retention > 0 && retention <= 3650 ? retention : null,
     animation: {
       enabled: anim['enabled'] === true,
@@ -89,6 +91,7 @@ export function readState(body: unknown): MaiaState | null {
     usedFraction: typeof b['usedFraction'] === 'number' && b['usedFraction'] >= 0 && b['usedFraction'] <= 1 ? b['usedFraction'] : null,
     resetsAt: when(b['resetsAt']),
     attachments: readCaps(b['attachments']),
+    trial: b['trial'],
   };
 }
 

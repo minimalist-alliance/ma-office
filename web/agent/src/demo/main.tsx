@@ -18,7 +18,7 @@ const THEMES: { id: Theme; label: string }[] = [
   { id: 'dusk', label: 'Dusk' },
   { id: 'dark', label: 'Dark' },
 ];
-const FIXTURE_LABEL: Record<FixtureName, string> = { fresh: 'New desk', ready: 'In use', limit: 'At its limit' };
+const FIXTURE_LABEL: Record<FixtureName, string> = { fresh: 'New desk', ready: 'In use', limit: 'At its limit', tools: 'Tools and approvals' };
 
 const params = new URLSearchParams(location.search);
 const pick = <T extends string>(name: string, allowed: readonly T[], fallback: T): T => {

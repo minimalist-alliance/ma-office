@@ -6,12 +6,14 @@
 # Input next to this script, all staged by bake.sh: releases/<component>-<version>.tgz for deskd, desk-agent, desk-notebook,
 # desk-rtc and desk-stream as the desk recipe's releases.pin names them (the desk recipe deletes its own copies);
 # releases.pin (the desk recipe's); desk-files.txt (the desk recipe's files/ list, which leaves the host); desk-svc (built
-# from image/host/desk-svc, its sha256 in desk-svc.sha256); files/ (the host's own files).
+# from image/host/desk-svc, its sha256 in desk-svc.sha256); desk-ice-demux (from image/host/desk-ice-demux, its sha256 in
+# desk-ice-demux.sha256); files/ (the host's own files); template-keys.sha256 and template-key-check (committed beside this script:
+# the template key's trust anchor and its check, ADR 0077 PU-9).
 set -euo pipefail
 export DEBIAN_FRONTEND=noninteractive
 HERE=$(cd "$(dirname "$0")" && pwd)
 VERSION=${1:?version}; STORE_VOL=${2:?slot store volume}
-LIB=/usr/local/lib/desk-host; DH=/srv/desk-host; T=$DH/template
+LIB=/usr/local/lib/desk-host; DH=/srv/desk-host; T=$DH/templates/g1   # the first template generation (ADR 0077 1.1)
 RUNC_VERSION=1.5.2
 RUNC_SHA256=d10ecae898361832a059be2089bab92d158aec54661b18ed7346ed79628b46b0
 RUNC_SIGNER=C2428CD75720FACDCF76B6EA17DE5ECB75A1100E
@@ -21,12 +23,17 @@ die() { echo "host build.sh: ERROR: $*" >&2; exit 1; }
 [ "$(id -u)" = 0 ] || die "root only"
 [ -f /etc/ma-release ] && [ -x /opt/ma/bin/ma-update ] || die "the desk recipe hasn't run here"
 DESK_VERSION=$(sed -n 's/^version=//p' /etc/ma-release)
+# ADR 0077 PU-9: the template signing key's trust anchor, committed (template-keys.sha256, alias/ma-host-template's public half by name
+# and SHA-256). The staged key must be exactly it before anything is made, and the installed one again before it's pinned (below).
+TK_ANCHOR=$HERE/template-keys.sha256
+python3 -I "$HERE/template-key-check" "$HERE/files/etc/desk-host/template-keys" "$TK_ANCHOR" \
+  || die "the staged template keys aren't exactly the committed anchor (template-keys.sha256): no bake"
 # Every desk unit and timer the desk image has, masked on the host (WALL-05); desk-host-check's list
 DESK_UNITS="desk-firstboot.service data.mount desk-units@.service desk-data@.service desk-datadirs.service desk-rtc.service deskd.service
   desk-agent.service desk-agent-filter.service desk-notebook.service desk-egress.service desk-units.socket desk-data.socket
   desk-preread.service desk-xorg.service desk-audio.service desk-browser.service desk-stream.service desk-browser-thaw.service
   desk-adblock.service desk-kind.service desk-guild-net.service desk-guild-rtc.service commons-data.service
-  commons-server-address.service commons-server.service docker.service docker.socket containerd.service zramswap.service"
+  commons-server-address.service commons-server.service desk-restart-reset.service desk-restart-reset.timer docker.service docker.socket containerd.service zramswap.service"
 DESK_USERS="desk rtc kiosk agent stream notebook agent-filter commons"
 
 step "the slot store: the second volume ($STORE_VOL), by its NVMe serial"
@@ -37,9 +44,9 @@ blkid -p "$dev" >/dev/null 2>&1 && die "$dev isn't blank"
 STORE_UUID=$(cat /proc/sys/kernel/random/uuid)
 mkfs.ext4 -q -O quota,project -L desk-slots -U "$STORE_UUID" "$dev"
 install -d -m 711 $DH; mount -o prjquota,nosuid,nodev,noatime "$dev" $DH; chmod 711 $DH
-install -d -m 711 $DH/slots $DH/releases
+install -d -m 711 $DH/slots $DH/releases $DH/templates
 
-step "the template: this root, the desk image as its recipe left it, never booted again (WALL-04, WALL-05)"
+step "the template's first generation, g1: this root, the desk image as its recipe left it, never booted again (WALL-04, WALL-05)"
 t0=$(date +%s)
 install -d -m 755 $T
 tar -C / --one-file-system --numeric-owner -cf - \
@@ -68,8 +75,7 @@ import json, sys
 p = sys.argv[1]; d = json.load(open(p)); d["NativeMessagingUserLevelHosts"] = False; json.dump(d, open(p, "w"), indent=2)
 PY
 ln -sfn /run/desk-host/desk-rtc.conf $T/etc/ma/desk-rtc.conf   # the port is the host's to say (ADR 0072 section 6, WALL-03)
-printf 'host-template=%s\nhost-version=%s\n' "$(date -u +%FT%TZ)" "$VERSION" > $T/.complete
-chown 0:0 $T; chmod 755 $T
+chown 0:0 $T; chmod 755 $T   # its .complete is written last, with its manifest, once desk-host-template is installed (below)
 echo "template: $(du -sh $T | cut -f1) in $(( $(date +%s) - t0 )) s"
 
 step "Docker's own spec for a default container (desk-spec.py and svc-spec.py start from it), then Docker leaves the host"
@@ -86,6 +92,7 @@ step "the release store, from the verified artifacts only (desk-host-release, RC
 install -d -m 755 /etc/desk-host
 install -m 644 "$HERE/releases.pin" /etc/desk-host/releases.pin
 install -m 755 "$HERE/files/usr/local/lib/desk-host/desk-host-release" $LIB/desk-host-release
+for m in batchsig.py batches.py templates.py; do install -m 755 "$HERE/files/usr/local/lib/desk-host/$m" $LIB/$m; done   # desk-host-release's (ADR 0078)
 for comp in deskd desk-agent desk-notebook desk-rtc desk-stream; do
   ver=$(awk -v c=$comp '$1==c {print $2}' /etc/desk-host/releases.pin)
   [ -f "$HERE/releases/$comp-$ver.tgz" ] || die "no releases/$comp-$ver.tgz"
@@ -94,9 +101,13 @@ for comp in deskd desk-agent desk-notebook desk-rtc desk-stream; do
 done
 $LIB/desk-host-release verify
 
+# The ruleset is syntax-checked here, while the running (cloud) kernel's modules are still installed: its `socket` and other
+# expressions load nft modules, and the step below removes the running kernel (0.1.7's first bake failed on `socket transparent`).
+nft -c -f "$HERE/files/etc/nftables.conf"
+
 step "the host's kernel: Debian's linux-image-arm64 (zswap built in; the cloud kernel has none)"
 apt-get update -q
-apt-get install -y -q --no-install-recommends linux-image-arm64 quota conntrack e2fsprogs apparmor gnupg curl jq nvme-cli
+apt-get install -y -q --no-install-recommends linux-image-arm64 quota conntrack e2fsprogs apparmor gnupg curl jq nvme-cli zstd openssl unattended-upgrades
 echo 'linux-base linux-base/removing-running-kernel boolean false' | debconf-set-selections
 cloud=$(dpkg-query -W -f='${Package}\n' 'linux-image-*cloud*' 2>/dev/null | grep . || true)
 [ -z "$cloud" ] || apt-get purge -y -q $cloud
@@ -138,20 +149,61 @@ rmdir /etc/systemd/system/*.service.d 2>/dev/null || true
 for u in $DESK_USERS; do id "$u" >/dev/null 2>&1 && userdel "$u"; getent group "$u" >/dev/null && groupdel "$u" 2>/dev/null || true; done
 systemctl daemon-reload
 for u in $DESK_UNITS; do systemctl mask "$u" >/dev/null 2>&1; done
-for c in python3 nft ip nsenter flock setquota conntrack chattr lsattr apparmor_parser curl blkid resize2fs mkfs.ext4 fallocate; do command -v $c >/dev/null || die "the host needs $c"; done
+for c in python3 nft ip tc nsenter flock setquota conntrack chattr lsattr apparmor_parser curl blkid resize2fs mkfs.ext4 fallocate; do command -v $c >/dev/null || die "the host needs $c"; done
 
 step "the host's own files: desk-host, desk-host-link, their units, ruleset, sysctls"
+install -d -m 755 /etc/desk-host/template-keys   # ADR 0077 1.2: the template key's public half (PU-9), and nothing else
+install -d -m 755 /etc/desk-host/batch-keys      # ADR 0078 1.1: the batch key's public half (alias/ma-desk-batch, desks' own), and nothing else
 (cd "$HERE/files" && find . \( -type f -o -type l \) -print0 | tar --null --no-recursion --owner=0 --group=0 -T - -cf -) | tar -C / -xf -
-chmod 755 $LIB/desk-host $LIB/desk-host-check $LIB/desk-host-release $LIB/desk-host-boot $LIB/desk-host-link $LIB/*.py $LIB/desk/*.py
+chmod 755 $LIB/desk-host $LIB/desk-host-check $LIB/desk-host-release $LIB/desk-host-boot $LIB/desk-host-link $LIB/desk-host-template $LIB/desk-host-batch $LIB/*.py $LIB/desk/*.py
 install -m 755 "$HERE/desk-svc" $LIB/desk/desk-svc
 [ "$(sha256sum $LIB/desk/desk-svc | cut -d' ' -f1)" = "$(cut -d' ' -f1 "$HERE/desk-svc.sha256")" ] || die "desk-svc isn't the binary bake.sh built"
 cut -d' ' -f1 "$HERE/desk-svc.sha256" > $LIB/desk-svc.sha256
+# desk-ice-demux (SlotMode=port's TCP 443, image/host/desk-ice-demux), built by bake.sh as desk-svc is, and its own user
+install -m 755 "$HERE/desk-ice-demux" $LIB/desk-ice-demux
+[ "$(sha256sum $LIB/desk-ice-demux | cut -d' ' -f1)" = "$(cut -d' ' -f1 "$HERE/desk-ice-demux.sha256")" ] || die "desk-ice-demux isn't the binary bake.sh built"
+cut -d' ' -f1 "$HERE/desk-ice-demux.sha256" > $LIB/desk-ice-demux.sha256
+getent passwd desk-dmx >/dev/null || useradd --system --no-create-home --home-dir /nonexistent --shell /usr/sbin/nologin --user-group desk-dmx
 install -m 644 $T/usr/local/lib/ma/desk-units $LIB/desk/desk-units.py   # the freeze desk-init uses (the template's own code)
+# ADR 0036's shaper and budgets, the template's own desk-egress (its baked release; the link is absolute, so it's resolved inside the
+# template): egress.py runs it for each slot (ADR 0072 section 8, TD-223). The host's copy, so a template's change never reaches it.
+eg=$(readlink "$T/opt/ma/desk-egress/current") || die "the template has no desk-egress"
+case "$eg" in /*) eg=$T$eg ;; *) eg=$T/opt/ma/desk-egress/$eg ;; esac
+install -m 644 "$eg/desk-egress" $LIB/desk_egress.py
 ln -sfn $LIB/desk-host /usr/local/sbin/desk-host
 echo "$STORE_UUID" > /etc/desk-host/store.uuid
-chmod 644 /etc/nftables.conf /etc/sysctl.d/90-desk-host.conf /etc/desk-host/*; chmod 600 /etc/desk-host/desk-host.conf
+chmod 644 /etc/nftables.conf /etc/sysctl.d/90-desk-host.conf /etc/apt/apt.conf.d/51desk-host-unattended; find /etc/desk-host -maxdepth 1 -type f -exec chmod 644 {} +
+chmod 600 /etc/desk-host/desk-host.conf; chmod 755 /etc/desk-host/template-keys; chmod 644 /etc/desk-host/template-keys/*
+chmod 755 /etc/desk-host/batch-keys; chmod 644 /etc/desk-host/batch-keys/*
 chown -R 0:0 $LIB; chmod -R go-w $LIB; chmod 755 $LIB/desk
-nft -c -f /etc/nftables.conf
+cmp -s "$HERE/files/etc/nftables.conf" /etc/nftables.conf || die "the installed ruleset differs from the one checked"   # checked above, before the kernel swap
+
+step "the template's first generation sealed (ADR 0077 1.1): its manifest on the host's root, .complete written last, state.json; the keys pinned"
+python3 -I $LIB/desk-host-template bake-g1 "$VERSION"
+grep -qx "gen=g1" $T/.complete || die "g1 isn't sealed"
+# the template keys this image trusts, pinned by name and SHA-256 (desk-host-check template-sig): exactly the committed anchor. The
+# installed directory must hold exactly its keys (no other file, no link, the anchor's SHA-256, P-256), and the anchor is the pin. No
+# key, no bake: alias/ma-host-template exists (PU-9), and bake.sh compared the committed key with KMS's public half before launching.
+python3 -I "$HERE/template-key-check" /etc/desk-host/template-keys "$TK_ANCHOR" \
+  || die "/etc/desk-host/template-keys isn't exactly the committed anchor (template-keys.sha256)"
+install -m 644 "$TK_ANCHOR" $LIB/template-keys.sha256
+echo "template keys pinned: $(wc -l < $LIB/template-keys.sha256), the committed anchor's ($(cut -c1-12 $LIB/template-keys.sha256 | paste -sd' '))"
+# ADR 0078 1.1: the batch key this image trusts, pinned by name and SHA-256 (desk-host-check batch-sig): exactly the desk image's own,
+# alias/ma-desk-batch's public half; no drop-in. batch-baseline (1.3 step 2): the newest batch whose releases this image's pin holds,
+# from bake.sh's BATCH_BASELINE (none: no file, 0), so no older signed batch can be replayed onto a host born on this image.
+[ "$(ls -A /etc/desk-host/batch-keys)" = ma-desk-batch-2026-11.pem ] || die "/etc/desk-host/batch-keys isn't exactly the batch key"
+cmp -s /etc/desk-host/batch-keys/ma-desk-batch-2026-11.pem "$HERE/../ma-recipe/files/opt/ma/etc/batch-keys/ma-desk-batch-2026-11.pem" 2>/dev/null \
+  || [ ! -d "$HERE/../ma-recipe/files/opt/ma/etc/batch-keys" ] || die "the host's batch key isn't the desk image's"
+(cd /etc/desk-host/batch-keys && for f in *.pem; do [ -f "$f" ] && echo "$(sha256sum "$f" | cut -d' ' -f1)  $f"; done; true) > $LIB/batch-keys.sha256
+chmod 644 $LIB/batch-keys.sha256
+if [ -n "${BATCH_BASELINE:-}" ]; then
+  [[ $BATCH_BASELINE =~ ^[0-9]{1,15}$ ]] || die "BATCH_BASELINE isn't a sequence number"
+  printf '{"seq": %s}\n' "$BATCH_BASELINE" > /etc/desk-host/batch-baseline; chmod 644 /etc/desk-host/batch-baseline
+fi
+install -d -m 755 /var/lib/desk-host/batch
+echo "batch key pinned: $(cut -c1-12 $LIB/batch-keys.sha256); baseline $(cat /etc/desk-host/batch-baseline 2>/dev/null || echo 'none (0)')"
+# the host's own apt (ADR 0077 section 3): nftables and apparmor come only with a host image
+apt-mark hold nftables apparmor
 
 step "protocol modules no desk needs, and every tty line discipline (RC-02, WR2-02): install /bin/false"
 BLACKLIST="sctp sctp_diag dccp dccp_diag dccp_ipv4 dccp_ipv6 tipc tipc_diag rds rds_tcp rds_rdma kcm smc smc_diag af_key l2tp_core l2tp_eth l2tp_ip l2tp_ip6 l2tp_netlink l2tp_debugfs l2tp_ppp pppoe pptp atm can can_raw can_bcm can_gw can_isotp can_j1939 x25 ax25 netrom rose appletalk psnap p8022 ipx llc2 ieee802154 ieee802154_socket af_802154 nfc phonet caif caif_socket bluetooth vsock vsock_diag vsock_loopback vmw_vsock_virtio_transport vmw_vsock_virtio_transport_common hv_sock af_alg algif_hash algif_skcipher algif_aead algif_rng mpls_router mpls_iptunnel mpls_gso openvswitch nsh"
@@ -185,7 +237,8 @@ PY
 
 step "units"
 systemctl daemon-reload
-systemctl enable nftables.service desk-host-boot.service desk-host-shutdown.service desk-host-link.service
+systemctl enable nftables.service desk-host-boot.service desk-host-shutdown.service desk-host-link.service desk-ice-demux.service desk-host-apt.timer
+systemctl mask apt-daily.timer apt-daily-upgrade.timer   # the desk recipe masks them already; the host's apt is desk-host-apt.timer
 systemctl disable ssh.service ssh.socket 2>/dev/null || true
 
 step "final: lock down and clean (as the desk recipe's last step)"
@@ -208,7 +261,7 @@ step "assertions (desk-host-check's checks that need no boot)"
 bad=0
 chk() { if ! "$@"; then echo "ASSERT FAILED: $*" >&2; bad=1; fi; }
 mount --bind $T $T; mount -o remount,bind,ro,nosuid,nodev $T   # as desk-host-boot binds it, for the template check
-$LIB/desk-host-check --only runc,template,releases,desk-svc,no-test,units,apparmor,classes || bad=1
+$LIB/desk-host-check --only runc,template,templates,template-sig,releases,desk-svc,no-test,units,apparmor,classes || bad=1
 umount $T
 chk test -z "$(find /root /home /etc/ssh -name 'authorized_keys*' 2>/dev/null)"
 chk test "$(systemctl is-enabled ssh.service 2>/dev/null || true)" != enabled
@@ -216,6 +269,9 @@ chk test "$(systemctl is-enabled desk-host-boot.service)" = enabled
 chk test "$(systemctl is-enabled desk-host-shutdown.service)" = enabled
 chk test "$(systemctl is-enabled desk-host-link.service)" = enabled
 chk python3 -I -B -c "import sys; sys.path.insert(0, \"$LIB\"); import hostmeta, sigv4, standin"
+chk python3 -I -B -c "import sys; sys.path.insert(0, \"$LIB\"); import egress; d = egress.de(); assert d.CLASSES and d.Budget and d.Shaper"   # TD-223
+chk test -f /etc/systemd/system/desk-host-egress@.service
+chk test "$(systemctl is-enabled desk-host-egress@1.service 2>/dev/null || true)" != enabled   # started by desk-host up only
 chk test "$(systemctl is-enabled nftables.service)" = enabled
 left=$(find / -xdev \( -uid 1100 -o -uid 1101 -o -uid 1102 -o -uid 1103 -o -uid 1104 -o -uid 1105 -o -uid 1106 -o -uid 1110 -o -gid 1100 -o -gid 1110 \) 2>/dev/null | head -20 || true)
 [ -z "$left" ] || { echo "files of the desk's users left on the host, now root's:"; echo "$left" | sed 's/^/  /'; find / -xdev \( -uid 1100 -o -uid 1101 -o -uid 1102 -o -uid 1103 -o -uid 1104 -o -uid 1105 -o -uid 1106 -o -uid 1110 -o -gid 1100 -o -gid 1110 \) -exec chown -h root:root {} + 2>/dev/null; }

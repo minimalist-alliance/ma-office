@@ -50,6 +50,10 @@ export function guildVm(state: string | null | undefined): VmState {
 export const mayManageAgents = (role: GuildRole | null | undefined, grants: readonly string[] | null | undefined): boolean =>
   role === 'lead' || (role === 'officer' && !!grants?.includes('manage_agents'));
 
+/** Notebooks and tabs on a Guild Desk (the space structure): the Founder, or an Officer with `manage_spaces`. Pages stay open to every member. */
+export const mayManageSpaces = (role: GuildRole | null | undefined, grants: readonly string[] | null | undefined): boolean =>
+  role === 'lead' || !!grants?.includes('manage_spaces');
+
 /** Usage per member, by name: the Founder and every Officer. */
 export const maySeeUsage = (role: GuildRole | null | undefined): boolean => role === 'lead' || role === 'officer';
 

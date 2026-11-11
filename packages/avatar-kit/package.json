@@ -1,0 +1,19 @@
+{
+  "name": "@minimalist-alliance/avatar-kit",
+  "version": "1.0.0",
+  "description": "The Minimalist Alliance avatar parts kit (Cut paper): render, validate and shuffle built avatars.",
+  "type": "module",
+  "main": "index.mjs",
+  "exports": { ".": "./index.mjs", "./kit-1.json": "./kit-1.json" },
+  "files": ["index.mjs", "src", "kit-1.json", "README.md"],
+  "sideEffects": false,
+  "license": "UNLICENSED",
+  "private": false,
+  "scripts": {
+    "build": "node scripts/build.mjs",
+    "draw": "node scripts/draw-parts.mjs && node scripts/build.mjs",
+    "test": "node scripts/build.mjs && node --test",
+    "sheet": "node scripts/build.mjs && node scripts/sheet.mjs",
+    "prepack": "node scripts/build.mjs"
+  }
+}

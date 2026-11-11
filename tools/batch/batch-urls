@@ -5,14 +5,26 @@
 # and out of logs. Read-only on S3.
 #
 #   tools/batch/batch-urls <manifest.json> > urls.json
+#   tools/batch/batch-urls <manifest.json> --files <dir on the desk> > urls.json
+#                          file:/// URLs of the bundle's names in <dir> (<component>-<version>-amd64.tgz; desk-stream's
+#                          has no arch), for a self-hosted test desk that holds a bundle there: amd64 releases aren't in
+#                          the bucket yet. ma-update still checks each file against the manifest's sha256
 set -euo pipefail
 BUCKET=${RELEASE_BUCKET:-ma-lambda-artifacts-$(aws sts get-caller-identity --query Account --output text)}
 export AWS_DEFAULT_REGION=${AWS_DEFAULT_REGION:-us-east-1}
-[ $# -eq 1 ] && [ -f "$1" ] || { sed -n '2,8p' "$0" | sed 's/^# \{0,1\}//' >&2; exit 2; }
+usage() { sed -n '2,11p' "$0" | sed 's/^# \{0,1\}//' >&2; exit 2; }
+[ $# -ge 1 ] && [ -f "$1" ] || usage
+files=
+if [ $# -eq 3 ] && [ "$2" = --files ]; then files=${3%/}; [[ $files == /* ]] || usage; elif [ $# -ne 1 ]; then usage; fi
 exp=$(date -u -d '+3600 seconds' +%FT%TZ)
 out='{}'
 while read -r c v; do
-  u=$(aws s3 presign "s3://$BUCKET/desk/$c/$v/$c-$v.tgz" --expires-in 3600)
+  if [ -n "$files" ]; then
+    u="file://$files/$c-$v-amd64.tgz"
+    [ "$c" != desk-stream ] || u="file://$files/$c-$v.tgz"   # desk-stream has no arch: the published artifact itself
+  else
+    u=$(aws s3 presign "s3://$BUCKET/desk/$c/$v/$c-$v.tgz" --expires-in 3600)
+  fi
   out=$(jq -c --arg c "$c" --arg u "$u" '. + {($c): $u}' <<<"$out")
 done < <(jq -r '.components[] | "\(.name) \(.version)"' "$1")
 jq -n --arg e "$exp" --argjson c "$out" '{expiresAt: $e, components: $c}'

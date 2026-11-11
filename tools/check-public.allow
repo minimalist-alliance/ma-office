@@ -20,3 +20,9 @@ business	services/desk-agent/src/main/java/com/minimalistalliance/desk/agent/ser
 business	services/deskd/src/main/java/com/minimalistalliance/desk/deskd/guild/GuildSettings.java	a guild agent's default spending limits per member, a product setting members see
 business	web/tests/e2e/guild.shell.spec.ts	a guild agent's spending limit per member, a product setting, in a test
 business	services/desk-agent/src/test/java/com/minimalistalliance/desk/agent/team/AgentMessagesTest.java	a share of an agent's own dollar limit, in a unit test
+private-ip	image/host/verify-port.sh	the shared host's internal desk network and made-up addresses it checks, which the image configures
+private-ip	image/tests/test_host_slotmode.py	made-up private addresses in a unit test
+private-ip	image/host/desk-ice-demux/gate_test.go	made-up private address in a unit test
+public-ip	image/tests/test_host_svc_dns.py	made-up public addresses in a unit test
+public-ip	image/host/tests/test_templates.py	a Chromium version number that looks like an address, in a unit test
+email	web/public/backgrounds/*/*.webp	compressed image data that happens to hold an address-like byte pattern

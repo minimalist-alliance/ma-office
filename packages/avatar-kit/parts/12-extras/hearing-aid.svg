@@ -1,0 +1,5 @@
+<g data-part="extra-hearing-aid" data-min-size="40" fill="none" stroke-linecap="round">
+  <path d="M86,103 C73,102 68,114 70,126 C71,133 75,138 80,139" stroke="{{ink}}" stroke-width="8.4"/>
+  <path d="M86,103 C73,102 68,114 70,126 C71,133 75,138 80,139" stroke="{{aid}}" stroke-width="5"/>
+  <circle cx="83" cy="127" r="3.8" fill="{{aid}}" stroke="{{ink}}" stroke-width="1.6"/>
+</g>

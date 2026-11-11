@@ -4,7 +4,7 @@
 // and subscriptions stay quiet until it's back, when each gets a fresh snapshot.
 import { AgentError, type AgentClient } from '../../agent/src/client/agentClient';
 import { KeySecret } from '../../agent/src/client/keySecret';
-import type { AgentCaps, AttachLimits, AgentCreate, AgentLink, AgentPatch, ConversationEvent, LimitLayer, LimitsChange, TimerInput } from '../../agent/src/client/types';
+import type { AgentCaps, AttachLimits, AgentCreate, AgentLink, AgentPatch, ConversationEvent, LimitLayer, LimitsChange, TimerInput, ToolsEvent } from '../../agent/src/client/types';
 import type { FixtureName } from '../../agent/src/mock/fixtures';
 import { MockAgentClient } from '../../agent/src/mock/mockAgentClient';
 import type { RpcOptions } from './deskLink';
@@ -12,7 +12,7 @@ import type { SubWire } from './rtc/subs';
 
 /** What a dev or a `shell` test can steer, as `window.__maDeskMock.agent`. */
 export interface MockAgentControl {
-  /** `?agentFixture=fresh|ready|limit`: what each desk starts with. */
+  /** `?agentFixture=fresh|ready|limit|tools`: what each desk starts with. `tools` is S-14's (approvals, running tools, memory). */
   fixture: FixtureName;
   /** `?speed=fast`: as the demo's. */
   fast: boolean;
@@ -53,6 +53,11 @@ const MUTATIONS: ReadonlySet<string> = new Set([
   'agent.attach.put',
   'agent.attach.remove',
   'agent.attach.caps.set',
+  // S-14
+  'agent.approval.decide',
+  'agent.tool.stop',
+  'agent.memory.delete',
+  'agent.memory.clear',
 ]);
 
 type Emit = (subId: number, seq: number, body: { type: string; data: unknown }) => void;
@@ -143,10 +148,20 @@ export class MockAgentDesk implements SubWire {
       sub.off = this.client.watchAgents((agents, caps) => send('snapshot', caps ? { agents, caps } : { agents }));
       return;
     }
+    // The spec's section 2.8: every tool call running on the desk. No deskd serves it yet; `refuse['agent.tools']` plays one.
+    if (sub.topic === 'agent.tools') {
+      sub.off = this.client.watchTools((e: ToolsEvent) => {
+        if (e.type === 'snapshot') send('snapshot', { serverNow: e.serverNow, calls: e.calls });
+        else if (e.type === 'call') send('call', { call: e.call });
+        else send('end', { callId: e.callId, agentId: e.agentId, ...(e.result ? { result: e.result } : {}) });
+      });
+      return;
+    }
     const agentId = sub.topic.slice('agent.conversation:'.length);
     sub.off = this.client.watchConversation(agentId, (e: ConversationEvent) => {
-      if (e.type === 'snapshot') send('snapshot', { messages: e.messages });
+      if (e.type === 'snapshot') send('snapshot', e.approvals ? { messages: e.messages, approvals: e.approvals } : { messages: e.messages });
       else if (e.type === 'message') send('message', { message: e.message });
+      else if (e.type === 'approval') send('approval', { approval: e.approval });
       else send('delta', { messageId: e.messageId, runId: e.runId, text: e.text });
     });
   }
@@ -256,6 +271,23 @@ async function call(c: AgentClient, method: string, p: Record<string, unknown>, 
     }
     case 'agent.audit.list':
       return c.listAudit(p);
+    // S-14: deskd API.md section 18, and desk-agent's memory (relayed as the rest).
+    case 'agent.approvals.list':
+      return c.listApprovals({ ...(typeof p['agentId'] === 'string' ? { agentId: p['agentId'] } : {}), ...(p['state'] === 'all' || p['state'] === 'pending' ? { state: p['state'] } : {}), ...(typeof p['before'] === 'string' ? { before: p['before'] } : {}) });
+    case 'agent.approval.get':
+      return { approval: await c.getApproval(p['approvalId'] as string) };
+    case 'agent.approval.decide':
+      return { approval: await c.decideApproval(p['approvalId'] as string, { approve: p['approve'] === true, sha256: String(p['sha256'] ?? ''), ...(typeof p['note'] === 'string' ? { note: p['note'] } : {}) }, m) };
+    case 'agent.tool.stop':
+      await c.stopTool(p['callId'] as string, m);
+      return {};
+    case 'agent.memory.list':
+      return c.listMemories(agentId);
+    case 'agent.memory.delete':
+      await c.deleteMemory(agentId, p['memoryId'] as string, m);
+      return { deleted: true };
+    case 'agent.memory.clear':
+      return c.clearMemories(agentId, m);
     default:
       throw wireError('not_found', {});
   }

@@ -252,6 +252,11 @@ public final class FakeAgentSocket implements AutoCloseable {
         return m;
     }
 
+    /** Any frame, as desk-agent would send it: a {@code tcall}, for one. */
+    public void sendJson(Map<String, Object> m) {
+        send(m);
+    }
+
     private void send(Map<String, Object> m) {
         SocketChannel channel = current;
         if (channel == null) {

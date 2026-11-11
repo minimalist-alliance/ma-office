@@ -79,7 +79,7 @@ class DeskAgentSocketTests {
     @Test
     void theAgentAppsWholeFlow(CapturedOutput output) throws Exception {
         assertThat(result(desk.call("agent.providers", Map.of())).get("providers")).asList()
-                .extracting(p -> map(p).get("id")).containsExactly("anthropic", "openai", "xai");
+                .extracting(p -> map(p).get("id")).containsExactly("anthropic", "openai", "xai", "openrouter");
         Map<String, Object> manager = agent(result(desk.call("agent.list", Map.of())));
         assertThat(manager).containsEntry("id", "manager").containsEntry("role", "manager")
                 .containsEntry("status", "no_key").containsEntry("binding", null).containsEntry("unseen", 0);
@@ -104,7 +104,8 @@ class DeskAgentSocketTests {
         List<Object> models = (List<Object>) result(desk.call("agent.key.models", Map.of("keyId", keyId))).get("models");
         assertThat(models).contains(
                 Map.of("id", "claude-sonnet-5-5", "label", "Claude Sonnet 5.5",
-                        "inputMicroUsdPerMTok", 2_000_000, "outputMicroUsdPerMTok", 10_000_000));
+                        "inputMicroUsdPerMTok", 2_000_000, "outputMicroUsdPerMTok", 10_000_000, "free", false,
+                        "tools", true));
         assertThat(models).anySatisfy(m -> assertThat(map(m)).containsEntry("id", "some-new-model")
                 .containsEntry("inputMicroUsdPerMTok", null));
 

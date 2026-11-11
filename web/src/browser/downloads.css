@@ -1,0 +1,64 @@
+/* The Browser window's download line (LS-31, `DownloadNote.tsx`): small and quiet, at the picture's bottom left, the
+   corner the muted sign doesn't use. Every color is a token. */
+.br-dl {
+  position: absolute;
+  left: 10px;
+  bottom: 10px;
+  z-index: 2; /* over the simplified view (1) */
+  display: flex;
+  align-items: center;
+  gap: 8px;
+  max-width: calc(100% - 60px);
+  min-height: 28px;
+  padding: 4px 12px 4px 10px;
+  border: 1px solid var(--ma-border);
+  border-radius: 999px;
+  background: var(--ma-surface-window);
+  color: var(--ma-text-secondary);
+  font-size: 13px;
+  line-height: 18px;
+  pointer-events: none;
+  animation: br-dl-in 160ms ease-out;
+}
+.br-dl-icon {
+  flex: none;
+  color: var(--ma-text-tertiary);
+}
+.br-dl-text {
+  min-width: 0;
+  overflow: hidden;
+  white-space: nowrap;
+  text-overflow: ellipsis;
+}
+.br-dl-pct {
+  flex: none;
+  font-variant-numeric: tabular-nums;
+  color: var(--ma-text-tertiary);
+}
+.br-dl-show {
+  flex: none;
+  pointer-events: auto;
+  padding: 0;
+  border: 0;
+  background: none;
+  color: var(--ma-text-link);
+  font: inherit;
+  text-decoration: underline;
+  cursor: pointer;
+}
+.br-dl-show:focus-visible {
+  outline: 2px solid var(--ma-focus-ring);
+  outline-offset: 2px;
+  border-radius: 4px;
+}
+@keyframes br-dl-in {
+  from {
+    opacity: 0;
+    transform: translateY(4px);
+  }
+}
+@media (prefers-reduced-motion: reduce) {
+  .br-dl {
+    animation: none;
+  }
+}

@@ -1,0 +1,4 @@
+<g data-part="disc">
+  <defs><linearGradient id="bg-grad" x1="0" y1="0" x2="0" y2="1"><stop offset="0" stop-color="{{bgTop}}"/><stop offset="1" stop-color="{{bgBottom}}"/></linearGradient></defs>
+  <rect width="256" height="256" fill="url(#bg-grad)"/>
+</g>

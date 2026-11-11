@@ -15,6 +15,7 @@ import com.minimalistalliance.desk.agent.store.AgentStore;
 import com.minimalistalliance.desk.agent.store.KeyRow;
 import com.minimalistalliance.desk.agent.store.MessageRow;
 import com.minimalistalliance.desk.agent.store.TeamStore;
+import com.minimalistalliance.desk.agent.store.ToolStore;
 import com.minimalistalliance.desk.agent.store.TeamStore.Extras;
 import com.minimalistalliance.desk.agent.store.TeamStore.Link;
 import com.minimalistalliance.desk.agent.store.TeamStore.ProposalRow;
@@ -195,6 +196,48 @@ public final class Team {
         this.clock = clock;
         this.tools = new TeamTools(this);
         this.timers = new Timers(this);
+        this.toolStore = new ToolStore(store);
+    }
+
+    /** The tools' rows: workspace files a {@code U} run wrote, and replies' plans (the tools and approvals draft). */
+    private final ToolStore toolStore;
+
+    public ToolStore toolStore() {
+        return toolStore;
+    }
+
+    /**
+     * {@code follow_up} (the tools and approvals draft, section 2), once the member approved it: a one-shot timer on the
+     * agent itself, as {@code agent.timer.set} makes one, within the tier's {@code timersPerAgent}.
+     *
+     * @return the timer's id
+     */
+    public String followUp(String agentId, long atMs, String prompt) throws RpcError, SQLException {
+        Map<String, Object> in = new LinkedHashMap<>();
+        in.put("kind", "once");
+        in.put("at", atMs);
+        in.put("label", "Follow-up");
+        in.put("prompt", prompt);
+        return String.valueOf(timers.set(agentId, in, "agent:" + agentId).get("id"));
+    }
+
+    /**
+     * {@code workspace_delete} (the tools and approvals draft, section 2): a file or folder of the agent's own
+     * workspace, and its marks.
+     *
+     * @return the workspace's use after it
+     */
+    public long workspaceDeleteOwn(String agentId, String path) throws WorkspaceException, SQLException {
+        long used = workspaces.remove(agentId, path);
+        toolStore.removed(agentId, path);
+        audit("agent:" + agentId, "workspace.delete", "agent:" + agentId, "ok");
+        host.publishState();
+        return used;
+    }
+
+    /** An agent's id from its id or its name, or null ({@link #resolve}). */
+    public String resolveAgent(String idOrName) throws SQLException {
+        return resolve(idOrName);
     }
 
     public void attach(Host host) {
@@ -968,6 +1011,7 @@ public final class Team {
         existing(agentId);
         try {
             long used = workspaces.remove(agentId, string(p, "path"));
+            toolStore.removed(agentId, string(p, "path"));
             audit("user", "workspace.delete", "agent:" + agentId, "ok");
             host.publishState();
             return Map.of("usedBytes", used);
@@ -1483,7 +1527,15 @@ public final class Team {
      */
     public List<com.minimalistalliance.desk.agent.provider.ChatMessage> context(List<MessageRow> rows)
             throws SQLException {
-        rows = pairingOnly(rows);
+        return render(pairingOnly(rows));
+    }
+
+    /**
+     * {@link #context} without the pairing's filter: every row as the model reads it, as a thread's compaction sends
+     * them to be summarized (S-14).
+     */
+    public List<com.minimalistalliance.desk.agent.provider.ChatMessage> render(List<MessageRow> rows)
+            throws SQLException {
         List<String> ids = new ArrayList<>();
         for (MessageRow row : rows) {
             if (row.role().equals("assistant")) {
@@ -1537,7 +1589,7 @@ public final class Team {
      * The rows of the pairing when the newest row is a message from another agent: each of that agent's messages and
      * the agent's reply that follows it. Otherwise all of them.
      */
-    static List<MessageRow> pairingOnly(List<MessageRow> rows) {
+    public static List<MessageRow> pairingOnly(List<MessageRow> rows) {
         if (rows.isEmpty()) {
             return rows;
         }

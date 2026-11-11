@@ -33,8 +33,10 @@ function StillNote({ text }: { text: string }) {
 
 export function WakeBar({ step }: { step: number }) {
   const name = WAKE_STEPS[step - 1] ?? WAKE_STEPS[0];
+  // A progress bar needs a name of its own (WCAG 4.1.2): the waking line's, without its ellipsis.
+  const label = useDeskWords().waking.replace(/…$/, '');
   return (
-    <div className="br-steps" role="progressbar" aria-valuemin={0} aria-valuemax={4} aria-valuenow={step} aria-valuetext={`${name}, step ${step} of 4`}>
+    <div className="br-steps" role="progressbar" aria-label={label} aria-valuemin={0} aria-valuemax={4} aria-valuenow={step} aria-valuetext={`${name}, step ${step} of 4`}>
       {WAKE_STEPS.map((label, i) => <span key={label} className={i < step ? 'on' : undefined} />)}
     </div>
   );
@@ -84,14 +86,22 @@ export function PanelBody({ panel, deskId, driver, asleepLine = 'Your tabs are s
         <>
           <h3>{words.asleep}</h3>
           <p>{guild ? 'Everything in it is safe, and comes back when it wakes.' : asleepLine}</p>
-          <button type="button" className="btn primary" onClick={() => wakeDesk(deskId)}>Wake</button>
+          <button type="button" className="btn primary" onClick={() => wakeDesk(deskId)}>{words.wake}</button>
         </>
       );
     case 'failed':
       return (
         <>
           <h3>{words.failed}</h3>
-          <button type="button" className="btn" onClick={() => wakeDesk(deskId)}>Retry</button>
+          <button type="button" className="btn" onClick={() => wakeDesk(deskId)}>Try again</button>
+        </>
+      );
+    case 'busy':
+      // A free desk waiting for room (`connect`'s `free_capacity_wait`): a wait with no link, asked again by itself.
+      return (
+        <>
+          <h3>Free desks are all busy right now.</h3>
+          <p>Yours is saved, and we&rsquo;ll keep trying.</p>
         </>
       );
     case 'queued':
@@ -99,10 +109,12 @@ export function PanelBody({ panel, deskId, driver, asleepLine = 'Your tabs are s
     case 'waking':
       return <Waking step={panel.step} />;
     case 'opening':
+      // The wake's last step, laid out as its others are (heading, bar, line), so the panel doesn't jump as it comes.
       return (
         <>
           <h3>Opening…</h3>
           <WakeBar step={4} />
+          <p>{WAKE_STEPS[3]} · step 4 of 4</p>
         </>
       );
     case 'stopping':
@@ -157,9 +169,12 @@ export function PanelBody({ panel, deskId, driver, asleepLine = 'Your tabs are s
     case 'resuming':
       return <h3>Resuming…</h3>;
     case 'starting':
+      // Still the wake's last step, laid out as the steps before it, so nothing moves until the picture comes.
       return (
         <>
           <h3>Starting the browser…</h3>
+          <WakeBar step={4} />
+          <p>{WAKE_STEPS[3]} · step 4 of 4</p>
           <StillNote text="Still starting…" />
         </>
       );

@@ -7,9 +7,11 @@
 #   selfhost/install.sh --bundle <dir>       on a desk that's installed: updates it to this installer and bundle, and
 #                                            keeps its settings (below)
 #
-#   --bundle DIR           the release bundle: desk-rtc, desk-stream, deskd, desk-agent-filter and desk-notebook for amd64,
-#                          and bundle.pin with their sha256s (selfhost/build-bundle.sh makes one; an older bundle has no
-#                          desk-notebook, and one with no desk-agent-filter is refused)
+#   --bundle DIR           the release bundle: desk-rtc, desk-stream, deskd, desk-agent, desk-agent-filter and desk-notebook
+#                          for amd64, bundle.pin with their sha256s and installer.sha256 with this installer's, and
+#                          bundle.pin.sig, the self-hosted release key's signature (build-bundle.sh makes one). Nothing is
+#                          installed unless all of it, and every file of this installer, is as signed (EXP-10). With a
+#                          batch-baseline file, desk-batch refuses update batches at or below it
 #   --env                  which platform to pair with (default staging; prod isn't open yet)
 #   --address              the address the member's browser reaches this desk on. Default auto: this machine's address
 #                          on its home network. Give a forwarded public address only if you've forwarded UDP and TCP
@@ -20,21 +22,29 @@
 #                          --no-keep-ssh closes it again
 #   --allow-home-network   let the desk's Browser reach your home network (by default it can't);
 #                          --no-allow-home-network undoes it
-#   --yes                  don't ask at the end of pairing whether the office shown (partly hidden) is yours
+#   --yes                  answer pairing's questions yes: whether the office shown (partly hidden) is yours, and, on a
+#                          data disk whose Browser has a profile, whether to pair it (it still says who gets the sign-ins)
 #   --no-pair              don't wait here for the code (ma-selfhost still asks for one); `ma-selfhost pair --wait` shows it
+#   --version LABEL        what /etc/ma-release calls this install (default selfhost-<the bundle's commit>)
 #
-# It follows image/recipe/build.sh, the cloud desk's recipe, step for step, and reuses its files. The differences, each
-# with its reason, are in selfhost/README.md, "How it differs from a cloud desk".
+# It follows image/recipe/build.sh, the cloud desk's recipe, step for step, and reuses its files (desk-batch's block it runs
+# as written there). The differences, each with its reason, are in selfhost/README.md, "How it differs from a cloud desk".
+# After it, the desk takes signed update batches by itself while idle, as a cloud desk does, and Debian's security
+# updates the same way (README.md, "Updates").
 #
 # Updating: run it again with a newer installer and bundle. It keeps /data, the pairing and the browser profile, and
 # the settings the desk has (--env, --address, --port, --keep-ssh, --allow-home-network) unless given again. A desk
 # installed before these were recorded (desk-rtc 0.3.0-sh1's bundles) has them read from its files: the port from
-# /etc/ma/desk-rtc-port, SSH and the home network from its firewall rules.
+# /etc/ma/desk-rtc-port, SSH and the home network from its firewall rules. An update takes only a bundle signed with the
+# key the desk already holds; `sudo ma-selfhost verify <folder>` checks a new folder with the desk's own checker first.
 set -euo pipefail
 export DEBIAN_FRONTEND=noninteractive
 HERE=$(cd "$(dirname "$0")" && pwd)
 RECIPE=$(cd "$HERE/../image/recipe" && pwd)
 step() { echo; echo "==== $* ===="; }
+# What's in a service's own directory is read as that service's user, never as root (EXP-7): a link or a FIFO it put there
+# can then reach only what that user already can.
+as_selfhost() { setpriv --reuid=selfhost --regid=selfhost --init-groups --no-new-privs "$@"; }
 die() { echo "install.sh: ERROR: $*" >&2; exit 1; }
 # Never stop without saying where (set -e alone exits silently).
 trap 'echo "install.sh: ERROR: stopped at line $LINENO: $BASH_COMMAND" >&2' ERR
@@ -54,7 +64,7 @@ while [ $# -gt 0 ]; do
     --no-pair) PAIR=0; shift ;;
     --yes) YES=--yes; shift ;;
     --version) LABEL=$2; shift 2 ;;
-    -h|--help) sed -n '2,30p' "$0"; exit 0 ;;
+    -h|--help) sed -n '2,39p' "$0"; exit 0 ;;
     *) die "unknown option $1 (see --help)" ;;
   esac
 done
@@ -88,6 +98,29 @@ case "$ENV" in staging|prod) ;; *) die "--env is staging or prod" ;; esac
 sh "$PORT_TOOL" check "$PORT" "$ADDRESS" || die "--port $PORT can't work here (above)"
 [ -n "$BUNDLE" ] && [ -f "$BUNDLE/bundle.pin" ] || die "--bundle <dir> with a bundle.pin in it is required"
 BUNDLE=$(cd "$BUNDLE" && pwd)
+# EXP-10: before anything of the desk is installed, the bundle and this installer's own files must be exactly what the
+# self-hosted release key signed (ma-selfhost-bundle; README.md, "A signed bundle"). A first install trusts the release key
+# this installer carries (files/opt/ma/etc/selfhost-release-keys/, exactly what release-keys.sha256 names), and prints its
+# sha256 for the member to compare with the guide. An update trusts only the release key the desk already holds
+# (/opt/ma/etc/selfhost-release-keys/), checked by the desk's own installed checker, and this installer must carry exactly
+# that key. A desk with none is refused. The update batch key (/opt/ma/etc/batch-keys/) never vouches for a bundle.
+need=""; for c in python3 openssl; do command -v "$c" >/dev/null 2>&1 || need="$need $c"; done
+if [ -n "$need" ]; then
+  echo "installing$need from Debian, to check the bundle"
+  { apt-get update -q && apt-get install -y -q --no-install-recommends $need; } >/dev/null || die "couldn't install$need"
+fi
+TREE=$(cd "$HERE/.." && pwd)
+CHECK=$HERE/files/usr/local/lib/ma/selfhost/ma-selfhost-bundle
+if [ "$UPGRADE" = 1 ]; then
+  # A desk installed from a bundle the batch key signed (or an unsigned one) has an older checker, which would only say the
+  # signature doesn't verify: say why here.
+  [ -d /opt/ma/etc/selfhost-release-keys ] || die "this desk holds no release key in /opt/ma/etc/selfhost-release-keys/: it was installed from a bundle signed with the update batch key, or from before signed bundles, and an update takes only a bundle signed with a key the desk already holds. Moving a desk to the release key isn't built yet, so nothing was installed"
+  [ ! -x /usr/local/lib/ma/selfhost/ma-selfhost-bundle ] || CHECK=/usr/local/lib/ma/selfhost/ma-selfhost-bundle
+  python3 -I "$CHECK" verify "$TREE" --bundle "$BUNDLE" --installed \
+    || die "this folder isn't exactly what the release key this desk holds signed (above), so nothing in it was installed"
+else
+  python3 -I "$CHECK" verify "$TREE" --bundle "$BUNDLE" || die "this folder isn't exactly what its release key signed (above), so nothing in it was installed"
+fi
 cores=$(nproc); mem_mb=$(awk '/MemTotal/{print int($2/1024)}' /proc/meminfo)
 [ "$cores" -ge 2 ] || die "needs at least 2 cores (has $cores)"
 [ "$mem_mb" -ge 3500 ] || die "needs at least 4 GB of memory (has $mem_mb MB)"
@@ -98,9 +131,13 @@ case "$others" in /dev/vd*) die "the data disk is $others, which the desk's firs
 echo "data disk: $others (formatted only if blank; an existing desk's data is kept)"
 # The bundle: one line per component, version and sha256, and each file must hash to it.
 declare -A VER SHA FILE
+BUNDLE_COMMIT=
 while read -r comp ver sha extra; do
-  case "$comp" in ''|'#'*) continue ;; esac
-  [[ $comp =~ ^(desk-rtc|desk-stream|deskd|desk-agent-filter|desk-notebook)$ && $ver =~ ^[A-Za-z0-9][A-Za-z0-9._-]{0,63}$ && $sha =~ ^[0-9a-f]{64}$ && -z $extra ]] || die "bad line in bundle.pin: $comp"
+  # build-bundle.sh's header names the commit it was built from: "# bundle <commit>".
+  if [ "$comp" = '#' ] && [ "$ver" = bundle ] && [[ $sha =~ ^[0-9a-f]{7,40}(-dirty)?$ ]]; then BUNDLE_COMMIT=$sha; continue; fi
+  # installer and batch-baseline: checked above, with the signature.
+  case "$comp" in ''|'#'*|installer|batch-baseline) continue ;; esac
+  [[ $comp =~ ^(desk-rtc|desk-stream|deskd|desk-agent|desk-agent-filter|desk-notebook)$ && $ver =~ ^[A-Za-z0-9][A-Za-z0-9._-]{0,63}$ && $sha =~ ^[0-9a-f]{64}$ && -z $extra ]] || die "bad line in bundle.pin: $comp"
   # || true: with pipefail, ls finding nothing would stop the script here, before the message below.
   f=$(ls "$BUNDLE"/"$comp-$ver"*.tgz 2>/dev/null | head -1 || true)
   [ -n "$f" ] || die "bundle has no $comp-$ver*.tgz"
@@ -117,10 +154,17 @@ if [ -n "${VER[desk-notebook]:-}" ]; then
   grep -q -- '-v /run/desk-notebook:/run/desk-notebook' <<<"$deskd_run" \
     || die "this bundle's deskd ${VER[deskd]} can't reach desk-notebook (its run doesn't mount /run/desk-notebook). Use a bundle from build-bundle.sh"
 fi
-echo "bundle: desk-rtc ${VER[desk-rtc]}, desk-stream ${VER[desk-stream]}, deskd ${VER[deskd]}, desk-agent-filter ${VER[desk-agent-filter]}, desk-notebook ${VER[desk-notebook]:-none}"
+# desk-agent is optional too: a bundle from before it installs as it did, with its unit skipped by its condition.
+# The batch baseline (build-bundle.sh BATCH_BASELINE): {"seq": N}, the newest update batch this bundle's releases hold.
+BASELINE_SEQ=
+if [ -f "$BUNDLE/batch-baseline" ]; then
+  BASELINE_SEQ=$(python3 -I -c 'import json, sys; v = json.load(open(sys.argv[1]))["seq"]; assert type(v) is int and 0 < v < 2**53; print(v)' "$BUNDLE/batch-baseline") \
+    || die "the bundle's batch-baseline isn't {\"seq\": <n>}"
+fi
+echo "bundle: desk-rtc ${VER[desk-rtc]}, desk-stream ${VER[desk-stream]}, deskd ${VER[deskd]}, desk-agent ${VER[desk-agent]:-none}, desk-agent-filter ${VER[desk-agent-filter]}, desk-notebook ${VER[desk-notebook]:-none}"
 if [ "$UPGRADE" = 1 ]; then
   installed() { cat "/opt/ma/$1/current/VERSION" 2>/dev/null || echo none; }
-  echo "updating this desk from desk-rtc $(installed desk-rtc), desk-stream $(installed desk-stream), deskd $(installed deskd), desk-agent-filter $(installed desk-agent-filter), desk-notebook $(installed desk-notebook)"
+  echo "updating this desk from desk-rtc $(installed desk-rtc), desk-stream $(installed desk-stream), deskd $(installed deskd), desk-agent $(installed desk-agent), desk-agent-filter $(installed desk-agent-filter), desk-notebook $(installed desk-notebook)"
   echo "settings: --env $ENV --address $ADDRESS --port $PORT, SSH from your home network $([ "$KEEP_SSH" = 1 ] && echo on || echo off), the Browser's access to your home network $([ "$ALLOW_HOME" = 1 ] && echo on || echo off)"
 fi
 
@@ -155,22 +199,54 @@ PTP_HELPER=/usr/lib/$(dpkg-architecture -qDEB_HOST_MULTIARCH 2>/dev/null || echo
 dpkg-statoverride --list "$PTP_HELPER" >/dev/null || dpkg-statoverride --update --add root root 0700 "$PTP_HELPER"
 
 step "install files (the cloud desk's, then this desk's own)"
-# The cloud recipe's files, less the three a self-hosted desk has its own of (selfhost/files) and the outbound shaper's
-# budgets, which guard our cloud bill and have nothing to guard here (README.md).
-(cd "$RECIPE/files" && find . \( -type f -o -type l \) ! -path ./etc/nftables.conf ! -path ./etc/chrony/chrony.conf ! -path ./etc/ma/egress.conf -print0 \
+# The cloud recipe's files, less the three a self-hosted desk has its own of (selfhost/files), the outbound shaper's
+# budgets, which guard our cloud bill and have nothing to guard here, and a Guild Desk's own (README.md): a self-hosted
+# desk is a member's, never a guild's, and the guild's tmpfiles line names a user (commons) this machine doesn't have.
+GUILD_ONLY="etc/ma/guild.conf etc/tmpfiles.d/desk-commons.conf etc/systemd/system/nftables.service.d/desk-guild-net.conf
+  etc/systemd/system/desk-kind.service etc/systemd/system/desk-guild-net.service etc/systemd/system/desk-guild-rtc.service
+  etc/systemd/system/commons-data.service etc/systemd/system/commons-server-address.service etc/systemd/system/commons-server.service
+  usr/local/lib/ma/desk-kind usr/local/lib/ma/desk-guild-net usr/local/lib/ma/desk-guild-rtc"
+skip=(! -path ./etc/nftables.conf ! -path ./etc/chrony/chrony.conf ! -path ./etc/ma/egress.conf)
+for f in $GUILD_ONLY; do skip+=(! -path "./$f"); done
+(cd "$RECIPE/files" && find . \( -type f -o -type l \) "${skip[@]}" -print0 \
   | tar --null --no-recursion --owner=0 --group=0 -T - -cf -) | tar -C / -xf -
+# An install from main between the Guild Desk's files and this installer copied them: they go, and nothing enabled them.
+for f in $GUILD_ONLY; do rm -f "/$f"; done
+rmdir /etc/systemd/system/nftables.service.d 2>/dev/null || true
 (cd "$HERE/files" && find . \( -type f -o -type l \) ! -path "*/__pycache__/*" -print0 | tar --null --no-recursion --owner=0 --group=0 -T - -cf -) | tar -C / -xf -
 chmod 0644 /etc/ma/agent-egress.conf
 chmod 0755 /opt/ma/smoke-test /opt/ma/bin/ma-update /usr/local/lib/ma/desk-firstboot /usr/local/lib/ma/desk-datadirs \
   /usr/local/lib/ma/desk-units /usr/local/lib/ma/desk-browser-start /usr/local/lib/ma/desk-xorg-ready /usr/local/lib/ma/desk-preread \
-  /usr/local/lib/ma/desk-browser-policy /usr/local/lib/ma/desk-adblock \
+  /usr/local/lib/ma/desk-browser-policy /usr/local/lib/ma/desk-adblock /usr/local/lib/ma/desk-browser-close /usr/local/lib/ma/desk-xauth \
+  /usr/local/lib/ma/desk-browser-quit /usr/local/lib/ma/desk-browser-prewarm /usr/local/lib/ma/desk-data \
+  /usr/local/lib/ma/desk-restart-reset /usr/local/lib/ma/desk-oom-container \
   /usr/local/lib/ma/selfhost/ma-selfhost /usr/local/lib/ma/selfhost/ma-selfhost-prep /usr/local/lib/ma/selfhost/ma-selfhost-dtls \
-  /usr/local/lib/ma/selfhost/ma-selfhost-port /usr/local/sbin/ma-selfhost
+  /usr/local/lib/ma/selfhost/ma-selfhost-port /usr/local/lib/ma/selfhost/ma-selfhost-net /usr/local/lib/ma/selfhost/ma-selfhost-bundle \
+  /usr/local/sbin/ma-selfhost
 # An installed desk's old way for the agent out: address sets filled every 5 min, which these firewall rules no longer have.
 systemctl disable --now desk-agent-egress.timer desk-agent-egress.service 2>/dev/null || true
 rm -f /etc/systemd/system/desk-agent-egress.timer /etc/systemd/system/desk-agent-egress.service /usr/local/lib/ma/desk-agent-egress
-# A teen's Browser lock and the ad blocker's template, as build.sh: both helpers refuse a file anyone but root can write.
-chown root:root /etc/ma/chromium-teen.json /etc/ma/chromium-adblock.json; chmod 0644 /etc/ma/chromium-teen.json /etc/ma/chromium-adblock.json
+# A teen's Browser lock, an adult's password managers and the ad blocker's template, as build.sh: the helpers refuse a file
+# anyone but root can write.
+chown root:root /etc/ma/chromium-teen.json /etc/ma/chromium-adult.json /etc/ma/chromium-adblock.json
+chmod 0644 /etc/ma/chromium-teen.json /etc/ma/chromium-adult.json /etc/ma/chromium-adblock.json
+# The release key (README.md, "A signed bundle"): the installer's folder exactly, root's, so the next update is checked
+# against it alone. An update brought the same files (ma-selfhost-bundle refused any other), so there it changes nothing;
+# a first install over leftovers replaces the folder whole. Never in /opt/ma/etc/batch-keys/, which desk-batch trusts.
+RELEASE_KEYS=/opt/ma/etc/selfhost-release-keys
+if ! diff -r -q "$HERE/files$RELEASE_KEYS" "$RELEASE_KEYS" >/dev/null 2>&1; then
+  rm -rf "$RELEASE_KEYS.new" && install -d -o root -g root -m 0755 "$RELEASE_KEYS.new"
+  install -o root -g root -m 0644 "$HERE/files$RELEASE_KEYS"/*.pem "$RELEASE_KEYS.new/"
+  rm -rf "$RELEASE_KEYS" && mv "$RELEASE_KEYS.new" "$RELEASE_KEYS"
+fi
+chown root:root "$RELEASE_KEYS" "$RELEASE_KEYS"/*.pem; chmod 0755 "$RELEASE_KEYS"; chmod 0644 "$RELEASE_KEYS"/*.pem
+# Links out, as build.sh (runtime spec section 8.11): the stand-in is the only xdg-open and xdg-email (this machine is the
+# desk's alone, README.md), and its socket's directory now rather than at the next boot.
+chmod 0755 /usr/local/bin/xdg-open; ln -sfn xdg-open /usr/local/bin/xdg-email
+install -d -m 0755 /usr/share/ma/xdg-utils
+for f in xdg-open xdg-email; do
+  [ "$(dpkg-divert --truename /usr/bin/$f)" = /usr/share/ma/xdg-utils/$f ] || dpkg-divert --local --rename --divert /usr/share/ma/xdg-utils/$f --add /usr/bin/$f
+done
 # The ad blocker (ADR 0076), built from the pinned lists as build.sh builds it (a new id each install, which reinstalls it and
 # loses nothing), then its policy, from the member's per-site list if this desk has one already. Rendered again before
 # every start of the Browser.
@@ -190,7 +266,10 @@ nft -c -f "$nft_tmp" || die "the firewall rules don't load"
 install -m 0644 "$nft_tmp" /etc/nftables.conf; rm -f "$nft_tmp"
 install -d -m 0755 /data
 systemd-tmpfiles --create /etc/tmpfiles.d/ma.conf
-rev=$(git -C "$HERE" rev-parse --short HEAD 2>/dev/null || echo unknown)
+systemd-tmpfiles --create /etc/tmpfiles.d/desk-links.conf
+# hello's imageVersion: the bundle's commit (build-bundle.sh's header), or else this checkout's, so the platform knows which
+# installer and releases a desk came from (and which update batches it may take). A copied folder has no .git.
+rev=${BUNDLE_COMMIT:-$(git -C "$HERE" rev-parse --short HEAD 2>/dev/null || echo unknown)}
 printf 'version=%s\nbuilt=%s\nhosting=self\n' "${LABEL:-selfhost-$rev}" "$(date -u +%FT%TZ)" > /etc/ma-release
 {
   echo "# ma-selfhost (selfhost/README.md). Written by install.sh; run it again to change these."
@@ -216,17 +295,46 @@ ln -sfn /run/systemd/resolve/stub-resolv.conf /etc/resolv.conf
 systemctl daemon-reload
 systemctl enable nftables chrony zramswap docker unattended-upgrades \
   desk-firstboot.service data.mount desk-datadirs.service desk-rtc.service deskd.service desk-units.socket ma-selfhost.service
+# The firewall's list of this desk's own networks (EXP-9): every prefix on its links and every route a router advertised,
+# whatever their addresses, which the Browser can't reach and desk-agent-filter doesn't dial. nftables.conf includes the
+# list it writes; it keeps the list current as the network changes.
+systemctl enable ma-selfhost-net.service
 # desk-agent, as build.sh: skipped by its condition until a release is installed (this bundle has none yet).
 # desk-agent-filter, as build.sh, is its only way out (ADR 0070), and a local disk starts it like any other part.
 systemctl enable desk-agent.service desk-agent-filter.service
 # desk-notebook, as build.sh: its unit, /run/desk-notebook and /data/notebook come from the recipe's files above. Its
 # release comes from the bundle, below; with a bundle from before it, it's skipped by its condition.
 systemctl enable desk-notebook.service
+# The rest of build.sh's units, as there: desk-data (the Download your data helper), the Browser's thaw before every stop
+# (ADR 0045) and its prewarm once deskd answers (TD-227), and the restart back-off's reset (desk-runtime.md, "Restarts and
+# memory pressure"); the back-off itself and the kill order are in the units' own files.
+systemctl enable desk-data.socket desk-browser-thaw.service desk-browser-prewarm.service desk-restart-reset.timer
+# Desk batches and Debian's updates (image/README.md, "Desk batches and Debian's updates"): build.sh's block, run as it is
+# written there, as lab/desk-batch/apply.sh runs it. The image's trusted key (the platform's release key's public half) is
+# in the recipe's files above; Debian's own apt timers are masked, and desk-batch runs apt from the security archive only,
+# while the desk is idle (deskd's /run/desk/idle.json), or after 72 hours with none.
+block=$(awk '/^# >>> desk-batch/{f=1} f; /^# <<< desk-batch/{exit}' "$RECIPE/build.sh")
+[ -n "$block" ] || die "no desk-batch block in $RECIPE/build.sh"
+# A fresh Debian has Debian's apt timers running (a cloud desk's builder never starts them): stopped first, since a timer
+# masked while it runs is left failed ("Unit to trigger vanished"), and a failed unit marks the whole machine degraded.
+systemctl stop apt-daily.timer apt-daily-upgrade.timer 2>/dev/null || true
+bash -euo pipefail -c "$block" || die "build.sh's desk-batch block failed"
+systemctl reset-failed apt-daily.timer apt-daily-upgrade.timer 2>/dev/null || true
+# The bundle's batch baseline, never lowered: a fresh system disk under the same data disk starts at the bundle's floor.
+if [ -n "$BASELINE_SEQ" ]; then
+  had=$(python3 -I -c 'import json, sys; print(json.load(open(sys.argv[1]))["seq"])' /opt/ma/etc/batch-baseline 2>/dev/null || echo 0)
+  if [ "$BASELINE_SEQ" -gt "$had" ]; then
+    printf '{"seq": %s}\n' "$BASELINE_SEQ" > /opt/ma/etc/batch-baseline.tmp && chmod 0644 /opt/ma/etc/batch-baseline.tmp \
+      && mv -f /opt/ma/etc/batch-baseline.tmp /opt/ma/etc/batch-baseline
+  fi
+fi
 # Not on a self-hosted desk: desk-preread (reads a cloud root's blocks once; a local disk has nothing to load) and
 # desk-egress (our cloud bill's budgets). Installed but not started at boot, as on a cloud desk: deskd starts these.
 systemctl disable desk-preread.service desk-egress.service 2>/dev/null || true
 systemctl disable desk-xorg desk-audio desk-browser desk-stream 2>/dev/null || true
 systemctl restart nftables chrony
+# A running ma-selfhost-net restarts with nftables (PartOf); a new one starts here, and fills the sets before it says ready.
+systemctl start ma-selfhost-net.service || die "ma-selfhost-net didn't start: journalctl -u ma-selfhost-net"
 
 step "yuvconv, as build.sh"
 if ! GST_PLUGIN_PATH=/usr/local/lib/ma/gst-plugins gst-inspect-1.0 yuvconv >/dev/null 2>&1; then
@@ -245,11 +353,13 @@ step "the desk's releases, from the bundle"
 systemctl restart docker
 for _ in $(seq 1 30); do docker info >/dev/null 2>&1 && break; sleep 1; done
 docker info >/dev/null 2>&1 || die "docker isn't running"
-# desk-notebook goes last. ma-update's smoke test checks every installed component, so a desk-notebook installed but not
-# yet running would fail the others' updates. Where it isn't running yet (a new desk, or one from a bundle before it),
-# it's only installed here, and starts with the desk below, once /data/notebook is there.
+# desk-notebook and desk-agent go last. ma-update's smoke test checks every installed component, so one installed but not
+# yet running would fail the others' updates. Where one isn't running yet (a new desk, or one from a bundle before it),
+# it's only installed here, and starts with the desk below, once /data/notebook and /data/agent are there.
 comps="desk-stream desk-rtc deskd desk-agent-filter"
-if [ -n "${VER[desk-notebook]:-}" ]; then comps="$comps desk-notebook"; fi
+for c in desk-notebook desk-agent; do
+  if [ -n "${VER[$c]:-}" ]; then comps="$comps $c"; fi
+done
 for comp in $comps; do
   rel=/opt/ma/$comp/releases/${VER[$comp]}
   if [ "$(readlink "/opt/ma/$comp/current" 2>/dev/null)" = "$rel" ]; then
@@ -274,8 +384,15 @@ done
 [ "$(/usr/local/lib/ma/selfhost/ma-selfhost-port)" = "$PORT" ] || die "desk-rtc doesn't read port $PORT from /etc/ma/desk-rtc.conf"
 
 step "GStreamer plugin registry, as build.sh"
-env HOME=/run/desk-stream GST_REGISTRY_1_0=/usr/local/lib/ma/gst-registry.bin \
-  GST_PLUGIN_PATH=/opt/ma/desk-stream/current/gst-plugins:/usr/local/lib/ma/gst-plugins gst-inspect-1.0 yuvconv >/dev/null || die "no plugin registry"
+# As build.sh, with desk-stream's HOME, since a few plugins name HOME as a dependency and another value rescans them.
+# But not desk-stream's actual folder: it's user stream's (and kept across restarts), and GStreamer loads any plugin in
+# $HOME/.local/share/gstreamer-1.0/plugins, so as root that would run whatever stream put there (EXP-7). So it runs in a
+# mount namespace of its own, with an empty /run that only root can write.
+unshare --mount --propagation private /bin/sh -euc 'mount -t tmpfs -o mode=0755,size=1m,nosuid,nodev,noexec ma-gst /run
+  install -d -m 0755 /run/desk-stream
+  exec env HOME=/run/desk-stream GST_REGISTRY_1_0=/usr/local/lib/ma/gst-registry.bin GST_PLUGIN_PATH="$1" gst-inspect-1.0 yuvconv' \
+  ma-gst "/opt/ma/desk-stream/current/gst-plugins/$(uname -m):/opt/ma/desk-stream/current/gst-plugins:/usr/local/lib/ma/gst-plugins" \
+  >/dev/null || die "no plugin registry"
 chmod 0644 /usr/local/lib/ma/gst-registry.bin
 
 step "the data disk and the desk's identity"
@@ -284,7 +401,7 @@ systemctl start desk-firstboot.service data.mount || die "the data disk didn't c
 systemctl restart desk-datadirs.service || die "the data disk's directories didn't come up: journalctl -u desk-datadirs"
 mountpoint -q /data || die "/data isn't mounted"
 systemctl restart ma-selfhost.service
-for _ in $(seq 1 30); do [ -s /run/ma-selfhost/status.json ] && break; sleep 1; done
+for _ in $(seq 1 30); do as_selfhost test -s /run/ma-selfhost/status.json && break; sleep 1; done
 
 if [ "$PAIR" = 1 ]; then
   step "pairing"
@@ -297,12 +414,14 @@ step "starting the desk"
 # desk-units.socket too: a cloud desk gets it from its first boot, and without it deskd can't start the Browser.
 # desk-notebook beside them, as at boot: /data/notebook is there now, and with no release its condition skips it. It and
 # deskd don't wait for each other.
-systemctl start desk-units.socket desk-agent-filter.service desk-rtc.service desk-notebook.service
+# desk-agent's condition skips it with no release, and its unit waits for the ruleset with agent_redirect (DA-2).
+systemctl start desk-units.socket desk-data.socket desk-agent-filter.service desk-rtc.service desk-notebook.service desk-agent.service
+systemctl start desk-restart-reset.timer desk-batch.socket desk-batch.timer
 # desk-rtc's start hands its DTLS fingerprint to ma-selfhost, which signs it with the desk's key. The platform takes
 # deskd's hello only after that (otherwise deskd waits a minute and tries again), so give it a moment first.
 if [ "$PAIR" = 1 ]; then
   for _ in $(seq 1 30); do
-    grep -qE '"identity": "(signed|unsupported)"' /run/ma-selfhost/status.json 2>/dev/null && break
+    as_selfhost grep -qE '"identity": "(signed|unsupported)"' /run/ma-selfhost/status.json 2>/dev/null && break
     sleep 1
   done
 fi
@@ -318,7 +437,7 @@ for _ in $(seq 1 60); do
   sleep 3
 done
 /opt/ma/smoke-test || true
-[ "$ok" = 1 ] || echo "install.sh: the desk's services aren't healthy yet. Check: journalctl -u deskd -u desk-rtc -u desk-notebook -u ma-selfhost" >&2
+[ "$ok" = 1 ] || echo "install.sh: the desk's services aren't healthy yet. Check: journalctl -u deskd -u desk-rtc -u desk-notebook -u desk-agent -u ma-selfhost" >&2
 /usr/local/sbin/ma-selfhost status || true
 echo
 echo "CHROMIUM_VERSION: $chromium_version"

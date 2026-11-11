@@ -16,6 +16,7 @@ Status: measured on one temporary staging test desk, `ma-desk-0.3.1` (`<ami>`), 
 | Against the 15 s floor | **Not met**, and not reachable by anything in the image: A alone is 9.8 s | |
 | CPU credits an hour, by activity | Office open 0.6, a still page 9.8, reading 9.5, scrolling 74, video 75 (High) or 88 (Low), against 24 earned. Section 5 | 2 CloudWatch buckets each |
 | EC2 hibernation as a way to a quicker wake | Works on this image. **Not quicker** (resume 22 s from the start call with a 1.4 GB image), the public address changes, and the link took 197 s to come back (section 6) | 1 run |
+| **2026-11-11: the wake on `ma-desk-0.3.3`** (the trims baked; the app's 1 s `connect` poll and the pushed ready) | median **21.0 s** to the first Browser frame (20.6 to 22.4), **21.6 s** to Chromium's tabs (20.9 to 22.9), against 24.0 and 24.2 s. **20 s not met at the median, about 1 s away; 15 s not met.** The app's stretch C went 2.5 to 0.7 s; A, B and D are unchanged (section 11) | 5 wakes |
 
 ## 2. How it was measured
 
@@ -144,7 +145,9 @@ A `t4g.medium` earns 24 credits an hour (20% of each of two vCPUs). The desk is 
 
 - **Low is not clearly cheaper in CPU than High on the video page.** The 10-minute credit windows say 60% of the machine at High and 75% at Low; the 30-second W3 passes on the same page say 79 to 83% at High and 76% at Low (3 rounds each). The two disagree, so no direction is claimed: at Low `desk-stream` scales the 1920x1080 screen to 1280x720 before it encodes, which costs CPU as the smaller picture saves it. What Low does save is bandwidth: 1.7 Mbps against 4.2 to 4.4 on the same page.
 - **The prewarm costs nothing at rest:** the office window with Chromium started at boot used 0.6 credits an hour (0.2% of the machine), well inside the 24 earned.
-- **Surplus over a month:** measured, a month of reading, chat and idle pages earns more credits than it spends and bills $0 of surplus. A month of nothing but scrolling or video bills surplus at $0.042 an hour at High and $0.053 an hour at Low, the extremes. A mixed month sits between the two; **the desk's real mix is not known**, which is why this is a bound and not an estimate. Banked credits (the balance builds about 1.2 to 2 an hour of idle, to a cap of 576) and the 20 minutes after idle (which earn about 8 credits and spend almost none) pull the bound down.
+- **Surplus over a month:** measured, a month of reading, chat and idle pages earns more credits than it spends and bills $0 of surplus. A month of nothing but scrolling or video bills surplus at $0.042 an hour at High and $0.053 an hour at Low,
+ the extremes. A mixed month sits between the two; **the desk's real mix is 
+not known**, which is why this is a bound and not an estimate. Banked credits (the balance builds about 1.2 to 2 an hour of idle, to a cap of 576) and the 20 minutes after idle (which earn about 8 credits and spend almost none) pull the bound down.
 
 ## 6. EC2 hibernation, as an option only
 
@@ -199,3 +202,76 @@ npx playwright test -c w3 'credits\.spec'   # CREDITS_LABEL, CREDITS_MINUTES, CR
 python3 w3/wake-report.py ~/ma-design-drafts/w3/<W3_LABEL> <label> [<a>+<b>]
 ```
 Test desks tagged `Owner=<yours>` only; the spec refuses anything else, and the owner's desk by id.
+
+## 11. 2026-11-11: the wake on `ma-desk-0.3.3` (TD-128 part 2)
+
+Asked: does the wake reach the owner's 20 s ("Anything we can do to get it closer to 20 seconds consistently?", with "doesn't require more than 15 seconds boot up time" as the floor) now that the image carries section 4's two trims and the Desk app polls `connect` every second while a wake it asked for is open (`web/src/desk/rtc/policy.ts` `wakePollMs`, where it was every 3 s)?
+
+**How:** the same `wake.spec.ts` and `wake-report.py` as section 4, on a new temporary staging test desk: `scripts/desk-provision.sh --env staging --test --kind personal --size t4g.medium` on `desk_image#current` (`ma-desk-0.3.3`, nothing changed by hand), staging test account `desk-2`, tagged `Owner=syseng-td128`, `starts_with_office` set on its row as section 4's was. Root 12 GB, data 32 GB, unlimited credits, us-east-1a. One unmeasured wake first, so the root's blocks were read once (21.7 s, in no median), then 5. Desk app `2026.11.11-bfe6c02d` (it has `wakePollMs` and listens for the pushed `desk.progress: ready`), Chrome for Testing 156 headless from this workstation (RTT about 55 ms; client load 3.9 to 11.1 on 6 cores across the wakes). `wake.spec.ts` now takes the task's owner tag from `WAKE_OWNER`; nothing else in the kit changed.
+
+### By stretch, beside 0.3.1 with the two trims (section 4, row 4)
+
+Medians of 5 wakes in seconds, [min-max]. A is EC2's, B the image's and `deskd`'s, C the app's and Platform's, D the stream's (`desk-rtc` and the app's open).
+
+| Stretch | 0.3.1 + trims (Nov 9) | **0.3.3 (Nov 11)** | Change |
+|---|---|---|---|
+| A: the office loading to the kernel's start | 10.6 [9.3-10.9] | **9.9** [9.1-11.4] | -0.7 (A moves 2 s between wakes of one desk: noise) |
+| B: the kernel to `deskd`'s hello accepted | 8.8 [8.5-8.8] | **8.7** [8.6-8.7] | -0.1 |
+| C: the hello to the app's `connect` answering 200 | 2.5 [1.0-3.1] | **0.7** [0.4-0.9] | **-1.8** |
+| D: that 200 to the first Browser frame | 1.9 [1.8-2.2] | **1.8** [1.6-2.6] | -0.1 |
+| D': that 200 to Chromium's tabs | 2.4 [1.9-2.6] | **2.1** [2.0-2.9] | -0.3 |
+| **Total to the first Browser frame** | 24.0 [20.7-24.2] | **21.0** [20.6-22.4] | **-3.0** |
+| **Total to Chromium's tabs** | 24.2 [21.4-24.5] | **21.6** [20.9-22.9] | **-2.6** |
+
+The five wakes, to the first frame: 20.7, 22.4, 22.4, 20.6 and 21.0 s; to the tabs 20.9, 22.6, 22.9, 21.6 and 21.2 s. All five were valid (the desk was stopped each time) and the office loaded each time.
+
+### Inside the stretches (medians [min-max], seconds)
+
+| | 0.3.1 + trims | 0.3.3 | Whose |
+|---|---|---|---|
+| Office load to the `connect` request | 1.68 [1.43-2.07] | 1.12 [0.88-1.60] | the app |
+| `connect` to its 202 (`StartInstances`) | 0.18 | 0.27 | Platform |
+| 202 to EC2 `pending` seen | 1.87 | 2.07 | EC2 (about 1 s of it is the poll's resolution) |
+| `pending` to `running` seen | 4.14 [2.91-4.89] | 4.35 [2.94-6.10] | EC2 |
+| `running` to the kernel's start | 2.50 | 2.37 | EC2 (firmware) |
+| Kernel to `network-online` | 4.51 [4.17-4.76] | 4.61 [4.06-4.67] | the image: the kernel 1.35, then userspace, `systemd-networkd-wait-online` 1.3 |
+| `network-online` to `docker` started | 0.95 | 0.95 | the image (`containerd` 0.6, `docker` 0.9) |
+| `docker` to `deskd` started | 0.23 | **0.75** | the image: since 0.3.3 `deskd` is started only once `desk-oom-container` has run (`ExecStartPost=`, `image/RELEASES.md`) |
+| `deskd` started to ready | 1.93 | **1.53** | `deskd`'s JVM (the Desk Engineer's); it was already starting under the `ExecStartPost=`, so the two changes cancel: docker to ready 2.16 against 2.28 |
+| `deskd` ready to hello accepted | 0.87 | 0.87 | `deskd`'s signed hello to Platform's API |
+| Hello to the gateway link | 0.21 | 0.21 | `deskd` and the gateway |
+| Hello to the app's pushed `ready` | none seen | 0.56 [0.27-0.71] | Platform's push |
+| Hello to `connect` 200 | 2.50 [0.97-3.11] | 0.68 [0.44-0.88] | the app, now on the push |
+
+- **The app's change did what it was meant to, and more:** C fell from 2.5 s to 0.7 s, because the app now hears the gateway's `desk.progress: ready` (0.56 s after the hello) and asks `connect` straight away; its 200 comes 0.04 to 0.17 s after the push. The 1 s poll is the fallback: the app made 17 to 19 `connect` calls a wake against 8 to 9 before (all answered 202 or 200; no 429).
+- **The image's own stretch is unchanged** (B 8.7 against 8.8 s): the 0.3.3 bake's `desk-oom-container` step delays `deskd`'s `Started` by 0.5 s, but the JVM was already running under it, so the hello is no later. The 0.3.3 release note saw `deskd` active 0.5 s later in one sample and left the hello unmeasured; at the hello there is no cost.
+- **A is EC2's and still half the wait** (9.9 s of 21.0). The page itself sends `connect` 1.1 s after it starts to load, 0.6 s sooner than on Nov 9.
+
+### Against the owner's bars
+
+- **20 s: not met at the median** (21.0 s to the first frame, 21.6 s to the tabs). 2 of 5 wakes were within 0.7 s of it (20.6 and 20.7 s). It is about 1 s away.
+- **15 s: not met, and out of reach of everything but EC2:** A alone is 9.9 s, and B, C and D together are 11.2 s.
+
+### What could still be cut, and whose it is
+
+| Where | Now | What might move it | Whose |
+|---|---|---|---|
+| A, EC2's power-on | 9.9 s, of which about 8.7 s after the `connect` | nothing short of keeping the instance running or a warm pool; hibernation is not quicker (section 6) | EC2; the choice is Platform's and the owner's (cost) |
+| A, the office loading to `connect` | 1.1 s | sending `connect` from the loader before the app's bundle has booted, for a `starts_with_office` desk | the app (UI/UX Engineer) |
+| B, kernel to `network-online` | 4.6 s | the 1.3 s DHCP wait is the one large piece; section 4 found nothing cheap (Docker without `network-online` gained nothing) | the image (System Engineer): nothing cheap left |
+| B, `deskd`'s container start and JVM | 0.75 + 1.53 s | a faster JVM start (class-data sharing is in, `services/CLAUDE.md`; a native image or a checkpoint would be next), and starting the container without waiting for `desk-oom-container` | `deskd`'s JVM: the Desk Engineer; the `ExecStartPost=` order: the image |
+| B, ready to hello | 0.87 s | the hello's round trip and Platform's handling of it | the Desk Engineer and Platform |
+| C | 0.7 s | little: 0.56 s is the gateway's push after the hello | Platform |
+| D, to the first frame | 1.8 s | the session's open, ICE and DTLS (several round trips at about 55 ms here) and `desk-stream`'s first keyframe; Chromium is already up (the prewarm) | `desk-rtc` and the app |
+
+Getting under 20 s at the median needs about 1 s from the rows above that aren't EC2's; the app's earlier `connect` and `deskd`'s start are the two largest candidates. Nothing here was changed or tried; these are where the time is.
+
+### Spend and clean-up
+
+About $0.01 of compute (the `t4g.medium` ran about 11 minutes in all between 10:20 and 10:31 UTC, stopped in between), its 44 GB of gp3 for the same, and a little stream. Ended with `scripts/test-desk-stop.sh staging --desk <its id>` (marked `stopping`), `terminate-instances`, a delete of its data volume, its IAM role and instance profile, and its row in `ma-staging-desks`. **Checked by tag `Owner=syseng-td128`: only terminated instances list; no volume, snapshot, key pair or security group.** The shared test desk, the owner's desk and every other desk were not touched. Phases and sub-stretches: `image/evidence/alliance-wake-2026-11-11/`.
+
+### Not measured
+
+- Wakes of a desk whose `connect` came from a member's real browser (a cold cache and a slower page add to A), from another region, or at other times of day.
+- A wake with the Browser's last tab on a page the simplified view takes: the desk's tab was a new tab each time.
+- B12-style latency after a wake; the window's own first-frame marks only.

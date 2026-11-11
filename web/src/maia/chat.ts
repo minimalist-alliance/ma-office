@@ -7,6 +7,7 @@ import { getLive } from '../desk/liveStore';
 import { getView } from '../state/viewStore';
 import { capLine, type AttachCaps, downscaleImage, encodeFile, isImageName, planAdd, type Pending, type Sent, type WireFile } from './attachments';
 import { expired, memoryOutcome, readMemory, type Memory } from './cards';
+import { CHAT_DELETE_FAILED, CHAT_LOAD_FAILED, CHAT_OPEN_FAILED, CHATS_LOAD_FAILED, readChats, type ChatSummary } from './chats';
 import { FrameReader, type Frame, type Proposal } from './frames';
 import { startStatus } from './free';
 import type { MaiaState } from './gate';
@@ -50,11 +51,16 @@ export interface ChatState {
   line: string | null;
   /** For the widget's live region: her reply, once it has finished. */
   said: string;
+  /** The member's chats, newest first, once asked; null until then ("Your chats", Security's maia-2). */
+  chats: ChatSummary[] | null;
+  chatsLine: string | null;
   /** What she remembers, once asked; null until then. */
   memories: Memory[] | null;
   memoryLine: string | null;
   /** While she answers on her free model (ma-platform ADR 0104): when the member's allowance resets. Null otherwise. */
   freeUntil: string | null;
+  /** A turn stopped with `limit_trial`: the free trial is over (the widget shows its last word). */
+  trialOver: boolean;
   /** Files waiting to be sent. Held in memory only, and gone once a turn has gone out. */
   files: Pending[];
   /** One plain line about the last file that wasn't added. */
@@ -105,10 +111,14 @@ export async function errorInfo(res: Response): Promise<{ code: string | null; m
   }
 }
 
+let chats = 0;
+
 export class Chat {
   readonly store;
   /** What's in the composer while the panel is hidden. */
   draft = '';
+  /** Its hold on the office's close guard (`shell/closeGuard.ts`) while the composer has text, shown or hidden. */
+  readonly holdId = `maia:${(chats += 1)}`;
   readonly streaming = create<{ text: string }>(() => ({ text: '' }));
   private seq = 0;
   private turn: Turn | null = null;
@@ -134,9 +144,12 @@ export class Chat {
       status: null,
       line: null,
       said: '',
+      chats: null,
+      chatsLine: null,
       memories: null,
       memoryLine: null,
       freeUntil: state.free?.until ?? null,
+      trialOver: false,
       files: [],
       attachLine: null,
       restore: null,
@@ -370,6 +383,8 @@ export class Chat {
         turn.messageId = f.messageId;
         return;
       case 'notice':
+        // The first message of a free trial starts it (`trial_started`): the member just did that, so nothing more to say.
+        if (f.code === 'trial_started') return;
         this.note(f.text, f.code === 'free_mode' && f.upgrade);
         if (f.code === 'free_ended') this.set({ freeUntil: null });
         return;
@@ -443,6 +458,7 @@ export class Chat {
       said: [heard, stop?.text ?? '', cards.length ? 'Maia suggests something below.' : ''].filter(Boolean).join(' ') || (how === 'cut' ? 'The reply was cut off.' : ''),
     });
     if (this.turn === turn) this.turn = null;
+    if (how === 'stop' && stop?.reason === 'limit_trial') this.set({ trialOver: true });
     this.avatar()?.setState(how === 'stop' ? 'unavailable' : 'calm');
     if (cards.some((c) => c.proposal.action === 'forget') && !this.get().memories) void this.loadMemories();
   }
@@ -479,6 +495,55 @@ export class Chat {
       this.set({ messages: msgs });
     } catch {
       /* the chat goes on from here */
+    }
+  }
+
+  // ---------------------------------------------------------------- your chats
+
+  async loadChats(): Promise<void> {
+    try {
+      const res = await maiaFetch(this.base, '/v1/maia/conversations');
+      if (!res.ok) throw new Error(String(res.status));
+      this.set({ chats: readChats(await res.json()), chatsLine: null });
+    } catch {
+      this.set({ chatsLine: CHATS_LOAD_FAILED });
+    }
+  }
+
+  /** Back to an earlier chat: it's the chat from here on, shown as she keeps it. Not while she's answering. */
+  async openChat(conversationId: string): Promise<boolean> {
+    if (this.get().phase !== 'idle') return false;
+    this.seq += 1; // a score still on its way from the last reply is ignored
+    this.setConversation(conversationId);
+    this.loadedConversation = false;
+    this.set({ messages: [], line: null, said: '' });
+    await this.loadConversation();
+    if (this.get().conversationId !== conversationId) {
+      // Gone since the list was read (404): say so, and drop it from the list.
+      this.set({ chats: (this.get().chats ?? []).filter((c) => c.conversationId !== conversationId), line: CHAT_OPEN_FAILED });
+      return false;
+    }
+    // It's there but didn't come back (the network): the chat goes on from here, and the line says so.
+    if (this.get().messages.length === 0) this.set({ line: CHAT_LOAD_FAILED });
+    return true;
+  }
+
+  /** Deleted for good on the server; if it's the chat that's open, the panel starts a new one. A 404 is already gone. */
+  async deleteChat(conversationId: string): Promise<boolean> {
+    try {
+      const res = await maiaFetch(this.base, `/v1/maia/conversations/${encodeURIComponent(conversationId)}`, { method: 'DELETE' });
+      if (!res.ok && res.status !== 404) throw new Error(String(res.status));
+      this.set({ chats: (this.get().chats ?? []).filter((c) => c.conversationId !== conversationId), chatsLine: null });
+      if (this.get().conversationId === conversationId) {
+        this.seq += 1;
+        this.setConversation(null);
+        this.loadedConversation = true;
+        this.set({ messages: [], line: null, said: '' });
+      }
+      return true;
+    } catch {
+      this.set({ chatsLine: CHAT_DELETE_FAILED });
+      return false;
     }
   }
 

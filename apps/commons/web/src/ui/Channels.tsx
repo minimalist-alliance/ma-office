@@ -3,7 +3,7 @@
 // read. Commons' settings sit at the bottom.
 import { useEffect, useRef, useState } from 'react';
 import type { Channel, Member, RoomClient, RoomState } from '../room/client.ts';
-import { initials } from './names.ts';
+import { Face } from './Face.tsx';
 import { IconClose, IconHash, IconMicOff, IconMinus, IconPlus, IconRename, IconSettings, IconSidebar, IconTrash, Seal } from './icons.tsx';
 
 export function Channels({ client, st, title, onHide }: { client: RoomClient; st: RoomState; title: string; onHide: () => void }) {
@@ -178,7 +178,7 @@ function VoiceRow({ m, speaking, you }: { m: Member; speaking: boolean; you: boo
   return (
     <li>
       <span className="ma-cm-avatar" data-speaking={speaking ? '1' : '0'} style={{ ['--ma-cm-c' as string]: `var(--ma-cm-member-${m.color})`, width: 20, height: 20, fontSize: 9 }} aria-hidden="true">
-        {initials(m.name)}
+        <Face name={m.name} url={m.avatarUrl} recipe={m.avatarRecipe} size={20} />
       </span>
       <span className="ma-cm-chan-person">
         {m.name}

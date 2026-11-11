@@ -205,6 +205,19 @@ public final class FakeNotebookSocket implements NotebookService {
                     }
                 }
                 case "unsub" -> subscriptions.remove(((Number) m.get("sid")).longValue());
+                case "health" -> {
+                    healthAsks.incrementAndGet();
+                    Map<String, Object> reply = new LinkedHashMap<>();
+                    reply.put("t", "health");
+                    reply.put("ok", true);
+                    reply.put("version", "fake");
+                    reply.put("pages", 3);
+                    Map<String, Object> said = storage;
+                    if (said != null) {
+                        reply.put("storage", said);
+                    }
+                    sendJson(reply);
+                }
                 default -> { }
             }
         }
@@ -241,6 +254,11 @@ public final class FakeNotebookSocket implements NotebookService {
     public final BlockingQueue<byte[]> collabReceived = new LinkedBlockingQueue<>();
     /** The first event of a new {@code sub}, or null for none. */
     public volatile Map<String, Object> tree = Map.of("rev", 1);
+    /** The health frame's {@code storage}, as desk-notebook says it from main 6216d1e8; null leaves it out, as before. */
+    public volatile Map<String, Object> storage = Map.of(
+            "state", "ok", "unsavedPages", 0, "unsavedBytes", 0, "refusing", false, "degradedSeconds", 0);
+    /** How many {@code health} frames it has answered. */
+    public final java.util.concurrent.atomic.AtomicInteger healthAsks = new java.util.concurrent.atomic.AtomicInteger();
     /** If set, what to send back for a collab message. */
     public volatile Function<byte[], byte[]> collabHandler;
 
@@ -299,6 +317,13 @@ public final class FakeNotebookSocket implements NotebookService {
             return Map.of("notebook", notebook, "tab", Map.of(), "page", Map.of());
         });
         handlers.put("notebook.page.trash", p -> new Refusal("not_found", Map.of()));
+        // ADR 0091: the desk has no pages here, and a label that isn't one of the six colors is refused before the page is looked for.
+        handlers.put("notebook.page.label", p -> {
+            Object label = p.get("label");
+            if (label != null && !(label instanceof String s && s.matches("blue|green|amber|rose|violet|slate"))) return new Refusal("bad_request", Map.of("reason", "label"));
+            return new Refusal("not_found", Map.of());
+        });
+        handlers.put("notebook.page.duplicate", p -> new Refusal("not_found", Map.of()));
     }
 
     /** One event to every subscription on every open connection, and the first event of any later one. */

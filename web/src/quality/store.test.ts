@@ -31,7 +31,9 @@ type Store = typeof import('./store');
 
 const b64 = (o: unknown): string => Buffer.from(JSON.stringify(o)).toString('base64url');
 const tokenFor = (sub: string): string => `${b64({ alg: 'none' })}.${b64({ sub })}.sig`;
-const doc = (d: Level, apps: Record<string, Level> = {}, updatedAt: string | null = '2026-11-06T10:00:00.000Z'): StreamQuality => ({ default: d, apps, updatedAt });
+const doc = (d: Level | null, apps: Record<string, Level> = {}, updatedAt: string | null = '2026-11-06T10:00:00.000Z'): StreamQuality => ({ default: d, apps, desks: {}, updatedAt });
+/** What a Platform from before contract 0.3.70 answers: no `desks`. */
+const before = (d: Level, apps: Record<string, Level> = {}, updatedAt: string | null = '2026-11-06T10:00:00.000Z') => ({ default: d, apps, updatedAt });
 
 const stored = new Map<string, string>();
 const docEvents = new Map<string, () => void>();
@@ -73,14 +75,14 @@ const settle = (ms = 0): Promise<void> => vi.advanceTimersByTimeAsync(ms).then((
 const mirror = (sub: string, d: StreamQuality): void => {
   stored.set('ma.streamQuality.v1', JSON.stringify({ sub, doc: d }));
 };
-const mirrored = (): { sub: string; doc: StreamQuality } | null => JSON.parse(stored.get('ma.streamQuality.v1') ?? 'null');
+const mirrored = (): { sub: string; doc: StreamQuality; layered?: boolean } | null => JSON.parse(stored.get('ma.streamQuality.v1') ?? 'null');
 const gets = () => calls.filter((c) => c.path === '/v1/me');
 const puts = () => calls.filter((c) => c.method === 'PUT');
 const lastPut = () => puts()[puts().length - 1]!;
 const shown = (): string => store.levelFor('browser');
 
 /** Started, with the first read answered by Platform. Null: a Platform from before the contract, with no `streamQuality`. */
-async function ready(platform: StreamQuality | null = doc('high', {}, null)): Promise<void> {
+async function ready(platform: StreamQuality | ReturnType<typeof before> | null = doc(null, {}, null)): Promise<void> {
   store.subscribe(() => {});
   await settle();
   gets()[0]!.resolve(platform === null ? { userId: 'u-a' } : { userId: 'u-a', streamQuality: platform });
@@ -106,7 +108,7 @@ describe('the mirror in localStorage', () => {
     await settle();
     expect(shown()).toBe('max');
     // And replaces it with this member's.
-    expect(mirrored()).toEqual({ sub: 'u-a', doc: doc('max', {}, '2026-11-06T09:00:00.000Z') });
+    expect(mirrored()).toEqual({ sub: 'u-a', doc: doc('max', {}, '2026-11-06T09:00:00.000Z'), layered: true });
   });
 
   it("Platform's answer is its word, even when older than the mirror", async () => {
@@ -193,7 +195,7 @@ describe('saving', () => {
     lastPut().resolve(doc('high', { browser: 'low' }, '2026-11-06T12:00:00.000Z'));
     await settle();
     expect(shown()).toBe('low');
-    expect(mirrored()).toEqual({ sub: 'u-a', doc: doc('high', { browser: 'low' }, '2026-11-06T12:00:00.000Z') });
+    expect(mirrored()).toEqual({ sub: 'u-a', doc: doc('high', { browser: 'low' }, '2026-11-06T12:00:00.000Z'), layered: true });
     expect([...new Set(seen)]).toEqual(['low']); // it never flickers back
 
     store.setOverride('browser', null);
@@ -361,81 +363,222 @@ describe('the React hook and the player', () => {
   });
 });
 
-describe("each desk's own level (finding 5: the account sets a default, a desk overrides it)", () => {
-  const deskMirror = (): { sub: string; desks: Record<string, Record<string, Level>> } | null => JSON.parse(stored.get('ma.streamQuality.desks.v1') ?? 'null');
+describe("each desk's own, on Platform (contract 0.3.70; the owner's rule: the account sets a default, a desk overrides it, an app on it overrides the desk)", () => {
+  const layered = (d: Level | null, desks: StreamQuality['desks'], updatedAt = '2026-11-06T10:00:00.000Z'): StreamQuality => ({ default: d, apps: {}, desks, updatedAt });
 
-  it('a level chosen on one desk is that desk\'s alone: the others follow the account, and Platform never hears of it', async () => {
+  it("an app's level on one desk is that desk's alone, saved to Platform; the other desks follow the account", async () => {
     await ready(doc('medium', {}, '2026-11-06T10:00:00.000Z'));
+    expect(store.getSnapshot().layered).toBe(true);
     store.setDeskLevel('d-personal', 'browser', 'low');
     expect(store.levelFor('browser', 'd-personal')).toBe('low');
     expect(store.levelFor('browser', 'd-work')).toBe('medium');
-    expect(store.getSnapshot().desks).toEqual({ 'd-personal': { browser: 'low' } });
+    await settle();
+    expect(lastPut().body).toEqual({ desks: { 'd-personal': { apps: { browser: 'low' } } } });
+    lastPut().resolve(layered('medium', { 'd-personal': { level: null, apps: { browser: 'low' } } }, '2026-11-06T12:00:00.000Z'));
+    await settle();
+    expect(store.levelFor('browser', 'd-personal')).toBe('low');
+    expect(mirrored()?.doc.desks).toEqual({ 'd-personal': { level: null, apps: { browser: 'low' } } });
+    expect(stored.has('ma.streamQuality.desks.v1')).toBe(false); // nothing kept in this browser alone
+    // The account's level moves the desks that follow it, and not the one with its own.
+    store.setDefault('max');
+    expect(store.levelFor('browser', 'd-work')).toBe('max');
+    expect(store.levelFor('browser', 'd-personal')).toBe('low');
+    // Null follows the desk again, which follows the account.
+    store.setDeskLevel('d-personal', 'browser', null);
+    expect(store.levelFor('browser', 'd-personal')).toBe('max');
+    await settle();
+    expect(lastPut().body).toEqual({ default: 'max' });
+    lastPut().resolve(layered('max', { 'd-personal': { level: null, apps: { browser: 'low' } } }, '2026-11-06T12:00:01.000Z'));
+    await settle();
+    expect(lastPut().body).toEqual({ desks: { 'd-personal': { apps: { browser: null } } } });
+  });
+
+  it("a desk's own level is for every app on it, under the app's own there, and null follows the account again", async () => {
+    await ready(layered('medium', { 'd-work': { level: null, apps: { browser: 'max' } } }));
+    store.setDeskOwnLevel('d-work', 'low');
+    store.setDeskOwnLevel('d-personal', 'high');
+    expect(store.levelFor('browser', 'd-work')).toBe('max'); // the Browser's own on Work comes first
+    expect(store.levelFor('claude', 'd-work')).toBe('low');
+    expect(store.levelFor('browser', 'd-personal')).toBe('high');
+    expect(store.levelFor('browser', 'd-guild')).toBe('medium');
+    await settle();
+    expect(puts()[0]!.body).toEqual({ desks: { 'd-work': { level: 'low' } } });
+    puts()[0]!.resolve(layered('medium', { 'd-work': { level: 'low', apps: { browser: 'max' } } }, '2026-11-06T12:00:00.000Z'));
+    await settle();
+    expect(puts()[1]!.body).toEqual({ desks: { 'd-personal': { level: 'high' } } });
+    puts()[1]!.resolve(layered('medium', { 'd-work': { level: 'low', apps: { browser: 'max' } }, 'd-personal': { level: 'high', apps: {} } }, '2026-11-06T12:00:01.000Z'));
+    await settle();
+    store.setDeskLevel('d-work', 'browser', null);
+    expect(store.levelFor('browser', 'd-work')).toBe('low'); // follows the desk
+    store.setDeskOwnLevel('d-work', null);
+    expect(store.levelFor('browser', 'd-work')).toBe('medium'); // and the desk the account
+    await settle();
+    expect(puts()[2]!.body).toEqual({ desks: { 'd-work': { apps: { browser: null } } } });
+    puts()[2]!.resolve(layered('medium', { 'd-work': { level: 'low', apps: {} }, 'd-personal': { level: 'high', apps: {} } }, '2026-11-06T12:00:02.000Z'));
+    await settle();
+    expect(puts()[3]!.body).toEqual({ desks: { 'd-work': { level: null } } });
+    expect(store.levelFor('browser', 'd-work')).toBe('medium');
+  });
+
+  it('a failed save of a desk\'s level puts it back and says so', async () => {
+    await ready(doc('medium'));
+    store.setDeskOwnLevel('d-work', 'low');
+    expect(store.levelFor('browser', 'd-work')).toBe('low');
+    await settle();
+    lastPut().reject({ status: 503 });
+    await settle();
+    expect(store.levelFor('browser', 'd-work')).toBe('medium');
+    expect(store.getSnapshot().notice).toBe("That didn't save. Try again in a moment.");
+  });
+
+  it('from the mirror, before Platform answers, a new session starts at the desk\'s level', async () => {
+    stored.set('ma.streamQuality.v1', JSON.stringify({ sub: 'u-a', doc: layered('high', { 'd-work': { level: 'low', apps: {} } }), layered: true }));
+    store.subscribe(() => {});
+    await settle();
+    expect(store.levelFor('browser', 'd-work')).toBe('low');
+    expect(store.getSnapshot().layered).toBe(true);
+  });
+
+  it("another member's token drops this member's desk levels", async () => {
+    await ready(layered('high', { 'd-personal': { level: 'low', apps: {} } }));
+    expect(store.levelFor('browser', 'd-personal')).toBe('low');
+    flags.token = tokenFor('u-b');
+    store.setDeskLevel('d-personal', 'browser', 'max');
+    await settle();
+    expect(puts()).toHaveLength(0);
+    expect(store.levelFor('browser', 'd-personal')).toBe('high');
+    expect(store.getSnapshot().layered).toBeNull();
+    gets()[1]!.resolve({ streamQuality: doc(null, {}, null) });
+    await settle();
+    expect(store.levelFor('browser', 'd-personal')).toBe('high');
+  });
+
+  it('the fixtures keep every layer in memory only', async () => {
+    flags.platform = false;
+    store.subscribe(() => {});
+    expect(store.getSnapshot().layered).toBe(true);
+    store.setDeskLevel('d-personal', 'browser', 'low');
+    store.setDeskOwnLevel('d-work', 'max');
+    await settle(1_000);
+    expect(store.levelFor('browser', 'd-personal')).toBe('low');
+    expect(store.levelFor('browser', 'd-work')).toBe('max');
+    expect(stored.size).toBe(0);
+    expect(calls).toEqual([]);
+  });
+});
+
+describe('against a Platform from before 0.3.70 (no desks): an app\'s level on a desk stays in this browser, as before', () => {
+  const deskMirror = (): { sub: string; desks: Record<string, Record<string, Level>> } | null => JSON.parse(stored.get('ma.streamQuality.desks.v1') ?? 'null');
+
+  it("is that desk's alone, kept here, never sent; a desk's own level for every app isn't offered", async () => {
+    await ready(before('medium', {}, '2026-11-06T10:00:00.000Z'));
+    expect(store.getSnapshot().layered).toBe(false);
+    expect(mirrored()?.layered).toBe(false);
+    store.setDeskLevel('d-personal', 'browser', 'low');
+    expect(store.levelFor('browser', 'd-personal')).toBe('low');
+    expect(store.levelFor('browser', 'd-work')).toBe('medium');
+    expect(store.getSnapshot().doc.desks).toEqual({ 'd-personal': { level: null, apps: { browser: 'low' } } });
+    store.setDeskOwnLevel('d-work', 'max');
+    expect(store.levelFor('browser', 'd-work')).toBe('medium');
     await settle(1_000);
     expect(puts()).toEqual([]);
     expect(deskMirror()).toEqual({ sub: 'u-a', desks: { 'd-personal': { browser: 'low' } } });
-    // The account's level moves the desks that follow it, and not the one with its own.
-    store.setOverride('browser', 'max');
-    expect(store.levelFor('browser', 'd-work')).toBe('max');
-    expect(store.levelFor('browser', 'd-personal')).toBe('low');
-    // Null follows the account again, and leaves nothing behind.
     store.setDeskLevel('d-personal', 'browser', null);
-    expect(store.levelFor('browser', 'd-personal')).toBe('max');
+    expect(store.levelFor('browser', 'd-personal')).toBe('medium');
     expect(deskMirror()).toEqual({ sub: 'u-a', desks: {} });
   });
 
-  it("this member's desk levels come back on the next load, and another member's are never used", async () => {
+  it("this member's come back on the next load, and another member's are never used", async () => {
     stored.set('ma.streamQuality.desks.v1', JSON.stringify({ sub: 'u-a', desks: { 'd-work': { browser: 'max' }, __proto__x: { browser: 'low' }, 'd-bad': { browser: 'ultra' } } }));
-    await ready();
+    await ready(before('high'));
     expect(store.levelFor('browser', 'd-work')).toBe('max');
-    expect(store.getSnapshot().desks).toEqual({ 'd-work': { browser: 'max' } });
+    expect(store.getSnapshot().doc.desks).toEqual({ 'd-work': { level: null, apps: { browser: 'max' } } });
 
     vi.resetModules();
     store = await import('./store');
     stored.set('ma.streamQuality.desks.v1', JSON.stringify({ sub: 'u-b', desks: { 'd-work': { browser: 'low' } } }));
-    await ready();
+    await ready(before('high'));
     expect(store.levelFor('browser', 'd-work')).toBe('high');
   });
 
-  it('a choice before the first token is kept, over what this browser had for other desks', async () => {
-    stored.set('ma.streamQuality.desks.v1', JSON.stringify({ sub: 'u-a', desks: { 'd-work': { browser: 'max' } } }));
-    store.setDeskLevel('d-personal', 'browser', 'low');
-    expect(store.levelFor('browser', 'd-personal')).toBe('low');
-    await ready();
-    expect(store.getSnapshot().desks).toEqual({ 'd-work': { browser: 'max' }, 'd-personal': { browser: 'low' } });
-    expect(deskMirror()).toEqual({ sub: 'u-a', desks: { 'd-work': { browser: 'max' }, 'd-personal': { browser: 'low' } } });
-  });
-
   it("another tab's choice for another desk isn't lost, and arrives through storage", async () => {
-    await ready();
+    await ready(before('high'));
     store.setDeskLevel('d-personal', 'browser', 'low');
-    // Another tab chose for Work meanwhile.
     stored.set('ma.streamQuality.desks.v1', JSON.stringify({ sub: 'u-a', desks: { 'd-personal': { browser: 'low' }, 'd-work': { browser: 'medium' } } }));
     winEvents.get('storage')!({ key: 'ma.streamQuality.desks.v1', newValue: stored.get('ma.streamQuality.desks.v1') });
     expect(store.levelFor('browser', 'd-work')).toBe('medium');
     store.setDeskLevel('d-personal', 'browser', 'max');
     expect(deskMirror()?.desks).toEqual({ 'd-personal': { browser: 'max' }, 'd-work': { browser: 'medium' } });
   });
+});
 
-  it("another member's token drops this member's desk levels", async () => {
-    await ready();
-    store.setDeskLevel('d-personal', 'browser', 'low');
-    flags.token = tokenFor('u-b');
-    store.setOverride('browser', 'max');
+describe("moving this browser's desk levels to Platform, once it has the desk layer", () => {
+  const deskMirror = (): { sub: string; desks: Record<string, Record<string, Level>> } | null => JSON.parse(stored.get('ma.streamQuality.desks.v1') ?? 'null');
+  const keep = (desks: Record<string, Record<string, Level>>, sub = 'u-a'): void => void stored.set('ma.streamQuality.desks.v1', JSON.stringify({ sub, desks }));
+
+  it('goes once, quietly, under anything Platform already has, and empties the browser\'s copy', async () => {
+    keep({ 'd-personal': { browser: 'low' }, 'd-work': { browser: 'max' } });
+    await ready({ default: 'high', apps: {}, desks: { 'd-work': { level: null, apps: { browser: 'medium' } } }, updatedAt: '2026-11-06T10:00:00.000Z' });
+    expect(puts()).toHaveLength(1);
+    expect(puts()[0]!.body).toEqual({ desks: { 'd-personal': { apps: { browser: 'low' } } } }); // Work's on Platform wins
+    // While it moves, this browser's level shows for the desk Platform has none for, and Platform's for the other.
+    expect(store.levelFor('browser', 'd-personal')).toBe('low');
+    expect(store.levelFor('browser', 'd-work')).toBe('medium');
+    puts()[0]!.resolve({ default: 'high', apps: {}, desks: { 'd-personal': { level: null, apps: { browser: 'low' } }, 'd-work': { level: null, apps: { browser: 'medium' } } }, updatedAt: '2026-11-06T12:00:00.000Z' });
     await settle();
-    expect(store.levelFor('browser', 'd-personal')).toBe('high');
-    gets()[1]!.resolve({ streamQuality: doc('high', {}, null) });
+    expect(store.levelFor('browser', 'd-personal')).toBe('low');
+    expect(deskMirror()).toEqual({ sub: 'u-a', desks: {} });
+    expect(store.getSnapshot().notice).toBeNull();
+    // A later read moves nothing again.
+    await settle(61_000);
+    docEvents.get('visibilitychange')!();
     await settle();
-    expect(store.levelFor('browser', 'd-personal')).toBe('high');
-    expect(deskMirror()?.sub).toBe('u-a'); // left as it was, for u-a's next sign-in here
+    gets()[1]!.resolve({ streamQuality: { default: 'high', apps: {}, desks: { 'd-personal': { level: null, apps: { browser: 'low' } } }, updatedAt: '2026-11-06T12:00:00.000Z' } });
+    await settle();
+    expect(puts()).toHaveLength(1);
   });
 
-  it('the fixtures keep a desk level in memory only', async () => {
-    flags.platform = false;
-    store.subscribe(() => {});
-    store.setDeskLevel('d-personal', 'browser', 'low');
-    await settle(1_000);
-    expect(store.levelFor('browser', 'd-personal')).toBe('low');
-    expect(stored.has('ma.streamQuality.desks.v1')).toBe(false);
-    expect(calls).toEqual([]);
+  it('with nothing Platform lacks, the copy is emptied with no save', async () => {
+    keep({ 'd-work': { browser: 'max' } });
+    await ready({ default: null, apps: {}, desks: { 'd-work': { level: 'low', apps: { browser: 'high' } } }, updatedAt: '2026-11-06T10:00:00.000Z' });
+    expect(puts()).toEqual([]);
+    expect(deskMirror()).toEqual({ sub: 'u-a', desks: {} });
+  });
+
+  it('a failed move says nothing, keeps the copy, and tries again at the next read', async () => {
+    keep({ 'd-personal': { browser: 'low' } });
+    await ready(doc(null, {}, '2026-11-06T10:00:00.000Z'));
+    puts()[0]!.reject({ status: 503 });
+    await settle();
+    expect(store.getSnapshot().notice).toBeNull();
+    expect(deskMirror()?.desks).toEqual({ 'd-personal': { browser: 'low' } });
+    expect(store.levelFor('browser', 'd-personal')).toBe('low'); // still this browser's, until it moves
+    await settle(61_000);
+    docEvents.get('visibilitychange')!();
+    await settle();
+    gets()[1]!.resolve({ streamQuality: doc(null, {}, '2026-11-06T10:00:00.000Z') });
+    await settle();
+    expect(puts()).toHaveLength(2);
+    expect(puts()[1]!.body).toEqual({ desks: { 'd-personal': { apps: { browser: 'low' } } } });
+  });
+
+  it("another member's copy is never moved", async () => {
+    keep({ 'd-personal': { browser: 'low' } }, 'u-b');
+    await ready(doc(null, {}, null));
+    expect(puts()).toEqual([]);
+    expect(deskMirror()?.sub).toBe('u-b');
+  });
+
+  it('a change the member makes while it moves goes next, after it', async () => {
+    keep({ 'd-personal': { browser: 'low' } });
+    await ready(doc(null, {}, '2026-11-06T10:00:00.000Z'));
+    store.setDeskOwnLevel('d-work', 'max');
+    await settle();
+    expect(puts()).toHaveLength(1);
+    puts()[0]!.resolve({ default: null, apps: {}, desks: { 'd-personal': { level: null, apps: { browser: 'low' } } }, updatedAt: '2026-11-06T12:00:00.000Z' });
+    await settle();
+    expect(puts()).toHaveLength(2);
+    expect(puts()[1]!.body).toEqual({ desks: { 'd-work': { level: 'max' } } });
+    expect(store.levelFor('browser', 'd-work')).toBe('max');
   });
 });

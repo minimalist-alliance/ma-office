@@ -81,6 +81,19 @@ for f in desk-data:usr/local/lib/ma/desk-data desk-data.socket:etc/systemd/syste
 done
 [ -x "$HERE/recipe/files/usr/local/lib/ma/desk-data" ] || die "recipe/files/usr/local/lib/ma/desk-data isn't executable"
 log "desk-data: the recipe's four files match tools/desk-data"
+# Links out (runtime spec section 8.11): the xdg-open stand-in and its socket directory's tmpfiles line are deskd's
+# (services/deskd/desk-tools), copied into the recipe the same way. deskd's release doesn't carry them (package-release.sh
+# ships run, health, the env and the image), and a program Chromium runs as kiosk from PATH belongs to the root.
+for f in xdg-open:usr/local/bin/xdg-open desk-links.tmpfiles:etc/tmpfiles.d/desk-links.conf; do
+  if ! cmp -s "$REPO/services/deskd/desk-tools/${f%%:*}" "$HERE/recipe/files/${f#*:}"; then
+    cp -p "$REPO/services/deskd/desk-tools/${f%%:*}" "$HERE/recipe/files/${f#*:}" \
+      || die "couldn't copy services/deskd/desk-tools/${f%%:*} over recipe/files/${f#*:}"
+    log "links out: copied services/deskd/desk-tools/${f%%:*} over recipe/files/${f#*:} (commit it)"
+  fi
+done
+[ -x "$HERE/recipe/files/usr/local/bin/xdg-open" ] || die "recipe/files/usr/local/bin/xdg-open isn't executable"
+[ -z "$(find "$HERE/recipe" -type l -print -quit)" ] || die "recipe/ holds a link, which the self-hosted bundle can't name: make it in build.sh"
+log "links out: the recipe's stand-in and tmpfiles line match services/deskd/desk-tools"
 
 BASE_AMI=$(aws ssm get-parameter --name /aws/service/debian/release/13/latest/arm64 --query Parameter.Value --output text)
 log "base AMI $BASE_AMI ($(aws ec2 describe-images --image-ids "$BASE_AMI" --query 'Images[0].Name' --output text))"

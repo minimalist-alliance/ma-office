@@ -38,10 +38,20 @@ public final class HeartbeatLoop {
 
     /**
      * @param spacing the least time between heartbeats. The contract says 15 s by Platform's clock, so
-     *     the default leaves a margin
+     *     the default leaves a margin. A heartbeat that fails is sent again this long after, doubling while it keeps
+     *     failing, up to the period
+     * @param maxPeriod the longest gap a reply's {@code nextHeartbeatSeconds} may ask for. agent.md marks a desk unhealthy
+     *     after 5 minutes without one, so 2 minutes leaves room for a lost heartbeat and its retry, and keeps the reply's
+     *     revocations, its backstop, within 2 minutes
      */
-    public record Timing(Duration period, Duration spacing, Duration requestTimeout) {
-        public static final Timing DEFAULT = new Timing(Duration.ofSeconds(60), Duration.ofSeconds(16), Duration.ofSeconds(10));
+    public record Timing(Duration period, Duration spacing, Duration requestTimeout, Duration maxPeriod) {
+        public static final Duration MAX_PERIOD = Duration.ofMinutes(2);
+        public static final Timing DEFAULT = new Timing(Duration.ofSeconds(60), Duration.ofSeconds(16), Duration.ofSeconds(10), MAX_PERIOD);
+
+        /** With {@link #MAX_PERIOD}, or the period if that's longer. */
+        public Timing(Duration period, Duration spacing, Duration requestTimeout) {
+            this(period, spacing, requestTimeout, period.compareTo(MAX_PERIOD) > 0 ? period : MAX_PERIOD);
+        }
     }
 
     private final Supplier<Map<String, Object>> agentFields;
@@ -53,10 +63,22 @@ public final class HeartbeatLoop {
     private final BooleanSupplier chromiumRefused;
     /** Chromium is frozen, as nobody looks at the desk (ADR 0045): {@link #browserFrozenFrom}. */
     private volatile BooleanSupplier browserFrozen = () -> false;
+    /** Seconds the Browser has been live to any session since boot (ADR 0090): {@link #browserLiveSecondsFrom}, or none. */
+    private volatile LongSupplier browserLiveSeconds;
     /** A guild desk's {@code guild} block (desks.md, "Guild Desk heartbeat"), from desk-rtc's latest stats; null elsewhere. */
     private volatile java.util.function.Function<RtcStats, Map<String, Object>> guildBlock = stats -> null;
     /** A reply's {@code guildVersion}, the roster's version, for a guild desk to read it when it's newer. */
     private volatile java.util.function.LongConsumer guildVersion = version -> {};
+    /** desk-notebook's storage state (its health frame's {@code storage}), or null if unknown: {@link #notebookStorageFrom}. */
+    private volatile Supplier<Map<String, Object>> notebookStorage = () -> null;
+    /** What {@link #notebookStorage} said at the last heartbeat, for the final one, which has no time to ask. */
+    private volatile Map<String, Object> lastNotebookStorage;
+    /** This deskd's version, as hello and /health say it, or null before {@link #deskdFrom}: then no {@code deskd} block. */
+    private volatile String deskdVersion;
+    /** GET /health's answer on the admin socket: {@link #deskdFrom}. */
+    private volatile BooleanSupplier deskdHealthy = () -> true;
+    /** What {@link #deskdHealthy} said at the last heartbeat, for the final one, which has no time to write a file. */
+    private volatile Boolean lastDeskdHealthy;
     private final LongSupplier freeBytesSent;
     private final Revocations revocations;
     private final PlatformActions actions;
@@ -74,6 +96,8 @@ public final class HeartbeatLoop {
     private long seq;
     /** Only the loop's thread touches this. */
     private boolean delivering;
+    /** Heartbeats in a row that failed, not counting a 429 with Retry-After. Only the loop's thread touches this. */
+    private int failures;
     /** A stop asked for ready, and Platform hasn't accepted a heartbeat saying so. Only the loop's thread touches this. */
     private boolean readyOwed;
     /** The next heartbeat is the first to say ready for this stop, so it skips the spacing. Only the loop's thread touches this. */
@@ -149,6 +173,36 @@ public final class HeartbeatLoop {
      */
     public void browserFrozenFrom(BooleanSupplier frozen) {
         this.browserFrozen = frozen;
+    }
+
+    /**
+     * Where {@code media.browserLiveSeconds} comes from: whole seconds the Browser's video has gone to any session since the
+     * desk booted, which the Platform's meter turns into a free member's Browser time (ADR 0090). Must not block.
+     */
+    public void browserLiveSecondsFrom(LongSupplier seconds) {
+        this.browserLiveSeconds = seconds;
+    }
+
+    /**
+     * Where {@code health.checks.notebook} comes from: desk-notebook's {@code storage} block, or null when it can't be read
+     * (no desk-notebook, or it didn't answer), which sends no check. May park briefly; it's asked once a heartbeat, from
+     * the loop's thread. Set once, before {@link #start}.
+     */
+    public void notebookStorageFrom(Supplier<Map<String, Object>> storage) {
+        this.notebookStorage = storage;
+    }
+
+    /**
+     * Where the heartbeat's {@code deskd} block comes from (ADR 0078 section 3.3, DE-2): this deskd's version, the one hello
+     * and {@code GET /health} say, and {@code /health}'s own answer, {@code ok} or {@code failing}, which is serving with its
+     * data directory writable (deskd has no databases of its own). So a release switched in where no {@code health} script
+     * can run, as in a shared host's slot, is still seen running and healthy by the Platform. A failing deskd also makes
+     * {@code health.status} failing. {@code healthy} writes a file, so it's asked once a heartbeat from the loop's thread,
+     * and the final heartbeat says what the last one did. Set once, before {@link #start}.
+     */
+    public void deskdFrom(String version, BooleanSupplier healthy) {
+        this.deskdHealthy = healthy;
+        this.deskdVersion = version;
     }
 
     /** A guild desk's {@code guild} block, built from desk-rtc's latest stats at each heartbeat. Set once, before start. */
@@ -278,9 +332,12 @@ public final class HeartbeatLoop {
         try {
             Map<String, Object> response = beat(false, timing.requestTimeout());
             readyOwed &= !sayingReady;
+            failures = 0;
             Object next = response.get("nextHeartbeatSeconds");
             if (next instanceof Number seconds && seconds.longValue() > 0) {
-                period = Math.max(TimeUnit.SECONDS.toNanos(seconds.longValue()), timing.spacing().toNanos());
+                // Held to the contract's bounds: never under the spacing, never so long the desk looks dead (audit D7).
+                long asked = seconds.longValue() >= timing.maxPeriod().toSeconds() ? timing.maxPeriod().toNanos() : TimeUnit.SECONDS.toNanos(seconds.longValue());
+                period = Math.max(asked, timing.spacing().toNanos());
             }
             if (!delivering) {
                 // Once, and again after a failure: enough to read the state from the log, with no line a minute.
@@ -302,10 +359,13 @@ public final class HeartbeatLoop {
                 } finally {
                     lock.unlock();
                 }
+            } else {
+                period = afterFailure(period);
             }
         } catch (IOException | RuntimeException e) {
             delivering = false;
             log.warn("heartbeat failed: {}", e.getClass().getSimpleName());
+            period = afterFailure(period);
         }
         lock.lock();
         try {
@@ -315,6 +375,21 @@ public final class HeartbeatLoop {
         } finally {
             lock.unlock();
         }
+    }
+
+    /**
+     * When to try again after a heartbeat that failed (audit D3): the spacing, doubling while they keep failing, up to the
+     * period, plus up to a quarter more so a fleet that failed together doesn't retry together. A whole period of silence
+     * after each blip would put two blips near the Platform's 5-minute mark.
+     */
+    private long afterFailure(long period) {
+        failures++;
+        long base = timing.spacing().toNanos();
+        for (int i = 1; i < failures && base < period; i++) {
+            base *= 2;
+        }
+        base = Math.min(base, period);
+        return base + (long) (base * 0.25 * java.util.concurrent.ThreadLocalRandom.current().nextDouble());
     }
 
     private Map<String, Object> beat(boolean last, Duration timeout) throws IOException, InterruptedException {
@@ -362,8 +437,12 @@ public final class HeartbeatLoop {
     }
 
     private Map<String, Object> body(boolean last) throws InterruptedException {
-        // First, because it can park on desk-rtc, and sentAt should be when it's sent.
+        // First, because they can park on desk-rtc and desk-notebook, and sentAt should be when it's sent.
         Map<String, Object> media = media(last);
+        Map<String, Object> storage = last ? lastNotebookStorage : notebookStorage.get();
+        lastNotebookStorage = storage;
+        Boolean deskdOk = deskdVersion == null ? null : last && lastDeskdHealthy != null ? lastDeskdHealthy : deskdHealthy();
+        lastDeskdHealthy = deskdOk;
         Instant now = clock.instant().truncatedTo(ChronoUnit.SECONDS);
         Map<String, Object> body = new LinkedHashMap<>();
         body.put("bootId", state.bootId());
@@ -373,7 +452,13 @@ public final class HeartbeatLoop {
         body.put("media", media);
         body.put("agent", agentFields.get());
         body.put("badges", Map.of("total", 0, "apps", Map.of()));
-        body.put("health", health());
+        body.put("health", health(storage, deskdOk));
+        if (deskdOk != null) {
+            Map<String, Object> deskd = new LinkedHashMap<>();
+            deskd.put("version", deskdVersion);
+            deskd.put("status", deskdOk ? "ok" : "failing");
+            body.put("deskd", deskd);
+        }
         body.put("dataVolume", dataVolume());
         body.put("guild", guildBlock.apply(lastStats));
         // Only after a prepare_stop: Platform powers off on this, so a plain restart must never say it.
@@ -386,11 +471,17 @@ public final class HeartbeatLoop {
      * Chromium's check is there only while it's been refused, and never says ok: it starts on demand, so deskd doesn't
      * know that. A refusal is degraded and no worse, as the desk still works apart from its Browser, and a volume that
      * can't be written is the worse of the two.
+     *
+     * <p>The volume fails when it can't be written by its mode or has under {@link DataVolume#LOW_SPACE_BYTES} usable
+     * (audit D5): a full disk still looks writable. Notebook's check is there only while desk-notebook answers: degraded
+     * while its writes fail and edits wait in memory, failing once it refuses edits, and each makes the status the same.
+     * A deskd whose own {@code /health} fails ({@code deskdOk} false) is failing too; null is not known.
      */
-    private Map<String, Object> health() {
-        boolean volumeOk = volume.looksWritable();
+    private Map<String, Object> health(Map<String, Object> notebookStorage, Boolean deskdOk) {
+        boolean volumeOk = volume.looksWritable() && !volume.lowOnSpace();
         boolean rtcOk = rtc.isConfigured();
         boolean refused = chromiumRefused.getAsBoolean();
+        String notebook = notebookCheck(notebookStorage);
         Map<String, Object> checks = new LinkedHashMap<>();
         checks.put("rtc", rtcOk ? "ok" : "failing");
         checks.put("dataVolume", volumeOk ? "ok" : "failing");
@@ -400,10 +491,41 @@ public final class HeartbeatLoop {
         if (browserFrozen.getAsBoolean()) {
             checks.put("browser", BROWSER_FROZEN);
         }
+        if (notebook != null) {
+            checks.put("notebook", notebook);
+        }
+        boolean notebookFailing = "failing".equals(notebook);
+        boolean notebookOk = notebook == null || "ok".equals(notebook);
         Map<String, Object> health = new LinkedHashMap<>();
-        health.put("status", !volumeOk ? "failing" : rtcOk && !refused ? "ok" : "degraded");
+        boolean failing = !volumeOk || notebookFailing || Boolean.FALSE.equals(deskdOk);
+        health.put("status", failing ? "failing" : rtcOk && !refused && notebookOk ? "ok" : "degraded");
         health.put("checks", checks);
         return health;
+    }
+
+    /** As the admin socket's /health decides it: a check that throws is failing. */
+    private boolean deskdHealthy() {
+        try {
+            return deskdHealthy.getAsBoolean();
+        } catch (RuntimeException e) {
+            log.warn("deskd's health check failed: {}", e.getClass().getSimpleName());
+            return false;
+        }
+    }
+
+    /** {@code ok}, {@code degraded} (writes failing, edits kept in memory) or {@code failing} (refusing edits); null if unknown. */
+    private static String notebookCheck(Map<String, Object> storage) {
+        if (storage == null) {
+            return null;
+        }
+        Object state = storage.get("state");
+        if ("ok".equals(state)) {
+            return "ok";
+        }
+        if ("degraded".equals(state)) {
+            return Boolean.TRUE.equals(storage.get("refusing")) ? "failing" : "degraded";
+        }
+        return null;
     }
 
     /**
@@ -493,6 +615,10 @@ public final class HeartbeatLoop {
         // Since this process started, unlike the totals above, which carry across a restart of desk-rtc: a restart of
         // deskd starts it again, as it does bytesSent's carry. bytesSent's growth includes these.
         media.put("freeBytesSent", freeBytesSent.getAsLong());
+        LongSupplier live = browserLiveSeconds;
+        if (live != null) {
+            media.put("browserLiveSeconds", live.getAsLong());
+        }
         return media;
     }
 

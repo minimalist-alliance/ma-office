@@ -98,11 +98,23 @@ class GuildRosterTest {
                         e -> assertThat(e.code()).isEqualTo("invalid_token"));
     }
 
+    /**
+     * Audit Z30: on a fresh guild desk, or after a restart with no kept roster and a failed read, a removed member's
+     * unexpired token can't stand alone. Every member is told the desk isn't ready, and gets in once a roster is read.
+     */
     @Test
-    void beforeAnyRosterTheTokenStandsAlone() throws Exception {
+    void beforeAnyRosterNoMemberGetsInAndTheDeskIsNotReady() throws Exception {
         roster();
-        roster.check(caller("gm-aaaa0001", "member", List.of(), false));
+        served.set(null);
+        roster.read();
+        await().until(() -> reads.get() >= 2);
         assertThat(roster.known()).isFalse();
+        assertThatThrownBy(() -> roster.check(caller("gm-aaaa0001", "lead", List.of(), false)))
+                .isInstanceOfSatisfying(SessionAuthorizer.RefusedException.class,
+                        e -> assertThat(e.code()).isEqualTo("desk_not_ready"));
+        served.set(body(1, List.of(entry("gm-aaaa0001", "lead", List.of(), false))));
+        await().until(roster::known);
+        assertThatNoException(caller("gm-aaaa0001", "lead", List.of(), false));
     }
 
     @Test

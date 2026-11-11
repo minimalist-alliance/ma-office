@@ -1,6 +1,6 @@
 # 0036. A per-desk outbound throttle, so the cost guard's stop is the last resort
 
-**Status:** Proposed (TD-223, T57). The on-desk half is in every image from `ma-desk-0.2.4` (`image/RELEASES.md`): the test desk, the owner's desk since it took 0.2.6, and every desk new from staging's and prod's `desk_image#current`, 0.2.9 since 2026-11-07. **Section 6's test 1, video through the shaper, didn't run before it reached them,** against "before anything reaches a member desk"; section 8's lab and `verify.sh` section 3d are all that's proven, so the first real profile change through a real `desk-rtc` happens live, when a desk passes 100 GB. The guard's half (`fast` at 20 GB, the 7 and 140 GB flags) isn't built in `ma-platform`, so nothing reports the shaper's state. ADR 0082's stops stay live. For launch it leaves out `deskd`'s `egress` field, the panel line and the "slowed" flag. *(Status updated 2026-11-07 from the weekend review; it said "not baked and on no desk".)*
+**Status:** Proposed (TD-223, T57). The on-desk half is in every image from `ma-desk-0.2.4` (`image/RELEASES.md`): the test desk, the owner's desk since it took 0.2.6, and every desk new from staging's and prod's `desk_image#current`, 0.2.9 since 2026-11-07. **Section 6's test 1, video through the shaper, didn't run before it reached them,** against "before anything reaches a member desk"; section 8's lab and `verify.sh` section 3d are all that's proven, so the first real profile change through a real `desk-rtc` happens live, when a desk passes 100 GB. *(2026-11-11: test 1's profile part has run through a real `desk-rtc` on a staging test desk, page fps never under 58.9 and a 233 to 250 ms pause per switch, and it found a `desk-stream` start bug, fixed in 0.3.5; the clamp now counts `desk-rtc` alone and the day lines look ahead. Addendum of that date.)* *(2026-11-11: tests 1, 2 and 4 have now run on a desk of its own, on `ma-desk-0.3.3`. Test 1's kiosk-saturating row fails its CPU rule by 1.2 to 1.4 points and everything else passes; on a shared host the tests still wait for the per-desk shaper. Results are under the addendum of 2026-11-09.)* The guard's half (`fast` at 20 GB, the 7 and 140 GB flags) isn't built in `ma-platform`, so nothing reports the shaper's state. ADR 0082's stops stay live. For launch it leaves out `deskd`'s `egress` field, the panel line and the "slowed" flag. *(Status updated 2026-11-07 from the weekend review; it said "not baked and on no desk".)*
 **Date:** 2026-11-06
 
 ## Context
@@ -244,7 +244,133 @@ Section 6's test 1 and test 3 were left open. Test 3's root part is built and **
 - **The host:** its NIC's largest bucket under the flooders' ceilings added, and its `NetworkOut` under ADR 0036's limits times `DesksPerHost` (ADR 0072 section 8's last-resort stop). `ens5` is unshaped by design, so R4 is also the check that 5 floods at 163 Mbps (815 Mbps) don't queue a viewer's packets: if D1's B12 moves by more than 3 ms in R4 and not in R1, `fq_codel` on `ens5` is what the System Engineer adds.
 - **R5** must show the opposite: `throttle_bucket` on the slot or host (bucket over 7 GB per desk) and, if the host can bind it, that the guard's per-slot stop follows `CostGuardTestLimitGb` on a `DeskKind=test` desk.
 
-**Prerequisites, for the System Engineer.** (1) A staging shared host that can carry N desks with per-desk shapers on the veth: **not built** (ADR 0072: "the shaper on a veth" is on the not-built list; no staging shared host can exist until Platform's host link, placement and pairing are). (2) `desk-host` writes each slot's `tc -s class` counters and `net.json` to its report, so the judge's `classes_mbps` and `guard_tx_gb` can be read. (3) A way to remove one slot's shaper for R5 without root in the desk. (4) The test-5 harness (`sh5.sh`) taking a flooder step. None of these is in this change.
+**Prerequisites, for the System Engineer.** (1) A staging shared host that can carry N desks with per-desk shapers on the veth: **not built** (ADR 0072: "the shaper on a veth" is on the not-built list; no staging shared host can exist until Platform's host link, placement and pairing are). (2) `desk-host` writes each slot's `tc -s class` counters and `net.json` to its report, so the judge's `classes_mbps` and `guard_tx_gb` can be read. (3) A way to remove one slot's shaper for R5 without root in the desk. (4) The test-5 harness (`sh5.sh`) taking a flooder step. None of these is in this change. **Note, 2026-11-11 (TD-223, `sub/td223-shaper`, for host 0.1.11):** (2) and (3) are built, and (1)'s host half: each slot's shaper on its veth and its budgets on the host (ADR 0072 section 8), the report's `shaper` counters, `desk-host shaper <k> off|on`, and the flooder step in the host image's lab driver (`image/lab/td223/lab.sh row`) in place of `sh5.sh`, which has no `desk-host`. A staging shared host is still Platform's. How to run the test: `docs/sub-status/td223-shaper.md`.
 
 **What stays from the original test 1.** Desks of their own (the Alliance size and the owner's) keep section 6's rows 1 to 4 as written; they still need `spikes/browser-bench/real-stack/` on a `Purpose=browser-benchmark` box. The questions section 8 lists as unproven (capped and deep at the real size, QUIC's ACKs, the profile-change pause through a real `desk-rtc`) are test 2 and test 4 items and unchanged.
 
+### Result, 2026-11-11: tests 1, 2 and 4 on a desk of its own; test 1 on a shared host still can't run (`sub/guild-td223-test1`)
+**Test 1 on a shared host (rows R0 to R5): not run.** No shared host has a per-desk shaper: ADR 0072 lists "the shaper on a veth" as not built, and the host's `classes.conf` publishes each class's `egress` without enforcing it. The four prerequisites above went to the System Engineer (`PROGRESS.md`, 02:18 MT). The same holds for the shared-host forms of tests 2 and 4 (budgets on the host, state under `/var/lib/desk-host`). **What ran instead** is what the addendum keeps for desks of their own, which is every desk in prod today: section 6's tests 1, 2 and 4 on one `c7g.large` from `ma-desk-0.3.3` (`<ami>`) at 1920x1080, as baked (the shaper on `ens5`, `desk-egress` `baked-de48ec84`, `desk-rtc` 0.5.0, `desk-stream` 0.3.3, `deskd` `ff58751`). The client was a `c7i.xlarge` in the same subnet with Playwright's Chrome 156, 30 ms of `netem` on the client's own outbound (so `ens5` kept the shaper as its root qdisc), reaching `desk-rtc` on the desk's public address. `gateway-shim` and the fake IMDS ran on the desk's loopback. Both boxes were tagged `Purpose=browser-benchmark`, with no role and no member data, and both are gone. The driver is `image/lab/throttle/real/` (`real.sh`, `rows.sh`, `rtctap.py` for `rtpDropped`, `t1judge.py`, `pause.mjs`), and the evidence is `image/evidence/throttle-real-2026-11-11/` (`docs/sub-status/guild-td223-test1.md`). All figures are [M].
+
+**Test 1, video through the shaper: idle and bucket-empty pass; kiosk-saturating fails the CPU rule.** Each row is the median of 3 repeats, interleaved, each a fresh session through `spikes/browser-bench/real-stack/proof2.mjs`. `desk-stream`'s CPU is in % of one core, and the machine's is for 2 vCPUs.
+
+| Row | Page fps, scroll / video | B12 idle p50 / p95 | B12 video p50 / p95 | B13 p50 / p95 | 1:10 drops, `rtpDropped` | `desk-stream` CPU, scroll / video | Machine CPU | Verdict |
+|---|---|---|---|---|---|---|---|---|
+| No shaper (baseline) | 59.95 / 59.91 | 40.9 / 53.2 | 59.9 / 74.9 | 41.1 / 44.7 | (no class), 0 | 44.8 / 56.6 | 47.8 / 53.6 | |
+| Shaper idle | 59.95 / 59.92 | 41.7 / 55.4 | 60.2 / 74.4 | 41.7 / 45.1 | 0, 0 | 45.4 / 56.5 | 48.4 / 53.6 | **Pass** |
+| Shaper, `kiosk` saturating 1:20 (UDP, 150 Mbps offered, 100.3 carried) | 59.93 / 59.87 | 43.0 / 54.2 | 59.9 / 76.2 | 38.9 / 46.4 | 0, 0 | **47.0 / 59.0** | 55.9 / 61.8 | **Fail: CPU** |
+| Bucket empty (`bucket_gb` 0.3), `kiosk` upload running | 59.95 / 59.91 | 41.2 / 53.3 | 58.8 / 72.3 | 37.0 / 43.1 | 0, 0 | 45.0 / 56.5 | 48.1 / 53.5 | **Pass** |
+
+- **The failing row,** exactly: `desk-stream` CPU was 2.2 points over no shaper while scrolling (47.0 against 44.8) and 2.4 points over with video (59.0 against 56.6), against a limit of 1. That is 1.2 and 1.4 points over the rule. Read as machine CPU, the row is 8.1 and 8.2 points over, but that includes the flood's own sender. Every other rule passed in that row: page fps 0.02 and 0.04 under, B12 2.1 ms and 0.0 ms over, B13 46 ms, and no drop on 1:10 or in `rtpDropped`. The client saw 0 packets lost and 0 freezes in every row of every repeat.
+- **Repeated, and what it's made of** (3 repeats each, against the same baseline): the kiosk row again gave +1.9 and +2.4 (fail). With `kiosk` paced at exactly 100 Mbps under the shaper it gave +2.0 and +2.5 (fail). With the same 100 Mbps and **no shaper** it gave +0.9 and +0.5 (would pass), with the machine +5.3 and +5.4, which is the sender. So carrying 100 Mbps of 1:20 through HTB costs about 1 to 2 points of `desk-stream`'s CPU and 2.2 to 2.8 points of the machine, beyond the sender. That is about 4 to 5 µs a packet at about 10,000 packets a second, against section 8's 2.6 µs, which was measured on the stream's own class. The desk kernel has `CONFIG_IRQ_TIME_ACCOUNTING` off, so softirq work (HTB's dequeue and its watchdog) is charged to whatever task it interrupts, `desk-stream` included. `desk-stream`'s own encode can't be told apart from the shaper's softirq that lands on it. The picture did not change.
+- **Not changed to make it pass:** the shaper, the rows and the rule are as section 6 wrote them. Whether a saturating upload's 1 to 2 points on the stream is accepted, reduced or measured another way is the System Engineer's call.
+
+**Test 2, profiles and counters: pass.**
+- **Capped and deep at the real size** (3 repeats each; normal is test 1's shaper-idle row), each set by `desk-egress` itself through lowered day lines:
+
+| Profile | Picture | Video GB/h | Scroll GB/h | Page fps, scroll / video | Stream fps, scroll / video | B12 video p50 / p95 | B13 p95 | `desk-stream` CPU, video |
+|---|---|---|---|---|---|---|---|---|
+| Normal | 1920x1080 | 3.27 | 1.26 | 59.95 / 59.92 | 59.84 / 59.98 | 60.2 / 74.4 | 45.1 | 56.5 |
+| Capped | 1920x1080, q28, 4 Mbps | **1.65** | 1.05 | 59.95 / 59.90 | 59.19 / 59.96 | 58.6 / 73.2 | 44.3 | 50.5 |
+| Deep | 960x540, q30, 2.5 Mbps | **0.58** | 1.11 | 59.95 / 59.91 | 59.23 / 59.97 | 57.7 / 69.5 | 41.0 | 26.3 |
+
+  Both keep 60 fps, B12 and B13. On video, capped is 50% of normal and deep is 18% (ADR 0033 had 1.85 and 0.74 GB/h on its own content). Scrolling barely changes, because scroll already sits near the lower caps. Deep's scroll is a little above capped's: 2.5 Mbps is its VBV cap, and the 5th-percentile stream fps while scrolling was 55 to 56 on both, against 58 to 59 at normal.
+- **Each class holds its ceiling** (`tests/t3-ceilings.sh`, run unchanged with `desk-rtc` stopped so 443 was free): alone, 1:10 carried 60.93, 1:15 2.03, and 1:20 100.29 (UDP), 100.80 (TCP) and 100.63 Mbps (internet MSS). All at once they carried 60.62, 2.02 and 101.16, 163.8 Mbps in all (0.7 of that is the two bursts). Keyframe bursts of 600 and 960 KB left in 1.9 and 2.7 ms with no drop. All within 3%. The first try, with `desk-rtc` still holding 443, couldn't send from 443 and is kept as `t3-rtc-running.out`.
+- **`tc` against `NetworkOut` over 10 GB** (`tests/t6-counters.sh`): `tc` counted 10,727,046,744 bytes, the same as `ip link` to the byte. CloudWatch's two 5-minute buckets for the test held 10.515 GB, 1.98% under. The next bucket held 0.676 GB, the test's last seconds plus the next tests' traffic, so even counting all of it the total is at most 4.3% over. **Within 5%.**
+
+**Test 4, budgets with lowered thresholds: pass** (`tests/t7-budgets.sh` phases run unchanged, plus `real/pause.mjs` for a real viewer):
+- **The bucket empties and reopens:** after 0.3 GB at 100 Mbps, 1:20 dropped to 0.75 and 1:15 to 0.25 within the 5 s tick, carrying 0.76 Mbps. With a 40 Mbps refill it reopened by itself within 10 s.
+- **A real page load with it empty:** four real pages took 0.37 to 1.59 s, against 0.30 to 0.96 s with the bucket full, and 0.38 to 1.02 s with an upload running beside them. All returned 200.
+- **The clamp (layer 5):** `rtc` sending 50 Mbps from 443 was clamped to 1 Mbit past 0.2 GB and lifted when the line was raised.
+- **State survives a reboot and a stop and wake:** with the desk slowed, deep and holding 349 MB this month, a reboot kept all three and the shaper was on 4.2 s after boot. A real EC2 stop and start (52 s) kept them too, with the shaper on at 4.17 s. The bucket gained 7.3 MB across the 62 s between readings, so the stopped time refilled it at 1 Mbps.
+- **Month rollover:** a state from October holding 600 GB started November at 264 bytes.
+- **`desk-stream` restarted during a live session recovers:** three `try-restart`s under a real viewer through the real `desk-rtc` each gave one pause, of 217, 200 and 267 ms. The session stayed the same and the picture came back each time.
+- **The pause at a profile change through a real `desk-rtc`** (section 8's open item): normal to capped 233 ms, capped to deep 233 ms (the picture went to 960x540), and deep to normal 233 ms. On the way to deep, the lab's fresh start passed through normal once, adding one 217 ms pause that `desk-egress` itself wouldn't make. The client saw 0 packets lost, and its 7 freezes are those 7 pauses. Two clusters of 4 or 5 shorter gaps (67 to 150 ms), 10 to 20 s after a step and tied to no command, are recorded. The 15 s baseline had none.
+
+**Test 3:** recorded above (2026-11-10, on staging; MP `ed27c15c`, MD `210b83d5`, both on `main`). Not re-run.
+
+**Still open:** test 1 on a shared host and the shared-host forms of tests 2 and 4 (the per-desk shaper on the veth, the System Engineer's); the kiosk row's CPU (the System Engineer's call); a t4g.medium (not a member size); QUIC's ACKs against the refill; and the guard's half (`fast` at 20 GB, Platform's).
+
+
+## Addendum, 2026-11-11: the clamp counts `desk-rtc`, the day lines look ahead, and the profile test through a real `desk-rtc` (S-29, 16 D items 2 and 3)
+Marks as above. Simulations by the minute with the real `Budget` class, as the weekend review's were: `image/lab/s29/sim.py`, outputs in `image/evidence/s29-2026-11-11/`. Viewers at their hard caps the whole time, from 00:00 on the 1st of a month so the month line can't step the stream down first.
+
+### Item 2: the clamp fired on honest use
+**Found (weekend review 16 D, CONFIRMED again here):** layer 5's clamp and the day lines all counted every class, so a clamp meant for a broken `desk-rtc` held honest viewers to 1 Mbit when anything else was sent, and the stream steps came too late for more than one viewer: two viewers and a 25 GB upload reached the guard's 150 GB `day` stop at hour 21.9, three viewers were clamped for 9 hours. Section 4's "A false stop" listed only `month`.
+
+**Decision, in the rule functions only (`Budget.tick`, so the shared host's per-slot `desk-egress` gets the same):**
+- **Layer 5 counts 1:10 alone,** in its own 24 h window of 5-minute slots: 135 GB, released under 120, as before. Its job is a broken `desk-rtc`; an upload beside honest viewers is the bucket's business.
+- **Layers 3 and 4 keep counting every class,** because they hold the guard's `day` and `month`, which do. But their day lines now look ahead: `ahead` is the most the 24 h window would reach if the stream went `deep` now and stayed there (the window's highest point is just before one of its slots ages out). Deep's rate is estimated from the stream's 15-minute moving average, scaled by each profile's share at its cap (High 3.75, capped 1.89, deep 1.20 GB/h). Past 100 GB of `ahead` the stream goes `capped`, past 105 `deep` until under 95 (was a plain 24 h total, 100 and 120 until under 100). 105 leaves the bucket's 30 GB and its 10.8 GB refill under the guard's 150. Back to `normal` only if the window could take `normal` at Max (5.55 GB/h): seen from `capped`, Max and High look alike, and without this a member at Max went up and down every hour (19 switches in 72 h with two viewers).
+- The month lines (100 and 500 GB) are unchanged. `egress.conf` keeps its keys; `deep_day_gb` is 105 and `deep_day_release_gb` 95. The state file gains `stream_windows` and `deep_rate`; a state from before keeps everything else.
+
+| Case (hard caps, from the 1st) | Clamp, before | After | Peak 24 h GB, before | After | Guard `day` stop, before | After | capped / deep at h, before | After |
+|---|---|---|---:|---:|---|---|---|---|
+| 1 viewer | never | never | 90.7 | 90.7 | never | never | 26.5 / never | 26.5 / never |
+| 1 viewer at Max | never | never | 111.7 | 101.3 | never | never | 17.9 / never | 15.1 / never |
+| 2 viewers | never | never | 133.3 | 105.4 | never | never | 13.3 / 18.5 | 8.3 / 11.8 |
+| 2 viewers, 6 GB a day other | h 23.4, 169 min | never | 135.5 | 108.7 | never | never | 12.9 / 17.8 | 7.9 / 10.9 |
+| 2 viewers, 25 GB upload at h 20 | h 20.2, 486 min | never | 151.0 | 130.4 | **h 21.9** | never | 13.3 / 18.5 | 8.3 / 11.8 |
+| 2 viewers, 30 GB upload at the worst hour | h 23.1, 405 min | never | 161.6 | 135.4 | **h 23.4** | never | 13.3 / 18.5 | 8.3 / 11.8 |
+| 2 viewers at Max, 30 GB at the worst hour | h 20.4, 478 min | never | 166.8 | 134.5 | **h 21.3** | never | 9.0 / 14.2 | 2.0 / 23.0 |
+| 3 viewers | h 16.5, 551 min | never | 138.6 | 105.6 | never | never | 8.9 / 12.4 | 1.8 / 4.1 |
+| 3 viewers, 30 GB at the worst hour | h 16.5, 716 min | never | 168.6 | 135.6 | **h 17.3** | never | 8.9 / 12.4 | 1.8 / 4.1 |
+| 4 viewers, the session limit | h 12.4, 1,219 min | never | 140.6 | 120.7 | never | never | 6.7 / 9.3 | 0.5 / 0.5 |
+| 3 viewers at Medium, 30 GB at the worst hour | h 23.2, 486 min | never | 158.1 | 147.4 | **h 23.5** | never | 17.6 / 21.1 | 14.5 / 14.6 |
+| Broken `desk-rtc` | h 5.0 | h 5.0 | 144.3 | 144.3 | never | never | | |
+| Broken `desk-rtc`, bucket saturated | h 3.8 | h 5.0 | 153.2 | 184.6 | h 20.4 | **h 4.4** | | |
+
+- **What it costs a member:** more viewers step down sooner. Two viewers at High's cap are capped at hour 8.3 (was 13.3) and deep at 11.8 (was 18.5); three are deep at hour 4.1, and four almost at once. Frame rate is never touched, and no honest case is clamped any more, where before 2 to 4 viewers lost their video to 1 Mbit for 3 to 20 hours.
+- **Section 5's table, rerun** (31 days, `test_desk_egress.py`'s `AdrTable`): two viewers nonstop now peak at 105.4 GB in 24 h (was 133) and 1,996 GB in the month (still the `month` stop); one viewer with non-stream saturated 107.7 (was 117), 1,411 in the month. The other rows are unchanged.
+- **What it gives up:** a broken `desk-rtc` beside a saturated bucket now reaches `day` at hour 4.4, not 20.4, because the clamp no longer counts the bucket's traffic. Both cases ended at the stop before, and a broken `desk-rtc` is the "bug or hack" the stop is for; it stops sooner, so it costs less. With honest other traffic the clamp still holds `day` (144.3 GB).
+- **Where the estimate is low:** members at Low or Medium under `normal` send closer to deep's rate than High's share assumes, so the step comes later. Three viewers at Medium with a whole-bucket upload at the worst hour peak at 147.4 GB, under the stop by 2.6. `desk-egress` can't see the level; `desk-rtc` could publish it if this needs to be exact.
+- **Tests that fail on the old rule:** `test_desk_egress.py`'s `HonestViewers` (8 tests: two and three viewers with a whole-bucket upload at four hours, 6 GB of other traffic, two at Max, four viewers; 9 failures on `main`'s `desk-egress`) and `Lookahead.test_the_clamp_counts_desk_rtc_alone`. 84 of 84 pass on the new one.
+
+### The capped profile and the member's level (S-29, ADR 0039's addendum of this date)
+`stream-capped.conf` (`desk-stream` 0.3.5) holds each level to its picture, so Low stays Low; `desk-rtc` 0.5.1 reads `/run/desk-egress/profile` and holds the level at Medium (`capped`) or Low (`deep`), and its reply says held.
+
+### Item 3: section 6's test 1, the profile part, through a real `desk-rtc` (ran 2026-11-11)
+Section 8 left "the pause at a profile change through a real `desk-rtc`" unproven, and the review found the first such change would happen live, at a member's 100 GB.
+- **Where it ran:** on the coordinator's change of plan, a temporary staging test desk of this task's own, not the shared one. A c7g.large on image 0.3.3 with `desk-rtc` 0.5.1 and `desk-stream` 0.3.5, test account `desk-2`.
+- **How:** a member's session through the real office app and Browser window, W3's 1080p60 synthetic clip playing (`e2e/w3/profile.spec.ts`).
+  - **To capped,** as at 100 GB, through `desk-egress`'s own tick: its `egress.conf` gets a 1 kB month line and a 5 s tick, and it restarts.
+  - **Back to normal,** with its conf and state put back. Both restore at the end, pass or fail.
+- **What it measures:** page fps is the desk's own rAF, one report a second, and the verdict. The client's decoded fps comes from getStats. The client was this workstation's headless Chrome at 52 to 57 ms RTT.
+- **Runs:**
+  - Two complete runs on 0.3.5: the member on Max across both switches, then on Low.
+  - One run on 0.3.4 found the start bug below.
+  - One more stopped in the spec, not on the desk: a stats second came back without a video entry, and the spec now skips such seconds. The desk's switch was clean there.
+
+| Run, level asked | Phase | Page fps: samples, avg, p5, min | Decoded fps avg, p5 (s) | Mbit/s | Pause ms | Decoded at 30+ again, ms after the pause | The desk's reply |
+|---|---|---|---|---:|---:|---:|---|
+| 2, Max | normal | 30, 60.0, 59.9, 59.0 | 59.7, 58 (30) | 11.97 | | | max |
+| 2, Max | **to capped** | 45, 60.0, 59.9, 59.1 | 59.6, 59 (45) | 4.60 | **250** | **623** | **medium, held, ceiling medium** |
+| 2, Max | capped | 30, 60.0, 59.9, 59.1 | 59.8, 58.5 (30) | 3.42 | | | medium, held |
+| 2, Low | capped | 30, 60.0, 59.9, 59.0 | 59.9, 59 (30) | 1.98 | | | low (1280x720) |
+| 2, Max | **back to normal** | 45, 60.0, 59.6, 58.9 | 59.6, 59 (45) | 11.75 | **250** | **655** | **max** |
+| 2, Max | normal | 30, 60.0, 59.8, 59.1 | 59.8, 59 (30) | 11.99 | | | max |
+| 4, Low | normal | 30, 60.0, 59.4, 58.9 | 59.8, 59 (30) | 1.98 | | | low |
+| 4, Low | **to capped** | 45, 60.0, 59.9, 59.1 | 59.6, 59 (45) | 1.99 | **250** | **717** | **low, ceiling medium** (not held: Low is inside the cap) |
+| 4, Low | capped | 30, 60.0, 59.9, 59.0 | 59.8, 59 (30) | 1.96 | | | low (1280x720) |
+| 4, Max | capped | 30, 60.0, 59.9, 59.0 | 59.9, 59.5 (30) | 3.42 | | | medium, held |
+| 4, Low | **back to normal** | 45, 60.0, 59.8, 59.0 | 59.6, 58.2 (45) | 1.98 | **233** | **549** | **low** |
+| 4, Low | normal | 30, 60.0, 59.9, 58.9 | 59.8, 59 (30) | 1.95 | | | low |
+
+- **Page fps never went under 58.9** in 420 one-second samples, both switches included. The stream came back each time: one pause of 233 to 250 ms (the longest gap between presented frames, and WebRTC's one freeze of 0.23 to 0.25 s), decoded frames at 30 a second or more again 0.55 to 0.72 s after it, no packet lost, the session kept.
+- **The member's word:** on a capped desk the real menu said "This desk is held at Medium for now." The reply came with `desk-stream`'s first connection after the profile changed.
+- **The pause:** 233 to 250 ms here, against section 8's 158 to 175 ms with a stand-in. This is the whole restart as a member sees it: `desk-stream`'s start, the level, the keyframe and the client's jitter buffer. A real crossing comes at a tick, at most every hour in the sharper direction, two or three times a month.
+- **The start bug it found:** run 1 (`desk-stream` 0.3.4) paused 3.8 s going back to normal at Max, because a new `desk-stream` told Max failed twice with "encoder not initialized" before a third start held.
+  - On the same desk with a stand-in for `desk-rtc`, starts at Max failed 4 of 10.
+  - With `desk-stream` 0.3.5, which takes a level's encoder values after the first frame, 20 of 20 starts at Max were clean, plus 5 of 5 at Medium and 5 of 5 at Low.
+  - It predates S-29: any `desk-stream` restart with a member on Max hits it.
+  - Evidence: `image/evidence/s29-2026-11-11/start-level-*.txt`.
+- **Not covered:**
+  - Test 1's other rows: no shaper, the shaper idle, `kiosk` saturating 1:20, and the bucket empty with an upload. They still need a `Purpose=browser-benchmark` box.
+  - The `deep` profile on the real stack.
+  - Real footage: the clip is synthetic and fills each ceiling.
+  - A client near the desk: latency isn't judged here.
+
+## Addendum, 2026-11-11: the `kiosk` row's CPU is accepted (the System Engineer's call)
+Test 1's `kiosk`-saturating row on a desk of its own (result of 2026-11-11 above) put `desk-stream` 2.2 and 2.4 points over no shaper against a limit of 1, and +1.9 to +2.5 when repeated. Everything a member sees held: 60 fps, B12 and B13 in budget, no drop on 1:10, 0 packets lost and 0 freezes in every repeat. **Accepted, not reduced.**
+- **What it is:** HTB's per-packet work on about 10,000 packets a second of the desk's own `kiosk` upload (about 4 to 5 µs a packet). It appears only while that desk saturates its own 100 Mbps class, and ends with the upload or when the bucket empties (the bucket-empty row passes).
+- **Why accept:** the CPU rule stands in for the picture, and the picture didn't move. The machine had room: 61.8% of its 2 vCPUs at the worst repeat, the flood's own sender included. Reducing the cost means a cheaper qdisc or no ceiling on 1:20, and either gives up what the shaper is for (section 5, ADR 0082's stops).
+- **The rule from now on,** for a desk of its own: `desk-stream` CPU within 1 point of no shaper with the shaper idle or the bucket empty, and within 3 points while the desk's own `kiosk` class saturates, every other rule unchanged.
+- **Shared hosts are unchanged:** the 2026-11-09 addendum's rule that the viewer D1 stays within 1 point of R0 while its neighbours flood (R1 to R4) stands. A neighbour paying for another desk's flood is a different question, and those rows answer it. The per-slot shaper, its counters and `desk-host shaper <k> off|on` are in host image 0.1.11 (TD-223), so test 1 on a shared host can run on a lab host of its own from that image (`docs/sub-status/td223-shaper.md`).

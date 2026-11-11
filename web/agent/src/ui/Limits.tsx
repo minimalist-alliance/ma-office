@@ -27,6 +27,7 @@ import {
   type PolicyDraft,
 } from '../model/limits';
 import { Meter } from './bits';
+import { useUnsaved } from './hooks';
 
 export function UsageRows({ view }: { view: LimitsView }) {
   const rows = limitRows(view);
@@ -135,6 +136,7 @@ export function LimitsPanel({ client, agent, view, onSaved }: { client: AgentCli
   const [busy, setBusy] = useState(false);
   const [failed, setFailed] = useState<string | null>(null);
   const zones = useMemo(() => (base && layers(base) ? zoneList() : []), [base]);
+  useUnsaved(useMemo(() => draft !== null && base !== null && JSON.stringify(draft) !== JSON.stringify(draftFromView(base)), [draft, base]));
 
   if (!view) return <div className="ag-panel ag-muted">Loading…</div>;
   const formView = base ?? view;

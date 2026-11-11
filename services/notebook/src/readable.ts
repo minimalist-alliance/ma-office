@@ -50,6 +50,8 @@ export class Readable {
   private failing = false;
   private stopped = false;
   private rebuilding: Promise<void> | null = null;
+  private ticking: Promise<void> | null = null;
+  private epoch = 0;
 
   constructor(
     dataDir: string,
@@ -104,13 +106,15 @@ export class Readable {
     this.timer.unref();
   }
 
-  /** For tests and SIGTERM: everything now, synchronously. */
+  /** For tests and SIGTERM: everything now, synchronously. A run that is yielding between pages is dropped. */
   flush(): void {
     if (this.timer) {
       clearTimeout(this.timer);
       this.timer = null;
     }
-    this.tick();
+    this.epoch++;
+    this.ticking = null;
+    for (const _ of this.tickSteps()) void _;
   }
 
   stop(): void {
@@ -122,9 +126,30 @@ export class Readable {
   /** Waits for a rebuild that's running, for tests. */
   async settled(): Promise<void> {
     await this.rebuilding;
+    await this.ticking;
   }
 
+  /** The timer's run: the same steps as flush, with the event loop let go between pages so a mass move stalls nothing. */
   private tick(): void {
+    if (this.rebuilding || this.ticking) {
+      this.schedule();
+      return;
+    }
+    const epoch = this.epoch;
+    const run = (async () => {
+      for (const _ of this.tickSteps()) {
+        void _;
+        await new Promise((r) => setImmediate(r));
+        if (this.stopped || this.epoch !== epoch) return; // flush() finished the job, or we're stopping.
+      }
+    })().finally(() => {
+      if (this.ticking === run) this.ticking = null;
+    });
+    this.ticking = run;
+  }
+
+  /** Makes the directory match the tree. Yields after each page it removes or writes; the order is the same either way. */
+  private *tickSteps(): Generator<void> {
     if (this.rebuilding) {
       this.schedule();
       return;
@@ -134,16 +159,18 @@ export class Readable {
       this.dirtyPages = new Set();
       const rev = this.opts.rev();
       const want = this.desired();
-      for (const [id, rel] of this.current) {
+      for (const [id, rel] of [...this.current]) {
         if (want.get(id) !== rel) {
           this.remove(rel);
           this.current.delete(id);
+          yield;
         }
       }
       for (const [id, rel] of want) {
         if (this.current.get(id) === rel && !dirty.has(id)) continue;
         this.writePage(id, rel);
         this.current.set(id, rel);
+        yield;
       }
       this.db.setSetting('readable_rev', String(rev));
       if (this.failing) {

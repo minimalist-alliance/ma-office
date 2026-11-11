@@ -2,13 +2,15 @@
 // (image/host/), from the wall test's run 2. desk-host makes the sandbox (runc create, its mounts, runc start) once per
 // desk start and never takes a request from a desk; this supervises the one service inside it, as its systemd unit would:
 //
-//	desk-svc [-restart always|on-failure|no] [-restart-sec N] [-stop-timeout N] [-prevent 78,...] [-ctl <socket> [-on-demand]] -- argv...
+//	desk-svc [-restart always|on-failure|no] [-restart-sec N] [-restart-max-sec N] [-restart-steps N] [-healthy-sec N] [-stop-timeout N] [-prevent 78,...] [-ctl <socket> [-on-demand]] -- argv...
 //	desk-svc -accept <socket> [-accept-mode 0660] [-max-conn 24] [-peer-uid 1100] -- argv...
 //
 // -accept is systemd's Accept=yes socket (desk-data.socket, WALL-06): it listens on <socket> and starts argv once per
 // connection, the connection as its stdin, and refuses a peer whose uid isn't -peer-uid (the helper checks it again).
 //
-// It starts argv in a process group of its own and restarts it as the unit says. SIGTERM (runc kill) stops it: SIGTERM to
+// It starts argv in a process group of its own and restarts it as the unit says. The wait before a restart grows as systemd's
+// RestartSteps= does, from -restart-sec to -restart-max-sec (300) in -restart-steps (8) restarts in a row, and starts over once
+// a run has lasted -healthy-sec (120) or somebody starts it; it never gives up (reliability audit S1). SIGTERM (runc kill) stops it: SIGTERM to
 // the group, -stop-timeout seconds, then SIGKILL, then exit 0. With -ctl it listens on a Unix socket for "start", "stop"
 // and "status" from uid 0 of the desk only (SO_PEERCRED; desk-init's units.sock hands deskd's requests on), and with
 // -on-demand it waits for "start" (desk-stream). It reaps every child, as process 1 must.
@@ -25,6 +27,7 @@ import (
 	"errors"
 	"flag"
 	"fmt"
+	"math"
 	"net"
 	"os"
 	"os/exec"
@@ -40,6 +43,11 @@ type svc struct {
 	argv        []string
 	restart     string
 	restartSec  time.Duration
+	restartMax  time.Duration // the cap of the back-off
+	restartStep int           // steps from restartSec to restartMax
+	healthy     time.Duration // a run this long without a break starts the back-off over
+	streak      int           // restarts in a row since a healthy run or a manual start
+	startedAt   time.Time
 	stopTimeout time.Duration
 	prevent     map[int]bool
 	mu          sync.Mutex
@@ -63,6 +71,7 @@ func (s *svc) start() error {
 	if s.cmd != nil {
 		return nil
 	}
+	s.streak = 0 // a start somebody asked for begins the back-off over, as systemctl start does
 	return s.spawnLocked()
 }
 
@@ -75,9 +84,22 @@ func (s *svc) spawnLocked() error {
 		return err
 	}
 	s.cmd = c
+	s.startedAt = time.Now()
 	s.exited = make(chan struct{})
 	logf("started %s pid %d", s.argv[0], c.Process.Pid)
 	return nil
+}
+
+// backoff is systemd's RestartSteps=/RestartMaxDelaySec= for the n-th restart in a row (n from 1): base for the first, then
+// base * (max/base)^((n-1)/steps), never more than max. With no steps or max at or under base it is base, as it was.
+func backoff(base, max time.Duration, steps, n int) time.Duration {
+	if steps <= 0 || max <= base || n <= 1 {
+		return base
+	}
+	if n-1 >= steps {
+		return max
+	}
+	return time.Duration(float64(base) * math.Pow(float64(max)/float64(base), float64(n-1)/float64(steps)))
 }
 
 // reap collects every child (process 1 must), and handles the service's own exit: never exec.Cmd.Wait, so no race.
@@ -107,11 +129,17 @@ func (s *svc) reap() {
 		if !again {
 			s.wanted = false
 		}
+		if time.Since(s.startedAt) >= s.healthy {
+			s.streak = 0 // it ran well: the back-off starts over
+		}
+		s.streak++
+		streak := s.streak
+		wait := backoff(s.restartSec, s.restartMax, s.restartStep, streak)
 		s.mu.Unlock()
-		logf("exited %d%s", rc, map[bool]string{true: ", restarting", false: ""}[again])
+		logf("exited %d%s", rc, map[bool]string{true: fmt.Sprintf(", restarting in %.1f s (restart %d in a row)", wait.Seconds(), streak), false: ""}[again])
 		if again {
 			go func() {
-				time.Sleep(s.restartSec)
+				time.Sleep(wait)
 				s.mu.Lock()
 				if s.wanted && !s.stopping && s.cmd == nil {
 					_ = s.spawnLocked()
@@ -296,6 +324,9 @@ func supervise(args []string) {
 	fs := flag.NewFlagSet("desk-svc", flag.ExitOnError)
 	restart := fs.String("restart", "always", "always|on-failure|no")
 	restartSec := fs.Float64("restart-sec", 3, "")
+	restartMax := fs.Float64("restart-max-sec", 300, "the back-off's cap; with -restart-steps 0 or the same as -restart-sec the wait stays flat")
+	restartSteps := fs.Int("restart-steps", 8, "restarts in a row from -restart-sec to -restart-max-sec")
+	healthy := fs.Float64("healthy-sec", 120, "a run this long, unbroken, starts the back-off over")
 	stopTimeout := fs.Float64("stop-timeout", 30, "")
 	prevent := fs.String("prevent", "", "exit codes that don't restart")
 	ctl := fs.String("ctl", "", "control socket")
@@ -306,6 +337,7 @@ func supervise(args []string) {
 		os.Exit(2)
 	}
 	s := &svc{argv: fs.Args(), restart: *restart, restartSec: time.Duration(*restartSec * float64(time.Second)),
+		restartMax: time.Duration(*restartMax * float64(time.Second)), restartStep: *restartSteps, healthy: time.Duration(*healthy * float64(time.Second)),
 		stopTimeout: time.Duration(*stopTimeout * float64(time.Second)), prevent: map[int]bool{}}
 	for _, p := range strings.Split(*prevent, ",") {
 		if n, err := strconv.Atoi(p); err == nil {

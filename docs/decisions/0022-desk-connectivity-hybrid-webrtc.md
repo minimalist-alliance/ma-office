@@ -40,3 +40,6 @@
   - A TLS-terminating gateway: plaintext at Platform, no UDP, sluggish.
   - Media-only direct: two transports and two auth models, with app traffic in plaintext at the gateway.
   - Separate WebRTC endpoints for media (Neko) and data (deskd): two connections per desk, against the contract's "one WebRTC connection".
+
+## Note (2026-11-10): TURN credentials are refreshed
+The relay is live on staging (ma-platform ADR 0120, contract gateway.md 2.4, 0.3.58 draft), at `turn.` on UDP 443 and TLS 443. Its credentials don't last an hour: they expire with the session's desk token (its `exp` plus 30 s, at least 60 s and at most an hour), and every `session.refreshed`, and a resume's `session.opened`, carry new ones. The Desk app hands each new set to the session's own connection with `setConfiguration`, so an ICE restart allocates with live credentials (`PeerSession.useIceServers` in `web/src/desk/rtc/peer.ts`). A new session uses only its own `session.opened` servers: credentials are never reused across sessions.

@@ -9,7 +9,7 @@ Task 47. Scores what deskd itself makes of the 42 public pages of the prototype'
 **`MinifiedRealSites`** (`src/test/java/.../browser/`): deskd end to end, as a desk runs it. A real headless Chromium on the public web, deskd's Browser module and its simplified view on it with the switch on (`media-actions` and `consent-reject` off), and a client asking through the same RPCs the Desk app uses. Per page, one tab, one page at a time:
 1. `browser.tab.navigate`, then wait until the tab stops loading (up to 45 s), then 2 s.
 2. Scroll the real page through 8 screens and back, as the prototype's run did, so lazy content is there. This is the harness's own debugging socket, not deskd.
-3. `browser.minified.get` until the view is `simplified` or `stream` (up to 25 s). Its result, as a client gets it, is `PNN.mdoc.json`.
+3. `browser.minified.get` until the view is `simplified` or `stream` (up to 25 s); a `simplified` view of a document still loading (a page that went on to another address) is asked again until it's loaded, as a client gets the loaded one from the topic (round 4). Its result, as a client gets it, is `PNN.mdoc.json`.
 4. `browser.minified.island` for the main island, if there is one. That reply, the timings and the tab's URL go to `PNN.run.json`.
 5. 4 s before the next page.
 
@@ -25,7 +25,7 @@ From `services/`, with Playwright's Chromium (build 1248 was used):
 JAVA_HOME=$HOME/.local/share/ma-desk-toolchain/jdk-21 DESKD_CHROMIUM_BIN=<chrome> MINIFIED_RUN_OUT=<folder outside git> nice -n 10 ./mvnw -q -f deskd/pom.xml test -Dtest=MinifiedRealSites -Dsurefire.failIfNoSpecifiedTests=false
 ```
 
-`MINIFIED_RUN_ONLY=P03,P05` runs some pages; `MINIFIED_RUN_SITES` takes another page list. The whole list takes about 15 minutes.
+`MINIFIED_RUN_ONLY=P03,P05` runs some pages; `MINIFIED_RUN_SITES` takes another page list (`sites-2026-11-11.json`: 16 of the day's common sites, T01 to T16, which have no targets in the check). The whole list takes about 15 minutes. `MINIFIED_RUN_SHOTS=1` also saves, for a rater, the images the view names as `browser.minified.image` gives them (`PNN.img/`, with why each missing one is missing in `PNN.run.json`) and the real page's first three 1800 px screens at half size (`PNN.orig-N.jpg`), any place the page names blanked first by `LocationBlank`'s rule. `MINIFIED_RUN_NO_SCROLL=1` skips the harness's own scroll-through, as a member's tab is: nothing but deskd's own pre-scroll scrolls it. Since round 3 the harness waits for deskd's pre-scroll to end after the first `simplified` view and asks `get` again, as a member's client does when the topic says the view changed; `PNN.run.json` has what the pre-scroll did (`prescroll`) and the first view's size (`firstView`). `MINIFIED_RUN_NO_PRESCROLL=1` turns deskd's pre-scroll off, as its `prescroll-off` switch does. Rounds and the rater's method: `docs/sub-status/simple-view-quality.md`.
 
 ```bash
 JAVA_HOME=$HOME/.local/share/ma-desk-toolchain/jdk-21 MINIFIED_V2_IN=<v2 run's captures> MINIFIED_RUN_OUT=<folder outside git> ./mvnw -q -f deskd/pom.xml test -Dtest=MinifiedV2Replay -Dsurefire.failIfNoSpecifiedTests=false

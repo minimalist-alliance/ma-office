@@ -115,6 +115,39 @@ describe('Platform\'s copy', () => {
     expect('stack' in read.doc.desks['plain']!).toBe(false);
   });
 
+  it('a carousel comes through Platform\'s copy as it was, only on its own desk, and a desk without one saves as it always did', () => {
+    const plain = desk('plain', 1);
+    const shown: LayoutDesk = { ...desk('shown', 700), carousel: { on: true, app: 'browser' } };
+    const off: LayoutDesk = { ...desk('off', 1400), carousel: { on: false, app: 'agent:research' } };
+    const body = writeServerLayout(doc(plain, shown, off));
+    const raw = (JSON.parse(body) as { layout: { desks: Record<string, Record<string, unknown>> } }).layout;
+    expect('carousel' in raw.desks['plain']!).toBe(false);
+    expect(raw.desks['shown']!['carousel']).toEqual({ on: true, app: 'browser' });
+    expect(raw.desks['off']!['carousel']).toEqual({ on: false, app: 'agent:research' });
+    const read = readServerLayout(raw) as Extract<ServerRead, { kind: 'ok' }>;
+    expect(read.doc.desks['shown']!.carousel).toEqual({ on: true, app: 'browser' });
+    expect(read.doc.desks['off']!.carousel).toEqual({ on: false, app: 'agent:research' });
+    expect('carousel' in read.doc.desks['plain']!).toBe(false);
+    expect(sameDesk(read.doc.desks['shown']!, shown)).toBe(true);
+    expect(writeServerLayout(read.doc)).toBe(body); // read back and saved again, the same bytes
+  });
+
+  it('a carousel that isn\'t one is no carousel, which is off', () => {
+    for (const carousel of [true, 'on', { on: 'yes', app: 'browser' }, { on: true, app: 'nope' }, { on: true }, null]) {
+      const read = readLayoutDoc({ desks: { a: { ...desk('a'), carousel } }, z: ['a'] })!;
+      expect('carousel' in read.desks['a']!, JSON.stringify(carousel)).toBe(false);
+    }
+  });
+
+  it('only the carousel is different: that\'s a different desk, so it arrives and saves', () => {
+    const plain = desk('a', 1);
+    const on: LayoutDesk = { ...plain, carousel: { on: true, app: 'chat' } };
+    expect(sameDesk(plain, on)).toBe(false);
+    expect(sameDesk(on, { ...plain, carousel: { on: true, app: 'notebook' } })).toBe(false);
+    expect(sameDesk(on, { ...plain, carousel: { on: false, app: 'chat' } })).toBe(false);
+    expect(sameDesk(on, { ...plain, carousel: { on: true, app: 'chat' } })).toBe(true);
+  });
+
   it('only a stack is different: that\'s a different desk, so it arrives and a merge keeps the right one', () => {
     const plain = twoApps('a', 1);
     const stacked = withStack(plain, plain.items.map((i) => i.id).reverse());
@@ -148,6 +181,14 @@ describe('Platform\'s copy', () => {
     const local: LayoutDoc = { desks: Object.fromEntries(placed.map((d) => [d.id, d])), z: ids };
     expect(isUntouched(local, ids)).toBe(true);
     expect(clearLayoutDoc(local)).toBe(local);
+  });
+
+  it('a desk the member switched to carousel has been touched, even with nothing moved', () => {
+    const ids = ['d0', 'd1'];
+    const placed: LayoutDesk[] = [];
+    for (const id of ids) placed.push(freshDesk(id, placed));
+    const local: LayoutDoc = { desks: { d0: placed[0]!, d1: { ...placed[1]!, carousel: { on: true, app: 'browser' } } }, z: ids };
+    expect(isUntouched(local, ids)).toBe(false);
   });
 
   it('merging: a desk only one side has stays, so one desk going elsewhere can\'t wipe the others', () => {

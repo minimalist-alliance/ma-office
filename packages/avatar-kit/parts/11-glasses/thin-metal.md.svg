@@ -1,0 +1,5 @@
+<g data-part="glasses-thin-metal" fill="none" stroke="{{glasses}}" stroke-linecap="round" stroke-linejoin="round">
+  <circle cx="110" cy="119" r="14.5" stroke-width="4.6" fill="#FFFFFF" fill-opacity="0.08"/>
+  <circle cx="146" cy="119" r="14.5" stroke-width="4.6" fill="#FFFFFF" fill-opacity="0.08"/>
+  <path d="M124.5,116.5 Q128,112 131.5,116.5" stroke-width="4"/>
+</g>

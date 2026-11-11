@@ -18,6 +18,11 @@ public final class Preparer {
 
     private final Parsers parsers;
 
+    /** The readers, which the Agent's {@code files_read} shares for a document from Files. */
+    public Parsers parsers() {
+        return parsers;
+    }
+
     public Preparer(Parsers parsers) {
         this.parsers = parsers;
     }

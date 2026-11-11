@@ -45,3 +45,50 @@ export function initialsOf(displayName: string | null | undefined, email?: strin
   const last = lettered.length > 1 ? firstLetter(lettered[lettered.length - 1] ?? '') : '';
   return (first + last).toLocaleUpperCase();
 }
+
+/**
+ * The address of a member's checked picture, or null (acct-picture; ma-platform contract profile-picture.md section 5).
+ * Only ever Platform's own public avatar route over https: `https://api.<host>/v1/public/avatars/im_...`. Anything else (another
+ * path, http, a data: or blob: address, a different shape) is initials, so the app can't be made to show a picture the
+ * image check did not pass.
+ */
+const PICTURE_PATH = /^\/v1\/public\/avatars\/im_[a-z2-7]{26}$/;
+export function pictureUrlOf(v: unknown): string | null {
+  if (typeof v !== 'string' || v.length > 300) return null;
+  try {
+    const u = new URL(v);
+    if (u.protocol !== 'https:' || u.username || u.password || u.search || u.hash || !PICTURE_PATH.test(u.pathname)) return null;
+    return u.href;
+  } catch {
+    return null;
+  }
+}
+
+/** A `Me`'s picture: `avatarUrl`, else the `avatar` object when its kind is `upload`. Other kinds are not a picture address (a built avatar is `builtRecipeOf`). */
+export function pictureOf(me: { avatarUrl?: unknown; avatar?: unknown } | null | undefined): string | null {
+  if (!me) return null;
+  const direct = pictureUrlOf(me.avatarUrl);
+  if (direct) return direct;
+  const a = me.avatar as { kind?: unknown; url?: unknown } | null | undefined;
+  return a && typeof a === 'object' && a.kind === 'upload' ? pictureUrlOf(a.url) : null;
+}
+
+/**
+ * A member's built avatar (acct-avatar): the recipe of `/v1/me` `avatar` when its kind is `built`. Checked again here, as
+ * the server did: a plain object, `kind: 'built'`, `kit: 1`, at most 600 bytes of JSON. Ids inside are not checked: the
+ * kit draws an unknown one as its category's default. Anything else is null, which is the initials.
+ */
+export const BUILT_MAX_BYTES = 600;
+export function builtRecipeOf(me: { avatar?: unknown } | null | undefined): Record<string, unknown> | null {
+  const a = me?.avatar as { kind?: unknown; config?: unknown } | null | undefined;
+  if (!a || typeof a !== 'object' || a.kind !== 'built') return null;
+  const c = a.config as Record<string, unknown> | null | undefined;
+  if (!c || typeof c !== 'object' || Array.isArray(c) || Object.getPrototypeOf(c) !== Object.prototype) return null;
+  if (c['kind'] !== 'built' || c['kit'] !== 1) return null;
+  try {
+    const json = JSON.stringify(c);
+    return new TextEncoder().encode(json).length <= BUILT_MAX_BYTES ? c : null;
+  } catch {
+    return null;
+  }
+}

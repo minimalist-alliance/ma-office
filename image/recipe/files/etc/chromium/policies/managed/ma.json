@@ -16,5 +16,16 @@
   "SyncDisabled": true,
   "MetricsReportingEnabled": false,
   "BackgroundModeEnabled": false,
-  "HomepageLocation": "file:///usr/local/share/ma/home.html"
+  "HomepageLocation": "file:///usr/local/share/ma/home.html",
+  "ExtensionInstallBlocklist": ["*"],
+  "ExtensionAllowedTypes": ["extension"],
+  "BlockExternalExtensions": true,
+  "AutoLaunchProtocolsFromOrigins": [
+    {"protocol": "tel", "allowed_origins": ["*"]},
+    {"protocol": "sms", "allowed_origins": ["*"]},
+    {"protocol": "zoommtg", "allowed_origins": ["*"]},
+    {"protocol": "msteams", "allowed_origins": ["*"]},
+    {"protocol": "facetime", "allowed_origins": ["*"]},
+    {"protocol": "webcal", "allowed_origins": ["*"]}
+  ]
 }

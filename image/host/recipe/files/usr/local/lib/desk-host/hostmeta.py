@@ -3,7 +3,13 @@ shared-host.md section 2; ADR 0072 Platform's side, PF-01). Host root only: IMDS
 
 - Imds: IMDSv2 for the host itself (a token from PUT, then reads with it), one second a request, no proxy. The base URL is
   the real IMDS; tests point it elsewhere (DESK_HOST_IMDS).
+- slot_mode(): the host's SlotMode from its first boot (hosting.json, desk-host-boot): "address" (choice A: a private
+  address and an Elastic IP per slot, the default when the launch had no SlotMode tag) or "port" (choice B, the owner's,
+  2026-11-10: one public IPv4 for the host, slot k on UDP 4430+k and every slot's ICE-TCP on the host's 443 through the
+  demux). Anything else raises: a host that can't say which never guesses, and starts nothing.
 - parse_slot_tag(): DeskSlot<k> = <deskId|->/<volumeId|->/<privateIp>/<allocationId>/<epoch>[/<class>], read strictly.
+  Under SlotMode=port the two address fields must be "-" (the host's address is the slot's, and there's no Elastic IP);
+  under address they must be an IPv4 and an allocation ID. A tag of the other mode means nothing.
   The sixth field, the slot's size class, is optional and only a class /etc/desk-host/classes.conf names (standard and free
   today; missing means standard; the System Engineer's size classes, accepted for the contract by the coordinator), so a new
   class needs only that table. Anything that isn't exactly that is None, and None means nothing: no slot is started,
@@ -29,6 +35,8 @@ IMDS = os.environ.get("DESK_HOST_IMDS", "http://169.254.169.254")
 CLASSES_TABLE = os.environ.get("DESK_HOST_CLASSES", "/etc/desk-host/classes.conf")
 HOSTING = os.environ.get("DESK_HOST_HOSTING", "/var/lib/desk-host/hosting.json")
 SLOTS_MAX = 29
+SLOT_MODES = ("address", "port")
+UDP_PORT_BASE = 4430   # under SlotMode=port, slot k is UDP 4430 + k on the host's own address
 
 DESK_ID = re.compile(r"d-[a-z2-7]{12}")
 VOLUME_ID = re.compile(r"vol-[0-9a-f]{8,17}")
@@ -64,10 +72,25 @@ def is_ipv4(s):
     return isinstance(s, str) and IPV4.fullmatch(s) is not None
 
 
-def parse_slot_tag(v):
-    """The tag's value as {deskId, volumeId, privateIp, allocationId, epoch}, or None for anything else. An empty slot has
-    no desk and no volume and still names its addresses."""
-    if not isinstance(v, str) or len(v) > 256:
+def slot_mode():
+    """The first boot's SlotMode (hosting.json), "address" or "port"; ValueError for anything else."""
+    with open(HOSTING) as f:
+        m = json.load(f).get("slotMode", "address")
+    if m not in SLOT_MODES:
+        raise ValueError("SlotMode is neither address nor port")
+    return m
+
+
+def parse_slot_tag(v, mode=None):
+    """The tag's value as {deskId, volumeId, privateIp, allocationId, epoch, class}, or None for anything else. An empty
+    slot has no desk and no volume. Under SlotMode=address it still names its addresses; under port both are "-" (None
+    here), and an address in them means nothing, as "-" does under address. mode is the host's (slot_mode()) unless given."""
+    if mode is None:
+        try:
+            mode = slot_mode()
+        except (OSError, ValueError, KeyError):
+            return None
+    if mode not in SLOT_MODES or not isinstance(v, str) or len(v) > 256:
         return None
     parts = v.split("/")
     if len(parts) == 6:
@@ -82,7 +105,13 @@ def parse_slot_tag(v):
     empty = d == "-" and vol == "-"
     if not empty and not (DESK_ID.fullmatch(d) and VOLUME_ID.fullmatch(vol)):
         return None
-    if not IPV4.fullmatch(ip) or not ALLOCATION_ID.fullmatch(alloc) or not EPOCH.fullmatch(e):
+    if not EPOCH.fullmatch(e):
+        return None
+    if mode == "port":
+        if ip != "-" or alloc != "-":
+            return None
+        ip = alloc = None
+    elif not IPV4.fullmatch(ip) or not ALLOCATION_ID.fullmatch(alloc):
         return None
     return {"deskId": None if empty else d, "volumeId": None if empty else vol, "privateIp": ip, "allocationId": alloc,
             "epoch": int(e), "class": cls}
@@ -144,12 +173,18 @@ class Imds:
             raise ImdsError(type(e).__name__) from None
 
 
-def slot_tags(imds, n):
+def slot_tags(imds, n, mode=None):
     """{k: parsed tag or None} for 1..n. A tag that's absent or doesn't parse is None. ImdsError if IMDS can't be read."""
     out = {}
     for k in range(1, n + 1):
-        out[k] = parse_slot_tag(imds.get(f"meta-data/tags/instance/DeskSlot{k}"))
+        out[k] = parse_slot_tag(imds.get(f"meta-data/tags/instance/DeskSlot{k}"), mode)
     return out
+
+
+def udp_port(k):
+    """Slot k's UDP port under SlotMode=port: 4430 + k, 4431 to 4459 for 29 slots (the security group's 4431 to 4430 +
+    SlotsPerHost)."""
+    return UDP_PORT_BASE + k
 
 
 def mac_of_address(imds, ip):

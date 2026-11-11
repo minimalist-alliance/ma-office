@@ -111,7 +111,7 @@ export function ToneWheel({ value: stored, theme, onChange }: { value: string; t
         );
       })}
       <div className="ag-look-wheel-preview" aria-hidden="true">
-        <AgentMark icon="spark" tone={value} theme={theme} size={44} />
+        <AgentMark icon="nodes" tone={value} theme={theme} size={44} />
       </div>
     </div>
   );

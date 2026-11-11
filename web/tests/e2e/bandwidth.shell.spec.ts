@@ -428,3 +428,66 @@ test('no Maia in client-config: no line and no request to her', async ({ page, r
   await expect(panel(page)).toBeVisible();
   await expect(maiaLineOf(page)).toHaveCount(0);
 });
+
+// An {alliance} adult feels the weekly limit and reads where more comes from (the Designer's free-tier README, A2 and A3).
+const ALLIANCE_ADULT = { status: 'active', tier: 'alliance', ageBand: 'adult', adultFrom: null, parent: null };
+const AGE_ON = { enabled: true, minimumAge: 13, adultAge: 18 };
+const OFFICER_30 = { officer: { weeklyAllowanceGb: 30 } };
+const offerOf = (page: Page) => page.getByTestId('bandwidth-offer');
+
+for (const theme of ['light', 'dusk', 'dark'] as ThemeId[]) {
+  test(`${theme}: an alliance adult's panel adds the next tier's weekly allowance and See membership`, async ({ page, request }) => {
+    const errors = watchConsole(page);
+    await setTheme(page, theme);
+    await harness(request, { membership: ALLIANCE_ADULT, ageRules: AGE_ON, tierNames: { alliance: 'Alliance Member', officer: 'Steward', lead: 'Captain' }, tierAllowances: OFFICER_30 });
+    await arrive(page, request, meter(12.34, { tier: 'alliance' }));
+    await circle(page).click();
+    await expect(offerOf(page)).toHaveText('Steward has 30 GB a week. See membership');
+    const link = offerOf(page).getByRole('link', { name: 'See membership' });
+    await expect(link).toHaveAttribute('href', 'https://platform.localhost/account');
+    await expect(link).toHaveAttribute('target', '_blank');
+    await page.screenshot({ path: `test-results/shots/${theme}-alliance-up-panel.png` });
+    expect(errors).toEqual([]);
+  });
+
+  test(`${theme}: an alliance adult's weekly pause adds one quiet link, and the words stay`, async ({ page, request }) => {
+    const errors = watchConsole(page);
+    await setTheme(page, theme);
+    await harness(request, { membership: ALLIANCE_ADULT, ageRules: AGE_ON, tierAllowances: OFFICER_30 });
+    await arrive(page, request, meter(0, { tier: 'alliance' }));
+    await openApp(page, 'Browser');
+    await harness(request, { bandwidth: meter(30.2, { tier: 'alliance' }) });
+    const paused = page.getByTestId('bandwidth-paused');
+    await expect(paused.getByRole('heading')).toHaveText(/^Browser is paused until \w{3} \d{1,2}:\d{2} [AP]M$/);
+    await expect(paused).toContainText("You've used this week's 30 GB of bandwidth. Notebook and Agent keep working, and your tabs are safe.");
+    await expect(paused.getByRole('link')).toHaveText('Officer has 30 GB a week');
+    await expect(paused.getByRole('link')).toHaveAttribute('href', 'https://platform.localhost/account');
+    await page.screenshot({ path: `test-results/shots/${theme}-alliance-up-paused.png` });
+    expect(errors).toEqual([]);
+  });
+}
+
+test('no allowance on the wire: "more each week", no number; the heads-up at the warning line has no link', async ({ page, request }) => {
+  await harness(request, { membership: ALLIANCE_ADULT, ageRules: AGE_ON });
+  await arrive(page, request, meter(25, { tier: 'alliance' }));
+  await expect(page.getByTestId('bandwidth-notice')).toHaveText("You've used 83% of this week's bandwidth: 25 GB of 30 GB.");
+  await expect(page.getByTestId('bandwidth-notice').getByRole('link')).toHaveCount(0);
+  await circle(page).click();
+  await expect(offerOf(page)).toHaveText('Officer has more each week. See membership');
+});
+
+const NOTHING_NEW: [string, Record<string, unknown>, string][] = [
+  ['a teen', { age: 'teen' }, 'alliance'],
+  ['an officer', { membership: { ...ALLIANCE_ADULT, tier: 'officer' }, ageRules: AGE_ON }, 'officer'],
+  ['an alliance member whose age band is not known', { membership: { ...ALLIANCE_ADULT, ageBand: null } }, 'alliance'],
+];
+for (const [who, state, tier] of NOTHING_NEW) {
+  test(`${who} sees nothing new in the panel`, async ({ page, request }) => {
+    await harness(request, { ...state, tierAllowances: OFFICER_30 });
+    await arrive(page, request, meter(0, { tier }));
+    await circle(page).click();
+    await expect(panel(page)).toBeVisible();
+    await expect(offerOf(page)).toHaveCount(0);
+    await expect(panel(page).getByRole('link')).toHaveCount(0);
+  });
+}

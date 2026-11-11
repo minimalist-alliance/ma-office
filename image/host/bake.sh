@@ -6,12 +6,14 @@
 # volume) and turns the builder into the host. The AMI carries both volumes.
 # Env: HOST_AMI_PREFIX (ma-desk-test-host-, so image/prune.sh can delete a test bake; ma-shared-host- for a release),
 # OWNER_TAG, BUILDER_TYPE (c7g.large), ROOT_GB (16: the host and its 8 GB swap file), STORE_GB (12: the template and the
-# release store; Platform launches it bigger, desk-host-boot grows it).
+# release store; Platform launches it bigger, desk-host-boot grows it). BATCH_BASELINE (ADR 0078 1.3 step 2): the newest signed batch
+# whose releases this image's pin holds, written to /etc/desk-host/batch-baseline; none, no file (0).
 set -euo pipefail
 HERE=$(cd "$(dirname "$0")" && pwd)
 IMG=$(cd "$HERE/.." && pwd)
 . "$IMG/lib.sh"
 VERSION=${1:-}; [[ $VERSION =~ ^[A-Za-z0-9._-]{1,40}$ ]] || die "usage: bake.sh <version>"
+[ -z "${BATCH_BASELINE:-}" ] || [[ $BATCH_BASELINE =~ ^[0-9]{1,15}$ ]] || die "BATCH_BASELINE must be a batch sequence number"
 PREFIX=${HOST_AMI_PREFIX:-ma-desk-test-host-}
 NAME=$PREFIX$VERSION
 ROOT_GB=${ROOT_GB:-16}; STORE_GB=${STORE_GB:-12}
@@ -64,12 +66,35 @@ for f in desk-data:usr/local/lib/ma/desk-data desk-data.socket:etc/systemd/syste
   cmp -s "$REPO/tools/desk-data/${f%%:*}" "$IMG/recipe/files/${f#*:}" || die "recipe/files/${f#*:} differs from tools/desk-data"
 done
 
+# ADR 0077 PU-9: the template signing key, before anything is launched. The committed key must be exactly its committed anchor
+# (recipe/template-keys.sha256; recipe/build.sh checks it again on the builder, staged and installed) and alias/ma-host-template's
+# public half as KMS's GetPublicKey gives it (compared as DER). A role without kms:GetPublicKey skips only the KMS half, loudly.
+TK_DIR=$HERE/recipe/files/etc/desk-host/template-keys; TK_ANCHOR=$HERE/recipe/template-keys.sha256
+python3 -I "$HERE/recipe/template-key-check" "$TK_DIR" "$TK_ANCHOR" >&2 || die "the committed template key isn't exactly its anchor (recipe/template-keys.sha256)"
+TK_DER=$(mktemp); TK_ERR=$(mktemp)
+if aws kms get-public-key --key-id alias/ma-host-template --query PublicKey --output text 2>"$TK_ERR" | base64 -d > "$TK_DER" 2>/dev/null \
+   && [ -s "$TK_DER" ]; then
+  python3 -I "$HERE/recipe/template-key-check" "$TK_DIR" "$TK_ANCHOR" --kms-der "$TK_DER" >&2 \
+    || { rm -f "$TK_DER" "$TK_ERR"; die "the committed template key isn't alias/ma-host-template's public half (KMS GetPublicKey differs): no bake"; }
+elif grep -q 'AccessDenied' "$TK_ERR"; then
+  log "WARNING: ==== the template key was NOT compared with KMS: this role lacks kms:GetPublicKey on alias/ma-host-template. Only the committed anchor is checked in this bake ===="
+else
+  e=$(grep -o '[A-Za-z]*Exception' "$TK_ERR" | head -1 || true); rm -f "$TK_DER" "$TK_ERR"
+  die "KMS GetPublicKey on alias/ma-host-template failed (${e:-no error class}): no bake"
+fi
+rm -f "$TK_DER" "$TK_ERR"
+
 # desk-svc, built here with the pinned Go, the same bytes for the same source (process 1 of every service's sandbox)
 GO=${GO:-$HOME/.local/go/bin/go}
 DSVC=$(mktemp -d)
 (cd "$HERE/desk-svc" && CGO_ENABLED=0 GOOS=linux GOARCH=arm64 "$GO" build -trimpath -ldflags='-s -w -buildid=' -o "$DSVC/desk-svc" .) || die "desk-svc didn't build"
 (cd "$DSVC" && sha256sum desk-svc > desk-svc.sha256)
 log "desk-svc $(cut -c1-12 "$DSVC/desk-svc.sha256") ($("$GO" version | awk '{print $3}'))"
+# desk-ice-demux the same way (SlotMode=port's TCP 443; on every host, started only under SlotMode=port)
+DMXV=$(git -C "$HERE/desk-ice-demux" log -1 --format=%h -- . 2>/dev/null || echo unknown)   # the source's last commit: the same bytes for the same source
+(cd "$HERE/desk-ice-demux" && CGO_ENABLED=0 GOOS=linux GOARCH=arm64 "$GO" build -trimpath -ldflags="-s -w -buildid= -X main.version=$DMXV" -o "$DSVC/desk-ice-demux" .) || die "desk-ice-demux didn't build"
+(cd "$DSVC" && sha256sum desk-ice-demux > desk-ice-demux.sha256)
+log "desk-ice-demux $DMXV, $(cut -c1-12 "$DSVC/desk-ice-demux.sha256")"
 
 BASE_AMI=$(aws ssm get-parameter --name /aws/service/debian/release/13/latest/arm64 --query Parameter.Value --output text)
 log "base AMI $BASE_AMI ($(aws ec2 describe-images --image-ids "$BASE_AMI" --query 'Images[0].Name' --output text))"
@@ -97,7 +122,7 @@ STAGE=$WORKDIR/stage; mkdir -p "$STAGE"
 cp -r "$IMG/recipe" "$STAGE/ma-recipe"; cp -r "$HERE/recipe" "$STAGE/ma-host-recipe"
 cp "$IMG/recipe/releases.pin" "$STAGE/ma-host-recipe/releases.pin"
 (cd "$IMG/recipe/files" && find . -type f -o -type l) > "$STAGE/ma-host-recipe/desk-files.txt"
-cp "$DSVC/desk-svc" "$DSVC/desk-svc.sha256" "$STAGE/ma-host-recipe/"; rm -rf "$DSVC"
+cp "$DSVC/desk-svc" "$DSVC/desk-svc.sha256" "$DSVC/desk-ice-demux" "$DSVC/desk-ice-demux.sha256" "$STAGE/ma-host-recipe/"; rm -rf "$DSVC"
 scp "${SSH_OPTS[@]}" -i "$KEY_FILE" -r "$STAGE/ma-recipe" "$STAGE/ma-host-recipe" "admin@$IP:/home/admin/" >/dev/null
 fetch='set -euo pipefail; mkdir -p /home/admin/ma-recipe/releases /home/admin/ma-host-recipe/releases; cd /home/admin/ma-recipe/releases'
 for cv in "${PINS[@]}"; do
@@ -112,7 +137,7 @@ scp "${SSH_OPTS[@]}" -i "$KEY_FILE" "$FILTER_TGZ" "admin@$IP:/home/admin/ma-reci
 BUILD_LOG=$WORKDIR/build.log
 log "running the desk recipe, then the host recipe (log: $BUILD_LOG)"
 # One session: the desk recipe's last step removes the builder's SSH keys, and the session it runs in stays.
-ssh "${SSH_OPTS[@]}" -i "$KEY_FILE" "admin@$IP" "sudo bash /home/admin/ma-recipe/build.sh '$VERSION' && sudo bash /home/admin/ma-host-recipe/build.sh '$VERSION' '$STORE_VOL'; sudo rm -rf /home/admin/ma-host-recipe" 2>&1 | tee "$BUILD_LOG" >&2
+ssh "${SSH_OPTS[@]}" -i "$KEY_FILE" "admin@$IP" "sudo bash /home/admin/ma-recipe/build.sh '$VERSION' && sudo ${BATCH_BASELINE:+BATCH_BASELINE=$BATCH_BASELINE} bash /home/admin/ma-host-recipe/build.sh '$VERSION' '$STORE_VOL'; sudo rm -rf /home/admin/ma-host-recipe" 2>&1 | tee "$BUILD_LOG" >&2
 grep -q "^build.sh: done" "$BUILD_LOG" || die "the desk recipe did not finish"
 grep -q "^host build.sh: done" "$BUILD_LOG" || die "the host recipe did not finish"
 cp "$BUILD_LOG" "$HERE/last-build.txt"
@@ -125,7 +150,13 @@ for t in desk-rtc:DeskRtcVersion desk-stream:DeskStreamVersion deskd:DeskdVersio
   BAKED_TAGS+=",{Key=${t#*:},Value=$v}"; BAKED+="${BAKED:+, }${t%%:*} $v"
 done
 grep -q '^TEEN_LOCK: 1$' "$BUILD_LOG" || die "the desk recipe didn't report the teen lock"
-BAKED_TAGS+=",{Key=DeskTeenLock,Value=1},{Key=HostKind,Value=shared},{Key=HostKernel,Value=$KVER},{Key=Name,Value=$NAME}"
+# DeskSizeClasses=1 (S-119, ADR 0072 "Container sizes by tier"): the placer puts a free desk only on a host launched from an
+# image with this tag (ma-platform services/desks/lifecycle hosts.ts, scripts/host-image-set.sh --size-classes). Set only
+# when the recipe's class table names both standard and free; verify.sh's classes and class-applied checks then prove it.
+CLASSES="$HERE/recipe/files/etc/desk-host/classes.conf"
+awk '!/^#/ && NF {print $1}' "$CLASSES" | grep -qx standard && awk '!/^#/ && NF {print $1}' "$CLASSES" | grep -qx free \
+  || die "classes.conf must name standard and free"
+BAKED_TAGS+=",{Key=DeskTeenLock,Value=1},{Key=DeskSizeClasses,Value=1},{Key=HostKind,Value=shared},{Key=HostKernel,Value=$KVER},{Key=Name,Value=$NAME}"
 
 log "stopping builder"
 aws ec2 stop-instances --instance-ids "$INSTANCE_ID" >/dev/null

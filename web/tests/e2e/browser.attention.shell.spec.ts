@@ -235,7 +235,7 @@ test('switching back: the still at once, seen first, the picture on its first re
   await page.evaluate(() => {
     (window as unknown as { __sameDocument: boolean }).__sameDocument = true;
   });
-  const tabsBefore = await page.getByRole('tablist', { name: 'Tabs on this desk' }).innerText();
+  const tabsBefore = await page.getByRole('group', { name: 'Tabs on this desk' }).innerText();
   const listsBefore = await mock(page, (c) => c.rpc.filter((r) => r.m === 'browser.tab.list' || r.m === 'browser.tab.reload').length);
 
   const runs: Switch[] = [];
@@ -263,7 +263,7 @@ test('switching back: the still at once, seen first, the picture on its first re
 
   // Nothing lost: the same document, the same tabs and address, and nothing reloaded or listed again.
   expect(await page.evaluate(() => (window as unknown as { __sameDocument?: boolean }).__sameDocument)).toBe(true);
-  await expect(page.getByRole('tablist', { name: 'Tabs on this desk' })).toHaveText(tabsBefore);
+  await expect(page.getByRole('group', { name: 'Tabs on this desk' })).toHaveText(tabsBefore);
   await expect(page.getByTestId('browser-address')).toHaveValue('https://example.com/kept');
   expect(await mock(page, (c) => c.rpc.filter((r) => r.m === 'browser.tab.list' || r.m === 'browser.tab.reload').length)).toBe(listsBefore);
   expect(errors).toEqual([]);

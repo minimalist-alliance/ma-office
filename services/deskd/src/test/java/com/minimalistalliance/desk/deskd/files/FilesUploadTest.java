@@ -485,12 +485,11 @@ class FilesUploadTest {
         Map<String, Object> side = com.minimalistalliance.desk.deskd.protocol.Json.parseObject(Files.readAllBytes(sidecar));
         side.put("lastProgressAt", rig.clock.millis() - Duration.ofHours(25).toMillis());
         Files.write(sidecar, com.minimalistalliance.desk.deskd.protocol.Json.bytes(side));
-        long past = System.currentTimeMillis() - Duration.ofDays(3).toMillis();
+        // File times come from the test clock, not the wall clock: the sweep compares them with the clock under test.
+        long past = rig.clock.millis() - Duration.ofDays(3).toMillis();
         Files.setLastModifiedTime(uploads.resolve(old.uploadId + ".part"), java.nio.file.attribute.FileTime.fromMillis(past));
         Files.setLastModifiedTime(sidecar, java.nio.file.attribute.FileTime.fromMillis(past));
         rig.clock.advance(Duration.ofSeconds(1));
-        // The clock under test is in 2026; real file times are now. Age by the clock instead.
-        rig.clock.advance(Duration.ofHours(0));
         rig.files.sweep();
         assertThat(Files.exists(uploads.resolve(recent.uploadId + ".part"))).isTrue();
         assertThat(Files.exists(uploads.resolve(old.uploadId + ".part")) && Files.exists(sidecar)).isFalse();

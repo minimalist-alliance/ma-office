@@ -10,20 +10,27 @@ loopback test key always is): an unknown key or a wrong signature is 403 "signat
 
   {"hostId": "i-...", "env": "staging", "desksPerHost": 6, "reportSeconds": 30, "refreshAfterSeconds": 600,
    "slots": {"1": {"deskId": "d-..." | null, "volumeId": "vol-..." | null, "privateIp": "...", "allocationId": "eipalloc-...",
-                   "publicIp": "...", "epoch": 1, "want": "running" | "stopped", "userId": "...", "deskKind": "test"}},
+                   "publicIp": "...", "epoch": 1, "want": "running" | "stopped", "userId": "...", "deskKind": "test",
+                   "class": "standard" | "free"}},  (class: the record's, standard when absent)
+   (SlotMode=port: no privateIp or allocationId, and "udpPort": 4430 + k; publicIp is the host's own, at hello's top)
    "sessionStatus": {"1": 409},      optional: slot-session answers this instead
    "helloStatus": 500,               optional: hello answers this
    "forgetHello": true,              optional: every report is told hello_required
-   "extraOrders": [...]}             optional: sent with every report as they are
+   "extraOrders": [...],             optional: sent with every report as they are (host orders too: template_target, ...,
+                                     and ADR 0078's batch_target, batch_promote, batch_halt)
+   "updates": {"fetches": false}}    optional: the reply's kill switches (ADR 0077 PU-2; ADR 0078 PB-2's batches and liveSwitches)
 
 Orders follow hostlink.ts orderFor: an empty slot reported stopped or unmounted is prepare_slot; a desk wanted running and
-not starting or running is start_slot; a desk wanted stopped and starting or running is stop_slot (idle). A reported slot
-whose desk or epoch isn't the state's is ignored, as Platform ignores and flags it. Each request is one JSON line in the log.
+not starting or running is start_slot; a desk wanted stopped and starting or running is stop_slot (idle); otherwise an up
+slot whose report says a class (standard or free, "+pending" ignored) other than the record's is set_class (classOrder; a
+slot that reports no class gets none). A reported slot whose desk or epoch isn't the state's is ignored, as Platform ignores
+and flags it. Each request is one JSON line in the log.
 """
 import argparse
 import datetime
 import json
 import os
+import re
 import sys
 import threading
 from http.server import BaseHTTPRequestHandler, ThreadingHTTPServer
@@ -95,8 +102,20 @@ class H(BaseHTTPRequestHandler):
                                 "token": self.headers.get("x-amz-security-token")}) + "\n")
 
     def slots(self, st):
-        return [{"k": int(k), "deskId": s.get("deskId"), "volumeId": s.get("volumeId"), "privateIp": s["privateIp"],
-                 "allocationId": s["allocationId"], "publicIp": s["publicIp"], "epoch": s["epoch"]} for k, s in sorted(st["slots"].items(), key=lambda x: int(x[0]))]
+        """Each slot as hello names it: under SlotMode=port (records with udpPort; contract 0.3.57) its UDP port and no
+        address (the host's one public address is at the reply's top, hello() below; a record's helloPublicIp puts a
+        per-slot one in, for a test); otherwise its private address, allocation and public address."""
+        out = []
+        for k, s in sorted(st["slots"].items(), key=lambda x: int(x[0])):
+            o = {"k": int(k), "deskId": s.get("deskId"), "volumeId": s.get("volumeId"), "epoch": s["epoch"]}
+            if "udpPort" in s:
+                o["udpPort"] = s["udpPort"]
+                if "helloPublicIp" in s:
+                    o["publicIp"] = s["helloPublicIp"]
+            else:
+                o.update({"privateIp": s["privateIp"], "allocationId": s["allocationId"], "publicIp": s["publicIp"]})
+            out.append(o)
+        return out
 
     def hello(self, st, body):
         if st.get("helloStatus"):
@@ -105,8 +124,13 @@ class H(BaseHTTPRequestHandler):
             return 403, error("host_mismatch")
         with LOCK:
             HELLO["bootId"] = body.get("bootId")
-        return 200, {"hostId": st["hostId"], "env": st.get("env", "staging"), "reportSeconds": st.get("reportSeconds", 30),
-                     "desksPerHost": st.get("desksPerHost", 6), "slots": self.slots(st)}
+        body = {"hostId": st["hostId"], "env": st.get("env", "staging"), "reportSeconds": st.get("reportSeconds", 30),
+                "desksPerHost": st.get("desksPerHost", 6), "slots": self.slots(st)}
+        port = [s for s in st["slots"].values() if "udpPort" in s]
+        if port:   # SlotMode=port: the mode and the host's public address (as EC2 has it) at the top
+            body["slotMode"] = st.get("helloSlotMode", "port")
+            body["publicIp"] = st.get("hostPublicIp", port[0]["publicIp"])
+        return 200, body
 
     def report(self, st, body):
         with LOCK:
@@ -127,7 +151,14 @@ class H(BaseHTTPRequestHandler):
                 orders.append({"id": f"start_slot:{k}:{e}", "op": "start_slot", "k": k, "deskId": rec["deskId"], "epoch": e})
             elif rec.get("want") == "stopped" and state in ("starting", "running"):
                 orders.append({"id": f"stop_slot:{k}:{e}", "op": "stop_slot", "k": k, "deskId": rec["deskId"], "epoch": e, "reason": "idle"})
-        return 200, {"hostId": st["hostId"], "reportSeconds": st.get("reportSeconds", 30), "orders": orders + st.get("extraOrders", []), "actions": []}
+            elif state in ("starting", "running") and re.fullmatch(r"(standard|free)(\+pending)?", str(s.get("class"))):
+                want = "free" if rec.get("class") == "free" else "standard"
+                if s["class"].split("+")[0] != want:
+                    orders.append({"id": f"set_class:{k}:{e}:{want}", "op": "set_class", "k": k, "deskId": rec["deskId"], "epoch": e, "class": want})
+        out = {"hostId": st["hostId"], "reportSeconds": st.get("reportSeconds", 30), "orders": orders + st.get("extraOrders", []), "actions": []}
+        if "updates" in st:   # the kill switches: ADR 0077 PU-2's {fetches, restarts, reboots}, ADR 0078 PB-2's {batches, liveSwitches}
+            out["updates"] = st["updates"]
+        return 200, out
 
     def session(self, st, body):
         k, epoch = body.get("slot"), body.get("epoch")
@@ -145,7 +176,8 @@ class H(BaseHTTPRequestHandler):
                      "credentials": {"accessKeyId": f"ASIAFAKESLOT{k}E{epoch}", "secretAccessKey": f"fake-secret-slot-{k}-{epoch}-{n}",
                                      "sessionToken": f"fake-token-slot-{k}-{epoch}", "expiration": exp},
                      "refreshAfterSeconds": st.get("refreshAfterSeconds", 600),
-                     "endpoints": {"api": "https://api.example.invalid", "gateway": "wss://gw.example.invalid/v1"}}
+                     "endpoints": {"api": "https://api.example.invalid", "gateway": "wss://gw.example.invalid/v1"},
+                     **({"udpPort": rec.get("sessionUdpPort", rec["udpPort"])} if "udpPort" in rec else {})}
 
 
 def main():

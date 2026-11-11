@@ -235,7 +235,7 @@ const desksSound = async () => {
   return +(b.audio.energy - a.audio.energy).toFixed(4);
 };
 
-const tablist = p.getByRole('tablist', { name: 'Tabs on this desk' });
+const tablist = p.getByRole('group', { name: 'Tabs on this desk' });
 const titles = async () => (await tablist.innerText().catch(() => '')).replace(/\s+/g, ' ');
 const address = p.getByTestId('browser-address');
 log('tabs at the start', JSON.stringify(await until(async () => (await titles()) || null, 15_000)), 'sound before', await desksSound());

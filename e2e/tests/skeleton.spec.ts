@@ -116,16 +116,14 @@ test('4 token refresh: one session stays live for 6+ minutes', async () => {
   await page.keyboard.press('Escape');
   const t0 = Date.now();
   const before = (await marks()).rpcMsg.length;
-  const boot0 = await page.evaluate(() => document.querySelector('[data-testid=about-desk]')?.textContent ?? '');
-  void boot0;
   await sleep(6.5 * 60_000);
-  const text = await focusAndAbout(); // opening the panel asks for a fresh desk.status.get
+  const text = await focusAndAbout(); // a desk.status.get reply no older than 20 s: the app asks every 15 s
   const m = await marks();
   expect(m.rpcMsg.length, 'a fresh rpc reply after 6.5 min').toBeGreaterThan(before);
   const v = aboutValues(text);
   expect(v.deskId).toBe(DESK_ID);
   expect(v.deskdVersion).toBe(truth.deskdVersion);
-  expect(text).not.toMatch(/Reconnecting|Can't reach/);
+  expect(await page.evaluate(() => (window as unknown as { __e2e: { pcs: RTCPeerConnection[] } }).__e2e.pcs.some((pc) => pc.connectionState === 'connected')), 'a connected peer connection').toBe(true);
   expect(w.connectStatuses.filter((s) => s >= 400), 'no failed connect').toEqual([]);
   note('token refresh', { openedForSec: Math.round((Date.now() - t0) / 1000), rpcRepliesDuring: m.rpcMsg.length - before });
 });
@@ -141,16 +139,19 @@ test('5 reconnect after a deskd restart, without a reload', async () => {
   // Recovered = the tab built a new PeerConnection by itself, the rpc channel answered on it, and the panel is live again.
   // (The bootId is the OS boot, so it doesn't change when only deskd restarts; the new PeerConnection is the proof.)
   let tLive = 0;
-  const panel = page.getByTestId('about-desk');
+  let restartedText = '';
   while (Date.now() - tIssue < 180_000) {
     const m = await marks();
-    const txt = await panel.innerText().catch(() => '');
-    if (m.pcCreated.length > pcBefore && m.rpcMsg.filter((t) => t > m.pcCreated[pcBefore]).length > 0 && /^Service/.test(txt)) { tLive = Date.now(); break; }
+    if (m.pcCreated.length > pcBefore && m.rpcMsg.filter((t) => t > m.pcCreated[pcBefore]).length > 0) {
+      // The status reply on the new peer connection is what the app shows as live again.
+      restartedText = await openAbout(page, { afterPc: pcBefore, maxAgeMs: 60_000, timeoutMs: 1000 }).catch(() => '');
+      if (restartedText) { tLive = Date.now(); break; }
+    }
     await sleep(250);
   }
   note('deskd restart', { restartCommandSec: +((tRestarted - tIssue) / 1000).toFixed(1), recoveredAfterIssueSec: tLive ? +((tLive - tIssue) / 1000).toFixed(1) : null, recoveredAfterRestartDoneSec: tLive ? +((tLive - tRestarted) / 1000).toFixed(1) : null, newPeerConnections: (await marks()).pcCreated.length - pcBefore });
   expect(tLive, 'panel live again on a new connection within 180 s').toBeGreaterThan(0);
-  expect(aboutValues(await panel.innerText()).deskdVersion).toBe(truth.deskdVersion);
+  expect(aboutValues(restartedText).deskdVersion).toBe(truth.deskdVersion);
   expect(await page.evaluate(() => (window as unknown as { __sentinel?: number }).__sentinel), 'no reload happened').toBe(1);
   await page.screenshot({ path: 'screenshots/5-after-restart.png' });
 });

@@ -1,0 +1,5 @@
+<g data-part="glasses-cat-eye" fill="none" stroke="{{glasses}}" stroke-linecap="round" stroke-linejoin="round">
+  <path d="M93,104 Q108,106.5 124.5,113 Q127,132 110,132 Q93,130 93,104 Z" stroke-width="6.6" fill="#FFFFFF" fill-opacity="0.08"/>
+  <path d="M163,104 Q148,106.5 131.5,113 Q129,132 146,132 Q163,130 163,104 Z" stroke-width="6.6" fill="#FFFFFF" fill-opacity="0.08"/>
+  <path d="M125,115 Q128,112.5 131,115" stroke-width="6"/>
+</g>

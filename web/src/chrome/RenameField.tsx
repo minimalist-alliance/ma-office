@@ -42,7 +42,7 @@ function Field({ at }: { at: At }) {
       const { s, x, y } = camera.cam;
       const width = Math.round(Math.max(MIN_W, Math.min(MAX_W, rect.w * s - 32)));
       const middle = box.left + (rect.x + rect.w / 2) * s + x;
-      const top = box.top + (rect.y + rect.h) * s + y - NAME_MIDDLE - FIELD_H / 2;
+      const top = box.top + (rect.y + rect.h) * s + y - NAME_MIDDLE * s - FIELD_H / 2;
       const left = Math.max(EDGE, Math.min(middle - width / 2, window.innerWidth - width - EDGE));
       el.style.width = `${width}px`;
       el.style.transform = `translate(${Math.round(left)}px, ${Math.round(Math.max(EDGE, Math.min(top, window.innerHeight - FIELD_H - EDGE)))}px)`;

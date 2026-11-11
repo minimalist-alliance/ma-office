@@ -200,6 +200,30 @@ test('waiting for picture is calm and ends at the first frame', async ({ page })
   await expectPlaying(page);
 });
 
+test('an address typed while the Browser starts stays in the box when focus leaves, and is sent when the member presses Enter once it is up', async ({ page }) => {
+  await arrive(page);
+  await mock(page, (c) => {
+    c.noFrames = true;
+  });
+  await openBrowser(page);
+  await expect(panel(page)).toHaveAttribute('data-panel', 'starting');
+  const address = page.getByTestId('browser-address');
+  await address.click();
+  await address.fill('example.com/draft');
+  // Focus leaves: while it starts, a draft is not dropped for the page's own address.
+  await browserWindow(page).getByRole('button', { name: 'Back' }).evaluate((el) => (el as HTMLButtonElement).focus());
+  await address.evaluate((el) => (el as HTMLInputElement).blur());
+  await expect(address).toHaveValue('example.com/draft');
+  await mock(page, (c) => {
+    c.noFrames = false;
+  });
+  await expectPlaying(page);
+  await expect(address).toHaveValue('example.com/draft');
+  await address.click();
+  await address.press('Enter');
+  await expect.poll(() => mock(page, (c) => c.rpc.filter((r) => r.m === 'browser.tab.navigate').map((r) => String(r.p['url'])))).toEqual(['https://example.com/draft']);
+});
+
 test('a browser that cannot play H.264 is told so, with no video element and no live', async ({ page }) => {
   const errors = watchConsole(page);
   await arrive(page);
@@ -338,7 +362,7 @@ for (const theme of ['light', 'dusk', 'dark'] as ThemeId[]) {
     await page.screenshot({ path: `test-results/shots/${theme}-browser-asleep.png` });
     const before = await wakes(request);
     await harness(request, { refuseWake: null });
-    await page.getByRole('button', { name: 'Wake', exact: true }).click();
+    await page.getByRole('button', { name: 'Wake this desk', exact: true }).click();
     await expect(panel(page)).toHaveAttribute('data-panel', 'waking');
     await expect(browserWindow(page).getByRole('progressbar')).toHaveAttribute('aria-valuetext', 'Starting, step 1 of 4');
     await expect.poll(() => wakes(request)).toBe(before + 1);

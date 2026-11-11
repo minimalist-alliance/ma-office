@@ -71,7 +71,8 @@ class AgentRelayTest {
         for (String method : all) {
             assertThat(r.call(client, method, Map.of())).as(method).containsEntry("_kind", "RES").containsEntry("method", method);
         }
-        assertThat(all).as("task 49 added 15 methods to the 15 before, S-118 four more").hasSize(34);
+        assertThat(all).as("task 49 added 15 methods to the 15 before, S-118 four more, S-14's memory three and"
+                + " its approvals three").hasSize(40);
     }
 
     @Test

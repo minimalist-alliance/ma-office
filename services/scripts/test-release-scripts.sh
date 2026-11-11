@@ -198,8 +198,29 @@ expect "run: member memory" logged "--memory=512m --memory-swap=512m"
 expect "run: member has the image's entrypoint" test "$(grep -c -e '--entrypoint' "$STUB_LOG")" = 0
 expect "run: member file is mounted too" logged "--mount type=bind,src=$work/desk-kind,dst=/run/ma/desk-kind,readonly"
 : >"$STUB_LOG"
-expect "run: no file, no mount" env MA_DESK_KIND_FILE="$work/none" MA_DESK_KIND=personal RELEASE_DIR="$release" "$release/run"
+expect "run: no file, no mount" env MA_DESK_KIND_FILE="$work/none" MA_LINKS_DIR="$work/none" MA_DESK_KIND=personal RELEASE_DIR="$release" "$release/run"
 expect "run: and no mount flag" test "$(grep -c -e '--mount' "$STUB_LOG")" = 0
+# The desk app contract: /data/apps, /run/ma-apps and the review keys are mounted only where the image made them.
+: >"$STUB_LOG"
+expect "run: no apps directories" env MA_DESK_KIND=personal MA_APPS_DIR="$work/none" MA_APPS_RUN="$work/none" MA_APP_KEYS_DIR="$work/none" MA_APP_KEYS_DROPIN="$work/none" RELEASE_DIR="$release" "$release/run"
+expect "run: and no apps mounts" test "$(grep -c -e '/data/apps\|/run/ma-apps\|app-keys' "$STUB_LOG")" = 0
+mkdir -p "$work/apps" "$work/ma-apps" "$work/app-keys" "$work/app-keys.d"
+: >"$STUB_LOG"
+expect "run: with the apps directories" env MA_DESK_KIND=personal MA_APPS_DIR="$work/apps" MA_APPS_RUN="$work/ma-apps" MA_APP_KEYS_DIR="$work/app-keys" MA_APP_KEYS_DROPIN="$work/app-keys.d" RELEASE_DIR="$release" "$release/run"
+expect "run: mounts /data/apps" logged "-v $work/apps:/data/apps"
+expect "run: mounts /run/ma-apps" logged "-v $work/ma-apps:/run/ma-apps"
+expect "run: mounts the image's review keys read-only" logged "--mount type=bind,src=$work/app-keys,dst=/opt/ma/etc/app-keys,readonly"
+expect "run: mounts the drop-in read-only" logged "--mount type=bind,src=$work/app-keys.d,dst=/etc/ma/app-keys.d,readonly"
+expect "run: and the image still comes last" test "$(tail -n 1 "$STUB_LOG" | awk '{print $NF}')" = "$image_id"
+# The links directory for the xdg-open stand-in (desk-runtime.md section 8.11) is mounted only when the image made it.
+mkdir -p "$work/desk-links"
+: >"$STUB_LOG"
+expect "run: with the links directory" env MA_LINKS_DIR="$work/desk-links" MA_DESK_KIND=personal RELEASE_DIR="$release" "$release/run"
+expect "run: the links directory is mounted at its own path" logged "--mount type=bind,src=$work/desk-links,dst=/run/desk-links"
+expect "run: and the image still comes last with it" test "$(tail -n 1 "$STUB_LOG" | awk '{print $NF}')" = "$image_id"
+: >"$STUB_LOG"
+expect "run: without the links directory" env MA_LINKS_DIR="$work/none" MA_DESK_KIND=personal RELEASE_DIR="$release" "$release/run"
+expect "run: no links mount then" test "$(grep -c -e 'dst=/run/desk-links' "$STUB_LOG")" = 0
 # From the IMDS tag, with IMDSv2's token.
 cat >"$work/imds.py" <<'PY'
 import http.server, sys

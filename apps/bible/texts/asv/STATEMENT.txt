@@ -1,0 +1,32 @@
+American Standard Version (ASV, 1901): the distributor's public-domain statements, quoted word for word.
+
+==========================================================================
+1. eBible.org's page for this edition (eng-asv)
+Source: https://ebible.org/find/details.php?id=eng-asv
+Read: 2026-11-11
+Links in this passage: "Public Domain" links to
+http://en.wikipedia.org/wiki/Public_domain
+--------------------------------------------------------------------------
+American Standard Version (1901)
+
+The American Standard Version of the Holy Bible, first published in 1901.
+
+Public Domain
+Language: English
+Dialect: Archaic American
+
+This public domain Bible translation is brought to you courtesy of eBible.org. If you would like to make a donation to help keep free Bible access like this going, please visit https://eBible.org/give.php.
+
+2026-10-30
+
+==========================================================================
+2. The copyright page inside the source archive
+Source: copr.htm in https://ebible.org/Scriptures/eng-asv_usfm.zip
+(SHA-256 00b7b6c76cb1eb67b22ca51bd5ac13c2df526c13e1c38e78b862a7a2367f7071)
+Read: 2026-11-11
+--------------------------------------------------------------------------
+Its body is word for word the same as passage 1's. Its footer:
+
+The American Standard Version of the Holy Bible is in the Public Domain. Copy freely. If you find a typo, please report it. Help keep free Bibles online! Support the missionary who runs this site.
+
+Public Domain

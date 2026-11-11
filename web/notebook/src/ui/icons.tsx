@@ -54,6 +54,12 @@ const PATHS: Record<string, ReactElement> = {
       <path d="M4 19.5h16" />
     </>
   ),
+  panel: (
+    <>
+      <rect x="4.5" y="5.5" width="15" height="13" rx="2.5" />
+      <path d="M9.5 5.5v13" />
+    </>
+  ),
   trash: <path d="M5.5 7.5h13M10 7.5V5.5h4v2M7.5 7.5l.8 11h7.4l.8-11" />,
   search: (
     <>
@@ -70,6 +76,8 @@ const PATHS: Record<string, ReactElement> = {
   restore: <path d="M5.5 12a6.5 6.5 0 1 0 2-4.7M5.5 5v3.5H9" />,
   download: <path d="M12 4.5v10M7.5 10.5 12 15l4.5-4.5M5.5 19.5h13" />,
   undo: <path d="M9 7.5 5 11.5l4 4M5.5 11.5H15a4 4 0 0 1 0 8h-2" />,
+  check: <path d="m6.5 12.5 3.5 3.5 7.5-8" />,
+  filter: <path d="M5 7.5h14M8 12h8M10.5 16.5h3" />,
 };
 
 export type IconName = keyof typeof PATHS;

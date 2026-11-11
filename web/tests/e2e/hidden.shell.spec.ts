@@ -62,7 +62,7 @@ async function dragApp(page: Page, id: string, dxUnits: number, dyUnits: number)
 const drawnCount = (page: Page): Promise<string> => page.evaluate((id) => __maDesk.camera.getStage().findOne(`#desk-${id}`).findOne('.desk-name').getAttr('drawnCount') as string, PERSONAL);
 const hitAt = (page: Page, x: number, y: number): Promise<string> => page.evaluate((p) => {
   const hit = __maDesk.camera.getStage().getIntersection(p);
-  return hit?.findAncestor('.desk-hidden, .desk-cleanup, .desk-undo, .resize-handle, .app-tile', true)?.getAttr('name') as string ?? 'none';
+  return hit?.findAncestor('.desk-hidden, .desk-cleanup, .desk-undo, .desk-carousel, .resize-handle, .app-tile', true)?.getAttr('name') as string ?? 'none';
 }, { x, y });
 const topApp = (page: Page): Promise<string> => page.evaluate((id) => __maDesk.camera.getStage().findOne(`#desk-${id}`).find('.app-tile').map((n) => n.id().slice('tile-'.length)).at(-1)!, PERSONAL);
 /** How many pixels in this box differ from its first, in CSS pixels on the screen. */
@@ -74,13 +74,20 @@ const inkIn = (page: Page, box: Box): Promise<number> => page.evaluate((b) => {
   for (let i = 0; i < data.length; i += 4) if (Math.abs(data[i]! - data[0]!) + Math.abs(data[i + 1]! - data[1]!) + Math.abs(data[i + 2]! - data[2]!) > 12) count += 1;
   return count;
 }, box);
-const deskRect = async (page: Page): Promise<{ right: number; bottom: number; left: number; top: number }> => {
+type Rect = { right: number; bottom: number; left: number; top: number; s: number };
+/** The desk on screen, and the zoom: the strip's icons are in desk units and scale with the desk (ADR 0064, Nov 9 note). */
+const deskRect = async (page: Page): Promise<Rect> => {
   const b = (await page.locator(`[id="proxy-${PERSONAL}"]`).boundingBox())!;
-  return { left: b.x, top: b.y, right: b.x + b.width, bottom: b.y + b.height };
+  return { left: b.x, top: b.y, right: b.x + b.width, bottom: b.y + b.height, s: await scale(page) };
 };
-// From the right: the grip's target is 6 to 34 and cleanup's 42 to 70. A desk with a hidden app has an overlap, so cleanup's slot
-// is held, and the count is 78 to 124.
-const countSlot = (r: { right: number; bottom: number }): Box => ({ x: r.right - 124, y: r.bottom - 34, w: 46, h: 24 });
+/** A point this many desk units in from the desk's bottom-right corner, on screen. */
+const inFrom = (r: Rect, dx: number, dy: number): { x: number; y: number } => ({ x: r.right - dx * r.s, y: r.bottom - dy * r.s });
+/** A box in desk units from the bottom-right corner (x and y its top-left's distance in), on screen. */
+const boxFrom = (r: Rect, dx: number, dy: number, w: number, h: number): Box => ({ x: r.right - dx * r.s, y: r.bottom - dy * r.s, w: w * r.s, h: h * r.s });
+const hitIn = (page: Page, r: Rect, dx: number, dy: number): Promise<string> => { const p = inFrom(r, dx, dy); return hitAt(page, p.x, p.y); };
+// From the right, in desk units: the grip's target is 6 to 34, the carousel's switch 42 to 70 (on a desk this wide) and cleanup's 78
+// to 106. A desk with a hidden app has an overlap, so cleanup's slot is held, and the count is 114 to 160.
+const countSlot = (r: Rect): Box => boxFrom(r, 160, 34, 46, 24);
 async function clickProxy(page: Page, proxy: Locator): Promise<void> {
   const b = (await proxy.boundingBox())!;
   await page.mouse.move(b.x + b.width / 2, b.y + b.height / 2);
@@ -124,19 +131,22 @@ test('the count sits past the sparkle, beside it, nothing slides, and it has its
   await away();
   const atRest = await inkIn(page, countSlot(r));
   expect(atRest).toBeGreaterThan(30);
-  // From the right: the grip's target ends 34 in, cleanup's is 42 to 70, and the count fills 78 to 124.
-  expect(await hitAt(page, r.right - 79, r.bottom - 22)).toBe('desk-hidden');
-  expect(await hitAt(page, r.right - 123, r.bottom - 22)).toBe('desk-hidden');
-  expect(await hitAt(page, r.right - 101, r.bottom - 22 - 13)).toBe('desk-hidden');
-  expect(await hitAt(page, r.right - 101, r.bottom - 22 - 15)).toBe('none');
-  expect(await hitAt(page, r.right - 74, r.bottom - 22)).toBe('none'); // the gap between cleanup's and the count
-  expect(await hitAt(page, r.right - 20, r.bottom - 22)).toBe('resize-handle');
+  // From the right: the grip's target ends 34 in, the carousel's switch is 42 to 70, cleanup's 78 to 106, and the count fills 114 to 160.
+  expect(await hitIn(page, r, 115, 22)).toBe('desk-hidden');
+  expect(await hitIn(page, r, 159, 22)).toBe('desk-hidden');
+  expect(await hitIn(page, r, 137, 22 + 13)).toBe('desk-hidden');
+  expect(await hitIn(page, r, 137, 22 + 15)).toBe('none');
+  expect(await hitIn(page, r, 110, 22)).toBe('none'); // the gap between cleanup's and the count
+  expect(await hitIn(page, r, 56, 22)).toBe('desk-carousel');
+  expect(await hitIn(page, r, 38, 22)).toBe('none'); // the gap between the grip's and the switch
+  expect(await hitIn(page, r, 20, 22)).toBe('resize-handle');
   // The pointer on the desk brings the grip and the sparkle, and the count stays exactly where it was.
   await page.mouse.move(r.left + 400, r.top + 300);
   await page.waitForTimeout(150);
   expect(await inkIn(page, countSlot(r))).toBe(atRest);
-  expect(await hitAt(page, r.right - 56, r.bottom - 22)).toBe('desk-cleanup');
-  // The three are evenly spaced: the gaps between their ink are within a pixel of each other.
+  expect(await hitIn(page, r, 92, 22)).toBe('desk-cleanup');
+  expect(await hitIn(page, r, 56, 22)).toBe('desk-carousel');
+  // The four are evenly spaced: the gaps between their ink are within a pixel or so of each other.
   const inkCols = await page.evaluate((b) => {
     const { camera } = __maDesk;
     const d = camera.dpr();
@@ -152,21 +162,21 @@ test('the count sits past the sparkle, beside it, nothing slides, and it has its
       cols.push(ink);
     }
     return cols;
-  }, { x: r.right - 130, y: r.bottom - 32, w: 126, h: 20 });
+  }, boxFrom(r, 166, 32, 162, 20));
   const runs: [number, number][] = [];
   inkCols.forEach((ink, x) => {
     if (!ink) return;
     const last = runs.at(-1);
-    if (last && x - last[1] <= 10) last[1] = x; // the icon and its number, or a glyph's own seams, are one run
+    if (last && x - last[1] <= 10 * r.s) last[1] = x; // the icon and its number, or a glyph's own seams, are one run
     else runs.push([x, x]);
   });
-  expect(runs).toHaveLength(3); // the count, the sparkle and the grip, from the left
-  const gapCount = runs[1]![0] - runs[0]![1];
-  const gapGrip = runs[2]![0] - runs[1]![1];
-  expect(Math.abs(gapCount - gapGrip), `${gapCount} and ${gapGrip}`).toBeLessThanOrEqual(2);
-  await page.screenshot({ path: 'test-results/shots/hidden-row-even.png', clip: { x: r.right - 140, y: r.bottom - 44, width: 140, height: 44 } });
+  expect(runs).toHaveLength(4); // the count, the sparkle, the carousel's switch and the grip, from the left
+  const gaps = [runs[1]![0] - runs[0]![1], runs[2]![0] - runs[1]![1], runs[3]![0] - runs[2]![1]];
+  expect(Math.max(...gaps) - Math.min(...gaps), gaps.join(', ')).toBeLessThanOrEqual(2 * r.s);
+  await page.screenshot({ path: 'test-results/shots/hidden-row-even.png', clip: { x: r.right - 176 * r.s, y: r.bottom - 44 * r.s, width: 176 * r.s, height: 44 * r.s } });
   // Hovering it: the pointer's cursor, the tooltip, and surface.fill behind it.
-  await page.mouse.move(r.right - 101, r.bottom - 22);
+  const over = inFrom(r, 137, 22);
+  await page.mouse.move(over.x, over.y);
   await page.waitForTimeout(150);
   const box = page.locator('.konvajs-content').locator('..');
   await expect(box).toHaveAttribute('title', '1 hidden');
@@ -279,8 +289,8 @@ test('Cleanup takes the count to zero, and Undo brings it back', async ({ page, 
   expect(await drawnCount(page)).toBe('');
   await expect(page.locator('.hidden-ring')).toHaveCount(0);
   await page.waitForTimeout(300);
-  // "Undo" holds cleanup's slot, 42 to 88 in, and there's nothing past it where a count would go.
-  expect(await inkIn(page, { x: r.right - 142, y: r.bottom - 34, w: 46, h: 24 })).toBe(0);
+  // "Undo" holds cleanup's slot, 78 to 124 in, and there's nothing past it where a count would go.
+  expect(await inkIn(page, boxFrom(r, 178, 34, 46, 24))).toBe(0);
   await clickProxy(page, page.getByRole('button', { name: 'Undo clean up Personal desk', exact: true }));
   await expect(countButton(page, 1)).toHaveCount(1);
   expect(await drawnCount(page)).toBe('1');
@@ -303,14 +313,15 @@ test('a raise, a reload and a corner drag all keep it right', async ({ page, req
   const r = await deskRect(page);
   await page.mouse.move(r.left + 400, r.top + 300);
   await page.waitForTimeout(100);
-  await page.mouse.move(r.right - 20, r.bottom - 22);
+  const grip = inFrom(r, 20, 22);
+  await page.mouse.move(grip.x, grip.y);
   await page.mouse.down();
   await page.mouse.move(r.right + 20, r.bottom + 30, { steps: 8 });
   await page.mouse.up();
   await page.waitForTimeout(150);
   const after = await deskRect(page);
   expect(after.right).toBeGreaterThan(r.right + 30);
-  expect(await hitAt(page, after.right - 101, after.bottom - 22)).toBe('desk-hidden');
+  expect(await hitIn(page, after, 137, 22)).toBe('desk-hidden');
   await expect(countButton(page, 1)).toHaveCount(1);
 });
 
@@ -479,13 +490,15 @@ for (const theme of ['light', 'dusk', 'dark'] as ThemeId[]) {
   }
 }
 
-test('on touch the count has a 44 px tall target with room for its number, and a tap opens the list and a tap chooses', async ({ browser, request }) => {
+test('on touch the count has a 44 px tall target at 100 % with room for its number, and a tap opens the list and a tap chooses', async ({ browser, request }) => {
   const context = await browser.newContext({ viewport: { width: 1024, height: 768 }, hasTouch: true, isMobile: true });
   const page = await context.newPage();
   await seeded(page, request, [item(CHAT, 'chat', 100, 100), item(BROWSER, 'browser', 80, 80, 200, 200), item(AGENT, 'agent', 500, 24), item(NOTEBOOK, 'notebook', 650, 24)]);
+  // 44 x 62 desk units, so that on screen at 100 %, and times the zoom at any other (ADR 0064, Nov 9 note).
+  const s = await scale(page);
   const b = (await countButton(page, 1).boundingBox())!;
-  expect(Math.round(b.height)).toBe(44);
-  expect(Math.round(b.width)).toBe(62);
+  expect(Math.abs(b.height - 44 * s)).toBeLessThanOrEqual(1);
+  expect(Math.abs(b.width - 62 * s)).toBeLessThanOrEqual(1);
   await page.touchscreen.tap(b.x + b.width / 2, b.y + b.height / 2);
   const row = list(page).getByRole('menuitem');
   await expect(row).toHaveText(['Chat']);
@@ -498,7 +511,7 @@ test('on touch the count has a 44 px tall target with room for its number, and a
   await context.close();
 });
 
-test('the same size on screen at every zoom, and when the desk is too small it hides with the other icons and stays in the proxy', async ({ page, request }) => {
+test('it scales with the desk at every zoom, and zoomed out past where the name hides it hides with the other icons and stays in the proxy', async ({ page, request }) => {
   await seeded(page, request, [item(CHAT, 'chat', 100, 100), item(BROWSER, 'browser', 80, 80, 200, 200), item(AGENT, 'agent', 500, 24), item(NOTEBOOK, 'notebook', 650, 24)]);
   const aim = async (zoom: number): Promise<void> => {
     await page.evaluate((z) => {
@@ -517,16 +530,22 @@ test('the same size on screen at every zoom, and when the desk is too small it h
   for (const zoom of [0.6, 1.4]) {
     await aim(zoom);
     const r = await deskRect(page);
-    expect(await inkIn(page, countSlot(r)), `at ${zoom}`).toBe(ink);
-    expect(await hitAt(page, r.right - 101, r.bottom - 22), `at ${zoom}`).toBe('desk-hidden');
+    // Its ink covers about the zoom squared as many pixels: it's the same cut, scaled.
+    const scaled = await inkIn(page, countSlot(r));
+    expect(scaled / ink, `at ${zoom}`).toBeGreaterThan(zoom * zoom * 0.6);
+    expect(scaled / ink, `at ${zoom}`).toBeLessThan(zoom * zoom * 1.6);
+    expect(await hitIn(page, r, 137, 22), `at ${zoom}`).toBe('desk-hidden');
+    expect(await hitIn(page, r, 137, 22 + 13), `at ${zoom}`).toBe('desk-hidden');
+    expect(await hitIn(page, r, 137, 22 + 15), `at ${zoom}`).toBe('none');
     expect(await drawnCount(page)).toBe('1');
+    // Under 100 % the bitmap of 100 % is scaled down: no new one.
+    if (zoom < 1) expect(await page.evaluate(() => __maDesk.etchRasters())).toBe(bitmaps);
   }
-  expect(await page.evaluate(() => __maDesk.etchRasters())).toBe(bitmaps);
 
-  // 800 x 0.3 is 240 on screen, under the 290 where icons go.
+  // At 0.3 the name would be 14 x 0.3 = 4.2 px, under the 7 where it hides, and the icons hide with it.
   await aim(0.3);
   expect(await drawnCount(page)).toBe('');
   const small = await deskRect(page);
-  expect(await hitAt(page, small.right - 101, small.bottom - 22)).not.toBe('desk-hidden');
+  expect(await hitIn(page, small, 137, 22)).not.toBe('desk-hidden');
   await expect(countButton(page, 1)).toHaveCount(1);
 });

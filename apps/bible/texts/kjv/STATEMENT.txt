@@ -1,0 +1,34 @@
+King James Version (KJV): the distributor's public-domain statements, quoted word for word.
+
+==========================================================================
+1. eBible.org's page for this edition (eng-kjv2006, "King James (Authorized) Version")
+Source: https://ebible.org/find/details.php?id=eng-kjv2006
+Read: 2026-11-11
+Links in this passage: "Public Domain" links to
+http://en.wikipedia.org/wiki/Public_domain
+--------------------------------------------------------------------------
+King James (Authorized) Version
+
+The King James Version or Authorized Version of the Holy Bible, using the standardized text of 1769, protocanon only, with Strong's numbers added.
+
+Public Domain
+Language: English
+Dialect: archaic British
+
+Letters patent issued by King James with no expiration date means that to print this translation in the United Kingdom or import printed copies into the UK, you need permission. Currently, the Cambridge University Press, the Oxford University Press, and Collins have the exclusive right to print this Bible translation in the UK. This royal decree has no effect outside of the UK, where this work is firmly in the Public Domain. Please see http://www.cambridge.org/about-us/who-we-are/queens-printers-patent and https://en.wikipedia.org/wiki/King_James_Version#Copyright_status for more information.
+
+This free text of the King James Version of the Holy Bible is brought to you courtesy of the Crosswire Bible Society and eBible.org.
+
+2026-11-09
+
+==========================================================================
+2. The copyright page inside the source archive
+Source: copr.htm in https://ebible.org/Scriptures/eng-kjv2006_usfm.zip
+(SHA-256 dce1ec3ea45a155ac05e975fc8d817da403a817713d554eb9cc3a2177a6cfd1c)
+Read: 2026-11-11
+--------------------------------------------------------------------------
+Its body is word for word the same as passage 1's. Its footer:
+
+You may copy the King James Version of the Holy Bible freely. If you find a typo that is not just an archaic spelling, please report it.
+
+Public Domain

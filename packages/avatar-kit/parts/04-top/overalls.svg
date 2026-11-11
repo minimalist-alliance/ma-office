@@ -1,0 +1,9 @@
+<g data-part="top-overalls">
+  <path fill="{{shirt}}" d="M30,256 C30,222 60,201 104,195 C110,205 118,210 128,210 C138,210 146,205 152,195 C196,201 226,222 226,256 Z"/>
+  <path fill="{{shirtShade}}" d="M104,195 C110,205 118,210 128,210 C138,210 146,205 152,195 L158,196 C151,209 140,216 128,216 C116,216 105,209 98,196 Z"/>
+  <path fill="{{top}}" d="M94,256 L97,230 Q97,225 102,225 L154,225 Q159,225 159,230 L162,256 Z"/>
+  <path fill="{{top}}" d="M96,228 L88,204 L101,203 L108,226 Z"/>
+  <path fill="{{top}}" d="M160,228 L168,204 L155,203 L148,226 Z"/>
+  <g data-min-size="40"><circle cx="100" cy="226.5" r="3.2" fill="{{topHi}}"/><circle cx="156" cy="226.5" r="3.2" fill="{{topHi}}"/>
+  <rect x="116" y="235" width="24" height="14" rx="3" fill="none" stroke="{{topShade}}" stroke-width="2.4"/></g>
+</g>

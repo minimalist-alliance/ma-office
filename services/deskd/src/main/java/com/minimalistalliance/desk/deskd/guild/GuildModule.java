@@ -20,10 +20,11 @@ import java.util.List;
 import java.util.concurrent.atomic.AtomicBoolean;
 
 /**
- * Wires a guild desk's parts (API.md section 14): the roster, which the token verifier and the sessions answer to; the
- * agents' settings, pushed to desk-agent; the {@code guild.*} methods; and the heartbeat's {@code guild} block. On any
- * other desk it's all here and inert: the verifier never sees a member, the roster is never read, nothing is pushed, and
- * the heartbeat's {@code guild} stays null. Whether this is a guild desk is known once IMDS has been read, which is
+ * Wires a guild desk's parts (API.md section 15): the roster, which the token verifier and the sessions answer to, and
+ * the purges of removed members' agent conversations it owes desk-agent; the agents' settings, pushed to desk-agent;
+ * the {@code guild.*} methods; and the heartbeat's {@code guild} block. On any other desk it's all here and inert: the
+ * verifier never sees a member, the roster is never read, nothing is pushed or purged, and the heartbeat's {@code guild}
+ * stays null. Whether this is a guild desk is known once IMDS has been read, which is
  * before any config, session or heartbeat.
  */
 public final class GuildModule {
@@ -60,7 +61,9 @@ public final class GuildModule {
             public void closeMember(String memberId) {
                 sessions.closeMember(memberId);
             }
-        }, timing);
+        }, timing, clock);
+        // A removed member's agent conversations go (ADR 0080 decision 12): desk-agent is told, from a list in /data/desk.
+        agent.memberPurges(roster.purges());
         agent.memberNames(id -> {
             GuildRoster.Member member = roster.member(id);
             if (member != null && member.name() != null) {

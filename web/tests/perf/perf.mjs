@@ -475,7 +475,7 @@ async function runUi(browser, theme, w, h, dpr) {
   await page.waitForFunction(() => performance.getEntriesByName('ma:first-canvas-paint').length > 0);
   await page.waitForTimeout(800);
   await page.evaluate(INSTRUMENT);
-  const menu = page.getByRole('button', { name: 'Account' });
+  const menu = page.getByRole('button', { name: 'Account', exact: true });
   for (let i = 0; i < 10; i += 1) {
     await menu.click();
     await page.waitForTimeout(60);
@@ -495,9 +495,9 @@ async function runUi(browser, theme, w, h, dpr) {
   await page.goto(`${BASE}/?fixture=perf`);
   await page.waitForFunction(() => performance.getEntriesByName('ma:first-canvas-paint').length > 0);
   await page.waitForTimeout(800);
-  await page.getByRole('button', { name: 'Account' }).click();
-  for (const name of ['Dusk', 'Dark', 'Light', 'Dusk', 'Dark', 'Light']) {
-    await page.getByRole('radio', { name }).click();
+  await page.getByRole('button', { name: 'Account', exact: true }).click();
+  for (const name of ['Zen', 'Dark', 'Light', 'Zen', 'Dark', 'Light']) {
+    await page.getByRole('radiogroup', { name: 'Theme' }).getByRole('radio', { name, exact: true }).click(); // the Background row is radios too
     await page.waitForTimeout(300);
   }
   const themeSwitch = await page.evaluate(() => performance.getEntriesByName('ma:theme-switch').map((e) => e.duration));

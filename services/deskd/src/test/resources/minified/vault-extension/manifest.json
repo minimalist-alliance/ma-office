@@ -1,0 +1,8 @@
+{
+  "manifest_version": 3,
+  "name": "Fixture Vault Menu",
+  "description": "A test fixture for deskd's simplified view: on its test page it puts its own menu page over the page in a frame, as a password manager's in-page menu does.",
+  "version": "1.0",
+  "content_scripts": [{"matches": ["http://a.test/*"], "js": ["content.js"], "run_at": "document_idle"}],
+  "web_accessible_resources": [{"resources": ["menu.html"], "matches": ["http://a.test/*"]}]
+}

@@ -22,8 +22,17 @@ the wall test's desk-init (spikes/shared-host-wall/wall/desk-init.py, runs 1 and
 - T46L-2 and ADR 0045 on a shared host: units.sock takes freeze and thaw for desk-browser, with desk-units' own freeze()
   and thaw() (the template's copy, /desk-host/desk-units.py, the host's): the browser's cgroup found from the launcher's
   pid, a freeze refused while the browser is stopping or the desk is, and every stop thaws before it quits.
+- ADR 0036 per container (ADR 0072 section 8, TD-223): the host's desk-egress for this slot names desk-stream's profile in
+  /run/desk-host/egress/profile (the host's file, read-only; desk-stream's sandbox reads it at /run/desk-egress when it starts),
+  and this restarts a running desk-stream when it changes, as desk-egress's try-restart does on a desk of its own.
 - WR2-01: no CDP forward. A test host (only) mounts its tools at /desk-host-test and says so in /run/desk-host/test-cdp;
   then, and only then, this loads its forward, which listens on the desk's own address for the host's side of the veth alone.
+- The desk's root never acts on a name inside a directory a desk user owns (EXP-7's class, slot-datadirs): as root, a name there
+  may be a link that user put, and a chown, chmod or write by name follows it. What goes inside a user's directory is made by
+  that user (as_user: setpriv, no new privileges): /data/browser's profile, downloads and home (kiosk's), deskd's copy of the
+  volume record (desk's), desk-audio's /run/desk-audio/pulse (desk-snd's). units.sock, in the slot's /run/desk (rtc:desk 0770),
+  is bound as desk with its mode set before the bind, never chowned or chmodded by name; the profile's Preferences is read
+  without following a link at any step and without blocking on a FIFO. docs/sub-status/slot-datadirs.md lists every root write.
 Logs go to /data/logs/<unit>.log. `desk-init.py --exec-filtered <argv>`: the unit filter, then exec (the host's proofs).
 """
 import array
@@ -38,6 +47,7 @@ import re
 import select
 import signal
 import socket
+import stat
 import struct
 import subprocess
 import sys
@@ -99,6 +109,22 @@ def run_helper(argv, **kw):
     return subprocess.run(argv, stdin=subprocess.DEVNULL, **kw)
 
 
+def as_user(user, argv, group=None, **kw):
+    """argv as a desk user (its uid and group, no other groups, no new privileges), for anything inside a directory that user owns:
+    as the desk's root a name there may be a link the user put, and root's chown, chmod or write would follow it (EXP-7's class).
+    As the user, a link reaches only what that user could change already. Under the unit filter, as every helper."""
+    return run_helper(["/usr/bin/setpriv", f"--reuid={user}", f"--regid={group or user}", "--clear-groups", "--no-new-privs", "--", *argv], **kw)
+
+
+def root_only(d):
+    """True when only root can change the names in directory d: a directory (not a link), root's, no write for group or others."""
+    try:
+        st = os.lstat(d)
+    except OSError:
+        return False
+    return stat.S_ISDIR(st.st_mode) and st.st_uid == 0 and not st.st_mode & 0o022
+
+
 LOG_DIR = "/data/logs"
 CG = "/sys/fs/cgroup"
 CGROUPS = {"desk-browser": (100, "2560M"), "desk-xorg": (100, "max"), "desk-audio": (100, "max"),
@@ -113,14 +139,64 @@ SLOT = os.environ.get("DESK_HOST_SLOT", "0")
 TEST_DIR = "/desk-host-test"
 
 
+# Reliability audit S1: the wait before a supervised unit restarts grows as systemd's RestartSteps= does (the desk image's units;
+# desk-svc does the same for the sandboxed services): the unit's own wait first, then toward `cap` over `steps` restarts in a row,
+# and back to the start after a run of HEALTHY_SEC, or when somebody starts the unit. It never gives up.
+RESTART_CAP, RESTART_STEPS, HEALTHY_SEC = 300, 8, 120
+
+
+def backoff_delay(base, n, cap=RESTART_CAP, steps=RESTART_STEPS):
+    """The wait before the n-th restart in a row (n from 1): base, then base * (cap/base)^((n-1)/steps), never over cap."""
+    if steps <= 0 or cap <= base or n <= 1:
+        return base
+    if n - 1 >= steps:
+        return cap
+    return base * (cap / base) ** ((n - 1) / steps)
+
+
+class Backoff:
+    """The restart streak of one supervised unit. next_delay() is called at each exit; reset() on a start somebody asked for."""
+
+    def __init__(self, base, cap=RESTART_CAP, steps=RESTART_STEPS, healthy=HEALTHY_SEC, clock=time.monotonic):
+        self.base, self.cap, self.steps, self.healthy, self.clock = base, cap, steps, healthy, clock
+        self.n, self.started = 0, None
+
+    def started_now(self):
+        self.started = self.clock()
+
+    def reset(self):
+        self.n = 0
+
+    def next_delay(self):
+        if self.started is not None and self.clock() - self.started >= self.healthy:
+            self.n = 0
+        self.n += 1
+        return backoff_delay(self.base, self.n, self.cap, self.steps)
+
+
 def log(*a):
     print(f"[desk-init {time.strftime('%H:%M:%S')}]", *a, file=sys.stderr, flush=True)
 
 
 def mkdir(path, user, group, mode):
+    """As root, by name: only for a path whose directory only root can change (/data, /run, /var, /): elsewhere as_user."""
     os.makedirs(path, exist_ok=True)
     os.chown(path, pwd.getpwnam(user).pw_uid if isinstance(user, str) else user, grp.getgrnam(group).gr_gid if isinstance(group, str) else group)
     os.chmod(path, mode)
+
+
+def runtime_dir(d, user, group, mode, keep=False):
+    """A unit's RuntimeDirectory, emptied first unless kept. In a directory only root can change (/run/desk-xorg in the desk's own
+    /run) root makes it by name; inside a user's own (/run/desk-audio/pulse, in desk-snd's share) the unit's user removes and makes
+    it, so a link that user put there between the removal and the make is never followed by root. True when it's there."""
+    if root_only(os.path.dirname(d)):
+        if not keep and os.path.isdir(d):
+            run_helper(["rm", "-rf", "--one-file-system", d])
+        mkdir(d, user, group, mode)
+        return True
+    if not keep:
+        as_user(user, ["rm", "-rf", "--one-file-system", d], group=group)
+    return as_user(user, ["install", "-d", "-m", f"{mode:o}", d], group=group).returncode == 0
 
 
 class Unit:
@@ -128,7 +204,8 @@ class Unit:
 
     def __init__(self, name, argv, user, group=None, groups=(), env=None, cwd="/", restart="on-failure", restart_sec=2,
                  prevent=(), stop_timeout=30, post=None, runtime_dirs=(), umask=0o022, requires=(), wants=(), keep_runtime=False,
-                 ambient_bind=False):
+                 ambient_bind=False, restart_cap=RESTART_CAP, restart_steps=RESTART_STEPS):
+        self.backoff = Backoff(restart_sec, restart_cap, restart_steps)
         self.name, self.argv, self.user, self.group, self.groups = name, argv, user, group or user, groups
         self.env = {"PATH": "/usr/local/sbin:/usr/local/bin:/usr/sbin:/usr/bin:/sbin:/bin", "LANG": "C.UTF-8", **(env or {})}
         self.cwd, self.restart, self.restart_sec, self.prevent, self.stop_timeout = cwd, restart, restart_sec, set(prevent), stop_timeout
@@ -160,9 +237,9 @@ class Unit:
         if self.name == "desk-xorg":
             xauth_cookie()
         for d in self.runtime_dirs:
-            if not self.keep_runtime and os.path.isdir(d):
-                run_helper(["rm", "-rf", "--one-file-system", d])
-            mkdir(d, self.user, self.group, 0o700 if d == "/run/desk-xorg" else 0o755)
+            if not runtime_dir(d, self.user, self.group, 0o700 if d == "/run/desk-xorg" else 0o755, self.keep_runtime):
+                log(f"{self.name}: could not make {d} as {self.user}: not started")
+                return False
         out = open(f"{LOG_DIR}/{self.name}.log", "ab", buffering=0)
         out.write(f"--- start {time.strftime('%F %T')}\n".encode())
         if self.ambient_bind:
@@ -174,6 +251,7 @@ class Unit:
             self.proc = subprocess.Popen(self.argv, env=self.env, cwd=self.cwd, stdin=subprocess.DEVNULL, stdout=out, stderr=out,
                                          preexec_fn=self._preexec)
         out.close()
+        self.backoff.started_now()
         log(f"{self.name} started pid {self.proc.pid}")
         threading.Thread(target=self._watch, args=(self.proc,), daemon=True).start()
         if self.post:
@@ -198,7 +276,9 @@ class Unit:
             if not again:
                 self.wanted = False
                 return
-        time.sleep(self.restart_sec)
+            wait = self.backoff.next_delay()
+            log(f"{self.name} restarts in {wait:.1f} s (restart {self.backoff.n} in a row)")
+        time.sleep(wait)
         with self.lock:
             if self.wanted and self.proc is None and not SHUTTING_DOWN.is_set():
                 self.restarts += 1
@@ -216,6 +296,7 @@ class Unit:
             self.wanted = True
             if self.running():
                 return True
+            self.backoff.reset()
             return self._spawn()
 
     def stop(self):
@@ -347,6 +428,7 @@ class BrowserUnit:
         self.cv = threading.Condition()
         self.replies = []
         self.restart_sec, self.prevent, self.stop_timeout = 3, {78}, 30
+        self.backoff = Backoff(3, 30, 4)   # as the desk image's desk-browser.service: from 3 s to 30 s, a Browser comes back quickly
         threading.Thread(target=self._reader, daemon=True).start()
 
     def _reader(self):
@@ -379,7 +461,9 @@ class BrowserUnit:
             if rc == 0 or rc in self.prevent:
                 self.wanted = False
                 return
-        time.sleep(self.restart_sec)
+            wait = self.backoff.next_delay()
+            log(f"desk-browser restarts in {wait:.1f} s (restart {self.backoff.n} in a row)")
+        time.sleep(wait)
         with self.lock:
             if self.wanted and self.pid is None and not SHUTTING_DOWN.is_set() and not BROWSER_STOPPING.is_set():
                 self.restarts += 1
@@ -398,6 +482,7 @@ class BrowserUnit:
             log(f"desk-browser: launcher said {reply}")
             return False
         self.pid = int(reply.split()[1])
+        self.backoff.started_now()
         log(f"desk-browser started pid {self.pid} (through the launcher, without the unit filter: Chromium's sandbox)")
         return True
 
@@ -414,6 +499,7 @@ class BrowserUnit:
             self.wanted = True
             if self.running():
                 return True
+            self.backoff.reset()
             return self._spawn()
 
     def wait(self, pid, timeout):
@@ -452,14 +538,14 @@ UNITS = {
     "desk-xorg": Unit("desk-xorg", ["/usr/lib/xorg/Xorg", ":99", "-config", "/etc/ma/xorg-dummy.conf", "-noreset", "-nolisten", "tcp",
                                     "-nolisten", "local", "-auth", XAUTH,
                                     "-logfile", "/run/desk-xorg/Xorg.99.log", "-novtswitch", "-sharevts"], "desk-x",
-                      env={"DISPLAY": ":99", "XAUTHORITY": XAUTH}, runtime_dirs=("/run/desk-xorg",), keep_runtime=True,
+                      env={"DISPLAY": ":99", "XAUTHORITY": XAUTH}, runtime_dirs=("/run/desk-xorg",), keep_runtime=True, restart_cap=30, restart_steps=4,
                       post=["/bin/sh", "-c", "/usr/local/lib/ma/desk-xorg-ready && xhost +SI:localuser:kiosk"]),
     "desk-audio": Unit("desk-audio", ["/usr/bin/pulseaudio", "--daemonize=no", "--exit-idle-time=-1", "--log-target=stderr", "-n",
                                       "--disallow-module-loading=yes",
                                       "--load=module-null-sink sink_name=desk sink_properties=device.description=desk",
                                       "--load=module-native-protocol-unix socket=/run/desk-audio/native auth-anonymous=0 auth-cookie-enabled=0 "
                                       "auth-group=desk-audio auth-group-enable=1"], "desk-snd",
-                       env=PULSE_ENV, runtime_dirs=("/run/desk-audio/pulse",),
+                       env=PULSE_ENV, runtime_dirs=("/run/desk-audio/pulse",), restart_cap=30, restart_steps=4,
                        post=["/bin/sh", "-c", "export PULSE_SERVER=unix:/run/desk-audio/native; for i in $(seq 1 40); do pactl info >/dev/null 2>&1 && exec pactl set-default-sink desk; sleep 0.5; done; exit 1"]),
 }
 ON_DEMAND = {"desk-xorg", "desk-audio", "desk-browser", "desk-stream"}
@@ -504,10 +590,47 @@ class RemoteUnit:
 UNITS["desk-stream"] = RemoteUnit("desk-stream", requires=("desk-xorg",), wants=("desk-audio",))
 
 
+EGRESS_PROFILE = "/run/desk-host/egress/profile"
+EGRESS_PROFILES = ("normal", "capped", "deep")
+
+
+def egress_profile(path=EGRESS_PROFILE):
+    """The profile the host names for desk-stream; anything missing or unknown is the normal picture, as desk-stream's run reads it."""
+    try:
+        with open(path, encoding="ascii") as f:
+            p = f.read().strip()
+    except (OSError, ValueError):
+        return "normal"
+    return p if p in EGRESS_PROFILES else "normal"
+
+
+def watch_egress_profile(every=10, unit=None, path=EGRESS_PROFILE, rounds=None):
+    """A softer or sharper picture once the host's budget says so (ADR 0036 section 2's profile change): desk-stream picks its conf
+    only when it starts, so a change restarts it if it's running (a pause of about 0.2 s, two or three times a month at most); a
+    stopped one takes the new profile at its next start."""
+    last = egress_profile(path)
+    while not SHUTTING_DOWN.is_set() and rounds != 0:
+        time.sleep(every)
+        rounds = None if rounds is None else rounds - 1
+        now = egress_profile(path)
+        if now == last:
+            continue
+        u = unit or UNITS["desk-stream"]
+        if u.running():
+            log(f"desk-stream: stream profile {last} to {now}: restarting it")
+            u.stop()
+            u.start()
+        else:
+            log(f"desk-stream: stream profile {last} to {now}: not running, takes it at its next start")
+        last = now
+
+
 def xauth_cookie():
     """DA-1: a fresh MIT-MAGIC-COOKIE-1 for display 99, 0600 desk-x, before every start of Xorg (desk-xauth's format)."""
     mkdir("/run/desk-xorg", "desk-x", "desk-x", 0o700)
     rec = struct.pack(">H", 0xFFFF) + b"".join(struct.pack(">H", len(f)) + f for f in (b"", b"99", b"MIT-MAGIC-COOKIE-1", os.urandom(16)))
+    # inside desk-x's own directory, so nothing here follows a name: unlink and rename act on the names, the file is made O_EXCL |
+    # O_NOFOLLOW and chowned by its descriptor (slot-datadirs' audit)
     tmp = XAUTH + ".new"
     if os.path.lexists(tmp):
         os.unlink(tmp)
@@ -670,14 +793,34 @@ def handle(conn):
         conn.sendall(b"ok\n" if ok else f"err failed {verb} {unit}\n".encode())
 
 
-def serve_units():
-    path = "/run/desk/units.sock"
-    if os.path.exists(path):
-        os.unlink(path)
+UNITS_SOCK = "/run/desk/units.sock"
+
+
+def bind_as(s, path, uid, gid, mode):
+    """Binds AF_UNIX socket s at path as uid:gid with mode, never chowning or chmodding the name: the mode is set on the socket before
+    the bind (the kernel makes the file with it, less the umask), and the bind runs with this thread's filesystem uid and gid set to
+    uid and gid (setfsuid and setfsgid are per thread), so the file is theirs from the start and a stale one is removed as them too.
+    For a directory others can write: /run/desk is the slot's share, rtc:desk 0770, so deskd, desk-data or desk-rtc could swap the
+    name for a link between a bind and a chown by name, and root would chown what it named (EXP-7's class)."""
+    os.fchmod(s.fileno(), mode)
+    old_g = _LIBC.setfsgid(gid)
+    old_u = _LIBC.setfsuid(uid)
+    try:
+        if _LIBC.setfsuid(-1) != uid or _LIBC.setfsgid(-1) != gid:
+            raise OSError(errno.EPERM, f"setfsuid({uid})/setfsgid({gid}) not taken")
+        try:
+            os.unlink(path)
+        except FileNotFoundError:
+            pass
+        s.bind(path)
+    finally:
+        _LIBC.setfsuid(old_u)
+        _LIBC.setfsgid(old_g)
+
+
+def serve_units(path=UNITS_SOCK):
     s = socket.socket(socket.AF_UNIX, socket.SOCK_STREAM)
-    s.bind(path)
-    os.chown(path, DESKD_UID, grp.getgrnam("desk").gr_gid)
-    os.chmod(path, 0o600)
+    bind_as(s, path, DESKD_UID, grp.getgrnam("desk").gr_gid, 0o600)
     s.listen(8)
     while True:
         c, _ = s.accept()
@@ -686,17 +829,21 @@ def serve_units():
 
 def datadirs():
     """desk-datadirs and tmpfiles.d/ma.conf. A service directory the desk's root turned into a link is replaced (the host
-    refused to mount it: mounts.py)."""
-    for d in ("/data/desk", "/data/rtc", "/data/agent", "/data/notebook", "/data/browser", "/data/.ma-export-tmp"):
+    refused to mount it: mounts.py). As root only names in /data, /run, /var and /, which only root can change; inside a desk
+    user's own directory as that user (as_user), as the desk image's desk-datadirs does since EXP-7: as root, os.makedirs on a
+    link the Browser's user put at /data/browser/home, then chown and chmod by name, gave kiosk whatever the link named (a
+    directory of the desk's root, /data/logs say) at the slot's next start. One that can't be made is said, never fatal."""
+    for d in ("/data/desk", "/data/files", "/data/rtc", "/data/agent", "/data/notebook", "/data/browser", "/data/.ma-export-tmp"):
         if os.path.islink(d) or (os.path.lexists(d) and not os.path.isdir(d)):
             log(f"{d} isn't a directory (a link?): replaced by an empty one; the host refused to mount it")
             os.unlink(d)
     mkdir("/data/desk", "desk", "desk", 0o750)
+    mkdir("/data/files", "desk", "desk", 0o700)   # deskd's Files tree (free walk H5): a volume from before 0.1.11 gets it here, mounted from the next start
     mkdir("/data/rtc", "rtc", "rtc", 0o700)
     mkdir("/data/browser", "kiosk", "kiosk", 0o750)
-    mkdir("/data/browser/profile", "kiosk", "kiosk", 0o700)
-    mkdir("/data/browser/downloads", "kiosk", "kiosk", 0o750)
-    mkdir("/data/browser/home", "kiosk", "kiosk", 0o700)
+    for name, mode in (("profile", "0700"), ("downloads", "0750"), ("home", "0700")):   # kiosk's own: made by kiosk, never root
+        if as_user("kiosk", ["install", "-d", "-m", mode, "/data/browser/" + name]).returncode != 0:
+            log(f"could not make /data/browser/{name} as kiosk (a link to what kiosk doesn't own?): left as it is")
     mkdir("/data/agent", "agent", "agent", 0o700)
     mkdir("/data/notebook", "notebook", "notebook", 0o700)
     mkdir("/data/.ma-export-tmp", "desk-data", "desk-data", 0o700)   # desk-data's scratch, its own uid (WALL-06)
@@ -706,7 +853,9 @@ def datadirs():
     if not os.path.exists("/data/.ma-volume"):
         with open("/data/.ma-volume", "w") as fh:
             fh.write('{"volumeId":null,"formattedAt":null,"firstSeenAt":"%s"}\n' % time.strftime("%FT%TZ", time.gmtime()))
-    run_helper(["install", "-o", "desk", "-g", "desk", "-m", "0644", "/data/.ma-volume", "/data/desk/volume.json"])
+    # deskd's copy, in deskd's /data/desk, as desk: as root, install set the copy's owner and mode by name after making it
+    if as_user("desk", ["install", "-m", "0644", "/data/.ma-volume", "/data/desk/volume.json"]).returncode != 0:
+        log("could not copy the volume record to /data/desk/volume.json as desk")
 
 
 def cgroups():
@@ -734,12 +883,36 @@ def wait_network():
     return False
 
 
+BROWSER_DIR = "/data/browser"
+PREFS_MAX = 16 << 20
+
+
 def exit_type():
+    """Chromium's exit_type from the profile's Preferences, for the stop's line. kiosk's files, read as root: each step opened from the
+    last one's descriptor with O_NOFOLLOW (a link anywhere from /data/browser down is refused, not followed), O_NONBLOCK (a FIFO
+    there can't hold the stop), a regular file of at most PREFS_MAX. "none" when it can't be had."""
+    fds = []
     try:
-        m = re.search(r'"exit_type":"([A-Za-z]*)"', open("/data/browser/profile/Default/Preferences").read())
-        return m.group(1) if m else "none"
+        fds.append(os.open(BROWSER_DIR, os.O_RDONLY | os.O_DIRECTORY | os.O_NOFOLLOW | os.O_CLOEXEC))
+        for part in ("profile", "Default"):
+            fds.append(os.open(part, os.O_RDONLY | os.O_DIRECTORY | os.O_NOFOLLOW | os.O_CLOEXEC, dir_fd=fds[-1]))
+        fds.append(os.open("Preferences", os.O_RDONLY | os.O_NOFOLLOW | os.O_NONBLOCK | os.O_NOCTTY | os.O_CLOEXEC, dir_fd=fds[-1]))
+        st = os.fstat(fds[-1])
+        if not stat.S_ISREG(st.st_mode) or st.st_size > PREFS_MAX:
+            return "none"
+        data = b""
+        while len(data) <= PREFS_MAX:
+            chunk = os.read(fds[-1], 1 << 20)
+            if not chunk:
+                break
+            data += chunk
+        m = re.search(rb'"exit_type":"([A-Za-z]*)"', data)
+        return m.group(1).decode() if m else "none"
     except OSError:
         return "none"
+    finally:
+        for fd in fds:
+            os.close(fd)
 
 
 def shutdown(*_):
@@ -816,6 +989,7 @@ def main():
     test_tools()
     for name in ("desk-dns", "desk-agent-filter"):
         UNITS[name].start()
+    threading.Thread(target=watch_egress_profile, daemon=True).start()
     log("up: the Agent filter and its resolver started here; deskd, desk-agent, desk-notebook, desk-rtc and desk-data run in their "
         "own sandboxes, desk-stream's waits for units.sock; on-demand units wait for units.sock")
     while True:

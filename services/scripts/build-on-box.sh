@@ -16,8 +16,11 @@
 # history, expired after that, and are never printed here or on the box: curl's errors don't contain the URL's query.
 set -euo pipefail
 
-INSTANCE=${BUILD_BOX_INSTANCE:?set BUILD_BOX_INSTANCE to the arm64 build box}
-BUCKET=${RELEASE_BUCKET:-ma-lambda-artifacts-$(aws sts get-caller-identity --query Account --output text)}
+
+# The build box and bucket come from the environment, or from a private env file outside the repo.
+[ -z "${BUILD_INSTANCE:-}" ] && [ -f "${DESK_BUILD_ENV:-$HOME/work/desk-build.env}" ] && . "${DESK_BUILD_ENV:-$HOME/work/desk-build.env}"
+INSTANCE=${BUILD_INSTANCE:?set BUILD_INSTANCE to the build box instance id}
+BUCKET=${ARTIFACT_BUCKET:?set ARTIFACT_BUCKET to the artifacts bucket}
 SERVICE=${2:-deskd}
 REGION=${AWS_REGION:-us-east-1}
 URL_TTL=7200           # Long enough for the delivery wait plus the build.

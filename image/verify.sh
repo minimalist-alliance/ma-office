@@ -10,9 +10,17 @@ TYPE=${VERIFY_TYPE:-t4g.medium}
 # sections 1 to 1a1, then verify-kind.sh's guild sections, and stops (image/README.md, "Guild Desk"). The default boots it
 # as before, with metadata tags off, and adds verify-kind.sh's member sections after 1a1.
 KIND=${VERIFY_KIND:-member}; case "$KIND" in member|guild) ;; *) die "VERIFY_KIND is member or guild" ;; esac
+# LAB ONLY, never a release proof (a release is verified on its own baked AMI): VERIFY_OVERLAY=<dir> lays an unbaked tree's
+# files over the booted AMI's root after section 1 (which holds the image to its own first boot and replaces the root once)
+# and runs the overlay's own /overlay-setup.sh, as host/verify-port.sh's does; lab/img035/overlay.sh makes one. Section 6's
+# root replacement brings back the AMI's own root, so 6b, 6c, 7 and 8 test the AMI's files, not the overlay's. VERIFY_DESKD=<a
+# published deskd version> rolls deskd forward to it for section 3b6's links parts and back after, for an image whose baked
+# deskd predates links out. VERIFY_TAG names one tree's overlay run in the evidence file's name.
+[ -z "${VERIFY_OVERLAY:-}" ] || [ -f "$VERIFY_OVERLAY/overlay-setup.sh" ] || die "VERIFY_OVERLAY has no overlay-setup.sh"
 MDTAGS=; KINDTAG=; [ "$KIND" = guild ] && { MDTAGS=,InstanceMetadataTags=enabled; KINDTAG=,{Key=DeskKind,Value=guild}; }
 INSTANCE_ID=; SG_ID=; KEY_NAME=; WORKDIR=; VOL2=
-mkdir -p "$HERE/evidence"; EV=$HERE/evidence/verify-$AMI.txt; [ "$KIND" = guild ] && EV=$HERE/evidence/verify-guild-$AMI.txt; : > "$EV"
+mkdir -p "$HERE/evidence"; EV=$HERE/evidence/verify-$AMI.txt; [ "$KIND" = guild ] && EV=$HERE/evidence/verify-guild-$AMI.txt
+[ -n "${VERIFY_OVERLAY:-}" ] && EV=$HERE/evidence/verify-overlay${VERIFY_TAG:+-$VERIFY_TAG}-$AMI.txt; : > "$EV"
 cleanup() { local rc=$?; trap - EXIT; log "cleanup"; destroy_temp_access "$INSTANCE_ID"; exit "$rc"; }
 trap cleanup EXIT; trap 'exit 130' INT TERM
 
@@ -403,6 +411,11 @@ X
 info "fresh blank EBS volume content probe" < $WORKDIR/o
 aws ec2 detach-volume --volume-id "$VOL2" >/dev/null; aws ec2 wait volume-available --volume-ids "$VOL2"; aws ec2 delete-volume --volume-id "$VOL2"; VOL2=
 
+# LAB ONLY (above): the overlay goes on here, after section 1's own root replacement, which would take it away.
+if [ -n "${VERIFY_OVERLAY:-}" ]; then   # LAB ONLY (above)
+  tar -C "$VERIFY_OVERLAY" -cf - . | R 'sudo tar --no-same-owner --no-same-permissions --no-overwrite-dir -C / -xf - && sudo /overlay-setup.sh' > $WORKDIR/o 2>&1
+  say "OVERLAY (lab only, not a release proof): exit $?, $(cd "$VERIFY_OVERLAY" && find . \( -type f -o -type l \) | sort | tr '\n' ' ')"; sed 's/^/        /' $WORKDIR/o >> "$EV"
+fi
 # ---- 2. IMDS
 RS <<'X' > $WORKDIR/o 2>&1; rc=0
 imds() { # imds <uid> -> http code of the IMDSv2 token request
@@ -1475,7 +1488,9 @@ cat > $WORKDIR/tl.py <<'P'
 import base64, json, os, socket, struct, sys, time, urllib.request
 CDP = 'http://127.0.0.1:9222'
 LOCK = {'DnsOverHttpsMode': 'secure', 'DnsOverHttpsTemplates': 'https://family.cloudflare-dns.com/dns-query', 'ForceGoogleSafeSearch': True,
-        'ForceYouTubeRestrict': 1, 'ProxyMode': 'direct', 'ExtensionInstallBlocklist': ['*'], 'ExtensionInstallAllowlist': []}
+        'ForceYouTubeRestrict': 1, 'ProxyMode': 'direct'}
+# From 0.3.5 the extension keys are ma.json's (every band) and ma-adult.json's (band adult only): verify-chromium.sh, bands.
+ALLOW = ['nngceckbapebfimnlniiiahkandclblb', 'aeblfdkhhhdcdjpifhhbdiojplfjncoa', 'ghmbeldphafepmbegfdlkpapadhbakde']
 MA_JSON = '/etc/chromium/policies/managed/ma.json'
 def get(p, m='GET'): return urllib.request.urlopen(urllib.request.Request(CDP + p, method=m), timeout=30).read()
 class WS:  # just enough of RFC 6455 for CDP, as in the CJK check
@@ -1557,6 +1572,9 @@ if mode in ('teen', 'adult'):
                  '%s applied as %s: %s' % (k, json.dumps(v), json.dumps({x: p.get(x) for x in ('value', 'status', 'level', 'scope', 'source')}) if p else 'not set'))
         else:
             want(p is None, '%s unset%s' % (k, '' if p is None else ': ' + json.dumps(p.get('value'))))
+    p = rows.get('ExtensionInstallAllowlist')
+    if mode == 'adult': want(p is not None and p.get('value') == ALLOW and p.get('status') == 'OK', 'the password managers allowed: %s' % json.dumps(p and p.get('value')))
+    else: want(p is None, 'no extension allowed: %s' % json.dumps(p and p.get('value')))
     # Through the resolver or not, in Chromium itself: a name the family resolver answers with 0.0.0.0, Cloudflare's own test
     # name, and one it doesn't. The query string keeps Chromium's HTTP cache out of it, since a cached page needs no lookup.
     bust = '?tl=' + os.urandom(6).hex()
@@ -1568,10 +1586,12 @@ if mode in ('teen', 'adult'):
     else:
         want(fam.get('href', '').startswith('https://nudity.testcategory.com/'), 'the same name loads with no lock (the control)')
 elif mode == 'keys':
-    a, b = json.load(open(MA_JSON)), json.load(open('/etc/ma/chromium-teen.json'))
-    shared = sorted(set(a) & set(b)); print('ma.json: %d keys, chromium-teen.json: %d keys, shared: %s' % (len(a), len(b), shared))
-    want(not shared, 'no key in both files')
+    a, b, c = json.load(open(MA_JSON)), json.load(open('/etc/ma/chromium-teen.json')), json.load(open('/etc/ma/chromium-adult.json'))
+    shared = sorted((set(a) & set(b)) | (set(a) & set(c)) | (set(b) & set(c)))
+    print('ma.json: %d keys, chromium-teen.json: %d keys, chromium-adult.json: %d keys, shared: %s' % (len(a), len(b), len(c), shared))
+    want(not shared, 'no key in two of the three files')
     want(b == LOCK, 'chromium-teen.json holds what this check expects')
+    want(c == {'ExtensionInstallAllowlist': ALLOW}, 'chromium-adult.json holds what this check expects')
     want('RestoreOnStartup' in a and a['RestoreOnStartup'] == 1, 'ma.json still restores the session')
 elif mode == 'cookie':
     t = json.loads(get('/json/new?http://127.0.0.1:18766/echo', 'PUT')); title = ''
@@ -1584,6 +1604,7 @@ print('failures:', len(fails)); sys.exit(1 if fails else 0)
 P
 cat > $WORKDIR/tl.sh <<'P'
 BAND=/data/desk/age-band LOCK=/etc/chromium/policies/managed/ma-teen.json POLICY=/etc/ma/chromium-teen.json HELPER=/usr/local/lib/ma/desk-browser-policy
+ADULT=/etc/chromium/policies/managed/ma-adult.json ADULT_T=/etc/ma/chromium-adult.json
 bad() { echo "BAD: $*"; echo FAILED; }
 ask() { timeout 60 setpriv --reuid=1100 --regid=1100 --clear-groups python3 -I /var/tmp/tl-ask.py "$1" 2>&1 | tail -1; }
 setband() { rm -rf "$BAND"; printf "$1" > "$BAND"; chown desk:desk "$BAND"; chmod 0644 "$BAND"; }
@@ -1592,7 +1613,9 @@ down() { systemctl stop desk-browser; systemctl reset-failed desk-browser 2>/dev
 # start_via_deskd <what>: the way deskd starts it. The helper's own journal line from this start has to be there.
 start_via_deskd() { local since r l; since=$(date '+%F %T'); sleep 1; r=$(ask 'start desk-browser'); [ "$r" = ok ] || bad "$1: units.sock said: $r"
   l=$(journalctl -u desk-browser --since "$since" --no-pager -o cat | grep '^desk-browser-policy:'); [ -n "$l" ] || bad "$1: the helper didn't run on this start"; echo "$l" | sed "s/^/$1: /"; }
-same_as_policy() { [ -f "$LOCK" ] && [ ! -L "$LOCK" ] && cmp -s "$LOCK" "$POLICY" && [ "$(stat -c '%U:%G %a' "$LOCK")" = "root:root 644" ]; }
+# Locked means no allowlist too (from 0.3.5): the two files are never both in place.
+same_as_policy() { [ -f "$LOCK" ] && [ ! -L "$LOCK" ] && cmp -s "$LOCK" "$POLICY" && [ "$(stat -c '%U:%G %a' "$LOCK")" = "root:root 644" ] && [ ! -e "$ADULT" ] && [ ! -L "$ADULT" ]; }
+allowed() { [ -f "$ADULT" ] && [ ! -L "$ADULT" ] && cmp -s "$ADULT" "$ADULT_T" && [ "$(stat -c '%U:%G %a' "$ADULT")" = "root:root 644" ] && [ ! -e "$LOCK" ]; }
 P
 scp "${SSH_OPTS[@]}" -i "$KEY_FILE" $WORKDIR/tl.py $WORKDIR/tl.sh "admin@$IP:/var/tmp/" >/dev/null
 RS <<'X' > $WORKDIR/o 2>&1; rc=0
@@ -1609,17 +1632,18 @@ systemctl is-active --quiet desk-browser && touch /var/tmp/tl-start/running; ech
 echo "--- band adult"
 down; setband 'teen\n'; $HELPER; same_as_policy || bad "the opposite state wasn't reached"   # a lock to remove
 setband 'adult\n'; start_via_deskd adult; [ -e "$LOCK" ] && bad "the lock is still there"; echo "lock file: $(ls "$LOCK" 2>&1)"
+allowed && echo "allowlist: $(stat -c '%U:%G %a %s' "$ADULT"), the template's bytes" || bad "band adult, and no allowlist of the template's"
 up && python3 -I /var/tmp/tl.py adult || bad "Chromium's policies with band adult"
 echo "ran to the end"
 X
 grep -q -e '^FAILED$' $WORKDIR/o && rc=1
 grep -q '^ran to the end$' $WORKDIR/o || rc=1   # a script that died partway printed no FAILED
-result "teen lock: band adult, through units.sock: no lock file, and Chromium reports all 7 keys unset, ma.json's applied, and a name the family resolver filters loads" $rc < $WORKDIR/o
+result "teen lock: band adult, through units.sock: no lock file and the password managers' allowlist in place, and Chromium reports the lock's 5 keys unset, ma.json's applied, the allowlist applied, and a name the family resolver filters loads" $rc < $WORKDIR/o
 RS <<'X' > $WORKDIR/o 2>&1; rc=0
 . /var/tmp/tl.sh
 echo "--- band teen"
 down; setband 'adult\n'; $HELPER; [ ! -e "$LOCK" ] || bad "the opposite state wasn't reached"   # no lock to find already there
-setband 'teen\n'; start_via_deskd teen; same_as_policy || bad "the lock isn't the policy file's bytes, root's, 0644"; stat -c '%U:%G %a %s %n' "$LOCK"
+setband 'teen\n'; start_via_deskd teen; same_as_policy || bad "the lock isn't the policy file's bytes, root's, 0644, alone"; stat -c '%U:%G %a %s %n' "$LOCK"
 up && python3 -I /var/tmp/tl.py teen || bad "Chromium's policies with band teen"
 echo "--- uid 1102 reaches the resolver under nftables.conf"
 r=$(setpriv --reuid=1102 --regid=1102 --clear-groups curl -s -m 10 -H 'accept: application/dns-json' -w ' http=%{http_code}' 'https://family.cloudflare-dns.com/dns-query?name=example.net&type=A'); echo "$r" | cut -c1-160
@@ -1628,7 +1652,7 @@ echo "ran to the end"
 X
 grep -q -e '^FAILED$' $WORKDIR/o && rc=1
 grep -q '^ran to the end$' $WORKDIR/o || rc=1
-result "teen lock: band teen, through units.sock: the lock in place, Chromium reports all 7 keys applied as mandatory, names go through the family resolver, and uid 1102 reaches it" $rc < $WORKDIR/o
+result "teen lock: band teen, through units.sock: the lock in place and no allowlist, Chromium reports the lock's 5 keys applied as mandatory and no extension allowed, names go through the family resolver, and uid 1102 reaches it" $rc < $WORKDIR/o
 RS <<'X' > $WORKDIR/o 2>&1; rc=0
 . /var/tmp/tl.sh
 # Each starts from no lock. The symlink points at a file saying adult, and the FIFO has no writer, so following one unlocks and reading the other hangs.
@@ -1658,18 +1682,18 @@ echo "ran to the end"
 X
 grep -q -e '^FAILED$' $WORKDIR/o && rc=1
 grep -q '^ran to the end$' $WORKDIR/o || rc=1
-result "teen lock: a missing band, a symlink, a FIFO, garbage and no directory each end locked with the Browser up and no hang; nothing from the band in the log" $rc < $WORKDIR/o
+result "teen lock: a missing band, a symlink, a FIFO, garbage and no directory each end locked with no allowlist, the Browser up and no hang; nothing from the band in the log" $rc < $WORKDIR/o
 RS <<'X' > $WORKDIR/o 2>&1; rc=0
 . /var/tmp/tl.sh
 down; setband 'teen\n'; $HELPER; same_as_policy || bad "no lock to attack"
-h0=$(sha256sum "$LOCK" "$POLICY" | sha256sum | cut -c1-16); s0=$(stat -c '%U:%G %a' "$LOCK" "$POLICY" | paste -sd,)
+h0=$(sha256sum "$LOCK" "$POLICY" "$ADULT_T" | sha256sum | cut -c1-16); s0=$(stat -c '%U:%G %a' "$LOCK" "$POLICY" "$ADULT_T" | paste -sd,)
 for u in desk kiosk; do
   as() { setpriv --reuid="$(id -u $u)" --regid="$(id -g $u)" --init-groups sh -c "$1" 2>/dev/null; }
   [ "$(as 'id -u; echo probe')" = "$(id -u $u)
 probe" ] || bad "$u: the probe itself doesn't run"
   as ': > /tmp/tl-own' && echo "$u: writes its own file in /tmp (the control)" || bad "$u: can't write even its own file, so a refusal below proves nothing"
   rm -f /tmp/tl-own
-  for f in "$LOCK" "$POLICY"; do
+  for f in "$LOCK" "$POLICY" "$ADULT_T"; do
     for try in "echo x >> $f" ": > $f" "rm -f $f" "mv $f $f.x" "chmod 666 $f" "chown $u $f" "ln -f /etc/hostname $f" "touch $f"; do
       if as "$try"; then bad "$u ($(id -u $u)) could: $try"; fi
     done
@@ -1678,8 +1702,8 @@ probe" ] || bad "$u: the probe itself doesn't run"
   done
   echo "$u ($(id -u $u), groups $(id -G $u | paste -sd,)): refused on both files and both directories"
 done
-[ "$(sha256sum "$LOCK" "$POLICY" | sha256sum | cut -c1-16)" = "$h0" ] && echo "both files unchanged" || bad "a file changed"
-[ "$(stat -c '%U:%G %a' "$LOCK" "$POLICY" | paste -sd,)" = "$s0" ] && [ "$s0" = "root:root 644,root:root 644" ] && echo "owners and modes: $s0" || bad "owners or modes: $(stat -c '%U:%G %a' "$LOCK" "$POLICY" | paste -sd,)"
+[ "$(sha256sum "$LOCK" "$POLICY" "$ADULT_T" | sha256sum | cut -c1-16)" = "$h0" ] && echo "the three files unchanged" || bad "a file changed"
+[ "$(stat -c '%U:%G %a' "$LOCK" "$POLICY" "$ADULT_T" | paste -sd,)" = "$s0" ] && [ "$s0" = "root:root 644,root:root 644,root:root 644" ] && echo "owners and modes: $s0" || bad "owners or modes: $(stat -c '%U:%G %a' "$LOCK" "$POLICY" "$ADULT_T" | paste -sd,)"
 for d in /etc /etc/chromium /etc/chromium/policies /etc/chromium/policies/managed /etc/ma; do
   [ "$(stat -c '%U:%G' $d)" = root:root ] && [ $(( $(stat -c '%#a' $d) & 022 )) = 0 ] || bad "$d: $(stat -c '%U:%G %a' $d)"; done; echo "parent directories: root's, not group- or world-writable"
 m=$(docker inspect -f '{{range .Mounts}}{{.Source}} {{end}}' deskd 2>/dev/null); echo "deskd's container mounts: ${m:-none running}"
@@ -1688,12 +1712,12 @@ echo "ran to the end"
 X
 grep -q -e '^FAILED$' $WORKDIR/o && rc=1
 grep -q '^ran to the end$' $WORKDIR/o || rc=1
-result "teen lock: uids 1100 and 1102 can't change or remove the lock or the policy file, or add a file beside them" $rc < $WORKDIR/o
+result "teen lock: uids 1100 and 1102 can't change or remove the lock, the policy file or the allowlist's, or add a file beside them" $rc < $WORKDIR/o
 RS <<'X' > $WORKDIR/o 2>&1; rc=$?
 python3 -I /var/tmp/tl.py keys; rc=$?
 exit $rc
 X
-result "teen lock: chromium-teen.json shares no key with ma.json" $rc < $WORKDIR/o
+result "teen lock: chromium-teen.json, chromium-adult.json and ma.json share no key" $rc < $WORKDIR/o
 RS <<'X' > $WORKDIR/o 2>&1; rc=0
 . /var/tmp/tl.sh
 echo "--- back to the starting band"
@@ -1728,7 +1752,7 @@ for p in install switch restart stopped kill cookies hostile keys; do
     kill) what="the kill switch: nothing blocked, the blocker still installed and the list kept, uid 1100 can't set or clear it; then on again" ;;
     cookies) what="a profile's cookies and local storage byte-identical after pages with the blocker on, a site off and on again; no script of the blocker in a page" ;;
     hostile) what="a symlink, a FIFO, a directory, an oversized list and bad lines leave blocking on, never hang and never stop the Browser; no site in the log; uids 1100 and 1102 can't change the template or the policy; the policy root:kiosk 0640, unreadable to uids 1100 and 1103; 3b2's cookies came through" ;;
-    keys) what="no key in two of ma.json, chromium-teen.json and chromium-adblock.json, and the policy is the template with the list and the kill switch" ;;
+    keys) what="no key in two of ma.json, chromium-teen.json, chromium-adblock.json and (from 0.3.5) chromium-adult.json, and the policy is the template with the list and the kill switch" ;;
   esac
   R "sudo bash -s -- $p" < "$HERE/verify-adblock.sh" > $WORKDIR/o 2>&1; rc=0
   grep -q -e '^FAILED$' $WORKDIR/o && rc=1
@@ -1736,6 +1760,31 @@ for p in install switch restart stopped kill cookies hostile keys; do
   result "ad blocking, $p: $what" $rc < $WORKDIR/o
 done
 R "sudo bash -s -- leave-off" < "$HERE/verify-adblock.sh" >> "$EV" 2>&1
+
+# ---- 3b6. What the image gives the desk's Chromium beyond the kiosk (from 0.3.5): links out through the xdg-open stand-in,
+# the password managers' policies by band, JPEG XL off. Its own file, so it can run alone on a lab box (lab/img035/). Each
+# part puts back the band and the Browser as it found them, and has been seen to fail with what it guards broken
+# (evidence/img035-2026-11-11/mutations.txt). links and click need a deskd with links out (3c132d94 and later).
+if [ -n "${VERIFY_DESKD:-}" ]; then   # LAB ONLY (above)
+  D_SHA=$(aws s3 cp --only-show-errors "s3://$RELEASE_BUCKET/desk/deskd/$VERIFY_DESKD/meta.json" - | jq -r .sha256)
+  D_URL=$(aws s3 presign "s3://$RELEASE_BUCKET/desk/deskd/$VERIFY_DESKD/deskd-$VERIFY_DESKD.tgz" --expires-in 900)
+  printf '%s\n' "$D_URL" | R "sudo bash -c 'read -r u; /opt/ma/bin/ma-update deskd \"\$u\" $D_SHA 2>&1 | tail -2; cat /opt/ma/deskd/current/VERSION'" > $WORKDIR/o 2>&1
+  unset D_URL; say "VERIFY_DESKD (lab only): deskd rolled forward for 3b6's links parts: $(tail -1 $WORKDIR/o)"
+fi
+for p in links click bands keys jxl; do
+  case $p in
+    links) what="the stand-in is the only xdg-open and xdg-email on Chromium's PATH (xdg-utils' two diverted off it), /run/desk-links desk:kiosk 2750 and in deskd's container, no session bus for Chromium, and AutoLaunchProtocolsFromOrigins for the six schemes applied as mandatory" ;;
+    click) what="an http page's tel:, webcal: and mailto: links, each clicked, reach deskd's links socket (its /health count goes up by one each), and its ssh: and ms-settings: links reach nothing" ;;
+    bands) what="ExtensionInstallBlocklist [*], ExtensionAllowedTypes [extension] and BlockExternalExtensions on every band; the three password managers allowed on band adult only, unset on teen, with no band and with a band that isn't one" ;;
+    keys) what="no key in two of the four managed files, and the teen and adult files hold what they should" ;;
+    jxl) what="Chromium's one --disable-features turns JXLImageFormat off, and neither a page's request nor its image's asks for image/jxl" ;;
+  esac
+  [ $p = bands ] && [ -n "${VERIFY_DESKD:-}" ] && { R "sudo /opt/ma/bin/ma-update deskd --rollback 2>&1 | tail -1; cat /opt/ma/deskd/current/VERSION" > $WORKDIR/o 2>&1; say "VERIFY_DESKD (lab only): deskd back: $(tail -1 $WORKDIR/o)"; }
+  R "sudo bash -s -- $p" < "$HERE/verify-chromium.sh" > $WORKDIR/o 2>&1; rc=0
+  grep -q -e '^FAILED$' $WORKDIR/o && rc=1
+  grep -q '^ran to the end$' $WORKDIR/o || rc=1
+  result "Chromium, $p: $what" $rc < $WORKDIR/o
+done
 
 # ---- 3c. desk-stream against a stand-in for desk-rtc (runtime spec section 8.2)
 RS <<'X' > $WORKDIR/o 2>&1; rc=0
@@ -2189,11 +2238,11 @@ result "desk-agent needs the ruleset (DA-2): Requires and After nftables.service
 
 # ---- 3e1. desk-agent-filter (ADR 0070): uid 1103 reaches only the providers' names, and everything else is refused. Its own
 # file, so it can run alone on a lab box. It has been seen to fail with each thing it guards broken
-# (evidence/agent-filter-2026-11-07/mutations.txt).
+# (evidence/agent-filter-2026-11-07/mutations.txt; OpenRouter's line: evidence/img035-2026-11-11/mutations.txt).
 RS < "$HERE/verify-agent-filter.sh" > $WORKDIR/o 2>&1; rc=0
 grep -q -e '^FAILED$' $WORKDIR/o && rc=1
 grep -q '^ran to the end$' $WORKDIR/o || rc=1
-result "desk-agent-filter: uid 1103 reaches the three providers with their certificates, by name, by placeholder and aimed anywhere; a Cloudflare site that isn't listed is refused on the listed names' own addresses (with a control); no SNI, ECH, by IP, UDP 443, other ports, unlisted names and TXT are refused, on the host and in a container; only uid 1103 reaches its ports; uid 1106 reaches only TCP 443 and the stub; with it stopped uid 1103 has no way out and nothing can stand in; it comes back by itself; its traffic is in class 1:20" $rc < $WORKDIR/o
+result "desk-agent-filter: uid 1103 reaches the four providers (OpenRouter from 0.3.5) with their certificates, by name, by placeholder and aimed anywhere, and agent-egress.conf names exactly those four; a Cloudflare site that isn't listed is refused on the listed names' own addresses (with a control); no SNI, ECH, by IP, UDP 443, other ports, unlisted names and TXT are refused, on the host and in a container; only uid 1103 reaches its ports; uid 1106 reaches only TCP 443 and the stub; with it stopped uid 1103 has no way out and nothing can stand in; it comes back by itself; its traffic is in class 1:20" $rc < $WORKDIR/o
 # ---- 3f. A stop, then a start, of deskd, desk-agent and desk-notebook leaves none of them failed. On docker stop the JVMs
 # exit 143, which the docker client passes on, so before 0.2.9's SuccessExitStatus=143 each stop of deskd or desk-agent
 # ended its unit as failed (0.2.8's note in RELEASES.md). desk-notebook's Node exits 0. Seen to fail on 0.2.8 (RELEASES.md,
@@ -2224,6 +2273,26 @@ X
 grep -q -e '^FAILED$' $WORKDIR/o && rc=1
 grep -q '^ran to the end$' $WORKDIR/o || rc=1
 result "unit stop and start: deskd, desk-agent and desk-notebook each end a stop inactive, not failed, and come back healthy" $rc < $WORKDIR/o
+# ---- 3g. Restart back-off and the kill order under memory pressure (reliability audit S1 and S2; image/README.md, "Restarts and memory
+# pressure"; verify-restart.sh, which also runs alone on a lab box). Each part has been seen to fail with what it guards broken
+# (evidence/restart-oom-2026-11-10/): the back-off off, the reset timer stopped, an OOMScoreAdjust changed.
+for p in static oom backoff; do
+  case $p in
+    static) what="every unit that restarts itself has RestartSteps= and a cap (5 minutes; 30 s for the Browser's units), no start limit, and the OOMScoreAdjust= of the kill order; the reset timer is enabled" ;;
+    oom) what="each running service's own oom_score_adj as the order says: desk-rtc and deskd -500, desk-notebook -200, the Browser 0, desk-agent +200, renderers 300 (the Docker-run ones' container processes included)" ;;
+    backoff) what="deskd killed five times in a row: the wait grows from about 3 s toward 30 s; after two minutes of health the timer starts it over and the next kill is back to 3 s; deskd is running again at the end" ;;
+  esac
+  R "sudo bash -s -- $p" < "$HERE/verify-restart.sh" > $WORKDIR/o 2>&1; rc=0
+  grep -q -e '^FAILED$' $WORKDIR/o && rc=1
+  grep -q '^ran to the end$' $WORKDIR/o || rc=1
+  result "restart and memory pressure, $p: $what" $rc < $WORKDIR/o
+done
+# the back-off check can fail: with the steps taken off deskd it must say so
+R 'sudo mkdir -p /etc/systemd/system/deskd.service.d && printf "[Service]\nRestartSteps=0\n" | sudo tee /etc/systemd/system/deskd.service.d/mutant.conf >/dev/null && sudo systemctl daemon-reload'
+R "sudo env RESTART_FAST=1 bash -s -- backoff" < "$HERE/verify-restart.sh" > $WORKDIR/o 2>&1; rc=1
+grep -q -e '^FAILED$' $WORKDIR/o && grep -q "no back-off" $WORKDIR/o && rc=0
+R 'sudo rm -r /etc/systemd/system/deskd.service.d && sudo systemctl daemon-reload && sudo systemctl restart deskd.service'
+result "restart and memory pressure, the back-off check fails with the back-off off (deskd's RestartSteps=0 flat, three kills): it says no back-off" $rc < $WORKDIR/o
 # ---- 4. ma-update with a dummy component (run, health, small image.tar)
 D=$WORKDIR/dummy; mkdir -p $D
 mkart() { # mkart <version> <healthy:yes|no> -> $D/dummy-<version>.tgz
@@ -2322,6 +2391,15 @@ for cv in $WANT; do comp=${cv%%=*}; base=${cv#*=}
   [ $e = 0 ] && [ "$(link $comp current)" = verify-fwd ] && [ "$(link $comp previous)" = "$base" ] || bad "$comp forward (exit $e)"
   echo "== $comp: --rollback"; /opt/ma/bin/ma-update $comp --rollback; e=$?; st $comp
   [ $e = 0 ] && [ "$(link $comp current)" = "$base" ] && [ "$(link $comp previous)" = verify-fwd ] || bad "$comp back to the baked release (exit $e)"
+  # A rollout names a version the desk holds (previous, then the baked one) by its artifact's hash: switched to with no download,
+  # so the url here is one that can't be fetched. The baked release's recorded hash is the one releases.pin names (1a1).
+  bsha=$(tr -d '[:space:]' < /opt/ma/$comp/releases/$base/artifact.sha256); [[ $bsha =~ ^[0-9a-f]{64}$ ]] || bad "$comp: the baked release has no recorded sha256"
+  t0=$(date +%s.%N); /opt/ma/bin/ma-update $comp file:///nonexistent/never-fetched.tgz $s; e=$?; t1=$(date +%s.%N)
+  echo "== $comp: rollout of previous verify-fwd by its hash, no download: exit $e, $(awk -v a=$t0 -v b=$t1 'BEGIN{printf "%.2f", b-a}') s"; st $comp
+  [ $e = 0 ] && [ "$(link $comp current)" = verify-fwd ] && [ "$(link $comp previous)" = "$base" ] || bad "$comp rollout to previous by version (exit $e)"
+  t0=$(date +%s.%N); /opt/ma/bin/ma-update $comp file:///nonexistent/never-fetched.tgz $bsha; e=$?; t1=$(date +%s.%N)
+  echo "== $comp: rollout of the baked $base by its hash, no download: exit $e, $(awk -v a=$t0 -v b=$t1 'BEGIN{printf "%.2f", b-a}') s"; st $comp
+  [ $e = 0 ] && [ "$(link $comp current)" = "$base" ] && [ "$(link $comp previous)" = verify-fwd ] || bad "$comp rollout to the baked release by version (exit $e)"
 done
 [ "$(docker inspect -f '{{.Image}}' deskd)" = "$(cat /opt/ma/deskd/current/image-id)" ] && echo "deskd runs the baked image again" || bad "deskd's container"
 echo "== desk-stream: the baked release's own artifact again, as a rollout of the baked version sends it"
@@ -2341,7 +2419,7 @@ rm -rf /var/tmp/w-* /var/tmp/*-verify-fwd.tgz /var/tmp/*-verify-swap.tgz /var/tm
 exit $rc
 X
 } | RS > $WORKDIR/o 2>&1; rc=$?; DS_URL=
-result "ma-update on the baked releases: each one forward and back to the baked one; the baked artifact again changes nothing; another artifact under its version is refused; /data and the DTLS identity untouched" $rc < $WORKDIR/o
+result "ma-update on the baked releases: each one forward and back to the baked one, and to previous and to the baked one by version with no download; the baked artifact again changes nothing; another artifact under its version is refused; /data and the DTLS identity untouched" $rc < $WORKDIR/o
 
 # ---- 5. listeners, chrony, ssh, resources
 RS <<'X' > $WORKDIR/o 2>&1; rc=0
@@ -2508,6 +2586,7 @@ if [ "$band" = adult ]; then echo "an adult band has no lock to put back, so thi
 else
   journalctl -b -u desk-browser --no-pager -o cat | grep -q '^desk-browser-policy: locked:' || bad "the helper didn't lock on this root"
   cmp -s "$L" /etc/ma/chromium-teen.json && echo "lock: $(stat -c '%U:%G %a' "$L")" || bad "no lock on the new root"
+  [ ! -e /etc/chromium/policies/managed/ma-adult.json ] && echo "no allowlist" || bad "a locked desk has the password managers' allowlist"
 fi
 curl -s -m 5 -o /dev/null http://127.0.0.1:9222/json/version && echo "Chromium is up" || bad "Chromium isn't up"
 echo "ran to the end"
@@ -2568,5 +2647,5 @@ wake_part boot "with an age band on /data, the boot starts desk-xorg, desk-audio
 wake_part gates "no age band, a Guild Desk marker and a refusing start check each leave the Browser stopped without failing the unit, and with them open it starts"
 R 'sudo rm -f /data/desk/age-band; sudo systemctl stop desk-browser desk-audio desk-xorg 2>/dev/null; true'
 
-say ""; say "SUMMARY: $PASS passed, $FAILN failed, and $INFON informational (recorded, not judged, not counted). Evidence: image/evidence/verify-$AMI.txt"
+say ""; say "SUMMARY: $PASS passed, $FAILN failed, and $INFON informational (recorded, not judged, not counted). Evidence: image/evidence/$(basename "$EV")"
 [ "$FAILN" = 0 ]

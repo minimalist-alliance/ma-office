@@ -1,0 +1,8 @@
+<g data-part="top-jacket">
+  <path fill="{{shirt}}" d="M102,195 L128,228 L154,195 Z"/>
+  <path fill="{{top}}" d="M30,256 C30,222 60,201 102,195 L128,230 L154,195 C196,201 226,222 226,256 Z"/>
+  <path fill="{{topShade}}" d="M102,195 L128,230 L114,234 L92,203 Z"/>
+  <path fill="{{topShade}}" d="M154,195 L128,230 L142,234 L164,203 Z"/>
+  <g data-min-size="40" fill="none" stroke="{{topShade}}" stroke-width="3" stroke-linecap="round"><path d="M128,234 V256"/></g>
+  <g data-min-size="40" fill="{{topHi}}"><circle cx="133.5" cy="244" r="2.4"/></g>
+</g>

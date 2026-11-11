@@ -5,16 +5,20 @@ import static org.awaitility.Awaitility.await;
 
 import com.minimalistalliance.desk.deskd.browser.minified.MinifiedModule;
 import com.minimalistalliance.desk.deskd.browser.minified.MinifiedSwitch;
+import com.minimalistalliance.desk.deskd.platform.TierLimits;
 import com.minimalistalliance.desk.deskd.protocol.Channels;
 import com.minimalistalliance.desk.deskd.protocol.FrameKind;
 import com.minimalistalliance.desk.deskd.protocol.Json;
 import com.minimalistalliance.desk.deskd.testing.FakeCdp;
+import com.minimalistalliance.desk.deskd.testing.MutableClock;
+import com.minimalistalliance.desk.deskd.tier.BrowserTime;
 import com.minimalistalliance.desk.deskd.testing.TestClient;
 import java.nio.charset.StandardCharsets;
 import java.nio.file.Files;
 import java.nio.file.Path;
 import java.time.Clock;
 import java.time.Duration;
+import java.time.Instant;
 import java.util.ArrayList;
 import java.util.Base64;
 import java.util.LinkedHashMap;
@@ -24,6 +28,7 @@ import java.util.Set;
 import java.util.concurrent.CompletableFuture;
 import java.util.concurrent.CopyOnWriteArrayList;
 import java.util.concurrent.TimeUnit;
+import java.util.concurrent.atomic.AtomicLong;
 import java.util.function.Function;
 import org.junit.jupiter.api.AfterEach;
 import org.junit.jupiter.api.BeforeEach;
@@ -168,6 +173,9 @@ class MinifiedMethodsTest {
 
     @AfterEach
     void tearDown() throws Exception {
+        if (time != null) {
+            time.close();
+        }
         rig.close();
         cdp.close();
     }
@@ -236,7 +244,7 @@ class MinifiedMethodsTest {
         assertThat(mdoc).containsEntry("v", 1).containsEntry("url", "https://example.com/a").containsEntry("origin", "https://example.com");
         assertThat(new String(Json.bytes(mdoc), StandardCharsets.UTF_8)).doesNotContain("cdn.example.com");
 
-        FakeCdp.Command added = cdp.commands("Page.addScriptToEvaluateOnNewDocument").get(0);
+        FakeCdp.Command added = minifiedScripts().get(0);
         assertThat(added.sessionId()).isEqualTo(SESSION);
         assertThat(added.params()).containsEntry("worldName", "ma-minify");
         assertThat((String) added.params().get("source")).contains("__maProxy");
@@ -848,7 +856,7 @@ class MinifiedMethodsTest {
         assertThat(details(off)).containsEntry("reason", "disabled");
         assertThat(details(rig.call(client, "browser.minified.sites.list", Map.of(), null))).containsEntry("reason", "disabled");
         assertThat(client.subscribe("browser.minified:" + TAB, null)).containsEntry("code", "unavailable");
-        assertThat(cdp.commands("Page.addScriptToEvaluateOnNewDocument")).isEmpty();
+        assertThat(minifiedScripts()).isEmpty();
         assertThat(cdp.commands("Runtime.callFunctionOn")).isEmpty();
     }
 
@@ -1119,11 +1127,23 @@ class MinifiedMethodsTest {
             "Target.setAutoAttach", "Runtime.runIfWaitingForDebugger", "Runtime.callFunctionOn", "Page.getResourceContent",
             "Page.getFrameTree", "Input.dispatchMouseEvent", "Input.dispatchKeyEvent", "Input.insertText");
 
+    /**
+     * The view's scripts, in its own world. The Browser's attach puts one of its own in each tab's page, ProtectedMedia's,
+     * which has no world name and isn't the view's.
+     */
+    private List<FakeCdp.Command> minifiedScripts() {
+        return cdp.commands("Page.addScriptToEvaluateOnNewDocument").stream()
+                .filter(c -> "ma-minify".equals(c.params().get("worldName")))
+                .toList();
+    }
+
     private List<FakeCdp.Command> itsCommands() {
         List<FakeCdp.Command> its = new ArrayList<>();
         for (FakeCdp.Command command : cdp.commands()) {
             boolean ownWorld = "Page.createIsolatedWorld".equals(command.method()) && "ma-minify".equals(command.params().get("worldName"));
-            if (ITS_METHODS.contains(command.method()) || ownWorld) {
+            boolean browsers = "Page.addScriptToEvaluateOnNewDocument".equals(command.method())
+                    && !"ma-minify".equals(command.params().get("worldName"));
+            if ((ITS_METHODS.contains(command.method()) && !browsers) || ownWorld) {
                 its.add(command);
             }
         }
@@ -1316,5 +1336,185 @@ class MinifiedMethodsTest {
         cdp.answerHeld("Runtime.callFunctionOn");
         acted.get(10, TimeUnit.SECONDS);
         awaitFrozen();
+    }
+
+    // ---- Browser time on a free desk (ADR 0090 section 2): the simplified view in use counts, and is refused at the limit
+
+    private static final TierLimits.Limits FREE = new TierLimits.Limits("free", 45, 2, 30);
+    private final MutableClock clock = new MutableClock(Instant.parse("2026-11-09T15:00:00Z"));
+    private final AtomicLong nanos = new AtomicLong(1_000_000_000L);
+    private BrowserTime time;
+
+    /** Browser time as the desk wires it, on clocks the test moves, with its timer running. */
+    private void meter(TierLimits.Limits limits) {
+        time = new BrowserTime(dir.resolve(BrowserTime.FILE), dir.resolve(BrowserTime.LIVE_FILE), "boot-1", clock, nanos::get, () -> null, limits);
+        time.onOut(rig.module::browserTimeUsed);
+        rig.module.followBrowserTime(time::outUntil, time::live);
+        time.start();
+    }
+
+    private void pass(Duration by) {
+        clock.advance(by);
+        nanos.addAndGet(by.toNanos());
+    }
+
+    private long usedMillis() {
+        return time.view().usedMillis();
+    }
+
+    private void looking(boolean seen) throws Exception {
+        assertThat(rig.call(client, "desk.attention.set", Map.of("seen", seen), null)).containsEntry("_kind", "RES");
+    }
+
+    private Map<String, Object> subscribeView() throws Exception {
+        Map<String, Object> sub = client.subscribe("browser.minified:" + TAB, null);
+        assertThat(sub).containsEntry("_kind", "RES");
+        client.nextJson(Channels.EVENTS, FrameKind.EVT);
+        return sub;
+    }
+
+    private void unsubscribe(Map<String, Object> sub) throws Exception {
+        client.sendJson(Channels.RPC, FrameKind.UNSUB, 91_001, Map.of("subId", sub.get("subId")));
+        assertThat(client.nextReply()).containsEntry("_id", 91_001L);
+    }
+
+    private void assertTimeRefusal(Map<String, Object> reply) {
+        assertThat(reply).containsEntry("_kind", "ERR").containsEntry("code", "unavailable");
+        assertThat(details(reply))
+                .containsEntry("reason", "bandwidth_limit")
+                .containsEntry("resumesAt", time.outUntil().toString())
+                .containsEntry("limit", "browser_time");
+    }
+
+    /** The day's time used up: the desk looked at, a subscription, a quiet clock, then the limit lowered under the use. */
+    private void runOut() throws Exception {
+        looking(true);
+        subscribeView();
+        pass(Duration.ofMinutes(2));
+        time.limitsChanged(new TierLimits.Limits("free", 1, 2, 30));
+        await().atMost(Duration.ofSeconds(10)).until(() -> time.outUntil() != null);
+    }
+
+    @Test
+    void theSimplifiedViewAloneCountsWhileItIsLookedAtAndSubscribed() throws Exception {
+        meter(FREE);
+        looking(true);
+        assertThat(time.view().live()).isFalse();
+        Map<String, Object> sub = subscribeView();
+        assertThat(time.view().live()).isTrue();
+        pass(Duration.ofSeconds(90));
+        assertThat(usedMillis()).isBetween(89_000L, 91_000L);
+        assertThat(time.liveSecondsSinceBoot()).isBetween(89L, 91L);
+
+        // Nobody looking: a subscription held by a hidden tab costs nothing.
+        looking(false);
+        assertThat(time.view().live()).isFalse();
+        pass(Duration.ofMinutes(10));
+        assertThat(usedMillis()).isBetween(89_000L, 91_000L);
+        looking(true);
+        assertThat(time.view().live()).isTrue();
+        unsubscribe(sub);
+        assertThat(time.view().live()).isFalse();
+        pass(Duration.ofMinutes(10));
+        assertThat(usedMillis()).isBetween(89_000L, 91_000L);
+        assertThat(time.liveSecondsSinceBoot()).isBetween(89L, 91L);
+    }
+
+    @Test
+    void aPageCallCountsForALeaseEvenWithNoSubscription() throws Exception {
+        rig.module.minified().useLease(Duration.ofMillis(400));
+        meter(FREE);
+        assertThat(get()).containsEntry("view", "simplified");
+        assertThat(time.view().live()).isTrue();
+        await().atMost(Duration.ofSeconds(5)).until(() -> !time.view().live());
+    }
+
+    @Test
+    void theSimplifiedViewAndLiveTogetherAreCountedOnce() throws Exception {
+        meter(FREE);
+        looking(true);
+        Map<String, Object> sub = subscribeView();
+        pass(Duration.ofSeconds(30));
+        assertThat(rig.call(client, "browser.stream.set", Map.of("state", "live"), null)).containsEntry("state", "live");
+        pass(Duration.ofSeconds(60));
+        assertThat(usedMillis()).isBetween(89_000L, 91_000L);
+
+        // The view ends first, live carries on; then live ends and the view is back, then both end.
+        unsubscribe(sub);
+        assertThat(time.view().live()).isTrue();
+        pass(Duration.ofSeconds(30));
+        assertThat(usedMillis()).isBetween(119_000L, 121_000L);
+        assertThat(rig.call(client, "browser.stream.set", Map.of("state", "off"), null)).containsEntry("state", "off");
+        assertThat(time.view().live()).isFalse();
+        pass(Duration.ofMinutes(5));
+        assertThat(usedMillis()).isBetween(119_000L, 121_000L);
+        assertThat(time.liveSecondsSinceBoot()).isBetween(119L, 121L);
+    }
+
+    @Test
+    void atTheLimitTheViewsPageCallsAndSubscriptionAreRefusedAsLiveIsAndOpenOnesEnd() throws Exception {
+        meter(FREE);
+        Map<String, Object> archive = run("button", "Archive");
+        runOut();
+
+        // The open subscription is ended with an error event, as the live pause leaves its sessions off.
+        Map<String, Object> ended = client.nextJson(Channels.EVENTS, FrameKind.EVT);
+        assertThat(ended).containsEntry("type", "error");
+        assertThat(Json.object(ended, "data")).containsEntry("code", "unavailable");
+
+        assertTimeRefusal(get());
+        assertTimeRefusal(act(archive, "click", null));
+        assertTimeRefusal(rig.call(client, "browser.minified.image", Map.of("tabId", TAB, "imageId", "i1"), null));
+        assertTimeRefusal(rig.call(client, "browser.minified.island", Map.of("tabId", TAB, "islandId", "vq.1"), null));
+        assertTimeRefusal(client.subscribe("browser.minified:" + TAB, null));
+        assertThat(time.view().live()).isFalse();
+
+        // The same shape live gets, and what isn't the page carries on.
+        assertThat(rig.call(client, "browser.stream.set", Map.of("state", "live"), null)).satisfies(this::assertTimeRefusal);
+        assertThat(rig.call(client, "browser.minified.sites.list", Map.of(), null)).containsEntry("_kind", "RES");
+        assertThat(rig.call(client, "browser.stream.set", Map.of("state", "warm"), null)).containsEntry("state", "warm");
+        // Nothing of the tab or the session was touched (ADR 0035).
+        assertThat(cdp.commands("Target.closeTarget")).isEmpty();
+        assertThat(cdp.commands("Network.clearBrowserCookies")).isEmpty();
+        assertThat(cdp.commands("Storage.clearDataForOrigin")).isEmpty();
+        assertThat(rig.units.requests()).doesNotContain("stop desk-browser");
+    }
+
+    @Test
+    void theRefusalLiftsAtTheResetAndOnAnUpgrade() throws Exception {
+        meter(FREE);
+        runOut();
+        assertTimeRefusal(get());
+
+        // At resumesAt, with nothing said to the desk.
+        Instant resumes = time.outUntil();
+        pass(Duration.between(clock.instant(), resumes).plusSeconds(1));
+        assertThat(get()).containsEntry("view", "simplified");
+        assertThat(client.subscribe("browser.minified:" + TAB, null)).containsEntry("_kind", "RES");
+
+        // And on an upgrade, the limits gone at the next config.
+        client.nextJson(Channels.EVENTS, FrameKind.EVT);
+        pass(Duration.ofMinutes(2));
+        time.limitsChanged(new TierLimits.Limits("free", 1, 2, 30));
+        await().atMost(Duration.ofSeconds(10)).until(() -> time.outUntil() != null);
+        assertTimeRefusal(get());
+        time.limitsChanged(null);
+        assertThat(time.outUntil()).isNull();
+        assertThat(get()).containsEntry("view", "simplified");
+        assertThat(client.subscribe("browser.minified:" + TAB, null)).containsEntry("_kind", "RES");
+    }
+
+    @Test
+    void aDeskWithNoLimitsIsNeverRefusedAndStillCounts() throws Exception {
+        meter(null);
+        looking(true);
+        subscribeView();
+        pass(Duration.ofHours(5));
+        assertThat(time.outUntil()).isNull();
+        assertThat(get()).containsEntry("view", "simplified");
+        assertThat(rig.call(client, "browser.minified.island", Map.of("tabId", TAB, "islandId", "vq.1"), null)).containsEntry("_kind", "RES");
+        assertThat(client.subscribe("browser.minified:" + TAB, null)).containsEntry("_kind", "RES");
+        assertThat(time.liveSecondsSinceBoot()).isEqualTo(5 * 3600L);
+        assertThat(time.view().limited()).isFalse();
     }
 }

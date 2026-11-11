@@ -9,7 +9,7 @@ describe('resolveTheme', () => {
     expect(resolveTheme({ mode: 'system', systemDark: 'dark' }, false)).toBe('light');
     expect(resolveTheme({ mode: 'system', systemDark: 'dark' }, true)).toBe('dark');
   });
-  it('can use Dusk when the system is dark', () => {
+  it('can use Zen (dusk) when the system is dark', () => {
     expect(resolveTheme({ mode: 'system', systemDark: 'dusk' }, true)).toBe('dusk');
   });
 });

@@ -10,12 +10,19 @@ import type { BrowserPanel } from '../browser/panel';
 import type { DeskLink } from '../desk/deskLink';
 import { wakeDesk } from '../desk/liveStore';
 import { chooseLinkDesk, useGuildStore } from '../guild/guildStore';
-import { guildIdOfPanel } from '../guild/panel';
+import { DESK_WORDS, GUILD_WORDS } from '../guild/words';
+import { guildIdOfPanel, mayManageSpaces } from '../guild/panel';
+import { useDeskStore } from '../state/deskStore';
 import { useSession } from '../platform/session';
+import { useLayoutPrefs, type LayoutPrefs } from '../shell/layoutPrefs';
+import { setLayoutPref } from '../shell/layoutSync';
 import { backendFor } from './deskBackend';
 import { NotebookStatePanel } from './NotebookWindow';
 import { openInDeskBrowser } from './openLink';
 import { notebookLine } from './panel';
+
+/** The key in the layout document's `prefs`. */
+const NOTEBOOK_COLOR_PREF = 'notebookColor';
 
 export interface NotebookAppProps {
   deskId: string;
@@ -46,6 +53,10 @@ export default function NotebookApp({ deskId, link, panel, parked }: NotebookApp
   // A Guild Desk's Notebook is the guild's, shared: it says who's here, and a link goes to one of the member's own desks.
   const guildId = guildIdOfPanel(deskId);
   const helloName = useGuildStore((s) => (guildId ? s.hello[guildId]?.name : undefined));
+  const guildInfo = useDeskStore((s) => s.desks.find((d) => d.id === deskId)?.guild);
+  const guildHello = useGuildStore((s) => (guildId ? s.hello[guildId] : undefined));
+  // A member's own desk: they are the owner. A Guild Desk: notebooks and tabs need the Founder or an Officer with manage_spaces.
+  const manageSpaces = !guildId || mayManageSpaces(guildHello?.role ?? guildInfo?.role, guildHello?.grants ?? guildInfo?.grants);
   const myName = useSession((s) => s.me?.displayName ?? undefined);
   const presenceName = guildId ? (helloName ?? myName ?? 'Member') : undefined;
   // eslint-disable-next-line react-hooks/exhaustive-deps -- one backend per link; a later name goes through setPresenceName
@@ -59,6 +70,11 @@ export default function NotebookApp({ deskId, link, panel, parked }: NotebookApp
     return () => backend.setActive(false);
   }, [backend, parked]);
   const openLink = useCallback((href: string) => (guildId ? chooseLinkDesk(href) : openInDeskBrowser(deskId, href)), [deskId, guildId]);
+  // The color this member last used in a Notebook menu, in their layout document's `prefs` (the Product Designer's spec), so
+  // it follows them to every desk and browser. Saved with the layout once `prefs` keeps keys it doesn't name (`sub/setup-circle`);
+  // before that it lasts for this tab.
+  const savedColor = useLayoutPrefs((s) => (s as unknown as Record<string, unknown>)[NOTEBOOK_COLOR_PREF]);
+  const rememberColor = useCallback((id: string) => setLayoutPref({ [NOTEBOOK_COLOR_PREF]: id } as unknown as Partial<LayoutPrefs>), []);
 
   if (status.load !== 'ready') {
     // Nothing's been shown yet, so the whole window can say what's in the way.
@@ -76,17 +92,24 @@ export default function NotebookApp({ deskId, link, panel, parked }: NotebookApp
     return <NotebookStatePanel title="Opening…" delayed kind="loading" />;
   }
 
-  const line = notebookLine({ panel, unsaved: status.unsaved, hasUnsavedText: backend.hasUnsavedText(), full: status.full, tooLarge: status.tooLarge, problem: status.problem });
+  const line = notebookLine({ panel, unsaved: status.unsaved, hasUnsavedText: backend.hasUnsavedText(), full: status.full, outdated: status.outdated, tooLarge: status.tooLarge, problem: status.problem });
   return (
     <>
       {guildId && <HereNow backend={backend} />}
-      <Notebook backend={backend} stateKey={`ma.notebook.ui.${deskId}`} onOpenLink={openLink} />
+      <Notebook
+        backend={backend}
+        stateKey={`ma.notebook.ui.${deskId}`}
+        onOpenLink={openLink}
+        manageSpaces={manageSpaces}
+        lastColor={typeof savedColor === 'string' ? savedColor : null}
+        onLastColorChange={rememberColor}
+      />
       {line && (
         <p className="nbw-line" role="status" data-testid="notebook-line">
           <span>{line.text}</span>
           {line.wake && (
             <button type="button" className="btn" onClick={() => wakeDesk(deskId)}>
-              Wake
+              {guildId ? GUILD_WORDS.wake : DESK_WORDS.wake}
             </button>
           )}
         </p>

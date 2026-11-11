@@ -1,8 +1,8 @@
 # Desk runtime interfaces
 
-**Status:** v0, 2026-11-05 · Owner: System Engineer
+**Status:** v0, 2026-11-05; checked against image 0.3.3 on 2026-11-11 (TD-49) · Owner: System Engineer
 
-How the parts on one desk EC2 fit together. It adds what `docs/desk-design.md` §4.2 and Platform's `desk-endpoint.md` leave open, and it follows them everywhere else. Change it by asking the System Engineer.
+How the parts on one desk EC2 fit together. "Image 0.x.y" is the desk image of that version (`image/RELEASES.md`); a feature "from image 0.x.y" is in that image and every later one. Image 0.3.3 is staging's and prod's `desk_image#current` and the owner's desk's image since 2026-11-11. It adds what `docs/desk-design.md` §4.2 and Platform's `desk-endpoint.md` leave open, and it follows them everywhere else. Change it by asking the System Engineer.
 
 ## 1. Processes and users
 
@@ -12,9 +12,10 @@ How the parts on one desk EC2 fit together. It adds what `docs/desk-design.md` �
 | `desk-stream` (GStreamer capture and encode, §8) | `stream` (1104) | Python and GStreamer, release artifact, systemd | System Engineer |
 | `desk-xorg`, `desk-audio`, `desk-browser` | `kiosk` (1102) | Debian packages, systemd | System Engineer |
 | `desk-units` (§8.3) | root, per connection | Script in the image, socket-activated | System Engineer |
-| `desk-batch` (§6.1, S-96, from the image after 0.3.1) | root: per connection on `batch.sock` (no network), and as `desk-batch.service` every 5 minutes from its timer | Python script in the image, socket-activated, and a timer | System Engineer |
+| `desk-batch` (§6.1, S-96, from image 0.3.2) | root: per connection on `batch.sock` (no network), and as `desk-batch.service` every 5 minutes from its timer | Python script in the image, socket-activated, and a timer | System Engineer |
 | `desk-browser-policy` (§8.3) | root, as `desk-browser`'s `ExecStartPre=+`, before every start of Chromium | Python script in the image, from 0.2.8 | System Engineer |
 | `desk-data` (§8.7, task 32) | root, per connection, `CAP_DAC_READ_SEARCH` only, no network, `/data` read-only | Python script in the image from 0.2.6 (`tools/desk-data/`), socket-activated | Desk Engineer writes it, System Engineer bakes it |
+| `xdg-open` and `xdg-email` (§8.11, from image 0.3.5) | `kiosk` (1102), as a child of Chromium, one short process per link | Python script (`services/deskd/desk-tools/xdg-open`, copied into the recipe at bake), stdlib only | Desk Engineer writes it, System Engineer bakes it |
 | `desk-egress` (§9, ADR 0036) | root, `CAP_NET_ADMIN` only | Python, release artifact baked from the recipe, systemd | System Engineer |
 | `deskd` | `desk` (1100) | Spring Boot image in Docker, host network | Desk Engineer |
 | `desk-agent` (baked from image 0.2.7) | `agent` (1103) | Spring Boot image in Docker, host network | Desk Engineer |
@@ -24,6 +25,7 @@ How the parts on one desk EC2 fit together. It adds what `docs/desk-design.md` �
 | `desk-guild-net` (§3.1, task 48) | root, `CAP_NET_ADMIN` only, a Guild Desk only | Shell script in the image | System Engineer |
 | `desk-guild-rtc`, `commons-data` (§3.1, task 48) | root, oneshots, a Guild Desk only | Shell script and a unit in the image | System Engineer |
 | `commons-server` (§3.1, task 48) | `commons` (1110), no capabilities, a Guild Desk only | Go binary, release artifact (`apps/commons`), optional line in `releases.pin`, systemd | Guild Engineer writes it, System Engineer bakes it |
+| The image's other helpers: `desk-firstboot` and `desk-datadirs` (§3), `desk-browser-thaw` with `desk-browser-quit` and `desk-browser-close` (§8.3), `desk-adblock` (§8.9, image 0.3.0 on), `desk-browser-prewarm` (§3.2, image 0.3.2 on), `desk-preread`, `commons-server-address` (§3.1), `desk-oom-container` and `desk-restart-reset` (§11, image 0.3.3 on) | root, oneshots or `ExecStartPost`/`ExecStop` steps; `desk-restart-reset` from its timer | Scripts in `/usr/local/lib/ma/`, units in the image | System Engineer |
 
 - Containers use host networking and these uids. The IMDS hop limit (1) and the per-uid nftables rules then work as they do for native processes. `desk-notebook` is the exception: it has no network at all, so nftables has no rule for uid 1105, and `deskd` reaches it only over `notebook.sock`.
 - IMDS (`169.254.169.254`) is open only to uid 0 and `desk`. `desk-rtc` can't read it, so `deskd` passes it the public IPv4 (§4.3).
@@ -37,45 +39,54 @@ How the parts on one desk EC2 fit together. It adds what `docs/desk-design.md` �
 | `/opt/ma/<component>/releases/<version>/` | Unpacked release of one component | root |
 | `/opt/ma/<component>/current`, `previous` | Symlinks to the live and the last release | root |
 | `/opt/ma/<component>/prepared` | A symlink to a release a batch prepared and hasn't switched to yet (§6.1). `ma-update` keeps it, and its image, through every prune | root |
-| `/opt/ma/etc/batch-keys/*.pem` | The public keys a batch may be signed with (§6.1): the image's, P-256. **From image 0.3.2, exactly Platform's release key** (`ma-desk-batch-2026-11.pem`, KMS `alias/ma-desk-batch`); an earlier image has none and refuses every batch | root, `0755` directory, `0644` files |
+| `/opt/ma/etc/batch-keys/*.pem` | The public keys a batch may be signed with (§6.1): the image's, P-256. **From image 0.3.2, exactly Platform's release key** (`ma-desk-batch-2026-11.pem`, KMS `alias/ma-desk-batch`); an earlier image has none and refuses every batch. Batches only: from Nov 11 a self-hosted desk's bundles are checked against the next row's key, never these | root, `0755` directory, `0644` files |
+| `/opt/ma/etc/selfhost-release-keys/*.pem` | A self-hosted desk only: the key its next bundle must be signed with (EXP-10's Nov 11 follow-up), the public half of KMS `alias/ma-selfhost-release` (`ma-selfhost-release-2026-11.pem`), alone. `install.sh` installs it from `selfhost/files/` after checking it against the committed anchor `selfhost/release-keys.sha256`, and checks an update's `bundle.pin.sig` against it, with the installed `/usr/local/lib/ma/selfhost/ma-selfhost-bundle`, refusing an installer whose key folder differs in any file, so an update can't replace it; a desk without it is refused. `desk-batch` never reads it | root, `0755` directory, `0644` file |
 | `/etc/ma/batch-keys.d/*.pem` | An admin's drop-in of more trusted keys, empty in the image. Anyone who can write here is already root; the test desk uses it with a dev key | root, `0755`, `0644` |
-| `/opt/ma/etc/batch-baseline` | Optional: the seq of the newest batch whose releases the image already holds, `{"seq": N}`. An offer at or below it is refused. Not written by any bake yet | root, `0644` |
+| `/opt/ma/etc/batch-baseline` | Optional: the seq of the newest batch whose releases the image already holds, `{"seq": N}`. An offer at or below it is refused. Not written by any bake yet. On a self-hosted desk, `install.sh` writes it from the bundle's `batch-baseline` (`build-bundle.sh BATCH_BASELINE=`), never lowering it; no bundle carries one yet | root, `0644` |
 | `/var/lib/ma/batch/state.json` | `desk-batch`'s state (§6.1), for `deskd`'s heartbeat. Directory `0755`, file `0644`, written atomically | root |
 | `/var/lib/ma/batch/pending/<seq>/` | The pending batch: `manifest.json`, `manifest.sig` and `urls.json` (presigned URLs, bearer links). `0700`, files `0600` | root |
-| `/run/desk/idle.json` | **`deskd`'s, built (in no `deskd` release yet):** whether the desk is idle (§6.1). `desk-batch` reads it as root and treats it as hostile; missing, stale or not uid 1100's means not idle | `desk` writes it, root reads it |
+| `/run/desk/idle.json` | **`deskd`'s, from `deskd` `2026.11.10-7e809cb`, baked from image 0.3.3 (`deskd` `2026.11.10-ff58751`):** whether the desk is idle (§6.1). `desk-batch` reads it as root and treats it as hostile; missing, stale or not uid 1100's means not idle | `desk` writes it, root reads it |
 | `/opt/ma/bin/ma-update`, `/opt/ma/smoke-test` | Update tool and smoke test (§6) | root |
 | `/data` | Data volume, label `ma-data`. Formatted only if blank. **Never wiped.** | see below |
 | `/data/.ma-volume` | The volume's record, from image 0.2.3: `{volumeId, formattedAt, image}`, or `{volumeId, formattedAt: null, firstSeenAt}` for an older volume (ADR 0035) | root |
 | `/data/desk` | `deskd`'s state | `desk` |
-| `/data/desk/volume.json` | A copy of that record for `deskd`, rewritten at every boot | root writes it, `desk` reads it |
+| `/data/desk/volume.json` | A copy of that record for `deskd`, rewritten at every boot by `desk-datadirs` **as `desk`** (`setpriv --no-new-privs`), not as root, since `/data/desk` is `deskd`'s (EXP-7; from the bake after image 0.3.4). On a shared host the slot's `desk-init` copies it as `desk` too (`slot-datadirs`: host image 0.1.11.2, and main's first host bake with it) | root writes the record, `desk` copies and reads it |
 | `/data/desk/age-band` | The desk owner's band, exactly `teen\n` or `adult\n`, written atomically (§8.3). From image 0.2.8, `desk-browser-policy` reads it as root before every start of Chromium, and treats it as hostile. Anything else, or no file, means locked | `desk` writes it, root reads it |
 | `/data/desk/adblock-off` | The sites where the member turned the Browser's ad blocker off (§8.9): one lowercase ASCII hostname a line, LF after each, written atomically, `0640` (the Desk Engineer's half of `T47S-3`). `desk-adblock` reads it as root before every start of Chromium and on `start desk-adblock`, and treats it as hostile. No file means blocking everywhere. A clear of history empties it. In the member's export, under "Desk settings and Chat" | `desk` writes it, root reads it |
 | `/data/rtc` | DTLS identity, key mode `0600` | `rtc` |
-| `/data/browser` | Chromium profile and tab snapshots | `kiosk` |
+| `/data/browser` | Chromium profile and tab snapshots. `desk-datadirs` makes `/data/browser` as root, and `profile` (`0700`), `downloads` (`0750`) and `home` (`0700`) inside it **as `kiosk`** (EXP-7, from the bake after image 0.3.4): as root, GNU `install -d` followed a link the Browser's user put at one of those names, and gave it whatever the link named. One it can't fix is logged, and never fails the unit. On a shared host the slot's `desk-init` (the desk's root in its slot) makes the three as `kiosk` the same way (`slot-datadirs`, host image 0.1.11.2 and main's first host bake with it: its `os.makedirs`, `chown` and `chmod` by name followed such a link and gave `kiosk` a directory of the desk's root) | `kiosk` |
 | `/run/ma/desk-kind` | **The desk's kind for this boot, and the one source of it** (§3.1): exactly `guild\n` or `member\n`, from the `DeskKind` tag. Directory `0755 root`, file `0644 root`. `deskd` reads it, never IMDS | root (`desk-kind`) |
 | `/run/ma/guild` | There only on a Guild Desk, `DeskKind=guild\n`. What the units' conditions and `desk-units` test | root (`desk-kind`) |
 | `/run/commons-server.address` | A Guild Desk with a `commons-server` release: the desk's public IPv4, one line, for `commons-server`'s `-advertise`. `commons-server-address.service` writes it as root from IMDS before `commons-server` starts, since `commons-server` is denied IMDS (Security's `GDS-4`) | root, `0644` |
 | `/run/desk-commons/commons.sock` | `commons-server`'s relay socket for `deskd`. Directory `2750 commons:desk` on every desk (`desk-commons.conf`), socket `0660`; `commons-server` also checks `SO_PEERCRED` for uid 1100 | `commons` |
 | `/data/guild/commons` | `commons-server`'s boards, chat threads, settings and audit log (`MA_APP_DATA`). `/data/guild` is `0755 root`, `commons` `0700 commons`, both made by `commons-data.service` on a Guild Desk only; `commons-server` sees nothing else of `/data` | `commons` |
-| `/data/files` | The Files app's tree (ADR 0048): the member's files, `.uploads/` (partials, swept after a day) and `.trash/` (30 days). Directory `0700`, owner `desk` (uid 1100), made by `desk-datadirs` from the image after 0.3.1; mounted into `deskd`'s container as `-v /data/files:/data/files`. `deskd` is the only writer and reader: no root helper, and no other service or app sees it. Personal desks only | `desk` |
+| `/data/files` | The Files app's tree (ADR 0048): the member's files, `.uploads/` (partials, swept after a day) and `.trash/` (30 days). Directory `0700`, owner `desk` (uid 1100), made by `desk-datadirs` from image 0.3.2; mounted into `deskd`'s container as `-v /data/files:/data/files`. On a shared host (from host image 0.1.11, free walk H5) the volume's `files` directory is moved into `deskd`'s sandbox as `/data/desk` is (`mounts.py`); up to 0.1.10 it wasn't, so no shared desk had Files. A volume from before has it from its second start there: the desk's `desk-init` makes it at the first. `deskd` is the only writer and reader: no root helper, and no other service or app sees it. Personal desks only | `desk` |
+| `/run/ma-selfhost-dtls/dtls.json` | A self-hosted desk: desk-rtc's DTLS fingerprint, `{"fingerprintsSha256": [...]}`, for `ma-selfhost` to sign (`selfhost/README.md`). Written as root by `ma-selfhost-dtls`, at `ma-selfhost`'s start and after each desk-rtc start, into a directory only root can write (`0755 root`, checked before each write); it reads desk-rtc's `/data/rtc/dtls-identity.pem` with `O_NOFOLLOW` from an `O_NOFOLLOW` directory fd, a regular file of at most 64 KiB. Before EXP-7 it was `/run/ma-selfhost/dtls.json`, in `ma-selfhost`'s own directory | root writes it, `selfhost` reads it |
+| `/run/ma-selfhost-net/home.nft` | A self-hosted desk: the elements of the firewall's `home4` and `home6` sets (§9.1), written by `ma-selfhost-net` at every route change and included by `nftables.conf`. Directory `0755 root` (the unit's `RuntimeDirectory`, kept across its restarts), file `0644`. Beside it `load`, the same with `ipv6_ok`'s renewal, which is what each fill loads and the include never reads | root |
+| `/data/selfhost` | A self-hosted desk's own key and pairing (`selfhost/README.md`): `key.pem` (Ed25519, `0600`) and `desk.json`. Directory `0700`, owner `selfhost` (uid 1110), not root: `ma-selfhost-prep` makes it at each start of `ma-selfhost`, which runs as that user. Self-hosted desks, and a shared host's desks where ADR 0072 runs the same `ma-selfhost`; never in the export or a move. `ma-platform`'s `selfhost.md` step 1 and its ADR 0107 say "root only": it's this user's, not root's (audit Z31) | `selfhost` |
 | `/data/notebook` | `desk-notebook`'s `notebook.db` and `readable/`. Directory `0700`, owner `notebook`, made by `desk-datadirs` from image 0.2.8 | `notebook` |
 | `/data/.ma-export-tmp` | `desk-data`'s scratch copies of SQLite databases, unlinked as each is opened for sending, emptied of anything no live helper holds at each start (§8.7). Directory `0700`, made on the volume at boot by `/etc/tmpfiles.d/desk-data.conf`, from image 0.2.6 | root |
 | `/data/desk-egress/state.json` | `desk-egress`'s budgets (§9). Directory `0700` | root |
 | `/etc/ma/egress.conf` | `desk-egress`'s rates and budgets. The image's file, not a release's | root |
 | `/etc/ma/guild.conf` | A Guild Desk's sizes: members by instance type, the voice class, `desk-rtc`'s class and the guild's day line a member, with its temporary 120 GB cap (§3.1, §9). Read only with `/run/ma/guild`. The image's file, mode `0644` | root |
-| `/etc/ma/agent-egress.conf` | The names `desk-agent` may reach, exact, one a line (§9.1). The image's file, not a release's. Mode `0644` | root writes it, `agent-filter` reads it |
-| `/etc/ma/chromium-teen.json` | The teen lock's Chromium policies, sharing no key with `ma.json`. The image's file, from 0.2.8 | root, `0644` |
+| `/etc/ma/agent-egress.conf` | The names `desk-agent` may reach, exact, one a line (§9.1): `api.anthropic.com`, `api.openai.com`, `api.x.ai`, and from image 0.3.5 `openrouter.ai`. The image's file, not a release's (a shared host's slots read their template's, the same file). Mode `0644` | root writes it, `agent-filter` reads it |
+| `/etc/ma/chromium-teen.json` | The teen lock's Chromium policies, sharing no key with `ma.json`. The image's file, from 0.2.8. From 0.3.5 its two extension keys are gone: `ExtensionInstallBlocklist` is `ma.json`'s, on every desk | root, `0644` |
+| `/etc/ma/chromium-adult.json` | From image 0.3.5: an adult's `ExtensionInstallAllowlist`, the three password managers (Bitwarden, 1Password, Proton Pass; image README, "Sign-in extensions"). Shares no key with the other three | root, `0644` |
+| `/etc/chromium/policies/managed/ma-adult.json` | From image 0.3.5: a copy of that file, in place only while the band is exactly `adult`, and never beside `ma-teen.json`. On the root; not in the AMI | root, `0644`, written only by `desk-browser-policy` |
 | `/etc/chromium/policies/managed/ma-teen.json` | The teen lock: a copy of that file, in place only while the band isn't exactly `adult`. On the root, so a root swap takes it away and the next start puts it back. Not in the AMI | root, `0644`, written only by `desk-browser-policy` |
-| `/etc/ma/chromium-adblock.json` | The ad blocker's policy template (ADR 0076): force-installs the image's own blocker from `file:///usr/share/ma/adblock/update.xml` and updates it only from there, `DeveloperToolsAvailability` 1, the blocker's settings (`noFiltering` empty, `off` false). Its id is written in by `build.sh`. Shares no key with `ma.json` or `chromium-teen.json`. The image's file | root, `0644` |
+| `/etc/ma/chromium-adblock.json` | The ad blocker's policy template (ADR 0076): force-installs the image's own blocker from `file:///usr/share/ma/adblock/update.xml` and updates it only from there, `DeveloperToolsAvailability` 1, the blocker's settings (`noFiltering` empty, `off` false). Its id is written in by `build.sh`. Shares no key with `ma.json`, `chromium-teen.json` or `chromium-adult.json`. The image's file | root, `0644` |
 | `/etc/chromium/policies/managed/ma-adblock.json` | That template with the member's list as `noFiltering` and the kill switch as `off`. In the AMI with no site off, so a desk blocks before anything renders it. On the root, so a root swap brings back the AMI's and the next start of Chromium renders the list again | root:kiosk `0640` (`T47S-3`: Chromium reads it, no other user), written only by `desk-adblock` |
 | `/usr/share/ma/adblock/` | The blocker (ADR 0076): `ma-blocker.crx`, `update.xml`, `blocker-id`, `blocker.json` (what went in), built at bake time from `image/recipe/adblock` | root, `0644` |
 | `/data/.ma-adblock-off` | The ad blocker's kill switch: a regular file root owns. While it's there the blocker blocks nothing and stays installed. The Platform's, through SSM; not in the export | root |
-| `/run/desk-egress/profile` | `normal`, `capped` or `deep`: which `stream*.conf` `desk-stream`'s `run` picks (§9). Directory `0755` | root writes it, `stream` reads it |
-| `/run/desk/` | `rtc.sock` (`0660`, group `desk`), `deskd-admin.sock` (`0600`, owner `desk`), `units.sock` (`0600`, owner `desk`, §8.3), from image 0.2.6 `data.sock` (`0600`, owner `desk`, §8.7) and, from the image after 0.3.1, `batch.sock` (`0600`, owner `desk`, §6.1). Directory mode `0770`, owner `rtc`, group `desk` | `rtc`, `desk` |
+| `/run/desk-egress/profile` | `normal`, `capped` or `deep`: which `stream*.conf` `desk-stream`'s `run` picks (§9), and from `desk-rtc` 0.5.1 the ceiling it holds a member's level to. Directory `0755` | root writes it, `stream` and `rtc` read it |
+| `/run/desk/` | `rtc.sock` (`0660`, group `desk`), `deskd-admin.sock` (`0600`, owner `desk`), `units.sock` (`0600`, owner `desk`, §8.3), from image 0.2.6 `data.sock` (`0600`, owner `desk`, §8.7) and, from image 0.3.2, `batch.sock` (`0600`, owner `desk`, §6.1). Directory mode `0770`, owner `rtc`, group `desk` | `rtc`, `desk` |
 | `/run/desk/chromium-refused` | `deskd`'s: empty, presence only. A refused start of Chromium (ADR 0035), kept across a `deskd` restart and cleared by a reboot | `desk` |
 | `/run/desk/browser-frozen` | `deskd`'s: empty, presence only. A `deskd` may have left Chromium frozen (ADR 0045), so the next one thaws it before anything else. A reboot clears it, and no Chromium is frozen after one | `desk` |
+| `/run/desk-links/` | `links.sock` (§8.11), which `deskd` makes at `0660` and Chromium's `xdg-open` stand-in connects to. Directory `2750`, owner `desk`, group `kiosk`, so the socket's group is `kiosk` and no other user can enter; `deskd` also checks each peer's uid. From `/etc/tmpfiles.d/desk-links.conf` (deskd's `desk-links.tmpfiles`), from image 0.3.5, made at every boot before `deskd`. `deskd`'s `run` mounts it when it exists | `desk` |
 | `/run/desk-media/` | `stream.sock` (§8.2). Directory mode `0750`, owner `rtc`, group `stream` | `rtc` |
 | `/run/desk-notebook/` | `notebook.sock` (`0660`, group `desk`, by the directory's setgid bit). Directory mode `2750`, owner `notebook`, group `desk`, from image 0.2.8. `deskd` connects, and `kiosk` and `agent` can't enter | `notebook` |
+| `/run/desk-xorg/auth` | Xorg's cookie (the Security Analyst's `DA-1`, image 0.3.0 on), made at each start of `desk-xorg`, `0600 kiosk`, never handed out. Root needs `XAUTHORITY=/run/desk-xorg/auth` (§8.1) | root writes it at `desk-xorg`'s start |
+| `/data/desk/no-prewarm` | The Browser prewarm's kill switch (§3.2, image 0.3.2 on): while it exists, a boot doesn't start the Browser early. On `/data`, so it survives a root swap | root or `desk` |
 
 ## 3. Boot order
 
@@ -83,7 +94,7 @@ How the parts on one desk EC2 fit together. It adds what `docs/desk-design.md` �
 1a. `desk-egress` puts the shaper on `ens5` (§9). `desk-rtc` and `deskd` wait for it, up to 15 s, but only `Want` it, so they start whether it worked or not.
 1b. `desk-agent-filter` listens, before `desk-agent` (§9.1). Nothing waits on it but `desk-agent`, and only by order.
 2. `desk-rtc` loads or creates the DTLS identity, listens on `/run/desk/rtc.sock` and binds 443. It answers no STUN until it has sessions.
-3. `deskd` connects to `rtc.sock` with backoff, sends `configure`, then runs `desk-endpoint.md` §5.3 steps 4–6: hello, gateway link and `ready`, heartbeat.
+3. `deskd` connects to `rtc.sock` with backoff, sends `configure`, then runs `desk-endpoint.md` §5.3 steps 4–6: hello, gateway link and `ready`, heartbeat. From image 0.3.3 systemd counts `deskd` active only once `desk-oom-container` has run (`ExecStartPost=`, §11); `desk-agent` and `desk-notebook` are the same.
 3a. `desk-notebook`, after Docker and the directories, once a release is installed; with none, its condition skips it. `deskd` and `desk-notebook` don't wait for each other: `deskd` connects to `notebook.sock` with backoff when a session wants it, and its health never needs it.
 0. **cloud-init runs on a desk's first boot only** (§3.2). Every later boot has `/etc/cloud/cloud-init.disabled`, so none of its units run and nothing waits for them: `sysinit.target`, Docker and `deskd` start without them.
 4. `desk-xorg`, `desk-audio`, `desk-browser` and `desk-stream` are installed but not enabled. On a desk's first boot they stay stopped until first Browser use (design §10.3); `deskd` starts them through `units.sock` (§8.3). On a later boot `desk-browser-prewarm` starts `desk-xorg`, `desk-audio` and `desk-browser` as soon as `deskd` answers its health check (§3.2), so the Browser is already up when the first session asks. `desk-stream` is always `deskd`'s to start. Nothing above waits for any of them.
@@ -93,14 +104,14 @@ How the parts on one desk EC2 fit together. It adds what `docs/desk-design.md` �
 A Guild Desk is the same AMI, launched by Platform with the EC2 tag `DeskKind=guild` and instance metadata tags on. It has no Browser: `desk-xorg`, `desk-audio`, `desk-browser`, `desk-stream`, `desk-browser-thaw`, `desk-adblock` and `desk-preread` never run there, and `commons-server` does.
 
 - **`desk-kind.service`** runs once a boot, as root, after `network-online.target` and before `desk-rtc`, `deskd`, `desk-preread`, `desk-guild-net`, `desk-guild-rtc`, `commons-data` and `commons-server`. It reads `meta-data/tags/instance/DeskKind` over IMDSv2, asking again with backoff (0.5 s doubling to 4 s) for up to 30 s, and writes `/run/ma/desk-kind`. Only an exact `guild` writes `/run/ma/guild` too. No tag, metadata tags off, IMDS silent for 30 s, any other value (`Guild`, `guild `) or any error is a member's desk with its Browser, and the journal says why (`desk-kind: member (no DeskKind tag) in 12 ms`). It never fails a boot: nothing `Requires=` it.
-- **One source (the Security Analyst's `GDS-5`).** `/run/ma/desk-kind` is the only place the desk's kind is decided. `deskd` must read it, not IMDS, so the two can't disagree after a slow IMDS: exactly `guild\n` is a Guild Desk, and `member\n`, anything else or no file is a member's desk. `deskd` is ordered after `desk-kind`, so the file is there when it starts. Its container needs `/run/ma` mounted read-only (`-v /run/ma:/run/ma:ro`); the directory is root's, so no other uid can replace the file. Reading it once at start is enough: it doesn't change during a boot.
+- **One source (the Security Analyst's `GDS-5`).** `/run/ma/desk-kind` is the only place the desk's kind is decided. `deskd` must read it, not IMDS, so the two can't disagree after a slow IMDS: exactly `guild\n` is a Guild Desk, and `member\n`, anything else or no file is a member's desk. `deskd` is ordered after `desk-kind`, so the file is there when it starts. Its container gets the file itself, bound read-only (`deskd`'s `run`: `--mount type=bind,src=/run/ma/desk-kind,dst=/run/ma/desk-kind,readonly`); the directory and the file are root's, so no other uid can replace it. Reading it once at start is enough: it doesn't change during a boot.
 - **The Browser's units** each have a drop-in, `<unit>.service.d/desk-kind.conf`, with `ConditionPathExists=!/run/ma/guild`. `desk-units` answers every verb with `err unsupported` there (§8.3).
 - **`desk-guild-net`** puts nine rules in `inet ma` on a Guild Desk: in input, inbound UDP 8791 up to 8790 + cores, at most 8, which is what `commons-server` binds; first in output, UDP and TCP to `127.0.0.1:8799` and `[::1]:8799` refused to every uid but `rtc` (Commons' loopback relay port, which `desk-rtc` forwards 443's Commons ICE to), and new TCP connections to `127.0.0.1:8790` and `[::1]:8790` refused to every uid but root and `commons`; in classify, Commons' voice ports and the RTP `desk-rtc` relays from UDP 443 labelled for the voice class 1:30 (§9). Nothing on TCP 443 (§9.2). It runs at boot and after every start and reload of `nftables.service` (its drop-in), since those flush the ruleset. A member's desk never runs it, so its ruleset is exactly `nftables.conf`'s. Nothing is opened for TCP: `commons-server`'s room link is a Unix socket, and TCP and UDP 443 are already open on every desk, for `desk-rtc`.
 - **`desk-guild-rtc.service`** gives `desk-rtc` `MemoryMax=512M` and `GOMEMLIMIT=384MiB` on a Guild Desk, by a runtime drop-in under `/run/systemd/system/desk-rtc.service.d/` written before `desk-rtc` starts. A member's desk keeps the image's unit as it is.
 - **`commons-server.service`** needs `/run/ma/guild` and an installed release (`releases.pin`'s optional line, or a rollout). It runs as `commons` (1110) with no capabilities, `/data/guild/commons` its only view of `/data`, and its public address from `/run/commons-server.address`, which `commons-server-address.service` (Guild Desk only, root, IMDS its only address) writes first. No TURN: 443 stays `desk-rtc`'s, and nothing else is opened for it.
 - **A restart of `desk-kind`** reads the tag again, but units already started or skipped stay as they are. A tag changed after launch takes effect at the next boot.
 
-### 3.2 Faster wakes (TD-227, from the bake after 0.3.1)
+### 3.2 Faster wakes (TD-227, from image 0.3.2)
 
 A desk that stops and starts (an Alliance Member's, after 20 idle minutes) pays the boot at every wake, so two things are different after the first boot. Measured on a `t4g.medium`, 5 wakes each (`docs/benchmarks/2026-11-alliance-desk.md`): the kernel to `deskd`'s hello goes from a median 11.7 s to 8.8 s, and the office loading to Chromium's tabs from 31.1 s to 24.2 s.
 
@@ -192,20 +203,23 @@ Error codes: `not_configured`, `session_limit_reached`, `identity_mismatch`, `ba
 | System Engineer | Platform Engineer | AMI ID and the `ma-update` interface | By message; history in `image/RELEASES.md` |
 | Platform Engineer | everyone | Test desk, test account, `gw.`, `connect`, hello | Contract in `ma-platform/docs/contracts/` |
 
-`deskd`'s `run` script (§6, Desk Engineer) must start the container with at least these settings, pinning the image by ID:
+`deskd`'s `run` script (§6, Desk Engineer; `services/deskd/docker/run`) must start the container with at least these settings, pinning the image by ID. As in image 0.3.3's `deskd` (`2026.11.10-ff58751`):
 ```
 exec docker run --rm --name deskd --network host --user 1100:1100 --read-only --tmpfs /tmp \
-  --cap-drop=ALL --security-opt=no-new-privileges --log-driver=journald \
-  --memory=512m --memory-swap=512m --cpu-shares=512 --pids-limit=256 --stop-timeout=60 \
-  -v /run/desk:/run/desk -v /data/desk:/data/desk -v /data/files:/data/files --env-file "$RELEASE_DIR/deskd.env" \
-  "$(cat "$RELEASE_DIR/image-id")"
+  --cap-drop=ALL --security-opt=no-new-privileges --log-driver=journald --log-opt tag=deskd \
+  --memory=512m --memory-swap=512m --cpu-shares=512 --pids-limit=256 --stop-timeout=60 --ulimit core=0 \
+  -v /run/desk:/run/desk -v /run/desk-agent:/run/desk-agent -v /run/desk-notebook:/run/desk-notebook \
+  -v /run/desk-commons:/run/desk-commons -v /data/desk:/data/desk -v /data/files:/data/files \
+  --mount type=bind,src=/run/ma/desk-kind,dst=/run/ma/desk-kind,readonly \
+  --env-file "$RELEASE_DIR/deskd.env" "$(cat "$RELEASE_DIR/image-id")"
 ```
+On a Guild Desk the memory is `400m` and the JVM takes the guild heap. The next `deskd` (S-97, the desk app contract's base, `8ca3e01c`) also binds `/data/apps`, `/run/ma-apps` and the app keys' directories read-only when they exist.
 
 ## 6. Updates and health
 
 **Who owns what:** the System Engineer owns `ma-update`, `/opt/ma/smoke-test`, the layout in §2 and the unit files, which are the same for Docker services and native binaries. Each component's owner writes its `run` and `health`, so flags and health rules can change without a new AMI.
 
-**Release artifact:** `<component>-<version>.tgz` with a `.sha256` beside it, in `s3://ma-lambda-artifacts-<account-id>/desk/<component>/<version>/`. At its root:
+**Release artifact:** `<component>-<version>.tgz` with a `.sha256` beside it, in Platform's artifact bucket under `desk/<component>/<version>/` (`scripts/desk-service-release.sh` in `ma-platform` names it). At its root:
 
 | File | Required | Meaning |
 |---|---|---|
@@ -216,20 +230,20 @@ exec docker run --rm --name deskd --network host --user 1100:1100 --read-only --
 | `ON_DEMAND` | On-demand components | `ma-update` uses `try-restart`, so an update never starts the unit (`desk-stream`) |
 | Anything else | Optional | Such as `deskd.env` or the `desk-rtc` binary |
 
-**Release flow:** the Desk Engineer builds `deskd` from its Dockerfile on an arm64 box (for now Platform's test box over SSM, which also runs the CDS training) and packages it with `services/scripts/package-release.sh`. `desk-rtc` is built by `desk-rtc/build.sh`, and `desk-stream` by `image/package-desk-stream.sh`. Platform's `scripts/desk-service-release.sh` uploads the artifact, presigns it, and calls `ma-update` through SSM: test desk first, then the same SHA to the owner's, with a data volume snapshot before that. There's no ECR pull, so the desk role stays as `desk-endpoint.md` §5.4 defines it.
+**Release flow:** the Desk Engineer builds `deskd` from its Dockerfile on an arm64 box (for now Platform's test box over SSM, which also runs the CDS training) and packages it with `services/scripts/package-release.sh`. `desk-rtc` is built by `desk-rtc/build.sh`, and `desk-stream` by `image/package-desk-stream.sh`. Platform's `scripts/desk-service-release.sh` uploads the artifact, presigns it, and calls `ma-update` through SSM: test desk first, then the same SHA to the owner's desk, with a data volume snapshot before that. Members' desks take releases only in signed batches (§6.1). There's no ECR pull, so the desk role stays as `desk-endpoint.md` §5.4 defines it.
 
-**Baked releases (from the launch image):** the AMI holds one release of each of `desk-rtc`, `desk-stream`, `deskd`, from 0.2.7 `desk-agent`, from 0.2.8 `desk-notebook` (the one optional line) and, from 0.2.9, `desk-agent-filter`, named with their sha256 in `image/recipe/releases.pin`, so a new desk says hello with nothing rolled onto it and no SSM command from an event. `bake.sh` takes only versions whose `meta.json` and `.sha256` match the pin and that have a `passed-test.json`, except `desk-agent-filter`, which it builds from the recipe to the pin's hash, and `build.sh` installs each with `ma-update` in install-only mode, with `deskd`'s image loaded, so the layout is a rollout's: `current` on that release, no `previous`. Nothing is started on the builder, so the DTLS identity, `deskd`'s state and Docker's engine ID are made on each desk's first boot. The AMI carries the versions as the tags `DeskRtcVersion`, `DeskStreamVersion`, `DeskdVersion`, `DeskAgentVersion`, from 0.2.8 `DeskNotebookVersion` and, from 0.2.9, `DeskAgentFilterVersion`.
+**Baked releases (from the launch image):** the AMI holds one release of each of `desk-rtc`, `desk-stream`, `deskd`, from 0.2.7 `desk-agent`, from 0.2.8 `desk-notebook` (an optional line), from 0.2.9 `desk-agent-filter` and, from 0.3.1, `commons-server` (an optional line; it runs only on a Guild Desk), named with their sha256 in `image/recipe/releases.pin`, so a new desk says hello with nothing rolled onto it and no SSM command from an event. `bake.sh` takes only versions whose `meta.json` and `.sha256` match the pin and that have a `passed-test.json`, except `desk-agent-filter`, which it builds from the recipe to the pin's hash, and `build.sh` installs each with `ma-update` in install-only mode, with `deskd`'s image loaded, so the layout is a rollout's: `current` on that release, no `previous`. Nothing is started on the builder, so the DTLS identity, `deskd`'s state and Docker's engine ID are made on each desk's first boot. The AMI carries the versions as the tags `DeskRtcVersion`, `DeskStreamVersion`, `DeskdVersion`, `DeskAgentVersion`, from 0.2.8 `DeskNotebookVersion`, from 0.2.9 `DeskAgentFilterVersion` and, from 0.3.1, `CommonsServerVersion`. Image 0.3.3 pins `desk-rtc` 0.5.0, `desk-stream` 0.3.3, `deskd` `2026.11.10-ff58751`, `desk-agent` `2026.11.10-7e809cb`, `desk-notebook` `2026.11.10-c472928`, `desk-agent-filter` 0.1.1 and `commons-server` `0.2.0-eb755719` (`image/recipe/releases.pin`).
 
 **`ma-update <component> <url> <sha256>`**, run as root through SSM Run Command:
 1. Downloads and checks the artifact. The URL is presigned, because the desk role has no S3 access.
-2. Unpacks it to `releases/<version>`. If it has `image.tar`, runs `docker load`, writes the loaded image's ID to `image-id` (a loaded image has no repo digest), and deletes `image.tar`. It writes the artifact's sha256 to `artifact.sha256`. If that version is already `current` from the same artifact, such as the one the image bakes in, nothing changes: it runs only step 4 and exits 0 or 1. The same version from another artifact, or one that's `previous`, is refused with exit 2.
+2. Unpacks it to `releases/<version>`. If it has `image.tar`, runs `docker load`, writes the loaded image's ID to `image-id` (a loaded image has no repo digest), and deletes `image.tar`. It writes the artifact's sha256 to `artifact.sha256`. If that version is already `current` from the same artifact, such as the one the image bakes in, nothing changes: it runs only step 4 and exits 0 or 1. **From image 0.3.4, before step 1 (the hash is looked up first, as `--prepare` does):** a release the desk already holds as `previous` or `prepared`, from the same artifact (`artifact.sha256` equals the sha256 asked for, whatever the URL), is switched to with no download, which is a `--prepare` then an `--activate`; this is how a rollout names the baked release, or the one just left, by version. The same version from a different sha256 is downloaded, then refused, exit 2, nothing changed. On a lab box from 0.3.3: baked `deskd` to `previous`-by-name 4.2 s, a new release 12.5 s. The same version from another artifact, or one that's `previous`, is refused with exit 2.
 3. Moves `previous` to the old release and `current` to the new one, and restarts the unit.
 4. Runs `/opt/ma/smoke-test`, retrying for up to 90 s.
 5. Exits 0 if healthy, and prunes everything except `current` and `previous`, including unused images. Otherwise it puts the old release back, restarts, and exits 1.
 
 **`ma-update <component> --rollback`** swaps back to `previous` in one step. It never touches `/data`.
 
-**`ma-update <component> --prepare <url> <sha256>`** (desk batches, §6.1; from the image after 0.3.1) does steps 1 and 2 and switches nothing: the release goes to `releases/<version>` with its image loaded, and the link `prepared` points at it. `current` and `previous` stay, nothing restarts, and the smoke test doesn't run. An artifact that's already `current` needs nothing (exit 0, nothing prepared); one that's `previous`, or already prepared, is prepared from what's there with no download. Preparing another release drops the one prepared before. The same version as `current` or `previous` from another artifact is refused, exit 2. **`ma-update <component> --activate <version>`** needs `prepared` on that version and does steps 3 to 5 from it: `previous` to the old `current`, `current` to it, restart, the smoke test for up to 90 s, then prune, exit 0; on failure the old pair goes back, the prepared release is removed unless it was `previous`, and the exit is 1. Not prepared is exit 2 with nothing changed. **`ma-update <component> --unprepare`** drops the prepared release, unless it's `current` or `previous`. Every prune keeps `current`, `previous` and `prepared`, and every component's images for all three. The three-argument form and `--rollback` are unchanged; an install of the version a batch prepared replaces it and drops the link. **On a shared host** (ADR 0072 §2) only `load_image` changes, to unpacking the image into the release instead of `docker load`; the arguments, links and exit codes stay.
+**`ma-update <component> --prepare <url> <sha256>`** (desk batches, §6.1; from image 0.3.2) does steps 1 and 2 and switches nothing: the release goes to `releases/<version>` with its image loaded, and the link `prepared` points at it. `current` and `previous` stay, nothing restarts, and the smoke test doesn't run. An artifact that's already `current` needs nothing (exit 0, nothing prepared); one that's `previous`, or already prepared, is prepared from what's there with no download. Preparing another release drops the one prepared before. The same version as `current` or `previous` from another artifact is refused, exit 2. **`ma-update <component> --activate <version>`** needs `prepared` on that version and does steps 3 to 5 from it: `previous` to the old `current`, `current` to it, restart, the smoke test for up to 90 s, then prune, exit 0; on failure the old pair goes back, the prepared release is removed unless it was `previous`, and the exit is 1. Not prepared is exit 2 with nothing changed. **`ma-update <component> --unprepare`** drops the prepared release, unless it's `current` or `previous`. Every prune keeps `current`, `previous` and `prepared`, and every component's images for all three. The three-argument form and `--rollback` are unchanged; an install of the version a batch prepared replaces it and drops the link. **On a shared host** `ma-update` doesn't run: a slot's services run from the host's release store, which takes releases only from the host image's pin or a signed batch (ADR 0078, §13), and the host switches them (replacing ADR 0072 §13's "service batches stay per desk").
 
 **Root replacement brings back the baked releases,** because `/opt/ma` lives on the root volume. After `CreateReplaceRootVolumeTask` a desk runs exactly what the new AMI baked in (its `Desk*Version` tags), with no `previous`, whatever it ran before. That can be older than what it ran. The DTLS identity and `deskd`'s data stay, on `/data`. Afterwards, roll forward with `ma-update` only the components where the last version that passed is newer than the baked one; a rollout of the baked version itself changes nothing. An AMI from before the launch image bakes in only `desk-stream`, so on it every other component has to be rolled on, or the desk can't say hello.
 
@@ -240,12 +254,15 @@ exec docker run --rm --name deskd --network host --user 1100:1100 --read-only --
 - `desk-stream`: its unit hasn't failed. Stopped is healthy.
 - `desk-egress`: the unit is active and its three classes are on `ens5`. While the shaper is off, an update of any component rolls back.
 - `desk-agent-filter`: the unit is active and holds its ports (§9.1). While it's down, an update of any component rolls back.
+- `desk-agent` and `desk-notebook`: each release's own `health` (`services/`), the Desk Engineer's. Image 0.3.3's smoke test runs 8 components on a member's desk.
 - `commons-server` (a release is on every desk once pinned): on a Guild Desk, `/healthz` answers `ok` on `127.0.0.1:8790` and `/run/desk-commons/commons.sock` is a socket. On a member's desk (no `/run/ma/guild`) its unit is skipped and `health` exits 0 at once.
-- `deskd`: it's serving and its databases are open. Its links to `desk-rtc` and Platform are reported but don't fail health, so a Platform outage during a rollout can't trigger a rollback. Its `health` calls `GET /health` on `/run/desk/deskd-admin.sock`, never a TCP port.
+- `deskd`: it's serving and its databases are open. Its links to `desk-rtc` and Platform are reported but don't fail health, so a Platform outage during a rollout can't trigger a rollback. Its `health` calls `GET /health` on `/run/desk/deskd-admin.sock`, never a TCP port. deskd has no databases of its own, so `/health` is 200 while it serves with its data directory writable. **Every heartbeat carries the same answer** (ADR 0078 DE-2, `services/deskd/docs/API.md` §20): `deskd: {version, status}`, its version and `ok` or `failing`, for a release switched in where this smoke test can't run, as in a shared host's slot, whose canary the Platform promotes on it.
 
-### 6.1 Desk batches and Debian's updates (S-96, from the image after 0.3.1)
+### 6.1 Desk batches and Debian's updates (S-96, from image 0.3.2)
 
-The desk half of "updates to members' desks are rare and never interrupt" (`docs/decisions/draft-desk-app-contract.md` section 13). The platform names a batch in the heartbeat response once the desk's wave is open; `deskd` fetches it from the agent route and hands it to `desk-batch`, a root helper outside `deskd` (nothing can supervise its own replacement), which checks the signature and applies it the next time the desk is idle. Test desks and the owner's desk still take single releases through `desk-service-release.sh`.
+The desk half of "updates to members' desks are rare and never interrupt" (`docs/decisions/draft-desk-app-contract.md` section 13). The platform names a batch in the heartbeat response once the desk's wave is open; `deskd` fetches it from the agent route and hands it to `desk-batch`, a root helper outside `deskd` (nothing can supervise its own replacement), which checks the signature and applies it the next time the desk is idle. Test desks and the owner's desk still take single releases through `desk-service-release.sh`. **Platform's half** (the heartbeat's `batch` and `update`, `GET /v1/agent/batch`) is `agent.md` "Update batches", contract 0.3.56, a draft not yet shipped (`ma-platform` ADR 0118); the first real batches were offered by hand on the test desk (image 0.3.2's record). A shared host's desks take the same batches through their host (ADR 0078, §13; built on `sub/host-batches`, not baked yet).
+
+**`deskd`'s relay isn't built yet** (`docs/sub-status/desk-batch.md`, "For Desk" items 2 and 3): today it ignores the reply's `batch`, never offers on `batch.sock` and sends no `update`. **On a shared host** (ADR 0078 DE-1) a slot has no `batch.sock`, since the host takes its releases: there `deskd` makes no offer, logs no batch error and leaves `update` out, and the relay, once built, keeps that for any desk without the socket (`HeartbeatLoopTest` pins it).
 
 **The manifest, v1.** JSON, at most 64 KiB (`tools/batch/batch-build` keeps it within 4096 bytes, KMS's limit for a RAW message). A key that appears twice, NaN or Infinity is refused. Unknown fields are ignored: anything a desk must understand changes `format`.
 
@@ -256,11 +273,12 @@ The desk half of "updates to members' desks are rare and never interrupt" (`docs
 | `id` | `[A-Za-z0-9._-]{1,64}` | A name for people, such as `2026-12` |
 | `created` | UTC, `2026-11-09T18:00:00Z` | When it was built |
 | `urgent` | boolean | Decision 17's urgent fix: 13.2's shorter idle after 24 and 72 hours (below) |
-| `image` | optional, a version such as `0.3.2` | A batch that needs a root swap. Its services are applied, then `root-pending` is recorded; the swap is the platform's ask (13.6), not built |
+| `image` | optional, a version such as `0.3.2` | A batch that needs a root swap. Its services are applied, then `root-pending` is recorded; the swap is the platform's ask (13.6), not built. A self-hosted desk (`/etc/ma-release` `hosting=self`) refuses one: `err root`, as it has no root volume to swap |
+| `arch` | optional, `"arm64"` or `"amd64"` (Debian's names); none is `arm64` | The machine its artifacts are built for (S-85). A cloud desk is arm64; a self-hosted desk is amd64, and its batches name the bundle's amd64 artifacts (`selfhost/README.md`, "Signed updates"). A batch for another machine is refused after its signature checks out: `err arch`. `desk-batch` from the bake after 0.3.3; 0.3.2's and 0.3.3's ignore the field, so for them only the platform's rule keeps an amd64 batch away. `batch-build` writes it only when it isn't `arm64`, so a cloud desk's manifest is byte for byte what it was |
 | `components` | 1 to 16 of `{name, version, sha256}` | Activated in this order. `name` as `ma-update` takes it, never `bin` or `etc`; `sha256` of the published `.tgz` |
 | `note` | plain text, at most 2000 characters, `\n` the only control character; may be `""` | 13.7's "what changed", for the Desk app |
 
-**The signature.** A detached ECDSA P-256 SHA-256 signature over the manifest's exact bytes, DER (ANSI X9.62), which is what AWS KMS gives for `ECC_NIST_P256` with `ECDSA_SHA_256`, and what `openssl dgst -sha256 -verify` checks on the desk. Base64 of it is taken too. A batch verifies if any trusted key verifies it. Trusted keys are `*.pem` in `/opt/ma/etc/batch-keys/` (the image's) and `/etc/ma/batch-keys.d/` (an admin's drop-in): each a regular file root owns, not group- or world-writable, holding a P-256 public key, in a directory the same. Anything else is skipped and logged. **With no key every batch is refused** (`err untrusted no trusted key`), which is every desk until Platform's key is in an image. URLs are never signed or trusted: `ma-update` checks every artifact against the manifest's `sha256`.
+**The signature.** A detached ECDSA P-256 SHA-256 signature over the manifest's exact bytes, DER (ANSI X9.62), which is what AWS KMS gives for `ECC_NIST_P256` with `ECDSA_SHA_256`, and what `openssl dgst -sha256 -verify` checks on the desk. Base64 of it is taken too. A batch verifies if any trusted key verifies it. Trusted keys are `*.pem` in `/opt/ma/etc/batch-keys/` (the image's) and `/etc/ma/batch-keys.d/` (an admin's drop-in): each a regular file root owns, not group- or world-writable, holding a P-256 public key, in a directory the same. Anything else is skipped and logged. **With no key every batch is refused** (`err untrusted no trusted key`), which is every desk on an image before 0.3.2: from 0.3.2 the image holds Platform's release key. URLs are never signed or trusted: `ma-update` checks every artifact against the manifest's `sha256`.
 
 **Sequence numbers.** An offer is refused when its `seq` is at or below the floor, the highest of: the last batch applied, the last one rolled back or given up on, and the image's `/opt/ma/etc/batch-baseline` (an unreadable baseline refuses everything). Below the pending batch's `seq` is refused too. The pending `seq` again with the same bytes only takes new URLs; with other bytes it's `conflict`. A higher `seq` replaces the pending batch (batches are cumulative), unless one is being applied (`busy`).
 
@@ -273,7 +291,8 @@ hold <0..15>\n               ok {"holdUntil": "<UTC>" | null}\n      0 clears a 
 offer <json>\n               ok {"seq": N, "id": "..."}\n
                              json: {"manifest": "<base64 of its exact bytes>", "signature": "<base64 of the DER>", "urls": <urls.json>}
 any failure                  err <code> <text>\n
-                             code: denied | bad_request | untrusted | seq | conflict | busy | failed
+                             code: denied | bad_request | untrusted | seq | conflict | busy | failed | arch | root
+                             arch and root, like seq and untrusted, are final for that batch
 ```
 Root has the same verbs on the command line (`desk-batch offer <manifest> <sig> <urls.json>`, `status`, `hold <minutes>`), plus `tick` and `verify <manifest> <sig> [<key.pem>...]`, which needs no root.
 
@@ -295,7 +314,7 @@ Root has the same verbs on the command line (`desk-batch offer <manifest> <sig> 
 | `reboot` | `{running, installed, pending}`: `pending` when a newer kernel is in `/boot` or `/run/reboot-required` exists. Nothing reboots |
 | `apt` | `{firstSeen, lastAttempt, lastOk, lastResult, seconds, forced}` |
 
-**Idle, `/run/desk/idle.json` (built by the Desk Engineer on `sub/deskd-idle-json`, in no `deskd` release yet; the version goes here once released).** `deskd` writes it atomically (a temporary file in `/run/desk`, then a rename), mode `0644`, as uid 1100, at least every 15 s and at every change:
+**Idle, `/run/desk/idle.json` (the Desk Engineer's; from `deskd` `2026.11.10-7e809cb`, baked from image 0.3.3, whose `deskd` is `2026.11.10-ff58751`).** `deskd` writes it atomically (a temporary file in `/run/desk`, then a rename), mode `0644`, as uid 1100, at least every 15 s and at every change:
 ```
 {"at": "2026-11-09T18:00:00Z",       when written; older than 60 s, or more than 60 s ahead, is not idle
  "sessions": 0,                      client sessions connected
@@ -336,7 +355,7 @@ RES {"deskId":"d-…","deskdVersion":"…","rtcVersion":"…","bootId":"…","up
 `desk-stream` captures `:99` and the Pulse sink and encodes once. `desk-rtc` forwards that RTP to each session that is viewing and injects input into `:99`. Design §6, §4.2.3, §4.2.10.
 
 ### 8.1 Changes to earlier decisions
-- **`desk-stream` runs as a new user `stream` (1104),** not `kiosk`. Chromium is `kiosk`, so on the same uid a renderer sandbox escape could feed any bytes to every client's decoder. `desk-xorg` grants `stream` X access (`xhost +SI:localuser:stream`), as it does `rtc` and `kiosk`. From the next bake (DA-1) Xorg runs with `-auth` (a cookie made at each start, `0600 kiosk`, used only by `desk-xorg-ready`) and `-nolisten local`, so these three are the only uids X admits, by the socket's peer uid; root needs `XAUTHORITY=/run/desk-xorg/auth` (`image/README.md`).
+- **`desk-stream` runs as a new user `stream` (1104),** not `kiosk`. Chromium is `kiosk`, so on the same uid a renderer sandbox escape could feed any bytes to every client's decoder. `desk-xorg` grants `stream` X access (`xhost +SI:localuser:stream`), as it does `rtc` and `kiosk`. From image 0.3.0 (DA-1) Xorg runs with `-auth` (a cookie made at each start, `0600 kiosk`, used only by `desk-xorg-ready`) and `-nolisten local`, so these three are the only uids X admits, by the socket's peer uid; root needs `XAUTHORITY=/run/desk-xorg/auth` (`image/README.md`).
 - **`keys` also runs desk to client,** for `CURSOR` only (§8.6). Design §4.2.3 says client to desk.
 - **Text insert isn't on `keys`.** It doesn't fit a fixed event, and design §6.3 already sends it through CDP `Input.insertText`, so it's the `deskd` RPC `browser.text.insert {text, tabId?}` (`services/deskd/docs/API.md`). The app calls it for composed text, dictation and a paste, with `tabId` left out so it goes to the tab on screen.
 - **`units.sock` replaces the polkit rule** of design §10.3.
@@ -375,7 +394,7 @@ Mode `0600`, owner `desk`, reachable inside the `deskd` container through its `/
 One request per connection, then `desk-units` closes it:
 ```
 request   <verb> <unit>\n          at most 64 bytes
-verb      start | stop | freeze | thaw     freeze and thaw only for desk-browser (ADR 0045, from the next image)
+verb      start | stop | freeze | thaw     freeze and thaw only for desk-browser (ADR 0045, from image 0.3.0)
 unit      desk-xorg | desk-audio | desk-browser | desk-stream | desk-adblock
 reply     ok\n
           err <code> <text>\n     code: denied | bad_request | failed | timeout | busy | inactive | unsupported
@@ -383,7 +402,7 @@ reply     ok\n
 - **On a Guild Desk** (§3.1) every allowed verb on every unit here is answered `err unsupported guild desk has no Browser: <verb> <unit>`, and systemd is never asked. The uid, request and unit refusals come first, as on any desk.
 - The reply comes when the job is done, so allow 95 s on `deskd`'s side for a `stop` of `desk-browser`, `desk-xorg` or `desk-audio` (`desk-browser` is quit over CDP with up to 31 s, then stopped gracefully; see below), and 35 s for the rest. `start` of a running unit is `ok`.
 - **`start desk-browser` can be refused** when the profile's `Last Version` is newer than the installed Chromium (ADR 0035): `err failed start desk-browser: desk-browser-start: REFUSING TO START, profile left untouched: …`. `desk-units` runs `desk-browser-start --check` as `kiosk` first, since `systemctl start` of a `Type=simple` unit says `ok` regardless. The unit itself then exits 78 and doesn't restart.
-- **`start desk-browser` puts the teen lock in place or takes it away first** (from image 0.2.8; `image/README.md`, "Teen Browser lock"). `desk-browser`'s `ExecStartPre=+` reads `/data/desk/age-band`: exactly `adult\n` removes `ma-teen.json`, and anything else, no file included, installs it. So `deskd` writes the band before it asks for a start, and a changed band means `stop` then `start`: a `start` of a running unit changes nothing. If the lock can't be put in place the reply is `err failed start desk-browser: Job for desk-browser.service failed because the control process exited with error code…`, at once, Chromium doesn't start, and systemd tries again every 3 s, so the Browser can come up by itself later. With the data volume gone it's `err timeout`, at 34 s, and the unit then fails on its dependency.
+- **`start desk-browser` puts the teen lock in place or takes it away first** (from image 0.2.8; `image/README.md`, "Teen Browser lock"). `desk-browser`'s `ExecStartPre=+` reads `/data/desk/age-band`: exactly `adult\n` removes `ma-teen.json` (and from image 0.3.5 then puts `ma-adult.json`, the password managers' allowlist, in place), and anything else, no file included, removes `ma-adult.json` and installs `ma-teen.json`. So `deskd` writes the band before it asks for a start, and a changed band means `stop` then `start`: a `start` of a running unit changes nothing. If the lock can't be put in place the reply is `err failed start desk-browser: Job for desk-browser.service failed because the control process exited with error code…`, at once, Chromium doesn't start, and systemd tries again every 3 s, so the Browser can come up by itself later. With the data volume gone it's `err timeout`, at 34 s, and the unit then fails on its dependency.
 - `start desk-stream` also starts `desk-xorg` and `desk-audio`. `start desk-browser` starts those two as well. `stop desk-xorg` stops what needs it.
 - **`freeze desk-browser`** (ADR 0045) holds every process of Chromium with the kernel's cgroup v2 freezer, in this order, each step bounded:
   1. `desk-browser` isn't active: `err inactive desk-browser isn't running`.
@@ -402,7 +421,7 @@ reply     ok\n
 - **No freeze lands in a stop's quit** (the Security Analyst's T46L-1). Four parts, each tested and each seen to fail with it broken (`docs/sub-status/freeze-race.md`): `freeze` refuses while it sees a stop (step 3) and looks again after its write (step 7); `desk-browser-thaw`'s first `ExecStop` waits up to 5 s for step 2's lock before it writes `0`, so a freeze already under way when the stop is queued has answered, or died and let go, before the thaw and the quit; `desk-browser-close`'s wait writes `0` again every second, for anything that gets past both; and `desk-browser-thaw` is ordered `Before=deskd.service`, so when both stop, as at a shutdown, `deskd`, the only thing that asks for a freeze, has stopped before the thaw and the quit begin. During a shutdown `units.sock` takes no new requests anyway: a new `desk-units` can't start once the shutdown is queued, and the connection is reset (measured).
 - **A shutdown reaches Chromium only through its units** (ADR 0035; found with T46L-1). `desk-browser.service` sets `DBUS_SYSTEM_BUS_ADDRESS` to a path that can't exist. On the system bus Chromium holds a logind shutdown inhibitor and ends its own session at `PrepareForShutdown`, before systemd stops anything, which leaves cookies under about 30 s old unwritten (measured: a reboot, `SessionEnded`, the quit never sent, a cookie set 8 s before lost). Off it, a reboot or an EC2 stop goes `deskd`, then `desk-browser-thaw`'s thaw and quit over CDP (`Normal`), then `desk-browser`. Chromium used the system bus for nothing else on a desk. **`desk-browser.service` must have no `ExecStop`, `ExecStopPost` or `ExecReload`:** systemd starts them inside its cgroup with `vfork`, and with the cgroup frozen PID 1 waits on the frozen child (measured: PID 1 in D state until a thaw).
 - `desk-units` logs the verb and `ok`, `busy`, `inactive` or the code, with the time it took, never why a freeze was declined: `/health` and the heartbeat don't say either. `deskd` treats `busy` and `inactive` as a clear no, `bad_request` and `denied` as "this image can't", and anything else as a doubt, and thaws.
-- **`start desk-adblock`** (from the image after 0.2.9, ADR 0076) puts `/data/desk/adblock-off` in effect now and answers when it is, or when nothing is running to take it (§8.9). It's a oneshot, so each `start` runs it again, and like `start desk-browser` it thaws Chromium first, since it confirms with Chromium over CDP; freeze it again afterwards if it should be. On an older image the reply is `err denied unit not allowed`. `start desk-browser` also renders the list first, and the blocker takes it by itself as Chromium starts, so a list written while Chromium is down applies at its next start.
+- **`start desk-adblock`** (from image 0.3.0, ADR 0076) puts `/data/desk/adblock-off` in effect now and answers when it is, or when nothing is running to take it (§8.9). It's a oneshot, so each `start` runs it again, and like `start desk-browser` it thaws Chromium first, since it confirms with Chromium over CDP; freeze it again afterwards if it should be. On an older image the reply is `err denied unit not allowed`. `start desk-browser` also renders the list first, and the blocker takes it by itself as Chromium starts, so a list written while Chromium is down applies at its next start.
 
 ### 8.4 What `deskd` sends `desk-rtc`
 **`session.video {sessionId, view}`** is new. `session.permissions` stays what the token allows. Media flows to a session only while **`permissions.video` and `view`** are both true. `view` starts false, and revoking `video` stops media at once.
@@ -425,7 +444,7 @@ reply     ok\n
 - **Video size:** read `videoWidth` and `videoHeight`. 1920x1080 for now, and it can change without signaling.
 - An offer without constrained-baseline H.264 gets `m=video 0`, as in §4.4. Show that the browser can't play the stream.
 - Keyframes are `desk-rtc`'s job: PLI and FIR from the browser reach `desk-stream`, and a new viewer starts on a keyframe.
-- **Not in milestone 2:** congestion control. The bitrate in `stream.conf` is sent whatever the link. There's no transport-wide CC, no resolution ladder and no "reduced quality" chip yet. `bulk` is capped at 2 Mbps while a session views.
+- **Not in milestone 2:** congestion control. The bitrate in `stream.conf` is sent whatever the link. There's no transport-wide CC and no "reduced quality" chip yet. `bulk` is capped at 2 Mbps while a session views. (From `desk-stream` 0.3.0 the picture does step down when the desk's own CPU can't hold its frame rate, §8.2 and ADR 0073, but nothing reacts to the network yet. The quality levels, `stream-quality.md`, and the throttle's profiles, §9, set the bitrate's ceiling.)
 
 ### 8.6 `input` and `keys`
 **Every event is one message of exactly 16 bytes, big-endian,** on channel 6 (`MOVE` only) or channel 7 (everything else). A message of any other size or type is dropped and counted.
@@ -497,7 +516,7 @@ Apply it as `video.style.cursor = "url(data:image/png;base64,…) hotX hotY, aut
 Mode `0600`, owner `desk`, reachable inside the `deskd` container through its `/run/desk` mount, like `units.sock`. `desk-data.socket` (`Accept=yes`, `MaxConnections=24`) runs one root `desk-data` per connection, which refuses any uid but 1100 by `SO_PEERCRED`, reads `/data` and never writes there except its own scratch in `/data/.ma-export-tmp`. It's what `deskd`'s `data.*` methods (export and move, task 32) read through; without it they answer `unavailable` with `reason: helper`. The protocol (`parts`, `manifest`, `read`) is the appendix of `docs/decisions/draft-data-export-and-transfer.md`, and what the helper settles beyond it is in `tools/desk-data/README.md`. Images up to 0.2.5 don't have it: a desk on one gets it from `tools/desk-data/install.sh` over SSM, and a root swap takes it off again.
 
 ### 8.8 Video islands (ADR 0075; `desk-rtc` 0.3.6, `desk-stream` 0.3.2 on; 0.3.7 for T47S-1)
-**On by default, with a kill switch only (the owner's standing rule, 2026-11-07: a finished feature ships on, and its switch is never an opt-in), once the Security Analyst clears T47S-1, fixed in `desk-rtc` 0.3.7, and `deskd`'s half of T47-4 is built.** Both releases are on `main` and pinned for the next image. Until then `deskd` sends no `stream.crop` on a member's desk and the office offers no island. Offer islands only with `desk-rtc` 0.3.7 or later: 0.3.6 lets a press through to a window over a small island (T47S-1).
+**On by default, with a kill switch only (the owner's standing rule, 2026-11-07: a finished feature ships on, and its switch is never an opt-in), once the Security Analyst clears T47S-1, fixed in `desk-rtc` 0.3.7, and `deskd`'s half of T47-4 is built.** Both are in every image from 0.3.0 (`desk-rtc` 0.4.0 and later, `desk-stream` 0.3.3). `deskd`'s half isn't built (2026-11-11: no `stream.crop` in `services/deskd`), so `deskd` sends no `stream.crop` on any desk and the office offers no island. Offer islands only with `desk-rtc` 0.3.7 or later: 0.3.6 lets a press through to a window over a small island (T47S-1).
 
 An island is the simplified view's live video (design §7.4): the one encoder sends only the rectangle of `:99` where the page's player is, scaled to the size the office shows it at, at the stream's full frame rate, with the desk's sound, on the same `desk-video` and `desk-audio` tracks. There's no new track, channel or signaling, and nothing renegotiates. Numbers are in ADR 0075.
 
@@ -560,6 +579,24 @@ The desk's Chromium blocks ads and trackers, on by default on every desk, with t
 
 **For the simplified view's walker:** blocked requests never load, and the blocker hides nothing (network rules only), so an ad's empty box or frame can stay: drop hidden nodes and frames that loaded nothing, as the prototype's `checkVisibility` already does. Fetch images through the tab, so the blocker's rules apply to them too.
 
+### 8.10 What `deskd` puts in every page: protected playback (TD-225)
+The image's Chromium has no Widevine, so a page's protected (DRM) video fails. `deskd` tells the Desk app when a page was refused, so it can show a note (`services/deskd/docs/API.md` §10, "A protected video that can't play"). For that, on each member tab's CDP session while `deskd` is connected:
+- **A script in the page's own world,** from `Page.addScriptToEvaluateOnNewDocument` (with `runImmediately`), in the top frame only. It wraps `navigator.requestMediaKeySystemAccess` and, on the first refusal of a Widevine, PlayReady or FairPlay key system, fires a DOM event whose type is a random name per `deskd`. The page gets Chromium's own answer. It goes with the session, so a page loaded while `deskd` isn't connected has none.
+- **A binding in `deskd`'s isolated world `ma-deskd` only,** added by `Runtime.addBinding` with that world's context id, after each main-frame commit, with a listener for the event there. It sends one of three words, and comes to `deskd` as `Runtime.bindingCalled`.
+- **`Runtime.enable` is never sent:** a binding for every new document would need it, and it makes every page's console cost more and is a known way for a site to spot automation. No `Media`, `Log` or `Network` domain is enabled for this either.
+- **A kill switch,** `/data/desk/protected-media-switch` with the word `off` (no file means on, as for every switch here): `deskd` then registers none of the above, removes its script registrations from open tabs, ignores the binding and reports no mark. API.md §10.
+
+### 8.11 Links out: Chromium's `xdg-open` (Links in and out; from image 0.3.5)
+A desk can't open a `mailto:`, `tel:` or meeting link: there's no mail app or phone on it. Chromium hands such a link to the OS, and the member's own device should get it instead (`services/deskd/docs/API.md` §10, "Links out"). On Linux, Chromium with no session bus (as `desk-browser.service` gives it none) runs `xdg-email <url>` for `mailto:` and `xdg-open <url>` for every other scheme it doesn't handle itself, found on its `PATH`, with the URL as the one argument. It does so only after its own checks: one launch per input from the member, and its prompt or the policy that skips it. Checked on Chrome 156 (`LinksOutChromiumIT`). With a session bus it would ask the desktop's portal first; kiosk has none (no `/run/user/1102`, no `dbus-launch` in the image). **The image has `xdg-utils`** (`chromium-common` depends on it; found on 0.3.4 in the lab, where this line used to say it hadn't), so before 0.3.5 those calls reach xdg-utils' `xdg-open`, whose generic path on a machine with no desktop tries `x-www-browser`, which is Chromium (read from its script, not tried on a desk). From 0.3.5 its `xdg-open` and `xdg-email` are diverted off `PATH` (`dpkg-divert --local --rename` to `/usr/share/ma/xdg-utils/`, kept through upgrades), so the stand-in is the only one, by name or by `/usr/bin` path.
+
+- **The stand-in** is `services/deskd/desk-tools/xdg-open`, a Python script (stdlib, `python3 -I`), installed as `/usr/local/bin/xdg-open`, `0755 root`, with `/usr/local/bin/xdg-email` a symlink to it. It's copied into the image recipe at bake (`bake.sh` copies over a differing recipe copy, as for `desk-data`), not taken from `deskd`'s release, which carries only `run`, `health`, the env and the container image: a program Chromium runs from `PATH` is the root's, changed by a bake. `/usr/local/bin` comes before `/usr/bin` on systemd's default `PATH`, which `desk-browser.service` keeps. It hands the URL to `deskd` and exits; it opens nothing, starts nothing and never prints the URL.
+- **The socket** is `/run/desk-links/links.sock`. The directory comes from `desk-links.tmpfiles` beside the script (`d /run/desk-links 2750 desk kiosk -`, as `/etc/tmpfiles.d/desk-links.conf`). `deskd` makes the socket at `0660`, so its group is `kiosk` by the directory's setgid bit, and refuses any peer whose `SO_PEERCRED` uid isn't `DESKD_CDP_UID` (1102). `deskd`'s `run` mounts the directory only when it exists; without it `deskd` doesn't listen.
+- **Protocol:** one connection a link, one line each way: `open <url>\n` (UTF-8, at most 16 KiB and the newline), then `ok\n` or `dropped <reason>\n`. The stand-in exits 0 for `ok`, 1 for anything but one URL, 3 when it can't reach the socket, and 4 otherwise. Chromium doesn't wait for it.
+- **The policy:** a listed scheme other than `mailto` (which Chromium launches without asking) shows Chromium's "Open xdg-open?" prompt in the kiosk unless `AutoLaunchProtocolsFromOrigins` lets it go: `[{"protocol": "<scheme>", "allowed_origins": ["*"]}]` for `tel`, `sms`, `zoommtg`, `msteams`, `facetime` and `webcal`, the list `deskd` passes on. Any other scheme still prompts, and if the member says yes, `deskd` drops it and counts it.
+- **What `deskd` does with it:** checks the scheme against its list, cleans the URL, limits the rate and publishes `linkOut` on `browser.links` to owner sessions with video and input (API.md §10). Nothing reaches the heartbeat, the journal or Platform but counts in `/health`.
+- **On a shared host** (ADR 0072) a slot's root is the template, so it has the stand-in, the policy and the tmpfiles line, but no systemd runs `systemd-tmpfiles` there: `desk-init.py` makes a slot's directories itself and doesn't make `/run/desk-links`, and `svc-spec.py` doesn't mount it into `deskd`'s sandbox. Until the host does both, links out do nothing on a shared host (the stand-in exits 3). Not in 0.3.5's asks.
+- **Also on Chromium's `PATH` for downloads:** the download bubble's Open and Show in folder run `xdg-open` with a file path. `deskd` drops a path (no scheme), so nothing on the desk opens and nothing is shown.
+
 ## 9. Outbound throttle (ADR 0036)
 
 `desk-egress`, as root, puts HTB on `ens5` and keeps ADR 0036's budgets. Image README, "Outbound throttle", has the operating detail and ADR 0036 section 8 the lab results.
@@ -572,9 +609,9 @@ The desk's Chromium blocks ads and trackers, on by default on every desk, with t
 | 1:30, a Guild Desk's only | uid 1110 from its voice ports (`commons-server`), and uid 1101 from UDP 443 when the first payload byte is 128 to 191: RTP or RTCP, which on a Guild Desk is only the voice it relays (its own sessions carry no media) | 0.8 Mbit a member of the tier (20, 40, 160 Mbit at 25, 50, 200), 1 MB, prio 0 | `fq_codel` |
 
 - **Classification is nftables' `classify` chain** (output hook, priority -150), which sets `meta priority` and nothing else. There's no `tc filter`. Only root can change the chain, the qdiscs or a socket's priority above 6, so below root nothing can leave the stream's class or join it. Loopback isn't labelled.
-- **Budgets** (`/etc/ma/egress.conf`): with 30 GB of 1:15 and 1:20 used, refilled at 1 Mbit, those two drop to 0.25 and 0.75 Mbit until 1 GB is back. Past 100 GB this UTC month or in 24 h the stream goes to `capped`, past 500 GB or 120 GB in 24 h to `deep`. Past 135 GB in 24 h 1:10 drops to 1 Mbit until under 120. Every class counts toward the month and the 24 h; only 1:15 and 1:20 draw on the bucket.
+- **Budgets** (`/etc/ma/egress.conf`): with 30 GB of 1:15 and 1:20 used, refilled at 1 Mbit, those two drop to 0.25 and 0.75 Mbit until 1 GB is back. Past 100 GB this UTC month the stream goes to `capped`, past 500 GB to `deep`. The day lines look ahead (S-29): `ahead` is the most the last 24 h would reach if the stream went `deep` now and stayed there, from the stream's 15-minute rate scaled to `deep`'s cap. Past 100 GB of it the stream goes to `capped`, past 105 to `deep` until under 95, and back to `normal` only if the window could take `normal` at Max. That leaves the bucket's 30 GB and its refill under the guard's 150 GB `day` stop, so 2 or 3 honest viewers and a whole-bucket upload never reach it. Past 135 GB of 1:10's own bytes in 24 h, 1:10 drops to 1 Mbit until under 120: the clamp is for a broken `desk-rtc`, so it counts that class alone. Every class counts toward the month and the day lines; only 1:15 and 1:20 draw on the bucket. Simulation: `image/lab/s29/sim.py`.
 - **A Guild Desk's budgets** (`/etc/ma/guild.conf`, read only with `/run/ma/guild`): the bucket on 1:15 and 1:20 stays as on every desk. The stream steps and the 135 GB clamp on 1:10 don't apply: each member's bytes are metered to that member's own allowance (`guild-eng.md` §3.2), so a desk-wide allowance is the wrong rule, and 1:10 there is every member's data and ICE-TCP's relayed voice. In their place one day line for the guild: past 4 GB a member of the tier in any 24 h (100, 200, 800 GB), **capped at 120 GB for now** (release at most 105: 100, 120, 120 GB), since Platform's cost guard stops any instance past 150 GB in 24 h and doesn't know a Guild Desk yet (Security's `NET031-1`; `day_cap_gb`, 0 lifts it), 1:30 drops to 0.2 Mbit a member (3 voices heard) and 1:10 to 0.1 Mbit a member, until under 3.5 GB a member. The tier is the instance type the hypervisor reports (`/sys/devices/virtual/dmi/id/product_name`): `t4g.small` 25, `t4g.medium` 50, `c7g.xlarge` 200, any other 200. `desk-egress` reads the flag once, at start, and is ordered after `desk-kind`.
-- **Profiles:** `desk-egress` writes `/run/desk-egress/profile` and runs `systemctl try-restart desk-stream`. `desk-stream`'s `run` reads it at start and picks `stream-<profile>.conf` from its own release, or `stream.conf` for anything else. A viewer gets a keyframe from the new process, as after any restart (§8.2).
+- **Profiles:** `desk-egress` writes `/run/desk-egress/profile` and runs `systemctl try-restart desk-stream`. `desk-stream`'s `run` reads it at start and picks `stream-<profile>.conf` from its own release, or `stream.conf` for anything else. A viewer gets a keyframe from the new process, as after any restart (§8.2). From `desk-rtc` 0.5.1 `desk-rtc` reads the file too, at start and each time `desk-stream` connects, and holds the member's level to the profile's ceiling: `capped` Medium, `deep` Low (`stream-quality.md` §4). `stream-capped.conf` holds each level to its own picture, so Low stays Low past 100 GB; `stream-deep.conf` has no levels. The reply on `keys` then says the level is held, and `stats` carries `stream.profile`.
 - **For launch, nothing reports it.** `deskd` doesn't read `/run/desk/egress.json` yet (ADR 0036 section 6), the panel shows no line and the guard has no "slowed" flag. A slowdown shows only in `desk-egress`'s journal and its state file.
 
 ### 9.1 The agent's way out (ADR 0070)
@@ -584,17 +621,36 @@ The desk's Chromium blocks ads and trackers, on by default on every desk, with t
 | Who | May reach |
 |---|---|
 | uid 1103 | Loopback. Its TCP 443 and its DNS (UDP and TCP 53, any destination) go to the filter by nftables' `agent_redirect` chain, whatever address they aimed at. Everything else is refused |
-| uid 1106 | TCP 443 on public addresses, DNS at `127.0.0.53`, and answering on its own ports |
+| uid 1106 | TCP 443 on public addresses, DNS at `127.0.0.53`, and answering on its own ports. On a self-hosted desk, not the desk's own networks either (`home4`, `home6`, below), and IPv6 only while `ipv6_ok` holds it |
 | Any other uid, root included | Not the filter's ports: `127.0.0.1:14443`, `127.0.0.1:14053` (TCP and UDP) and the same on `::1` |
 
 - **Placeholder:** uid 1103's DNS gets `192.0.2.1` for a listed name's A, an empty AAAA and NXDOMAIN otherwise. It has no real DNS.
 - **Throttle:** the filter's traffic on `ens5` is in class 1:20. Loopback isn't shaped, so nothing is counted twice. Self-hosted desks have no shaper, and nothing here needs one.
 - **With it down:** uid 1103 gets connection refused, and `/opt/ma/smoke-test` fails.
+- **On a self-hosted desk (EXP-9):** the firewall also has two sets, `home4` and `home6`: every prefix routed straight onto one of the desk's links and every route a router advertisement announced, never a default route, loopback or a prefix shorter than /8 or /16. The Browser (1102) is refused both (`#HOME`, so `install.sh --allow-home-network` lifts it), and uid 1106's TCP 443 excludes both. On a home network with IPv6 the LAN's devices have global addresses, and a LAN may be on public IPv4, so the ranges alone didn't cover it. `ma-selfhost-net.service` (root) fills them at start and within about a second of a route change (`ip monitor route`), writing `/run/ma-selfhost-net/home.nft`, which `nftables.conf` includes, so a reload or restart loads the list with the rules. `desk-browser.service` waits for its first fill (a drop-in, `Wants=`). **It fails closed (Nov 11):** each fill that loads also puts uids 1102 and 1106 in `ipv6_ok` (in the same transaction, a 3-minute timeout; the helper fills at least once a minute), and without that the Browser gets no IPv6 beyond loopback (a TCP reset for a new connection, so Chromium uses IPv4 at once; `#HOME`) and 1106's IPv6 TCP 443 isn't accepted. `home4` keeps its last list. The include never carries `ipv6_ok`, so a reload or boot starts with it empty. `selfhost/README.md`, "The home network" and "It fails closed".
 
 ### 9.2 TCP 443 per network: none (desk-net-031-sec)
 
 TCP 443 is one `tcp dport 443 accept` after the established rule on every desk, as in 0.3.0 (`nftables.conf` byte for byte `92e3ef93`'s), and `desk-guild-net` adds nothing to it. desk-net-031's per-network limits (IPv4 /24, IPv6 /64) were taken out before any release: they counted a bare SYN, so forged SYNs claiming a member's network could shut it out of the ICE-TCP fallback (Security's `NET031-3`). `desk-rtc`'s ICE-TCP gate is the bound: from `desk-rtc` 0.4.1 it counts its waiting places per network itself, after the handshake, so forged SYNs never count: 64 places, 16 a /24 or /64, 3 s each, a full gate shared fairly between networks, and a Guild Desk's scaled to its members (`desk-rtc/README.md`, "The ICE-TCP gate"). Before 0.4.1 it held at most 64 connections that hadn't sent their first frame, 5 s each, first come. **From `desk-rtc` 0.4.2** (`GATE041-1`, `GATE041-2`): within a network an address holding two or more places over another's gives its oldest up, so one address in a member's /24 can't hold the network's 16; networks a live session is expected from (its offer's candidates, the source of a first frame signed with its password, its selected pair, and the last 32 verified networks) keep 4 reserved places a session outside the shared count; a first frame must verify with the session's ICE password; and past the gate at most 6 connections per session ufrag and 3 times a network's places per network are kept, each closed after the consent timeout without a byte. `desk-rtc` still gets no client address from the gateway (the contract has none), and the web app's offer carries no candidates, so a member's first connection from a network the desk has never verified gets no reserve (`docs/sub-status/desk-rtc-gate041.md`). Image README, "TCP 443 per network: taken out before release".
 
+**On a shared host with one public IPv4 (`SlotMode=port`, the owner's choice B, 2026-11-10; ADR 0072 section 6's note, `image/host/README.md` "One address per host").** Every slot's TCP 443 is the host's one TCP 443, so it can't be DNATed to a desk. The host's `desk-ice-demux` (in the host's own namespace, never a desk's) reads each connection's first RFC 4571 frame, takes the slot from the tag its STUN USERNAME's ufrag starts with (`s<kk>`, which `desk-rtc` 0.5.0 puts on every local ufrag of slot k, `desk-rtc/README.md` "Shared hosts"), and opens the connection to that slot's `desk-rtc` on `10.98.<k>.2:443` **with the client's own address and port as the source** (`IP_TRANSPARENT`; the host's ruleset routes the replies back to that socket). So the gate above, inside the desk, counts and reserves by the real client, exactly as on a desk of its own; the lab saw `desk-rtc`'s TCP 443 sockets in both slots name the client box's own public address and port. In front of it the demux keeps waiting places of its own per client network (48 a /24, 64 a slot in all, 5 s and 3 s under pressure, the same fair share and per-address rule), refuses at once anything that isn't a binding request naming a running slot, and bounds handed connections (192 a network, 192 a slot in all); `desk-rtc`'s own checks then run on the first frame as they do on any desk. The slot's `desk-rtc` takes UDP on 4430+k (DNATed unchanged from the host's address) and TCP on 443, both candidates naming the host's public IPv4, which `desk-host` reads from the host's IMDS at each start and writes in the slot's own `desk-rtc.conf` (`port`, `tcp_port`, `slot`, `public_ipv4`). In the shaper's `classify` chain the slot's UDP port joins 1:10 as 443 does, and the slot's shaper (9.3) takes it there. Under `SlotMode=address` (choice A), and on a desk of its own or a self-hosted one, none of this exists.
+
+
+### 9.3 On a shared host (ADR 0072 section 8, TD-223; from the bake after host 0.1.10)
+
+The same classes and budgets, run by the host for each slot (`image/host/README.md`, "The outbound shaper"):
+
+- **The classes** are on the desk's end of its veth, `eth0` in its network namespace, put on by `desk-host up` before anything in the
+  desk runs. The template's `classify` chain labels packets there as on `ens5`; under `SlotMode=port` the slot's UDP port joins 1:10 too.
+  Rates are the slot's class's (`/run/desk-host/class.json`'s `egress`: 60, 2 and 100 Mbit for `standard`, half for `free`). The desk's
+  root has no `CAP_NET_ADMIN`, so nothing in the desk can change them.
+- **The budgets** run on the host in `desk-host-egress@<k>.service`, the desk's own `desk-egress` code (the template's), with
+  `/etc/desk-host/egress.conf` for `/etc/ma/egress.conf` and the state in `/var/lib/desk-host/egress/<deskId>.json` for
+  `/data/desk-egress/state.json`. Nothing of it is in the desk. A desk moved to another host starts its budgets over there.
+- **The profile** is the host's `/run/desk-host/egress/profile` in the desk (read-only), which `desk-stream`'s sandbox reads at
+  `/run/desk-egress/profile`; `desk-init` restarts a running `desk-stream` when it changes, in place of `systemctl try-restart`.
+- **The host's report** carries each running slot's classes, their counters and the budget's state (`shaper`); `deskd` still reads
+  none of it.
 
 ## 10. On a shared host: the container's size class (ADR 0072 section 16)
 
@@ -611,8 +667,129 @@ A desk on a shared host (`image/host/`) runs in a container whose size its tier 
 
 (the values above are an `m7g.xlarge`'s; `io` is the root's read bytes and IOPS, then its writes, then the volume's reads and
 writes; `cpu.idle` 1 means the desk gets only CPU no other desk wants, and the kernel then shows `cpu.weight` 1). The host writes it at each start and at each class change (`desk-host class`), which takes effect at once with
-nothing in the desk restarted; `pending` holds a `memory.max` still to come: a raise waiting for room on the host, or a lower
+nothing in the desk restarted (from host image 0.1.11, not baked yet, the host link runs Platform's `set_class` this way, an upgrade in
+place, and a raise the host has no room for changes nothing until there's room: S-119, ADR 0072 section 16); `pending` holds a `memory.max` still to come: a raise waiting for room on the host, or a lower
 cap waiting for the next start. The file is the host's: a
 desk reads it and can't change it. Nothing in the desk reads it yet. The tier's other limits (the Browser's minutes a day, the
 idle stop, Files' size) are the Desk Engineer's and Platform's, from Platform's settings, not this file. On a desk of its own
 there is no `/run/desk-host`.
+
+
+## 11. Restarts and memory pressure (reliability audit S1 and S2, from image 0.3.3)
+
+**Restarts slow down and never stop.** A service that exits is started again, and the wait before each start grows with every
+restart in a row: from the unit's own `RestartSec=` (3 s for `deskd`, `desk-agent` and `desk-notebook`) toward a cap over eight
+steps, about 3, 5, 10, 17, 30, 53, 95, 169 and 300 s (systemd's `RestartSteps=` and `RestartMaxDelaySec=`; systemd 257 on Debian 13).
+Before this a `deskd` that exited early came back every 4 to 6 s for ever, each start a full boot and a hello with a new `bootId`,
+so a bad release across a fleet was a hello flood.
+
+| Units | Cap | Steps |
+|---|---|---|
+| `deskd`, `desk-agent`, `desk-notebook`, `desk-rtc`, `desk-stream`, `commons-server`, `desk-agent-filter`, `desk-egress` | 5 minutes | 8 |
+| `desk-browser`, `desk-xorg`, `desk-audio` (they make no hello, and a member waits on the Browser) | 30 s | 4 |
+
+- **No start limit.** Every one of these has `StartLimitIntervalSec=0`, so systemd never gives up on a loop and leaves a desk down
+  for good. A desk always comes back by itself, as fast as its back-off says.
+- **A healthy run starts it over.** systemd resets the count only on a manual start or a clean exit, so `desk-restart-reset.timer`
+  (every 30 s) runs `desk-restart-reset`, which runs `systemctl reset-failed` on a listed unit that has restarted and has been
+  `active` for 120 s without a break. A unit still in its loop is never touched. A `systemctl start` or `restart` (`ma-update`'s
+  and `deskd`'s own) is a manual start and begins the count again.
+- **On a shared host** there is no systemd inside a desk. `desk-svc`, process 1 of each service's sandbox, restarts `deskd`,
+  `desk-agent`, `desk-notebook`, `desk-rtc` and `desk-stream` with the same curve (`-restart-max-sec 300 -restart-steps 8
+  -healthy-sec 120`, the defaults) and starts the count over after 120 s of run or a `start` from `desk-init`'s control socket. `desk-init` does the same for what
+  it supervises itself: `desk-agent-filter` and `desk-dns` (5 minutes), `desk-xorg`, `desk-audio` and the Browser (30 s). Its log says
+  `restarting in 5.3 s (restart 2 in a row)`.
+
+**Who dies first under memory pressure.** The kernel kills the process with the highest `oom_score`, which is its share of memory
+plus `oom_score_adj`. Every desk service now has an `oom_score_adj`, so the order is ours. From first killed to last:
+
+| # | Process | `oom_score_adj` | What is lost |
+|---|---|---|---|
+| 1 | Chromium's renderers (and its GPU and network helpers at 200) | 300 (Chromium sets it; kept) | a tab reloads |
+| 2 | `desk-agent` | +200 | an Agent run fails and is reported |
+| 3 | `desk-stream` | +100 | the picture stops, restarts and resumes |
+| 4 | the Chromium browser process, `desk-xorg`, `desk-audio` | 0 | tab state, and cookies under 30 s old (ADR 0035), which is why it isn't first |
+| 5 | `desk-notebook`, `commons-server` | -200 | edits not yet synced |
+| 6 | `desk-rtc`, `deskd` | -500 | every session |
+
+The audit suggested +300 for the browser; it is 0, because killing it loses more than its renderers (ADR 0035's cookie window) and its renderers go first.
+On a desk of its own the units set it (`OOMScoreAdjust=`). The three Docker-run services need more: a unit's value covers its main
+process, which is the `docker run` client, and the container's processes are the Docker daemon's children, so they started at 0.
+`desk-oom-container` (an `ExecStartPost=-` of each of the three) writes the value onto every process in the container's cgroup.
+On a shared host `svc-spec.py` gives each sandbox's process 1 its value in the OCI spec (`oomScoreAdj`), which its service inherits;
+`desk-init`'s own children (Xorg, the audio server, the Browser) inherit the desk's 0, since a desk container has no
+`CAP_SYS_RESOURCE` to lower anything. The host's own `desk-host-link`, `desk-ice-demux` and `desk-host-shutdown` are -900 and `sshd`
+-1000, under any desk's -500. `verify-restart.sh oom` (a desk) and `desk-host-check oom` (a host) read these from `/proc`.
+
+**Reading the numbers.** `oom_score_adj` counts in thousandths of the machine's memory: +300 on a renderer makes it outrank an ordinary process
+(adj 0) that is about 30% of RAM larger, so a 100 MB renderer is chosen before a 1 GB process (on the 3.8 GB lab box the control needed a 2.8 GB hog at 0 to outrank the renderers); -500 on `deskd` and
+`desk-rtc` takes half of RAM off their score, so they are chosen last whatever the others hold.
+
+**Measured** (lab box from `ma-desk-0.3.2`, t4g.medium, 3.8 GB; a 1.5 GB resident process and the kernel's OOM killer run by hand, `sysrq f`, which picks as a real OOM does;
+`image/evidence/restart-oom-2026-11-10/desk-hog-*.txt`). With the hog at -600 and 4 kills: four Chromium renderers (300), one after another, and nothing else; `deskd`, `desk-rtc`, `desk-notebook`,
+`desk-agent` and the Browser's main process all still there. With the hog at -900 and 6 kills: the four renderers, then `desk-agent` (200), then a Chromium helper (200); `deskd`, `desk-rtc`, `desk-notebook` and
+the Browser's main process still there, and `desk-agent` back by itself. Control, a 2.8 GB process at 0: it goes first. Before `desk-browser` had `OOMPolicy=continue`, the first renderer kill
+took the whole Browser with it.
+
+**Not covered.** The kernel's pick is by score, so a service with a very large resident set can still be chosen over a smaller one
+with a higher adjustment; `deskd`'s `-Xmx` and the containers' `--memory` caps keep the real sizes far under that.
+Nothing here changes any `MemoryMax=` or container cap.
+
+## 12. On a shared host: updates come from template generations (ADR 0077, `sub/u77-host`; not baked yet)
+
+The counterpart of §6.1 for a desk in a slot, which runs no `desk-batch` and no apt. Its root is a copy of one **template
+generation**, `/srv/desk-host/templates/<gen>/` on the host (`g1` the bake's, `g<n>` built once per host-image version on a builder,
+signed, fetched and sealed by each host), and the slot's record names it. `desk-rtc`, `desk-stream` and `desk-data` run on that
+generation itself, read-only. Nothing changes under a running desk: no library or Chromium binary is replaced while it runs.
+
+**When a desk changes generation.** Only with its root, at a re-root: after a stop (a background copy beside the old root, swapped in
+only while the slot is still stopped; a start that comes first runs on the old root at once and the copy is dropped), or at an idle
+restart for a desk that never stops (only while idle by its own `/run/desk/idle.json`, §6.1's rule with `downloads` 0: Chromium is
+closed as a stop closes it, over CDP, and the desk starts again on the same epoch). Never at a wake. A desk that moves in gets the
+generation the host picks. **What a re-root keeps:** everything on `/data` (the profile, `deskd`'s state, the DTLS identity, the Notebook,
+Files, logs) and the host-owned release copies (`rel/`); what goes is what the desk wrote into its root (`/tmp`, `/var/tmp`, the teen
+lock's and the ad blocker's policy files, which are written again before every Chromium start), as at any move.
+
+**Chromium per slot (ADR 0035).** The host reads the profile's `Last Version` from the stopped desk's volume (`mounts.py peek`:
+read-only, never attached, nothing mounted when its journal needs replaying) and never moves a slot to a generation whose Chromium is
+older; an unreadable one keeps the slot where it is. `desk-browser-start`'s guard stays the last line, per slot. A generation rolled
+back moves a slot back only if its Chromium never ran there.
+
+**`idle.json` on a shared host** is the same file, read by the host from the slot's `/run` share (`/run/desk-host/share/<k>/desk/`)
+under RC-06's rules (`openat2`, no links, `O_NONBLOCK`, a regular file of at most 64 KiB owned by the slot's uid 1100, a timeout).
+Missing or stale is not idle, so with no `deskd` that writes it a slot moves only at its stops.
+
+**What the platform sees** (the host's report, PU-1): per slot `template`, `chromium`, `lastVersion`, `behind`, `chromiumBehind` and
+`update.holdUntil` (15 minutes ahead while its swap or idle restart runs); per host `templates`, `fetch` and `hostApt`. **The host's
+own packages** take Debian's security archive once a day with no service restarted, and the host reboots for a new kernel only on
+Platform's `reboot_host`, refused unless every desk is idle (or an urgent fix's clock allows): each desk is closed as a stop closes it
+and started again after the boot. Details: `image/host/README.md`, "Updates".
+
+## 13. On a shared host: service batches come through the host (ADR 0078, `sub/host-batches`; not baked yet, host 0.1.12)
+
+The counterpart of §6.1 for a desk in a slot, whose `deskd`, `desk-agent`, `desk-notebook`, `desk-rtc` and `desk-stream` run from the
+host's release store (`/srv/desk-host/slots/<k>/rel/<svc>`, a host-owned copy outside the desk's root), not from its `/opt/ma`. A slot
+has no `batch.sock` and runs no `desk-batch` or `ma-update` (DE-1: `deskd` makes no offer there).
+
+**The batch is the same** one desks of their own take: `ma-desk-batch/1`, signed by `alias/ma-desk-batch`, the same `seq`, the same
+waves. The host checks it with desk-batch's own rules (copied, kept equal by a parity test) against the batch key baked into the host
+image, fetches what its store lacks, unpacks it there as a `candidate`, and applies the components it runs. A batch's
+`desk-agent-filter` (the template's) or `image` waits for a host image (`templatePending`, `imagePending`).
+
+**When a desk's services change.** One slot first (the canary), then every slot after Platform's `batch_promote`:
+- **Live, at idle** (Platform's `liveSwitches`, off until the Security Analyst has read ADR 0078 §2.2): with nobody connected by its own
+  `/run/desk/idle.json` (§6.1's rule; `downloads` don't hold it, since Chromium keeps running), only the changed services' sandboxes are
+  stopped and made again, each smoke-tested from the host's side. Chromium, its tabs and every other sandbox keep running. `deskd`
+  restarts with a fresh `idleSince`, so after a switch its `idle.json` must come back, fresh, before the switch passes.
+- **At a stop** (while `liveSwitches` is off): the changed copies go in after the stop; the next start runs them and smoke-tests them
+  beside the start, and a failure puts the old ones back with the member there (a few seconds per service).
+- A wake never copies to change releases; a stopped slot with a batch waiting wakes on its old ones.
+
+**A failure** rolls the slot back (the failed service, then the switched ones in reverse), the `seq` is never tried there again, and the
+batch is halted on the host. `deskd` and `desk-agent` stay expand-then-contract (§6), so the previous release starts on data the new
+one migrated. A switch restarts `desk-agent`, which loses an in-RAM LLM key as a stop does.
+
+**What the platform sees** (PB-1): per slot `batch` `{seq, state}` (`current`, `behind`, `copying`, `switching`, `rolled-back`,
+`failed`), `releases` and `update.holdUntil` (15 minutes ahead while a switch runs); per host `batches` (current, previous, candidate,
+halted, floor), `batchFetch`, `templatePending`, `imagePending`. The canary's promote also needs the new `deskd`'s heartbeat
+`deskd: {version, status}` (DE-2, §6). Details: `image/host/README.md`, "Service batches".

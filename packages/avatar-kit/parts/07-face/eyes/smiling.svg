@@ -1,0 +1,4 @@
+<g data-part="eyes-smiling">
+  <g data-eye="left"><clipPath id="se-l"><path d="M95,105 H125 V126.5 Q110,108.5 95,126.5 Z"/></clipPath><ellipse cx="110" cy="119" rx="10" ry="7" fill="{{sclera}}" clip-path="url(#se-l)"/><circle cx="110" cy="118.6" r="6.5" fill="{{eye}}" clip-path="url(#se-l)"/><circle cx="112.1" cy="116.4" r="1.5" fill="{{catch}}"/></g>
+  <g data-eye="right"><clipPath id="se-r"><path d="M131,105 H161 V126.5 Q146,108.5 131,126.5 Z"/></clipPath><ellipse cx="146" cy="119" rx="10" ry="7" fill="{{sclera}}" clip-path="url(#se-r)"/><circle cx="146" cy="118.6" r="6.5" fill="{{eye}}" clip-path="url(#se-r)"/><circle cx="148.1" cy="116.4" r="1.5" fill="{{catch}}"/></g>
+</g>

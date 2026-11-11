@@ -1,0 +1,4 @@
+<g data-part="eyes-wide">
+  <g data-eye="left"><ellipse cx="104.5" cy="119" rx="12.5" ry="8.5" fill="{{sclera}}"/><circle cx="104.5" cy="119" r="7.4" fill="{{eye}}"/></g>
+  <g data-eye="right"><ellipse cx="151.5" cy="119" rx="12.5" ry="8.5" fill="{{sclera}}"/><circle cx="151.5" cy="119" r="7.4" fill="{{eye}}"/></g>
+</g>

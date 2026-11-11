@@ -5,7 +5,22 @@ import { prosemirrorJSONToYDoc } from '@tiptap/y-tiptap';
 import * as Y from 'yjs';
 import { type Db } from './db.ts';
 import { badRequest, notFound } from './errors.ts';
-import { BLANK_PAGE, DOC_FIELD, keyAt, notebookSchema, TAB_COLORS, type ActivityRow, type NotebookRec, type PageRec, type TabColor, type TabRec } from './model.ts';
+import {
+  BLANK_PAGE,
+  derive,
+  DOC_FIELD,
+  isPaletteId,
+  keyAt,
+  notebookSchema,
+  TAB_COLORS,
+  type ActivityRow,
+  type NotebookRec,
+  type PageRec,
+  type PaletteId,
+  type PMNode,
+  type TabColor,
+  type TabRec,
+} from './model.ts';
 import { dayIn } from './zones.ts';
 
 /** Who the owner's own sessions are in `actor` columns: a desk has one owner, and this stays true after a move. */
@@ -16,6 +31,37 @@ export const MAX_NAME = 1024;
 export const TREE_PAGE = 1000;
 /** A reply stays under REQ/RES's 1 MiB, however long its titles. */
 const TREE_BYTES = 900 * 1024;
+/** Rows per `notebook.activity` reply, at most. Real rows reach {@link ACTIVITY_BYTES} first, at about 5,700. */
+export const ACTIVITY_PAGE = 10_000;
+/**
+ * The rows' JSON per `notebook.activity` reply, at most. Before paging a reply was all the rows or `too_large`, at REQ/RES's
+ * 1 MiB, so this is as close to that as leaves room for `next`: a client that sends no cursor still gets everything it got.
+ */
+export const ACTIVITY_BYTES = 1024 * 1024 - 4096;
+const ACTIVITY_CURSOR = /^a:(\d{4}-\d{2}-\d{2}):(.{1,200})$/s;
+/**
+ * `notebook.activity`'s read, from the first row or from after a cursor's: (fromDay, toDay), then the cursor's (day, pageId).
+ * page_activity_by_day holds (day, page_id), as a WITHOUT ROWID table's key is appended to its indexes, so this reads that
+ * index backwards and sorts nothing. SQLite bounds the range by the days only, so after a cursor `toDay` is the cursor's day
+ * at the latest, and a page skips no more than the rest of that day.
+ */
+export const activitySql = (afterCursor: boolean): string =>
+  `SELECT a.page_id, a.day, a.created, a.first_at, a.last_at, a.edits, a.added, a.removed, a.actors
+   FROM page_activity a JOIN pages p ON p.id = a.page_id
+   WHERE a.day >= ? AND a.day <= ?${afterCursor ? ' AND (a.day, a.page_id) < (?, ?)' : ''} AND p.deleted_at IS NULL
+   ORDER BY a.day DESC, a.page_id DESC LIMIT ${ACTIVITY_PAGE + 1}`;
+
+interface ActivityDbRow {
+  page_id: string;
+  day: string;
+  created: number;
+  first_at: number;
+  last_at: number;
+  edits: number;
+  added: number;
+  removed: number;
+  actors: string;
+}
 
 interface NotebookRow {
   id: string;
@@ -42,10 +88,21 @@ export interface PageRow {
   updated_at: number;
   updated_by: string;
   deleted_at: number | null;
+  /** Who trashed it (authz-5): an actor while `deleted_at` is set, else null. Null too for a trash from an older build. */
+  deleted_by: string | null;
   row_version: number;
+  /** ADR 0091: a palette id, or null. Kept as stored; a value this build doesn't know is sent as none. */
+  label: string | null;
 }
 
-const PAGE_COLUMNS = 'id, tab_id, sort_key, title, snippet, word_count, has_checklist, created_at, created_by, updated_at, updated_by, deleted_at, row_version';
+const PAGE_COLUMNS = 'id, tab_id, sort_key, title, snippet, word_count, has_checklist, created_at, created_by, updated_at, updated_by, deleted_at, deleted_by, row_version, label';
+
+/** A new page's body: its Yjs state, its JSON, and its label. */
+export interface PageBody {
+  state: Uint8Array;
+  doc: PMNode;
+  label: PaletteId | null;
+}
 
 const notebookRec = (r: NotebookRow): NotebookRec => ({ id: r.id, title: r.title, sortKey: r.sort_key, createdAt: r.created_at, updatedAt: r.updated_at, rowVersion: r.row_version });
 const tabRec = (r: TabRow): TabRec => ({
@@ -70,6 +127,8 @@ export const pageRec = (r: PageRow): PageRec => ({
   updatedAt: r.updated_at,
   deletedAt: r.deleted_at,
   rowVersion: r.row_version,
+  // Only when set, so a page without one reads exactly as before labels.
+  ...(isPaletteId(r.label) ? { label: r.label } : {}),
 });
 
 export interface NotebookHooks {
@@ -221,18 +280,33 @@ export class Notebook {
 
   // ---------------------------------------------------------------- writes, in LocalBackend's order
 
-  /** Inside a transaction: a new, blank page and its first activity row. */
-  private insertBlankPage(tabId: string, sortKey: number, actor: string): PageRec {
+  /** Inside a transaction: a new page and its first activity row. Blank, or with a body (a duplicate, an import). */
+  private insertPage(tabId: string, sortKey: number, actor: string, body?: PageBody): PageRec {
     const now = this.hooks.now();
     const id = randomUUID();
-    const seed = prosemirrorJSONToYDoc(notebookSchema(), BLANK_PAGE, DOC_FIELD);
-    const state = Y.encodeStateAsUpdate(seed);
-    seed.destroy();
+    let state: Uint8Array;
+    let json: PMNode;
+    if (body) {
+      state = body.state;
+      json = body.doc;
+    } else {
+      const seed = prosemirrorJSONToYDoc(notebookSchema(), BLANK_PAGE, DOC_FIELD);
+      state = Y.encodeStateAsUpdate(seed);
+      seed.destroy();
+      json = BLANK_PAGE;
+    }
+    const d = body ? derive(json) : { title: '', snippet: '', wordCount: 0, hasChecklist: false, text: '' };
+    // As a store would: the title cut at 500 (not through a character), and the index's body the text after it.
+    const cut = d.title.length > 500 && (d.title.charCodeAt(499) & 0xfc00) === 0xd800 ? 499 : 500;
+    const title = d.title.slice(0, cut);
+    const label = body?.label ?? null;
     const inserted = this.db.q(
-      `INSERT INTO pages (id, tab_id, sort_key, title, snippet, word_count, has_checklist, created_at, created_by, updated_at, updated_by, deleted_at, row_version, ydoc, pm_json, plain_text)
-       VALUES (?, ?, ?, '', '', 0, 0, ?, ?, ?, ?, NULL, 1, ?, ?, '')`,
-    ).run(id, tabId, sortKey, now, actor, now, actor, state, JSON.stringify(BLANK_PAGE));
-    this.db.run(`INSERT INTO pages_fts (rowid, title, body) VALUES (?, '', '')`, inserted.lastInsertRowid);
+      `INSERT INTO pages (id, tab_id, sort_key, title, snippet, word_count, has_checklist, created_at, created_by, updated_at, updated_by, deleted_at, row_version, ydoc, pm_json, plain_text, label)
+       VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, NULL, 1, ?, ?, ?, ?)`,
+    ).run(id, tabId, sortKey, title, d.snippet, d.wordCount, d.hasChecklist ? 1 : 0, now, actor, now, actor, state, JSON.stringify(json), d.text, label);
+    const at = title ? d.text.indexOf(title) : -1;
+    const ftsBody = at < 0 ? d.text : d.text.slice(at + title.length).replace(/^\n+/, '');
+    this.db.run(`INSERT INTO pages_fts (rowid, title, body) VALUES (?, ?, ?)`, inserted.lastInsertRowid, title, ftsBody);
     const row: ActivityRow = { pageId: id, day: this.dayOf(now), created: true, firstAt: now, lastAt: now, edits: 0, added: 0, removed: 0, actors: [actor] };
     this.db.run(
       'INSERT INTO page_activity (page_id, day, created, first_at, last_at, edits, added, removed, actors) VALUES (?, ?, 1, ?, ?, 0, 0, 0, ?)',
@@ -242,7 +316,20 @@ export class Notebook {
       row.lastAt,
       JSON.stringify(row.actors),
     );
-    return { id, tabId, sortKey, title: '', snippet: '', wordCount: 0, hasChecklist: false, createdAt: now, updatedAt: now, deletedAt: null, rowVersion: 1 };
+    return {
+      id,
+      tabId,
+      sortKey,
+      title,
+      snippet: d.snippet,
+      wordCount: d.wordCount,
+      hasChecklist: d.hasChecklist,
+      createdAt: now,
+      updatedAt: now,
+      deletedAt: null,
+      rowVersion: 1,
+      ...(label ? { label } : {}),
+    };
   }
 
   createNotebook(title = 'New notebook', actor = OWNER_ACTOR): { notebook: NotebookRec; tab: TabRec; page: PageRec } {
@@ -260,7 +347,7 @@ export class Notebook {
       );
       const tab: TabRec = { id: randomUUID(), notebookId: notebook.id, title: 'General', color: 'blue', sortKey: 0, createdAt: now, updatedAt: now, rowVersion: 1 };
       this.insertTab(tab);
-      return { notebook, tab, page: this.insertBlankPage(tab.id, 0, actor) };
+      return { notebook, tab, page: this.insertPage(tab.id, 0, actor) };
     });
   }
 
@@ -303,7 +390,7 @@ export class Notebook {
         rowVersion: 1,
       };
       this.insertTab(tab);
-      return { tab, page: this.insertBlankPage(tab.id, 0, actor) };
+      return { tab, page: this.insertPage(tab.id, 0, actor) };
     });
   }
 
@@ -351,8 +438,31 @@ export class Notebook {
     return this.commit(() => {
       const list = this.livePagesOf(tabId);
       const afterIdx = o.after ? list.findIndex((p) => p.id === o.after) : -1;
-      return this.insertBlankPage(tabId, keyAt(list.map((p) => p.sort_key), afterIdx + 1), actor);
+      return this.insertPage(tabId, keyAt(list.map((p) => p.sort_key), afterIdx + 1), actor);
     });
+  }
+
+  /**
+   * A page with a body, right after `after` in the tab, or first (ADR 0091: a duplicate, or a page from a notebook file).
+   * `client` is the Yjs client id the body is written under: on a guild's desk, `onCreated` says whose it is, inside the
+   * same transaction, so nothing of a member's is ever on a page without its writer.
+   */
+  addPage(tabId: string, after: string | null, body: PageBody, actor = OWNER_ACTOR, onCreated?: (page: PageRec) => void): PageRec {
+    if (!this.tab(tabId)) throw notFound();
+    return this.commit(() => {
+      const list = this.livePagesOf(tabId);
+      const afterIdx = after ? list.findIndex((p) => p.id === after) : -1;
+      const page = this.insertPage(tabId, keyAt(list.map((p) => p.sort_key), afterIdx + 1), actor, body);
+      onCreated?.(page);
+      return page;
+    });
+  }
+
+  /** ADR 0091: metadata, as a tab's color is. A label isn't an edit, so updatedAt stays; the tree's rev says it changed. */
+  setPageLabel(pageId: string, label: PaletteId | null): void {
+    const page = this.mustPage(pageId);
+    if ((page.label ?? null) === label) return;
+    this.commit(() => this.db.run('UPDATE pages SET label = ?, row_version = row_version + 1 WHERE id = ?', label, pageId));
   }
 
   movePage(pageId: string, tabId: string, index?: number): void {
@@ -365,10 +475,11 @@ export class Notebook {
     });
   }
 
-  trashPage(pageId: string): void {
+  /** `actor` is who trashed it, kept so a guild desk knows who may bring it back (authz-5). */
+  trashPage(pageId: string, actor: string = OWNER_ACTOR): void {
     const page = this.mustPage(pageId);
     if (page.deleted_at != null) return;
-    this.commit(() => this.db.run('UPDATE pages SET deleted_at = ?, row_version = row_version + 1 WHERE id = ?', this.hooks.now(), pageId));
+    this.commit(() => this.db.run('UPDATE pages SET deleted_at = ?, deleted_by = ?, row_version = row_version + 1 WHERE id = ?', this.hooks.now(), actor, pageId));
   }
 
   restorePage(pageId: string): void {
@@ -381,7 +492,7 @@ export class Notebook {
       if (!first) return;
       tabId = first.id;
     }
-    this.commit(() => this.db.run('UPDATE pages SET tab_id = ?, deleted_at = NULL, row_version = row_version + 1 WHERE id = ?', tabId, pageId));
+    this.commit(() => this.db.run('UPDATE pages SET tab_id = ?, deleted_at = NULL, deleted_by = NULL, row_version = row_version + 1 WHERE id = ?', tabId, pageId));
   }
 
   /** Inside a transaction: everything about a page goes (design 5.2's Trash, after 30 days). */
@@ -404,17 +515,26 @@ export class Notebook {
 
   // ---------------------------------------------------------------- temporal
 
-  /** Rows for live pages in [fromDay, toDay]. */
-  activity(fromDay: string, toDay: string): ActivityRow[] {
-    return this.db
-      .all<{ page_id: string; day: string; created: number; first_at: number; last_at: number; edits: number; added: number; removed: number; actors: string }>(
-        `SELECT a.page_id, a.day, a.created, a.first_at, a.last_at, a.edits, a.added, a.removed, a.actors
-         FROM page_activity a JOIN pages p ON p.id = a.page_id
-         WHERE a.day >= ? AND a.day <= ? AND p.deleted_at IS NULL`,
-        fromDay,
-        toDay,
-      )
-      .map((r) => ({
+  /**
+   * Rows for live pages in [fromDay, toDay], newest day first and then by page id, from just after `cursor`: a page of them,
+   * with `next` to ask for the one after it, or null. The order is the table's key, so a row is never sent twice or skipped,
+   * whatever else is written meanwhile; a row added behind the cursor shows on the next read, which the topic asks for.
+   * `more` shapes each row as it's sent (a guild desk's names), inside the reply's budget.
+   */
+  activity(fromDay: string, toDay: string, cursor?: string, more?: (row: ActivityRow) => ActivityRow): { rows: ActivityRow[]; next: string | null } {
+    const params: string[] = [fromDay, toDay];
+    if (cursor !== undefined) {
+      const m = ACTIVITY_CURSOR.exec(cursor);
+      if (!m) throw badRequest('cursor');
+      const day = m[1] as string;
+      if (day < toDay) params[1] = day;
+      params.push(day, m[2] as string);
+    }
+    const out = { rows: [] as ActivityRow[], next: null as string | null };
+    let budget = ACTIVITY_BYTES;
+    let last: ActivityRow | undefined;
+    for (const r of this.db.iterate<ActivityDbRow>(activitySql(cursor !== undefined), ...params)) {
+      const plain: ActivityRow = {
         pageId: r.page_id,
         day: r.day,
         created: !!r.created,
@@ -424,7 +544,20 @@ export class Notebook {
         added: r.added,
         removed: r.removed,
         actors: JSON.parse(r.actors) as string[],
-      }));
+      };
+      const row = more ? more(plain) : plain;
+      // The comma before it, after the first.
+      const size = Buffer.byteLength(JSON.stringify(row)) + (out.rows.length ? 1 : 0);
+      // One row always goes, so a reader always moves on.
+      if (last && (out.rows.length === ACTIVITY_PAGE || size > budget)) {
+        out.next = `a:${last.day}:${last.pageId}`;
+        break;
+      }
+      budget -= size;
+      out.rows.push(row);
+      last = plain;
+    }
+    return out;
   }
 
   /** Every day with activity on a live page, newest first. */

@@ -7,8 +7,11 @@
 # Elastic IP is slot 1's first and then moved to slot 2's address. Then:
 #   1. boot: time to SSH and systemd's own boot time, the kernel, ENA and NVMe, IMDS's options, the boot state before SSH;
 #   2. a fake Platform on the host's loopback (tests/fake_platform.py, the contract's three routes, every signature checked)
-#      and desk-host-link pointed at it (LINK_API, a test host only); then every desk-host-check check (25: the host's own,
-#      the size classes' table and their application, the byte counters, the link, inbound and the stand-in);
+#      and desk-host-link pointed at it (LINK_API, a test host only); then every desk-host-check check (29: the host's own,
+#      the size classes' table and their application, the byte counters, the link, inbound, the stand-in, and SlotMode=port's
+#      four, which under address say there's no demux and nothing on the host's 443);
+#   2b. the template key's trust anchor (verify-template-anchor.sh): the host's pin is the committed recipe/template-keys.sha256 and
+#      its keys exactly the anchor's; the key and pin swapped together for another P-256 key must fail it (a skip with no template path);
 #   3. WR2-02 on the host: TIOCSETD N_HDLC on a pty refused, /proc/modules unchanged;
 #   4. the link: two desks placed by DeskSlot tags and started by the fake's start_slot orders; a slot leaves from the
 #      Elastic IP on its own address and from no other address once it's moved away (PF-01); from outside, the host's own
@@ -21,12 +24,22 @@
 #      kept; a raise past DesksPerHost units keeps its memory and disk and waits (75), then finishes once there's room; then
 #      stopped with nothing left;
 #   4c. the slot's byte counters (desk_est): a download's bytes in and its ACKs out match the slot's veth; then the link again;
+#   4f. ADR 0036 per container (TD-223): slot 1's outbound shaper on its veth (1:10, 1:15, 1:20 at 60, 2, 100 Mbit), its counters
+#      in the report, its desk-egress ticking; desk-host shaper 1 off (test 1's R5) fails the shaper check, on passes it;
+#   4g. ADR 0078: a service batch's fetch, its refusals and their mutations (verify-batches.sh);
 #   5. the mutation pass: each check broken on purpose must FAIL, then put back must PASS (every check can fail).
+#   6. Platform's reclaim wave (verify-wave.sh): six prepares at once on a store filled until it holds one root more, and 0.1.11's
+#      prepare (its mutation) failing the same wave.
+#   7. slot-datadirs (verify-links.sh): a link the Browser's user puts at /data/browser/home before slot 1's start isn't followed
+#      by its desk-init, and 0.1.11.1's desk-init (its mutation) following it fails the same step.
+# This is SlotMode=address (choice A, no SlotMode tag); SLOT_MODE=port runs verify-port.sh, SlotMode=port's own run.
 # Evidence: image/host/evidence/verify-<ami>.txt (addresses replaced). Creates only tagged temporary resources, removed on exit.
 set -euo pipefail
 HERE=$(cd "$(dirname "$0")" && pwd)
+# SlotMode=port (one public IPv4 for the host, choice B) has its own run: SLOT_MODE=port verify.sh <ami>. A bake runs both.
+[ "${SLOT_MODE:-address}" = port ] && exec "$HERE/verify-port.sh" "$@"
 . "$HERE/../lib.sh"
-AMI=${1:?usage: verify.sh <ami-id> [type]}; TYPE=${2:-m7g.xlarge}
+AMI=${1:?usage: [SLOT_MODE=port] verify.sh <ami-id> [type]}; TYPE=${2:-m7g.xlarge}
 INSTANCE_ID=; SG_ID=; KEY_NAME=; WORKDIR=; VOLS=(); ALLOCS=(); ENI1=
 PASS=0; FAILN=0
 mkdir -p "$HERE/evidence"; EV=$HERE/evidence/verify-$AMI.txt; : > "$EV"
@@ -186,7 +199,23 @@ while read -r st _ name rest; do
   result "host ${name%:}" "$([ "$st" = PASS ] && echo 0 || echo 1)" <<<"$rest"   # not through a pipe: its counts would stay in a subshell
 done < $WORKDIR/o
 NCHECKS=$(grep -c -E '^(PASS|FAIL) host ' $WORKDIR/o || true)
-[ "$NCHECKS" -ge 25 ] || { echo "only $NCHECKS checks ran" | result "every host check ran" 1; }
+[ "$NCHECKS" -ge 37 ] || { echo "only $NCHECKS checks ran" | result "every host check ran" 1; }
+
+# ---- 2b. the template key's trust anchor (ADR 0077 PU-9; verify-template-anchor.sh on the host): the host's pin is the committed
+# recipe/template-keys.sha256 byte for byte and its keys exactly the anchor's; its mutation, the key and the pin swapped together for
+# another P-256 key (which template-sig alone passes), must fail it. An image with no template path (0.1.11, 0.1.11.1, earlier) is a skip.
+TKA=$(base64 -w0 < "$HERE/recipe/template-keys.sha256")
+R "sudo bash -s -- check $TKA" < "$HERE/verify-template-anchor.sh" > $WORKDIR/o 2>&1 && rc=0 || rc=$?
+if grep -qx 'ANCHOR NOT APPLICABLE' $WORKDIR/o; then
+  say "SKIP  the template key's trust anchor: this image has no template path (ADR 0077's host half isn't on it)"
+  scrub < $WORKDIR/o | sed 's/^/        /' >> "$EV"
+else
+  grep -qx 'ANCHOR PASS' $WORKDIR/o || rc=1
+  result "the template key's trust anchor: the host's pin is the committed recipe/template-keys.sha256, its keys exactly the anchor's" $rc < $WORKDIR/o
+  R "sudo bash -s -- mutation $TKA" < "$HERE/verify-template-anchor.sh" > $WORKDIR/o 2>&1 && rc=0 || rc=$?
+  { grep -qx 'MUTATED ANCHOR FAIL' $WORKDIR/o && grep -qx 'RESTORE PASS' $WORKDIR/o; } || rc=1
+  result "that check fails with the key and its pin swapped together for another P-256 key (template-sig alone passes it); put back, both pass" $rc < $WORKDIR/o
+fi
 
 # ---- 3. WR2-02 on the host itself: a pty's TIOCSETD to N_HDLC, as an unprivileged user
 RS <<'X' > $WORKDIR/o 2>&1 && rc=0 || rc=$?
@@ -399,10 +428,37 @@ grep -E 'idmapped' /proc/$pid/mountinfo | grep -q ' /data ' && echo "/data idmap
 [ "$(grep -c riops $cg/io.max)" = 2 ] || ok=0
 for p in $(cat $cg/desk/init/cgroup.procs); do f=$(awk '/^Seccomp_filters/{print $2}' /proc/$p/status)
   case "$(tr '\0' ' ' < /proc/$p/cmdline)" in "/usr/bin/python3 -I /desk-host/desk-init.py"*) echo "desk-init pid $p: $f filters"; [ "$f" -ge 2 ] || ok=0 ;; esac; done
+for i in $(seq 1 60); do grep -q 'deskd ready' <(python3 -I -c 'import sys; t = open(sys.argv[1], errors="replace").read(); print(t[t.rfind("] started "):])' /var/log/desk-host/svc-1-deskd.log 2>/dev/null) && break; sleep 2; done   # deskd past its FilesModule
+out=$(/usr/local/lib/desk-host/desk-host-check --allow-verify-access --only svc-dns,oom,files); echo "$out"   # Bug 8: every sandbox has the desk's resolver, and deskd, desk-rtc and desk-agent look a public name up
+echo "$out" | grep -qE '^PASS host oom: [12] running slot\(s\), [1-9][0-9]* desk process\(es\) as the order says, lowest -500, the host.s own under -900' || ok=0   # S2
+echo "$out" | grep -qE '^PASS host svc-dns: [12] running slot\(s\), (6|12) sandbox\(es\) with the desk.s resolver, (3|6) lookups' || ok=0
+echo "$out" | grep -qE '^PASS host files: ([12]) running slot\(s\), \1 with deskd.s /data/files its volume.s, 1100:1100 0700' || ok=0   # free walk H5
 cat /run/desk-host/1/slot.json
 [ $ok = 1 ]
 X
-result "a desk on the image, started by the link: 7 containers (desk + 6 sandboxes), the memory rule, io.max on both devices, desk-init filtered, /data idmapped" $rc < $WORKDIR/o
+result "a desk on the image, started by the link: 7 containers (desk + 6 sandboxes), each sandbox with the desk's resolver and deskd, desk-rtc and desk-agent looking up a public name from inside (Bug 8), the memory rule, io.max on both devices, desk-init filtered, /data idmapped" $rc < $WORKDIR/o
+
+# ---- 4f. ADR 0036 per container (TD-223, ADR 0072 section 8): slot 1's shaper on its veth and its budgets; test 1's R5 (the shaper
+# dropped by the host, as a bug would drop it) fails the check, and putting it back passes
+RS > $WORKDIR/o 2>&1 <<'X' && rc=0 || rc=$?
+set -u; ok=1; L=/usr/local/lib/desk-host
+s=$(desk-host shaper 1 show); echo "desk-host shaper 1 show: $s"
+python3 -I -c 'import json,sys; s=json.loads(sys.argv[1]); c=s["classes"]; r={m: c[m]["rateBits"] for m in c}; print("rates", r, "1:15 bytes", c["15"]["bytes"])
+sys.exit(0 if s["on"] and r == {"10": 60000000, "15": 2000000, "20": 100000000} and c["15"]["bytes"] > 0 and s.get("profile") == "normal" and s.get("slowed") is False else 1)' "$s" || ok=0
+desk-host report | python3 -I -c 'import json,sys; s=[x for x in json.load(sys.stdin)["slots"] if x["k"] == 1][0].get("shaper") or {}; print("report, slot 1:", json.dumps(s)); sys.exit(0 if s.get("on") else 1)' || ok=0
+echo "desk-host-egress@1: $(systemctl is-active desk-host-egress@1.service)"; systemctl is-active --quiet desk-host-egress@1.service || ok=0
+ls -l /var/lib/desk-host/egress/ | tail -n +2 | sed 's/^/  state: /'
+$L/desk-host-check --allow-verify-access --only shaper || ok=0
+desk-host shaper 1 off
+$L/desk-host-check --allow-verify-access --only shaper > /tmp/s.out 2>&1 && { echo "the check passed with the shaper off"; ok=0; }; cat /tmp/s.out
+grep -q "shaper off" /tmp/s.out || ok=0
+echo "eth0 in slot 1 with the shaper off: $(nsenter --net=/run/desk-host/ns/1/net tc qdisc show dev eth0 root | head -1)"
+nsenter --net=/run/desk-host/ns/1/net tc qdisc show dev eth0 root | grep -q htb && ok=0
+desk-host shaper 1 on
+$L/desk-host-check --allow-verify-access --only shaper || ok=0
+[ $ok = 1 ]
+X
+result "slot 1's outbound shaper (ADR 0036 per container): HTB 1:10, 1:15 and 1:20 at 60, 2 and 100 Mbit on its veth, the desk's own traffic counted in 1:15, the report carries it, its desk-egress ticks; desk-host shaper 1 off (test 1's R5) fails the shaper check, on passes it" $rc < $WORKDIR/o
 
 fake_state running stopped
 { R "sudo python3 -I /root/fake/wait.py 300 1=running 2=unmounted,stopped" && RSE D1=$D1 <<'X'; } > $WORKDIR/o 2>&1 && rc=0 || rc=$?
@@ -472,7 +528,7 @@ echo "standard, live:"; same standard || { echo "  NOT the standard class"; ok=0
 after=\$(procs); echo "processes after: \$(echo \$after | wc -w), the same: \$([ "\$before" = "\$after" ] && echo yes || echo NO)"
 [ "\$before" = "\$after" ] || ok=0
 \$L/desk-host-check --only class-applied || ok=0
-grep -q '"class": "standard"' /run/desk-host/1/class.json || { echo "  class.json: \$(cat /run/desk-host/1/class.json)"; ok=0; }   # the contract's report carries no class yet
+grep -q '"class": "standard"' /run/desk-host/1/class.json || { echo "  class.json: \$(cat /run/desk-host/1/class.json)"; ok=0; }   # (the report carries it too from the bake after 0.1.10)
 desk-host class 1 free || ok=0; same free >/dev/null || ok=0
 # six more standard desks' worth of memory on the host (cgroups only): the raise to standard waits (75), memory and disk kept
 for j in 2 3 4 5 6 7; do mkdir /sys/fs/cgroup/desk-host/desk-\$j; python3 -I \$L/classes.py values standard \$ty | cut -d' ' -f2 > /sys/fs/cgroup/desk-host/desk-\$j/memory.max; done
@@ -519,11 +575,64 @@ X
 result "the slot's byte counters match its interface's (a download's replies, established traffic, counted: rx within 5%, out with its ACKs within the veth's 14-byte headers)" $rc < $WORKDIR/o
 R 'sudo systemctl start desk-host-link; sleep 10; systemctl is-active desk-host-link' >/dev/null || say "the link didn't start again (the mutation pass will say so)"
 
-# ---- 5. the mutation pass: each check broken must FAIL, put back must PASS
-RS > $WORKDIR/o 2>&1 <<'X' && rc=0 || rc=$?
+# ---- 4d. desk-svc's restart back-off, on the baked binary (reliability audit S1; verify-backoff.sh runs the real desk-svc as a plain
+# supervisor over a job that exits at once). The three runs go side by side: as built (waits 1, 2, 4, 8, 16 s, then back to 1 after a
+# healthy run), with the steps taken off (flat: must fail) and with no run ever healthy (never starts over: must fail).
+BIN=/usr/local/lib/desk-host/desk/desk-svc
+R "sudo bash -s -- $BIN" < "$HERE/verify-backoff.sh" > $WORKDIR/b1 2>&1 &
+R "sudo bash -s -- $BIN -restart-steps 0" < "$HERE/verify-backoff.sh" > $WORKDIR/b2 2>&1 &
+R "sudo bash -s -- $BIN -healthy-sec 1000" < "$HERE/verify-backoff.sh" > $WORKDIR/b3 2>&1 &
+wait
+rc=0; grep -q -e '^FAILED$' $WORKDIR/b1 && rc=1; grep -q '^ran to the end$' $WORKDIR/b1 || rc=1
+result "desk-svc, the supervisor of every sandbox, backs off its restarts: waits of 1, 2, 4, 8 and 16 s in a row, back to 1 s after a run of 6 s, and then 2 s again" $rc < $WORKDIR/b1
+rc=1; grep -q -e '^FAILED$' $WORKDIR/b2 && rc=0
+result "that check fails with the steps off (-restart-steps 0, a flat 1 s wait)" $rc < $WORKDIR/b2
+rc=1; grep -q -e '^FAILED$' $WORKDIR/b3 && rc=0
+result "that check fails when no run counts as healthy (-healthy-sec 1000, the wait never starts over)" $rc < $WORKDIR/b3
+
+# ---- 4g. ADR 0078: a service batch's fetch on the host (verify-batches.sh: a test release made from the store's own desk-rtc, a throwaway
+# key trusted as a TEST key for this step only, served on the loopback): the candidate, the refusals before any download, on its bytes
+# and for room, each with its mutation (DESK_HOST_BATCH_MUT) failing its step. The live switch, rollback, canary and stop path: the lab's.
+RS < "$HERE/verify-batches.sh" > $WORKDIR/o 2>&1 && rc=0 || rc=$?
+result "4g. a service batch's fetch: candidate, refusals (signature, floor, format, bytes, room), each mutation failing its step" $rc < $WORKDIR/o
+
+# ---- 5. the mutation pass: each check broken must FAIL, put back must PASS (svc-dns needs a sandbox: slot 1 is started by hand, the link stopped, for its one mutation)
+RSE D1=$D1 VOL1=$VOL1 EIP1=$EIP1 > $WORKDIR/o 2>&1 <<'X' && rc=0 || rc=$?
 C="/usr/local/lib/desk-host/desk-host-check --allow-verify-access --only"
-T=/srv/desk-host/template; L=/usr/local/lib/desk-host
+T=/srv/desk-host/templates/$(/usr/local/lib/desk-host/desk-host-template current); L=/usr/local/lib/desk-host   # the current template generation (ADR 0077)
 bad=0; n=0
+rmut() {   # rmut break|fix: slot 1's deskd sandbox without the desk's resolver, as 0.1.8 had it (the bind unmounted: the release's empty file), and back
+  python3 -I - "$1" "$(runc state dh-svc-1-deskd | python3 -I -c 'import json,sys; print(json.load(sys.stdin)["pid"])')" "$T/etc/resolv.conf" /etc/resolv.conf <<'P'
+import ctypes, os, sys
+what, pid, src_path, dst = sys.argv[1:]
+libc = ctypes.CDLL(None, use_errno=True)
+if what == "fix":   # the template's file as a detached clone, taken before the move into the sandbox's mount namespace
+    tree = libc.syscall(428, -100, src_path.encode(), 0x1 | 0o2000000)   # open_tree(AT_FDCWD, path, OPEN_TREE_CLONE | OPEN_TREE_CLOEXEC)
+    if tree < 0:
+        sys.exit(ctypes.get_errno() or 1)
+os.setns(os.open(f"/proc/{pid}/ns/mnt", os.O_RDONLY), os.CLONE_NEWNS)
+if what == "break":
+    r = libc.umount2(dst.encode(), 2)
+else:
+    r = libc.syscall(429, tree, b"", -100, dst.encode(), 4)   # move_mount(tree, "", AT_FDCWD, dst, MOVE_MOUNT_F_EMPTY_PATH)
+sys.exit(0 if r == 0 else ctypes.get_errno() or 1)
+P
+}
+fmut() {   # fmut break|fix: slot 1's deskd with 0.1.10's /data/files (a root-owned mode 000 tmpfs over the volume's: its placeholder), and back
+  python3 -I - "$1" "$(runc state dh-svc-1-deskd | python3 -I -c 'import json,sys; print(json.load(sys.stdin)["pid"])')" <<'P'
+import ctypes, os, sys
+what, pid = sys.argv[1:]
+libc = ctypes.CDLL(None, use_errno=True)
+# the sandbox's mounts, read from the host's /proc before setns: inside, /proc is the sandbox's own and has no /proc/self for this process
+top = [l.split() for l in open(f"/proc/{pid}/mountinfo") if l.split()[4] == "/data/files"]
+os.setns(os.open(f"/proc/{pid}/ns/mnt", os.O_RDONLY), os.CLONE_NEWNS)
+if what == "break":
+    r = libc.mount(b"h5-mutation", b"/data/files", b"tmpfs", 0x2 | 0x4 | 0x8, b"mode=000,size=4k")   # nosuid, nodev, noexec
+else:   # only the mutation's own tmpfs, if it's the top mount there: never the volume's
+    r = libc.umount2(b"/data/files", 0) if top and top[-1][top[-1].index("-") + 2] == "h5-mutation" else -1
+sys.exit(0 if r == 0 else ctypes.get_errno() or 1)
+P
+}
 m() {   # m <check> <break> <restore>
   local c=$1 b=$2 r=$3 f p
   eval "$b" >/dev/null 2>&1; $C "$c" >/tmp/m.out 2>&1 && f=PASS || f=FAIL
@@ -531,9 +640,22 @@ m() {   # m <check> <break> <restore>
   n=$((n+1)); echo "$c: broken -> $f, restored -> $p   ($(cut -c1-150 /tmp/m.out))"
   [ "$f" = FAIL ] && [ "$p" = PASS ] || bad=1
 }
+omut() {   # omut <adj>: every process of slot 1's deskd sandbox set to <adj> (the kill order broken, and put back)
+  local pid p; pid=$(runc state dh-svc-1-deskd | python3 -I -c 'import json,sys; print(json.load(sys.stdin)["pid"])')
+  for p in $(cat /sys/fs/cgroup$(sed -n 's/^0:://p' /proc/$pid/cgroup)/cgroup.procs); do echo "$1" > /proc/$p/oom_score_adj; done
+}
 cp -a /usr/local/sbin/runc /root/runc.keep; cp -a $L/desk/desk-svc /root/svc.keep; cp -a /etc/modprobe.d/desk-host.conf /root/mp.keep
 cp -a $L/apparmor.tmpl /root/aa.keep; cp -a /var/lib/desk-host/hosting.json /root/h.keep; cp -a /home/admin/.ssh/authorized_keys /root/ak.keep
 cp -a /srv/desk-host/releases/deskd/current/run /root/run.keep; cp -a /etc/desk-host/classes.conf /root/cl.keep
+systemctl stop desk-host-link
+desk-host up 1 $D1 $VOL1 --public $EIP1 >/tmp/up1.out 2>&1 || { bad=1; cat /tmp/up1.out; }
+sleep 8
+m svc-dns "rmut break" "rmut fix"
+m oom "omut 0" "omut -500"
+m files "fmut break" "fmut fix"
+m shaper "systemctl kill -s SIGSTOP desk-host-egress@1.service; nsenter --net=/run/desk-host/ns/1/net tc qdisc del dev eth0 root" "desk-host shaper 1 on; sleep 1"
+desk-host stop 1 >/dev/null 2>&1
+systemctl start desk-host-link; sleep 5
 m runc "printf x >> /usr/local/sbin/runc" "cp -a /root/runc.keep /usr/local/sbin/runc"
 m kernel "touch /boot/vmlinuz-0.0-cloud-arm64" "rm -f /boot/vmlinuz-0.0-cloud-arm64"
 m zswap "echo N > /sys/module/zswap/parameters/enabled" "echo Y > /sys/module/zswap/parameters/enabled"
@@ -551,6 +673,7 @@ m no-test "touch /etc/desk-host/test.conf; mkdir -p /var/lib/desk-host/test" "rm
 m apparmor "echo 'profile bad {' >> $L/apparmor.tmpl" "cp -a /root/aa.keep $L/apparmor.tmpl"
 m cgroup "echo -io > /sys/fs/cgroup/desk-host/cgroup.subtree_control" "echo +io > /sys/fs/cgroup/desk-host/cgroup.subtree_control"
 m boot "systemctl stop desk-host-shutdown.service" "systemctl start desk-host-shutdown.service"
+m dirs "chmod 700 /srv/desk-host" "chmod 711 /srv/desk-host"
 m hosting "mv /var/lib/desk-host/hosting.json /root/h.moved" "cp -a /root/h.keep /var/lib/desk-host/hosting.json"
 m ssh "echo 'ssh-ed25519 AAAAtest second' >> /home/admin/.ssh/authorized_keys" "cp -a /root/ak.keep /home/admin/.ssh/authorized_keys"
 m link "systemctl stop desk-host-link" "systemctl start desk-host-link; sleep 3"
@@ -562,6 +685,64 @@ m classes "sed -i 's/^standard .*/standard 1 0.9 1 1 1 1 1/' /etc/desk-host/clas
 m class-applied "mkdir /sys/fs/cgroup/desk-host/desk-29" "rmdir /sys/fs/cgroup/desk-host/desk-29"
 m counters 'h=$(nft -a list chain inet host forward | sed -n "s/.*jump desk_est # handle \\([0-9]*\\)/\\1/p"); nft delete rule inet host forward handle $h' \
   'a=$(nft -a list chain inet host forward | sed -n "s/.*ct state .*established.*accept # handle \\([0-9]*\\)/\\1/p"); nft insert rule inet host forward position $a ct state established,related jump desk_est'
+# ADR 0077's four (template generations and the host's own updates): one counted break each, and each one's second break (m2)
+m2() {   # m2 <check> <break> <restore>: a further break of a check already counted, which must FAIL and then PASS too
+  local c=$1 b=$2 r=$3 f p
+  eval "$b" >/dev/null 2>&1; $C "$c" >/tmp/m.out 2>&1 && f=PASS || f=FAIL
+  eval "$r" >/dev/null 2>&1; $C "$c" >/tmp/m2.out 2>&1 && p=PASS || p=FAIL
+  echo "$c (its second break): broken -> $f, restored -> $p   ($(cut -c1-150 /tmp/m.out))"
+  [ "$f" = FAIL ] && [ "$p" = PASS ] || bad=1
+}
+tmut() {   # tmut break|fix: one byte of a current-generation file written through the store's writable path (the store itself, under the read-only bind)
+  # the directory made only while nothing is bound there: install -d on the bind would chmod the store's own root to 700, and no desk's
+  # root could then reach a sandbox's root under it (sub/host-batches finding 6: every runc create after this pass refused)
+  mountpoint -q /root/st || { install -d -m 700 /root/st; mount --bind /srv/desk-host /root/st; }
+  local f=/root/st/templates/$(basename "$T")/etc/debian_version
+  if [ "$1" = break ]; then cp -a "$f" /root/dv.keep; printf X | dd of="$f" bs=1 count=1 conv=notrunc status=none; else cat /root/dv.keep > "$f"; umount /root/st; fi
+}
+sdev=$(python3 -I -c 'import sys; sys.path.insert(0, "/usr/local/lib/desk-host"); import templates as T; print(T.disk_of(T.DH))')
+m templates "tmut break" "tmut fix"
+m2 templates "cp -a /var/lib/desk-host/slots/1.json /root/rec.keep; python3 -I -c 'import json,sys; p=sys.argv[1]; r=json.load(open(p)); r[\"template\"]=\"g99\"; json.dump(r, open(p, \"w\"))' /var/lib/desk-host/slots/1.json" \
+  "cp -a /root/rec.keep /var/lib/desk-host/slots/1.json"
+m template-sig "openssl ecparam -name prime256v1 -genkey -noout | openssl ec -pubout -out /etc/desk-host/template-keys/unpinned.pem" "rm -f /etc/desk-host/template-keys/unpinned.pem"
+m2 template-sig "mkdir /etc/desk-host/template-keys.d" "rmdir /etc/desk-host/template-keys.d"
+# the link's signing region: the API's us-east-1 for both envs, never the instance's (S-120); the conf's prod region changed must fail
+m2 link "cp -a /etc/desk-host/desk-host.conf /root/dhc.keep; sed -i 's/^LINK_API_REGION_prod=.*/LINK_API_REGION_prod=us-west-2/' /etc/desk-host/desk-host.conf" \
+  "cp -a /root/dhc.keep /etc/desk-host/desk-host.conf"
+m update-cgroup "echo '$sdev rbps=max wbps=max riops=max wiops=max' > /sys/fs/cgroup/desk-host-upd/io.max" "python3 -I /usr/local/lib/desk-host/desk-host-template upd-ensure"
+m2 update-cgroup "python3 -I -c 'import time; time.sleep(120)' /usr/local/lib/desk-host/desk-host reroot 9 >/dev/null 2>&1 < /dev/null & echo \$! > /root/rr.pid; sleep 0.5" \
+  "kill \$(cat /root/rr.pid); sleep 0.5"
+# ADR 0078's (service batches): batch-sig, svc-spec, the rewritten releases and the widened update-cgroup, each broken (and a second break)
+TB="touch /etc/desk-host/test.conf; mkdir -p /var/lib/desk-host/test"; TU="rm -f /etc/desk-host/test.conf; rmdir /var/lib/desk-host/test"
+m batch-sig "cp -a /etc/desk-host/batch-keys/ma-desk-batch-2026-11.pem /root/bk.keep; openssl ecparam -name prime256v1 -genkey -noout | openssl ec -pubout -out /etc/desk-host/batch-keys/ma-desk-batch-2026-11.pem" \
+  "cp -a /root/bk.keep /etc/desk-host/batch-keys/ma-desk-batch-2026-11.pem"
+m2 batch-sig "mkdir /etc/desk-host/batch-keys.d" "rmdir /etc/desk-host/batch-keys.d"
+# svc-spec's two breaks need a running slot 1 (resandbox, and its svc/desk-rtc/config.json): started by hand with the link stopped, as svc-dns's is
+systemctl stop desk-host-link; desk-host up 1 $D1 $VOL1 --public $EIP1 >/tmp/up1b.out 2>&1 || { bad=1; cat /tmp/up1b.out; }; sleep 8
+# a sandbox made again by the switch's own steps with a capability added (a test host's flag), then made again without it
+m svc-spec "$TB; SWITCH_ADD_CAP=1 desk-host resandbox 1 desk-agent >> /root/resandbox.log 2>&1; $TU" "$TB; desk-host resandbox 1 desk-agent >> /root/resandbox.log 2>&1; $TU"
+echo "  resandbox: $(tail -4 /root/resandbox.log 2>/dev/null | cut -c1-160 | tr '\n' ' '); runc's: $(grep -v '^\[desk-svc' /var/log/desk-host/svc-1-desk-agent.log | tail -3 | cut -c1-200 | tr '\n' ' ')"
+echo "  slot 1's cgroup: memory $(cat /sys/fs/cgroup/desk-host/desk-1/memory.current)/$(cat /sys/fs/cgroup/desk-host/desk-1/memory.max), pids $(cat /sys/fs/cgroup/desk-host/desk-1/pids.current)/$(cat /sys/fs/cgroup/desk-host/desk-1/pids.max), class $(cat /run/desk-host/1/class.json 2>/dev/null)"
+m2 svc-spec "cp -a /srv/desk-host/slots/1/svc/desk-rtc/config.json /root/rtc.keep; python3 -I -c 'import json,sys; p=sys.argv[1]; d=json.load(open(p)); d[\"mounts\"]=[m for m in d[\"mounts\"] if m[\"destination\"]!=\"/run/desk-egress\"]; json.dump(d, open(p, \"w\"))' /srv/desk-host/slots/1/svc/desk-rtc/config.json" \
+  "cp -a /root/rtc.keep /srv/desk-host/slots/1/svc/desk-rtc/config.json"
+desk-host stop 1 >/dev/null 2>&1; systemctl start desk-host-link; sleep 5   # svc-spec's slot is stopped again, as the later mutations expect
+cp -a /srv/desk-host/slots/1/rel/deskd/run /root/srun.keep 2>/dev/null; cp -a /var/lib/desk-host/slots/1.json /root/rec1.keep
+m2 releases "printf x >> /srv/desk-host/slots/1/rel/deskd/run" "cp -a /root/srun.keep /srv/desk-host/slots/1/rel/deskd/run"
+m2 releases "python3 -I -c 'import json,sys; p=sys.argv[1]; r=json.load(open(p)); r[\"releases\"]=dict(r.get(\"releases\") or {}, deskd=\"0.0-none\"); json.dump(r, open(p, \"w\"))' /var/lib/desk-host/slots/1.json" \
+  "cp -a /root/rec1.keep /var/lib/desk-host/slots/1.json"
+m2 update-cgroup "python3 -I -c 'import time; time.sleep(120)' /usr/local/lib/desk-host/desk-host-batch copy 9 >/dev/null 2>&1 < /dev/null & echo \$! > /root/cp.pid; sleep 0.5" \
+  "kill \$(cat /root/cp.pid); sleep 0.5"
+m host-apt "apt-mark unhold nftables" "apt-mark hold nftables"
+m2 host-apt "sed -i 's/Automatic-Reboot \"false\"/Automatic-Reboot \"true\"/' /etc/apt/apt.conf.d/51desk-host-unattended" \
+  "sed -i 's/Automatic-Reboot \"true\"/Automatic-Reboot \"false\"/' /etc/apt/apt.conf.d/51desk-host-unattended"
+# SlotMode=port's four, under address: no demux ground, nothing on the host's 443, a SlotMode that must be address or port
+own=$(ip -4 -j addr show dev "$(ip -4 -j route show default | python3 -I -c 'import json,sys; print(min(json.load(sys.stdin), key=lambda r: r.get("metric", 0))["dev"])')" | python3 -I -c 'import json,sys; print(json.load(sys.stdin)[0]["addr_info"][0]["local"])')
+guess='python3 -I -c "import json; p = \"/var/lib/desk-host/hosting.json\"; h = json.load(open(p)); h[\"slotMode\"] = \"guess\"; json.dump(h, open(p, \"w\"))"'
+m slotmode "nft add rule inet host host_in tcp dport 443 accept" \
+  "for h in \$(nft -a list chain inet host host_in | sed -n 's/.*tcp dport 443 accept # handle \\([0-9]*\\)\$/\\1/p'); do nft delete rule inet host host_in handle \$h; done"
+m addresses "$guess" "cp -a /root/h.keep /var/lib/desk-host/hosting.json"
+m demux "systemd-run --quiet --unit=ma-verify-443 python3 -m http.server 443 --bind $own; sleep 1" "systemctl stop ma-verify-443"
+m ports "$guess" "cp -a /root/h.keep /var/lib/desk-host/hosting.json"
 echo "mutations: $n"
 all=$(/usr/local/lib/desk-host/desk-host-check --list | wc -w); echo "checks: $all"
 [ "$n" = "$all" ] || bad=1
@@ -569,6 +750,28 @@ all=$(/usr/local/lib/desk-host/desk-host-check --list | wc -w); echo "checks: $a
 [ "$bad" = 0 ]
 X
 result "the mutation pass: every host check, broken, fails; put back, passes" $rc < $WORKDIR/o
+
+# ---- 6. Platform's reclaim wave (2026-11-11, verify-wave.sh): every slot prepared again at once on a store filled until it holds one root
+# more; then the same wave with 0.1.11's prepare (the mutation) must fail, and the real desk-host prepares every slot again, one at a time
+R "sudo bash -s -- real" < "$HERE/verify-wave.sh" > $WORKDIR/w1 2>&1 && rc=0 || rc=$?
+grep -qx 'WAVE PASS' $WORKDIR/w1 || rc=1
+result "Platform's reclaim wave: every slot prepared again at once on a store with room for one root more; each succeeds, or refuses for room (75) and then succeeds alone; no ENOSPC, no partial tree left, the store never full, the copies in the host's turn" $rc < $WORKDIR/w1
+R "sudo bash -s -- mutation" < "$HERE/verify-wave.sh" > $WORKDIR/w2 2>&1 && rc=0 || rc=$?
+{ grep -q '^MUTATED WAVE FAIL' $WORKDIR/w2 && grep -qx 'RESTORE PASS' $WORKDIR/w2; } || rc=1
+result "that check fails with 0.1.11's prepare (the mutation: ENOSPC and partial trees); the real prepare, one slot at a time, then removes what it left" $rc < $WORKDIR/w2
+
+# ---- 7. slot-datadirs (EXP-7's class on a shared host, verify-links.sh): a link the Browser's user puts at /data/browser/home before a
+# slot start isn't followed by the slot's init; then the same with 0.1.11.1's desk-init (the mutation: root's makedirs, chown and chmod by
+# name hand kiosk the link's target) must fail, and the real one, put back, passes again. The old init comes from git (OLD_INIT_REF: the
+# last commit with it; update it if desk-init.py changes so much that the old one no longer starts on this host).
+OLD_INIT_REF=b7cb1421
+git -C "$HERE" show "$OLD_INIT_REF:image/host/recipe/files/usr/local/lib/desk-host/desk/desk-init.py" | R 'sudo tee /root/desk-init.old.py >/dev/null'
+R "sudo bash -s -- real $D1 $VOL1 $EIP1" < "$HERE/verify-links.sh" > $WORKDIR/l1 2>&1 && rc=0 || rc=$?
+grep -qx 'LINKS PASS' $WORKDIR/l1 || rc=1
+result "slot-datadirs: a link the Browser's user put at /data/browser/home before a slot start isn't followed (its target, the desk's root's directory, still root's 0755; desk-init says it couldn't make home as kiosk); units.sock bound desk:desk 0600" $rc < $WORKDIR/l1
+R "sudo bash -s -- mutation $D1 $VOL1 $EIP1" < "$HERE/verify-links.sh" > $WORKDIR/l2 2>&1 && rc=0 || rc=$?
+{ grep -q '^MUTATED LINKS FAIL' $WORKDIR/l2 && grep -qx 'RESTORE PASS' $WORKDIR/l2; } || rc=1
+result "that check fails with 0.1.11.1's desk-init (the mutation: the link's target handed to kiosk); the real desk-init, put back, passes it again" $rc < $WORKDIR/l2
 
 say "RESULT: $PASS passed, $FAILN failed ($AMI on $TYPE)"
 [ "$FAILN" = 0 ]

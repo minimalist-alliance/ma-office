@@ -70,7 +70,7 @@ const later = await frame();
 step(2, Boolean(first) && later.frames > first.frames, `picture ${later.w}x${later.h} ${ms} ms after opening; frames ${first?.frames} then ${later.frames} over 3 s; paused ${later.paused}, muted ${later.muted}`);
 await shot(SHOTS, 'open');
 
-const tablist = p.getByRole('tablist', { name: 'Tabs on this desk' });
+const tablist = p.getByRole('group', { name: 'Tabs on this desk' });
 const tabs = () => tablist.locator('.br-tab');
 const tabCount0 = await until(async () => (await tabs().count()) || null, 20_000);
 step(3, Boolean(tabCount0), `${tabCount0} tab(s) in the strip`);

@@ -16,6 +16,8 @@ User=agent-filter
 Group=agent-filter
 Restart=always
 RestartSec=1
+RestartSteps=8
+RestartMaxDelaySec=300
 TimeoutStopSec=5
 # The kernel charges each connection's socket buffers here too. The program sets them (0.1.1 on), so its 64 connections
 # with every buffer full come to 74 MiB, and the DNS side's to 2 MiB: this leaves room for the program's few. Idle, it uses

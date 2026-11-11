@@ -1,0 +1,307 @@
+{
+ "_about": "Kit 1 palette. Index order is the recipe contract (0-based) and never changes; a later kit may only append. Derived from source/palette.json. Skin is swatches only, named by number. Mouth, nose and brow colors are worked out from the skin by the face rule in src/color.mjs.",
+ "skin": [
+  {
+   "id": "skin-1",
+   "name": "Skin tone 1",
+   "base": "#F6DDCA",
+   "shade": "#E9C5AC",
+   "freckle": "#C99074"
+  },
+  {
+   "id": "skin-2",
+   "name": "Skin tone 2",
+   "base": "#EFCDB4",
+   "shade": "#E0B596",
+   "freckle": "#BF866A"
+  },
+  {
+   "id": "skin-3",
+   "name": "Skin tone 3",
+   "base": "#E5BC9B",
+   "shade": "#D4A582",
+   "freckle": "#B27B5E"
+  },
+  {
+   "id": "skin-4",
+   "name": "Skin tone 4",
+   "base": "#D9A983",
+   "shade": "#C6926B",
+   "freckle": "#A06C50"
+  },
+  {
+   "id": "skin-5",
+   "name": "Skin tone 5",
+   "base": "#CA9770",
+   "shade": "#B6805A",
+   "freckle": "#93603F"
+  },
+  {
+   "id": "skin-6",
+   "name": "Skin tone 6",
+   "base": "#BC865E",
+   "shade": "#A7704A",
+   "freckle": "#845535"
+  },
+  {
+   "id": "skin-7",
+   "name": "Skin tone 7",
+   "base": "#AB764E",
+   "shade": "#96613C",
+   "freckle": "#754A2E"
+  },
+  {
+   "id": "skin-8",
+   "name": "Skin tone 8",
+   "base": "#986543",
+   "shade": "#835234",
+   "freckle": "#633D26"
+  },
+  {
+   "id": "skin-9",
+   "name": "Skin tone 9",
+   "base": "#835537",
+   "shade": "#6F452B",
+   "freckle": "#55331F"
+  },
+  {
+   "id": "skin-10",
+   "name": "Skin tone 10",
+   "base": "#704730",
+   "shade": "#5D3925",
+   "freckle": "#47291A"
+  },
+  {
+   "id": "skin-11",
+   "name": "Skin tone 11",
+   "base": "#5E3B28",
+   "shade": "#4D2F1F",
+   "freckle": "#3A2216"
+  },
+  {
+   "id": "skin-12",
+   "name": "Skin tone 12",
+   "base": "#4F3223",
+   "shade": "#41281B",
+   "freckle": "#311D13"
+  }
+ ],
+ "hair": [
+  {
+   "id": "black",
+   "name": "Black",
+   "hex": "#232227"
+  },
+  {
+   "id": "darkBrown",
+   "name": "Dark brown",
+   "hex": "#3A2A22"
+  },
+  {
+   "id": "brown",
+   "name": "Brown",
+   "hex": "#634632"
+  },
+  {
+   "id": "auburn",
+   "name": "Auburn",
+   "hex": "#7A3B2B"
+  },
+  {
+   "id": "copper",
+   "name": "Copper",
+   "hex": "#97553A"
+  },
+  {
+   "id": "blond",
+   "name": "Blond",
+   "hex": "#C9A46A"
+  },
+  {
+   "id": "platinum",
+   "name": "Platinum",
+   "hex": "#E2D7BF"
+  },
+  {
+   "id": "grey",
+   "name": "Grey",
+   "hex": "#8E9095"
+  },
+  {
+   "id": "white",
+   "name": "White",
+   "hex": "#E6E6E4"
+  },
+  {
+   "id": "mutedBlue",
+   "name": "Muted blue",
+   "hex": "#5B7FB0"
+  }
+ ],
+ "clothing": [
+  {
+   "id": "graphite",
+   "name": "Graphite",
+   "hex": "#3E4553"
+  },
+  {
+   "id": "navy",
+   "name": "Navy",
+   "hex": "#274469"
+  },
+  {
+   "id": "steel",
+   "name": "Steel blue",
+   "hex": "#517BAD"
+  },
+  {
+   "id": "steelHigh",
+   "name": "Light steel blue",
+   "hex": "#7099CC"
+  },
+  {
+   "id": "slate",
+   "name": "Slate",
+   "hex": "#7D8794"
+  },
+  {
+   "id": "silver",
+   "name": "Silver",
+   "hex": "#A8B0BB"
+  },
+  {
+   "id": "offWhite",
+   "name": "Off white",
+   "hex": "#E8EAED"
+  },
+  {
+   "id": "green",
+   "name": "Green",
+   "hex": "#5E9A78"
+  },
+  {
+   "id": "pine",
+   "name": "Pine",
+   "hex": "#3F6B5A"
+  },
+  {
+   "id": "ochre",
+   "name": "Ochre",
+   "hex": "#C99A48"
+  },
+  {
+   "id": "rose",
+   "name": "Rose",
+   "hex": "#B9707C"
+  },
+  {
+   "id": "violet",
+   "name": "Violet",
+   "hex": "#8F7CC4"
+  }
+ ],
+ "metal": [
+  {
+   "id": "gold",
+   "name": "Gold",
+   "hex": "#D2A54E"
+  },
+  {
+   "id": "silver",
+   "name": "Silver",
+   "hex": "#C3C8CF"
+  },
+  {
+   "id": "rose",
+   "name": "Rose",
+   "hex": "#D69A8A"
+  },
+  {
+   "id": "dark",
+   "name": "Dark",
+   "hex": "#3E4553"
+  }
+ ],
+ "bg": [
+  {
+   "id": "blue",
+   "name": "Blue",
+   "top": "#E2EAF4",
+   "bottom": "#D1DDEE"
+  },
+  {
+   "id": "green",
+   "name": "Green",
+   "top": "#E1EDE6",
+   "bottom": "#CFE2D7"
+  },
+  {
+   "id": "amber",
+   "name": "Amber",
+   "top": "#F6ECDB",
+   "bottom": "#F1E1C6"
+  },
+  {
+   "id": "rose",
+   "name": "Rose",
+   "top": "#F5E5E7",
+   "bottom": "#F0D5D8"
+  },
+  {
+   "id": "violet",
+   "name": "Violet",
+   "top": "#E9E5F3",
+   "bottom": "#DBD5EC"
+  },
+  {
+   "id": "slate",
+   "name": "Slate",
+   "top": "#E5E7EA",
+   "bottom": "#D5D9DD"
+  },
+  {
+   "id": "steel",
+   "name": "Steel",
+   "top": "#CBD9EC",
+   "bottom": "#B5C8E2"
+  },
+  {
+   "id": "pine",
+   "name": "Pine",
+   "top": "#C8DED3",
+   "bottom": "#B1CFC1"
+  },
+  {
+   "id": "ochre",
+   "name": "Ochre",
+   "top": "#EDD7AB",
+   "bottom": "#E3C586"
+  },
+  {
+   "id": "deep-slate",
+   "name": "Deep slate",
+   "top": "#7A8594",
+   "bottom": "#667181"
+  }
+ ],
+ "fixed": {
+  "eye": "#1C2028",
+  "sclera": "#FAF7F2",
+  "catch": "#FFFFFF",
+  "teeth": "#FFFFFF",
+  "blush": "#E7837D",
+  "ink": "#2A2E35",
+  "aid": "#B7BEC8",
+  "shirt": "#E8EAED",
+  "shirtShade": "#C9CED6"
+ },
+ "defaults": {
+  "skin": 3,
+  "hairColor": 1,
+  "topColor": 2,
+  "headwearColor": 2,
+  "glassesColor": 0,
+  "extraColor": 0,
+  "bg": 0
+ }
+}

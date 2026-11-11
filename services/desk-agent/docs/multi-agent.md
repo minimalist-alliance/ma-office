@@ -304,6 +304,7 @@ with its prompt. Its runs count toward every spending limit, as any run does.
 |---|---|---|
 | `workspace_list`, `workspace_read`, `workspace_write` | Every agent | Its own workspace, and read-only those shared with it (`workspace`: the owner agent's id or name). `workspace_read` takes `offset` and `length` (64 Ki characters by default, 128 Ki at most) and says how many characters remain. A run started by a message sees only its own workspace |
 | `message_agent` | An agent with links that is not solo | Section 4. The tool's description lists whom it may message and each pairing's rules |
+| `memory_save`, `memory_forget` | Every agent, and a guild member's own, in every run but one answering another agent's message | Section 9 |
 | `desk_agents`, `desk_choices` | The lead | The agents (no keys, threads or workspaces), and the icons, tones, models on the member's keys and the caps |
 | `propose_agent`, `propose_agent_change`, `propose_agent_removal`, `propose_links`, `propose_timer`, `propose_timer_removal` | The lead | Section 3 |
 
@@ -332,3 +333,24 @@ run limit (50 by default), and each step reserves against every limit before it 
   cache breakpoint on the last system block (or the last tool).
 - **Idle watchdog:** 10 minutes while a reasoning model hasn't started text or a call, 90 seconds otherwise.
 - **After 3 refused `message_agent` calls in a row** the tool closes (section 4).
+
+## 9. Memory (S-14)
+
+Each agent remembers short lines about its member across conversations, and keeps a summary of the part of its thread
+too long to send whole. desk-agent `README.md`, "Memory", has how it works; this is what the Agent app shows.
+
+| Method | Params | Answer |
+|---|---|---|
+| `agent.memory.list` | `{agentId}` | `{agentId, memories: [{id, text, createdAt, untrusted}], summary, limits: {items: 50, chars: 300}}`. `memories` newest first. `summary` is null, or `{id, text, messages, throughId, at, untrusted}`: `messages` is how many messages of the thread it covers, through the message `throughId` |
+| `agent.memory.delete` | `{agentId, memoryId}` | `{deleted: true}`. A line by its id, or the summary by its id. `not_found` `detail: memory` for neither; `bad_request` `detail: memoryId` without one |
+| `agent.memory.clear` | `{agentId}` | `{deleted}`: how many lines, plus 1 for a summary |
+
+- **The member's.** They work for every agent the caller sees: the owner's agents, or a guild member's own (unlike the
+  team methods). Text is untrusted, as everything an agent wrote: render it as text only.
+- **`untrusted: true`** is a line saved, or a summary made, while the agent had read untrusted content (a file, a page,
+  another agent's message). A run that loads it is untrusted too, so its saves need the member's yes (`API.md` §18).
+- **A deleted summary stays deleted:** the messages it covered are never sent to a model or summarized again. The
+  thread itself is unchanged.
+- **Chips** on a reply: "Remembered something", "Forgot something", each with " (refused)" when refused.
+- **Activity:** `memory.save`, `memory.forget`, `memory.delete` (actor `user` or `member`), `memory.clear`
+  (`deleted:<n>`) and `thread.compact` (`ok`, `raced`, `error:<kind>`, `refused:<scope>`). Ids only.

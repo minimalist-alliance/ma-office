@@ -16,6 +16,8 @@ import type {
   AgentCreate,
   AgentLink,
   AgentPatch,
+  Approval,
+  AuditDetail,
   AuditEntry,
   AuditPage,
   ConversationEvent,
@@ -25,6 +27,8 @@ import type {
   LimitPolicy,
   LimitsChange,
   LimitsView,
+  MemoryLine,
+  MemoryList,
   Message,
   MessageOrigin,
   ModelInfo,
@@ -35,6 +39,9 @@ import type {
   Timer,
   TimerInput,
   TimerList,
+  RunningCall,
+  ToolChip,
+  ToolsEvent,
   Usage,
   WorkspaceEntry,
   WorkspaceFile,
@@ -43,6 +50,7 @@ import type {
 import { AGENT_ICONS } from '../look/icons';
 import { TONES } from '../look/tones';
 import { hasHiddenChars, nameKey } from '../model/agents';
+import { askedWord, doneWord, levelOf, TOLD, toolWords } from '../model/approvals';
 import { extOf, isImageName } from '../model/attachments';
 import { linkProblems } from '../model/links';
 import { fromBase64, maskPixels, pngCheck, toBase64 } from '../model/png';
@@ -50,6 +58,7 @@ import { canonicalJson, sha256Hex } from '../model/proposals';
 import { DAY, HOUR, MINUTE, nextRun, timerProblem } from '../model/timers';
 import { MB, pathProblem, READ_PAGE_CHARS } from '../model/workspace';
 import { DEFAULT_CAPS, DEFAULT_POLICY, DESK_DEFAULTS, MAX_OUTPUT_TOKENS, MODELS, PRICES_AS_OF, PROVIDERS, seed, type FixtureName } from './fixtures';
+import { ASKS, type AskName, type AskSpec } from './asks';
 import { check, cost, estimate, totalTokens, usageView, type LedgerRow, type Price } from './ledger';
 import { cannedReply, chunks } from './replies';
 
@@ -90,13 +99,31 @@ interface Run {
   inputTokens: number;
   /** The lead's proposals, which the reply carries once it's written. */
   proposals: string[];
-  /** A run that ends on the output cap or a refusal: it fails with this, keeping what was said. */
-  ends?: 'cut_off' | 'refused';
+  /** A run that ends on the output cap or a refusal: it fails with this, keeping what was said. A provider's failure, with its kind. */
+  ends?: 'cut_off' | 'refused' | 'provider_error';
+  endsDetail?: string;
+  /** On a `free_limit` failure: when the free requests come back. */
+  endsResetAt?: number;
   /** Files this run's agent couldn't save. */
   refusedWrites?: { path: string; reason: string }[];
   /** What a timer's or another agent's run does when it ends: its spend and its words. */
   after: ((spent: number | null, text: string, how: 'done' | 'stopped' | 'failed') => void) | null;
+  /** S-14: the calls this run asks about once its words are out, and then the ids it waits on. */
+  asks?: AskSpec[];
+  waiting?: string[];
 }
+
+/** A tool call running in the mock: the wire's call, what it answers, and its timer. */
+interface Live {
+  call: RunningCall;
+  approvalId: string | null;
+  messageId: string | null;
+  spec: AskSpec | null;
+  timer: ReturnType<typeof setTimeout> | null;
+}
+
+/** What `agent.memory.list` says of its limits (desk-agent: 300 characters a line, 50 lines an agent). */
+const MEMORY_LIMITS = { items: 50, chars: 300 };
 
 /** A proposal and where it lives: the lead's reply that made it. */
 interface Held {
@@ -161,6 +188,13 @@ export class MockAgentClient implements AgentClient {
   /** The agent-message log, newest first. */
   private a2a: A2aMessage[] = [];
   private threadWatchers = new Map<string, Set<(e: ConversationEvent) => void>>();
+  // ----- S-14
+  private approvals = new Map<string, Approval>();
+  private askSpecs = new Map<string, AskSpec>();
+  private decisions = new Map<string, Approval>();
+  private live = new Map<string, Live>();
+  private toolWatchers = new Set<(e: ToolsEvent) => void>();
+  private memories: Record<string, MemoryLine[]> = {};
   private counter = 0;
   /** `agent.attach.put`'s files, by upload id: sizes only, as the real desk's are memory the mock doesn't need. */
   private staged = new Map<string, Staged>();
@@ -200,6 +234,46 @@ export class MockAgentClient implements AgentClient {
     }
     for (const id of Object.keys(this.threads)) this.seqs[id] = (this.threads[id] ?? []).length;
     for (const k of s.keys) this.record('user', 'key.add', `key:${k.keyId}`, `provider:${k.provider}`, null, k.createdAt);
+    this.memories = s.memories ?? {};
+    if (opts.fixture === 'tools') this.seedToolsAudit();
+    for (const w of s.waiting ?? []) this.seedWaiting(w);
+  }
+
+  // ------------------------------------------------------------ S-14 test and demo hooks
+
+  /** A tool call starts running, as `agent.tools` would say: for the strip's demo and tests. `ms` ends it; without, it runs until stopped. */
+  runTool(agentId: string, c: { tool: string; doing: string; target: string; risk?: RunningCall['risk']; stoppable?: boolean; ms?: number; agoMs?: number }): string {
+    const callId = this.id('call');
+    const call: RunningCall = { callId, agentId, runId: this.id('run'), tool: c.tool, doing: c.doing, target: c.target, risk: c.risk ?? 'read', startedAt: this.now() - (c.agoMs ?? 0), approvedBy: 'none', stoppable: c.stoppable ?? true, state: 'running' };
+    const held: Live = { call, approvalId: null, messageId: null, spec: null, timer: null };
+    this.live.set(callId, held);
+    this.emitTools({ type: 'call', call });
+    if (c.ms !== undefined) held.timer = setTimeout(() => this.endCall(callId, 'done'), c.ms);
+    return callId;
+  }
+
+  /** Every waiting approval's time is up, now: each says no one answered, and its run goes on. */
+  expireApprovals(): void {
+    for (const a of [...this.approvals.values()]) if (a.state === 'pending') this.expireOne(a, 'timeout');
+  }
+
+  /**
+   * A waiting card whose payload no longer hashes to its `sha256`, as a card changed on the way would: the app must offer no
+   * Approve. For tests.
+   */
+  tamperApproval(agentId: string): void {
+    const a = [...this.approvals.values()].find((x) => x.agentId === agentId && x.state === 'pending');
+    if (a) this.setApproval({ ...a, payload: { ...(a.payload ?? {}), url: 'https://evil.example.net/' } });
+  }
+
+  /** An agent asks about one of the presets (`ASKS`) as if its run had just reached the call, with a short reply before it. */
+  ask(agentId: string, name: AskName, text = 'Before I go on, I need your yes for one thing.'): void {
+    const a = this.agent(agentId);
+    const at = this.now();
+    const runId = this.id('run');
+    const reply: Message = { id: this.id('msg'), role: 'assistant', text, at, runId, ...(a.binding ? { badge: { provider: a.binding.provider, providerName: a.binding.providerName, model: a.binding.model } } : {}), state: 'streaming' };
+    this.putMessage(agentId, reply);
+    this.seedWaiting({ agentId, messageId: reply.id, runId, ask: name, at });
   }
 
   /** Everything the mock holds, as JSON. A test searches it for a key it must not find. */
@@ -360,7 +434,10 @@ export class MockAgentClient implements AgentClient {
     queueMicrotask(() => this.agentWatchers.forEach((fn) => fn(clone(snapshot), clone(caps))));
   }
 
-  private emit(agentId: string, e: Omit<Extract<ConversationEvent, { type: 'message' }>, 'seq'> | Omit<Extract<ConversationEvent, { type: 'delta' }>, 'seq'>): void {
+  private emit(
+    agentId: string,
+    e: Omit<Extract<ConversationEvent, { type: 'message' }>, 'seq'> | Omit<Extract<ConversationEvent, { type: 'delta' }>, 'seq'> | Omit<Extract<ConversationEvent, { type: 'approval' }>, 'seq'>,
+  ): void {
     const seq = (this.seqs[agentId] ?? 0) + 1;
     this.seqs[agentId] = seq;
     const event = clone({ ...e, seq }) as ConversationEvent;
@@ -375,13 +452,14 @@ export class MockAgentClient implements AgentClient {
   }
 
   /** Appends to the hash chain, as task 04's AuditLog does. The mock hashes its own JSON, not task 04's encoding. */
-  private record(actor: string, action: string, target: string, decision: string, costMicroUsd: number | null = null, at: number = this.now()): void {
+  private record(actor: string, action: string, target: string, decision: string, costMicroUsd: number | null = null, at: number = this.now(), detail?: AuditDetail): void {
     this.auditTail = this.auditTail.then(async () => {
       const seq = this.audit.length + 1;
       const body = { seq, atMs: at, actor, action, target, payloadSha256: null, decision, costMicroUsd };
       const hash = hex(await crypto.subtle.digest('SHA-256', enc.encode(this.head + JSON.stringify(body))));
       this.head = hash;
-      this.audit.push({ ...body, hash });
+      // The words (the spec's 4.5 `detail`) are joined in at read, outside the chain.
+      this.audit.push({ ...body, hash, ...(detail ? { detail } : {}) });
     });
   }
 
@@ -499,7 +577,7 @@ export class MockAgentClient implements AgentClient {
       badgeNotice: false,
       unseen: 0,
       purpose: input.purpose ?? '',
-      look: { icon: input.icon ?? 'spark', tone: input.tone ?? this.unusedTone(), png: null },
+      look: { icon: input.icon ?? 'nodes', tone: input.tone ?? this.unusedTone(), png: null },
       solo: input.solo ?? true,
       links: [],
       workspace: { quotaBytes: Math.max(quotaMb, input.workspaceMb === undefined ? 10 : 0) * MB, usedBytes: 0, sharedWith: [] },
@@ -559,7 +637,7 @@ export class MockAgentClient implements AgentClient {
     this.checkFields(patch, agentId);
     if (patch.purpose !== undefined) next.purpose = patch.purpose;
     if (patch.icon !== undefined || patch.tone !== undefined) {
-      const look = a.look ?? { icon: 'spark', tone: 'graphite', png: null };
+      const look = a.look ?? { icon: 'nodes', tone: 'graphite', png: null };
       next.look = { ...look, ...(patch.icon !== undefined ? { icon: patch.icon } : {}), ...(patch.tone !== undefined ? { tone: patch.tone } : {}) };
     }
     if (patch.solo !== undefined) next.solo = patch.solo;
@@ -649,14 +727,19 @@ export class MockAgentClient implements AgentClient {
 
   async getThread(agentId: string): Promise<ThreadSnapshot> {
     await this.wait();
-    return { agentId, messages: clone(this.threads[agentId] ?? []), seq: this.seqs[agentId] ?? 0 };
+    return { agentId, messages: clone(this.threads[agentId] ?? []), approvals: this.approvalsOf(agentId), seq: this.seqs[agentId] ?? 0 };
+  }
+
+  /** A thread's approvals, as a snapshot carries them (API.md section 18). */
+  private approvalsOf(agentId: string): Approval[] {
+    return clone([...this.approvals.values()].filter((a) => a.agentId === agentId).sort((a, b) => a.createdAt - b.createdAt));
   }
 
   watchConversation(agentId: string, onEvent: (e: ConversationEvent) => void): () => void {
     let set = this.threadWatchers.get(agentId);
     if (!set) this.threadWatchers.set(agentId, (set = new Set()));
     set.add(onEvent);
-    const snapshot: ConversationEvent = { type: 'snapshot', seq: this.seqs[agentId] ?? 0, messages: clone(this.threads[agentId] ?? []) };
+    const snapshot: ConversationEvent = { type: 'snapshot', seq: this.seqs[agentId] ?? 0, messages: clone(this.threads[agentId] ?? []), approvals: this.approvalsOf(agentId) };
     const s = set;
     queueMicrotask(() => s.has(onEvent) && onEvent(snapshot));
     return () => s.delete(onEvent);
@@ -672,6 +755,8 @@ export class MockAgentClient implements AgentClient {
     // The real desk checks a missing key and a busy desk before it takes the files, so those leave them staged. A refusal after
     // it has read them (a limit, an agent cap, a file it can't read) has deleted them already.
     if (refusal === 'no_key') throw new AgentError('precondition_failed', { reason: 'no_key' });
+    // API.md section 18: a message to an agent whose run waits on the member is refused until it's answered or stopped.
+    if (refusal === 'busy' && [...this.runs.values()].some((r) => r.agentId === agentId && r.waiting)) throw new AgentError('conflict', { reason: 'awaiting_approval' });
     if (refusal === 'busy') throw new AgentError('conflict', { reason: 'busy' });
     for (const id of attachments) this.staged.delete(id);
     if (refusal === 'agent_cap') throw new AgentError('precondition_failed', { reason: 'agent_cap' });
@@ -687,10 +772,22 @@ export class MockAgentClient implements AgentClient {
     let proposals: Proposal[] = [];
     let after: Run['after'] = null;
     let ends: Run['ends'];
+    let endsDetail: string | undefined;
+    let endsResetAt: number | undefined;
     let refusedWrites: Run['refusedWrites'];
-    const lead = isLead(a) ? await this.leadTurn(body) : null;
+    let asks: AskSpec[] | undefined;
+    let tools: ToolChip[] | undefined;
+    // A provider's failure, by its kind, before anything is said: `demo:free_limit` (with `_at`, when they come back),
+    // `demo:rate_limited`, `demo:timeout`, `demo:data_policy`, as desk-agent ends a reply (deskd API.md §11).
+    const failing = /demo:(free_limit|rate_limited|timeout|data_policy)(_at)?/i.exec(body);
+    const lead = isLead(a) && !failing ? await this.leadTurn(body) : null;
     const save = /\bsave\s+(?:it\s+)?(?:as\s+|to\s+)?([\w][\w./-]*\.\w+)/i.exec(body);
-    if (lead) {
+    if (failing) {
+      reply = '';
+      ends = 'provider_error';
+      endsDetail = (failing[1] as string).toLowerCase();
+      if (failing[2]) endsResetAt = this.now() + 3 * HOUR;
+    } else if (lead) {
       reply = lead.text;
       proposals = lead.proposals;
     } else if (/demo:cut_off/i.test(body)) {
@@ -700,6 +797,24 @@ export class MockAgentClient implements AgentClient {
     } else if (/demo:refused/i.test(body)) {
       reply = 'I’m not able to help with that.';
       ends = 'refused';
+    } else if (/\b(price|prices|shop)\b/i.test(body)) {
+      // S-14 in the demo: a tool call that asks. The run's words come first, then the card, then what it says next.
+      reply = 'Two review sites both like the Lumen Arc. I’d like to check its price today at the shop.';
+      asks = [ASKS.shop];
+    } else if (/\b(trash|tidy)\b/i.test(body)) {
+      reply = 'I found 3 pages with “draft” in the title that haven’t changed in over a year. Here’s the first.';
+      asks = [ASKS.trash];
+    } else if (/\b(pictures?|images?)\b/i.test(body)) {
+      reply = 'I can make four pictures of that.';
+      asks = [ASKS.pictures];
+    } else if (/^remember\b/i.test(body)) {
+      // `memory_save` in an ordinary chat: no card, a chip, and a line in Memory.
+      const text = body.replace(/^remember\s*(that\s*)?/i, '').trim().slice(0, MEMORY_LIMITS.chars) || body;
+      const line: MemoryLine = { id: this.id('mem'), text, createdAt: this.now(), untrusted: false };
+      (this.memories[agentId] ??= []).unshift(line);
+      this.record(`agent:${agentId}`, 'memory.save', `agent:${agentId} memory:${line.id}`, 'ok', null, this.now(), { agentId, tool: 'memory_save', risk: 'own', done: 'Saved a memory', approvedBy: 'none', undoable: true });
+      reply = 'I’ll remember that.';
+      tools = [{ name: 'memory_save', summary: 'Saved a memory', ok: true, risk: 'own', target: { kind: 'memory' }, durationMs: 200 }];
     } else if (save) {
       // The `workspace_write` tool, in the demo: inside the quota it saves; over it, the desk refuses and the thread says so.
       const path = save[1] as string;
@@ -730,7 +845,7 @@ export class MockAgentClient implements AgentClient {
     }
     const at = this.now();
     const userMsg: Message = { id: this.id('msg'), role: 'user', text: body, at, ...(sent.length ? { attachments: sent } : {}) };
-    const runId = this.begin(agentId, userMsg, reply, { proposals, after, ...(ends ? { ends } : {}), ...(refusedWrites ? { refusedWrites } : {}) });
+    const runId = this.begin(agentId, userMsg, reply, { proposals, after, ...(ends ? { ends } : {}), ...(endsDetail ? { endsDetail } : {}), ...(endsResetAt ? { endsResetAt } : {}), ...(refusedWrites ? { refusedWrites } : {}), ...(asks ? { asks } : {}), ...(tools ? { tools } : {}) });
     return { messageId: userMsg.id, runId };
   }
 
@@ -756,14 +871,14 @@ export class MockAgentClient implements AgentClient {
   }
 
   /** A run: the message that starts it goes in the thread, and the reply streams after it. */
-  private begin(agentId: string, start: Message, reply: string, opts: { proposals?: Proposal[]; after?: Run['after']; ends?: Run['ends']; refusedWrites?: Run['refusedWrites'] } = {}): string {
+  private begin(agentId: string, start: Message, reply: string, opts: { proposals?: Proposal[]; after?: Run['after']; ends?: Run['ends']; endsDetail?: string; endsResetAt?: number; refusedWrites?: Run['refusedWrites']; asks?: AskSpec[]; tools?: ToolChip[] } = {}): string {
     const a = this.agent(agentId);
     const { keyId, provider, providerName, model } = a.binding!;
     const price = this.price(provider, model);
     const history = (this.threads[agentId] ?? []).map((x) => x.text).join('\n') + start.text;
     this.putMessage(agentId, start);
     const runId = this.id('run');
-    const replyMsg: Message = { id: this.id('msg'), role: 'assistant', text: '', at: start.at + 1, runId, badge: { provider, providerName, model }, state: 'streaming' };
+    const replyMsg: Message = { id: this.id('msg'), role: 'assistant', text: '', at: start.at + 1, runId, badge: { provider, providerName, model }, state: 'streaming', ...(opts.tools ? { tools: opts.tools } : {}) };
     this.putMessage(agentId, replyMsg);
     for (const p of opts.proposals ?? []) this.proposals.set(p.id, { p, agentId, messageId: replyMsg.id });
     this.patchAgent(agentId, { status: 'working', statusDetail: null });
@@ -781,7 +896,10 @@ export class MockAgentClient implements AgentClient {
       proposals: (opts.proposals ?? []).map((p) => p.id),
       after: opts.after ?? null,
       ...(opts.ends ? { ends: opts.ends } : {}),
+      ...(opts.endsDetail ? { endsDetail: opts.endsDetail } : {}),
+      ...(opts.endsResetAt ? { endsResetAt: opts.endsResetAt } : {}),
       ...(opts.refusedWrites?.length ? { refusedWrites: opts.refusedWrites } : {}),
+      ...(opts.asks?.length ? { asks: opts.asks } : {}),
     };
     this.runs.set(runId, run);
     run.timer = setTimeout(() => this.step(run), this.streamMs * 4);
@@ -791,6 +909,13 @@ export class MockAgentClient implements AgentClient {
   private step(run: Run): void {
     const piece = run.rest.shift();
     if (piece === undefined) {
+      run.timer = null;
+      if (run.asks?.length) {
+        const asks = run.asks;
+        delete run.asks;
+        void this.askFor(run, asks);
+        return;
+      }
       this.finish(run, run.ends ? 'failed' : 'done');
       return;
     }
@@ -826,6 +951,8 @@ export class MockAgentClient implements AgentClient {
         costMicroUsd: spent,
         stopReason: how === 'done' ? 'end_turn' : how === 'failed' ? 'max_tokens' : 'cancelled',
         ...(how === 'failed' && run.ends ? { error: run.ends } : {}),
+        ...(how === 'failed' && run.endsDetail ? { errorDetail: run.endsDetail } : {}),
+        ...(how === 'failed' && run.endsResetAt ? { errorResetAt: run.endsResetAt } : {}),
         ...(run.refusedWrites ? { workspaceRefused: run.refusedWrites } : {}),
         ...(run.proposals.length ? { proposals: this.proposalsOf(run.proposals) } : {}),
       });
@@ -915,8 +1042,22 @@ export class MockAgentClient implements AgentClient {
     this.log('agent.run.stop', { runId, idem: m.idem });
     const run = this.runs.get(runId);
     if (run?.timer) clearTimeout(run.timer);
+    // Its calls stop with it (every row to "Stopping…"), and its waiting cards expire `stopped` (API.md section 18).
+    for (const held of this.live.values()) {
+      if (held.call.runId !== runId || held.call.state === 'stopping') continue;
+      held.call = { ...held.call, state: 'stopping' };
+      this.emitTools({ type: 'call', call: held.call });
+    }
     await this.wait();
-    if (run && this.runs.has(runId)) this.finish(run, 'stopped');
+    if (!run || !this.runs.has(runId)) return;
+    for (const held of [...this.live.values()]) if (held.call.runId === runId) this.endCall(held.call.callId, 'stopped', false);
+    for (const id of run.waiting ?? []) {
+      const a = this.approvals.get(id);
+      if (a?.state === 'pending') this.expireOne(a, 'stopped', false);
+    }
+    delete run.waiting;
+    this.clearWaiting(run);
+    this.finish(run, 'stopped');
   }
 
   async markSeen(agentId: string): Promise<void> {
@@ -938,6 +1079,9 @@ export class MockAgentClient implements AgentClient {
     const owner = keyOwner(input.secret, PROVIDERS);
     const problem = owner && owner.id !== p.id ? 'provider_mismatch' : keyFormatProblem(input.secret, p.keyPrefix);
     const refused = input.secret.withPlaintext((k) => /revoked/i.test(k));
+    // Stand-ins for a desk that can't reach the provider to check the key (its name filter, ADR 0070) and one that can't seal it.
+    const unreachable = input.secret.withPlaintext((k) => /unreachable/i.test(k));
+    const unsealed = input.secret.withPlaintext((k) => /nostore/i.test(k));
     const last4 = input.secret.withPlaintext((k) => k.slice(-4));
     await this.wait(this.latency * 6);
     if (problem) throw new AgentError('bad_request', { reason: 'key_malformed', detail: problem });
@@ -945,6 +1089,8 @@ export class MockAgentClient implements AgentClient {
       this.record('user', 'key.add', `provider:${p.id}`, 'refused:auth');
       throw new AgentError('precondition_failed', { reason: 'key_refused', detail: 'auth' });
     }
+    if (unreachable) throw new AgentError('unavailable', { reason: 'unavailable', detail: 'unavailable' });
+    if (unsealed) throw new AgentError('unavailable', { reason: 'storage' });
     const key: KeyMeta = {
       keyId: this.id('k'),
       provider: p.id,
@@ -1032,6 +1178,315 @@ export class MockAgentClient implements AgentClient {
     const entries = older.slice(0, limit);
     const last = entries[entries.length - 1];
     return { entries: clone(entries), headHash: this.head, nextBeforeSeq: older.length > limit && last ? last.seq : null };
+  }
+
+  // ------------------------------------------------------------ S-14: approvals (API.md section 18), running tools, memory
+
+  private seedWaiting(w: { agentId: string; messageId: string; runId: string; ask: AskName; at: number }): void {
+    const a = this.agent(w.agentId);
+    const base = (this.threads[w.agentId] ?? []).find((x) => x.id === w.messageId);
+    if (!a.binding || !base) return;
+    const run: Run = {
+      runId: w.runId,
+      agentId: w.agentId,
+      messageId: w.messageId,
+      timer: null,
+      sent: base.text,
+      rest: [],
+      full: base.text,
+      price: this.price(a.binding.provider, a.binding.model),
+      keyId: a.binding.keyId,
+      inputTokens: 900,
+      proposals: [],
+      after: null,
+    };
+    this.runs.set(run.runId, run);
+    void this.askFor(run, [ASKS[w.ask]], w.at);
+  }
+
+  /** A run reaches calls that ask: each gets its card, the reply waits, and the agent says it needs the member. */
+  private async askFor(run: Run, specs: readonly AskSpec[], at: number = this.now()): Promise<void> {
+    const ids: string[] = [];
+    for (const spec of specs) {
+      const context = spec.context ?? 'agent';
+      const sha256 = await sha256Hex(canonicalJson({ v: 1, agentId: run.agentId, runId: run.runId, tool: spec.tool, context, payload: spec.payload }));
+      const words = toolWords(spec.tool);
+      const ctx = { before: spec.before ?? null, target: spec.target ?? null };
+      const b = new Uint8Array(20);
+      crypto.getRandomValues(b);
+      const a: Approval = {
+        id: `ap-${[...b].map((x) => BASE32[x % 32]).join('')}`,
+        agentId: run.agentId,
+        runId: run.runId,
+        messageId: run.messageId,
+        tool: spec.tool,
+        risk: spec.risk,
+        title: words ? words.title(spec.payload, ctx) : (spec.title ?? spec.tool),
+        context,
+        target: spec.target ?? null,
+        payload: clone(spec.payload),
+        payloadOmitted: false,
+        payloadBytes: bytesOf(canonicalJson(spec.payload)),
+        before: spec.before ?? null,
+        sha256,
+        untrusted: spec.untrusted ?? false,
+        origin: { kind: 'member' },
+        state: 'pending',
+        detail: null,
+        // An hour in a run the member started (section 18).
+        createdAt: at,
+        expiresAt: at + HOUR,
+        decidedAt: null,
+        decidedBy: null,
+        note: null,
+        result: null,
+        ...(spec.reason ? { reason: spec.reason } : {}),
+        ...(spec.costMicroUsd ? { cost: { microUsd: spec.costMicroUsd } } : {}),
+      };
+      this.approvals.set(a.id, a);
+      this.askSpecs.set(a.id, spec);
+      ids.push(a.id);
+      this.record(`agent:${run.agentId}`, 'approval.ask', `approval:${a.id} tool:${a.tool} run:${run.runId}`, 'pending', null, at, this.detailOf(a, spec));
+      this.emit(run.agentId, { type: 'approval', approval: clone(a) });
+    }
+    if (!this.runs.has(run.runId)) return;
+    run.waiting = [...(run.waiting ?? []), ...ids];
+    const base = (this.threads[run.agentId] ?? []).find((x) => x.id === run.messageId);
+    if (base) this.putMessage(run.agentId, { ...base, text: run.sent, state: 'awaiting_approval', pendingApprovals: [...run.waiting] });
+    this.countWaiting(run.agentId);
+  }
+
+  /** An agent's waiting count, and its status while a run waits (section 18's `working` with `awaiting_approval`). */
+  private countWaiting(agentId: string): void {
+    const n = [...this.approvals.values()].filter((a) => a.agentId === agentId && a.state === 'pending').length;
+    const waiting = [...this.runs.values()].some((r) => r.agentId === agentId && r.waiting?.length);
+    const a = this.agent(agentId);
+    this.patchAgent(agentId, { approvalsPending: n, ...(waiting ? { status: 'working', statusDetail: 'awaiting_approval' } : a.statusDetail === 'awaiting_approval' ? { statusDetail: null } : {}) });
+  }
+
+  private clearWaiting(run: Run): void {
+    const base = (this.threads[run.agentId] ?? []).find((x) => x.id === run.messageId);
+    if (base) {
+      const next = { ...base };
+      delete next.pendingApprovals;
+      this.threads[run.agentId] = (this.threads[run.agentId] ?? []).map((x) => (x.id === base.id ? next : x));
+    }
+    this.patchAgent(run.agentId, { statusDetail: null, approvalsPending: [...this.approvals.values()].filter((a) => a.agentId === run.agentId && a.state === 'pending').length });
+  }
+
+  /** The words of an audit row (the spec's 4.5 `detail`), as a desk would join them in at read. */
+  private detailOf(a: Pick<Approval, 'agentId' | 'tool' | 'risk'>, spec: AskSpec | null, more: Partial<AuditDetail> = {}): AuditDetail {
+    return { agentId: a.agentId, tool: a.tool, risk: a.risk, done: doneWord(a.tool) === 'Used a tool' && spec ? spec.doing.replace(/^Making/, 'Made') : doneWord(a.tool), asked: askedWord(a.tool) === 'use a tool' && spec?.title ? spec.title.charAt(0).toLowerCase() + spec.title.slice(1) : askedWord(a.tool), target: spec?.target2 || null, ...more };
+  }
+
+  private setApproval(a: Approval): void {
+    this.approvals.set(a.id, a);
+    this.emit(a.agentId, { type: 'approval', approval: clone(a) });
+  }
+
+  private expireOne(a: Approval, detail: 'timeout' | 'stopped' | 'restart', goOn = true): void {
+    const next: Approval = { ...a, state: 'expired', detail };
+    this.setApproval(next);
+    const spec = this.askSpecs.get(a.id) ?? null;
+    this.record(`agent:${a.agentId}`, 'approval.expire', `approval:${a.id} tool:${a.tool} run:${a.runId}`, detail, null, this.now(), this.detailOf(a, spec, { approval: 'expired' }));
+    this.record(`agent:${a.agentId}`, 'tool.call', `tool:${a.tool} run:${a.runId} approval:${a.id}`, 'refused:expired', null, this.now(), this.detailOf(a, spec, { approval: detail === 'stopped' ? 'cancelled' : 'expired', approvedBy: null }));
+    if (goOn) this.settle(a.runId);
+    else this.countWaiting(a.agentId);
+  }
+
+  async listApprovals(opts: { agentId?: string; state?: 'pending' | 'all'; before?: string } = {}): Promise<{ approvals: Approval[]; older: boolean }> {
+    await this.wait();
+    if (opts.agentId) this.agent(opts.agentId);
+    let list = [...this.approvals.values()].filter((a) => (!opts.agentId || a.agentId === opts.agentId) && (opts.state === 'all' || a.state === 'pending')).sort((a, b) => b.createdAt - a.createdAt);
+    if (opts.before) {
+      const i = list.findIndex((a) => a.id === opts.before);
+      list = i >= 0 ? list.slice(i + 1) : [];
+    }
+    return { approvals: clone(list.slice(0, 50)), older: list.length > 50 };
+  }
+
+  async getApproval(approvalId: string): Promise<Approval> {
+    await this.wait();
+    const a = this.approvals.get(approvalId);
+    if (!a) throw new AgentError('not_found', { detail: 'approval' });
+    return clone(a);
+  }
+
+  async decideApproval(approvalId: string, decision: { approve: boolean; sha256: string; note?: string }, m: Mutation): Promise<Approval> {
+    this.log('agent.approval.decide', { approvalId, approve: decision.approve, sha256: decision.sha256, note: decision.note ? `[${decision.note.length} characters]` : undefined, idem: m.idem });
+    await this.wait();
+    // The same key gets the first answer back.
+    const again = this.decisions.get(m.idem);
+    if (again) return clone(this.approvals.get(again.id) ?? again);
+    const a = this.approvals.get(approvalId);
+    if (!a) throw new AgentError('not_found', { detail: 'approval' });
+    if (decision.note !== undefined && (decision.approve || !decision.note || decision.note.length > 500 || hasHiddenChars(decision.note))) throw new AgentError('bad_request', { detail: 'note' });
+    if (a.state === 'expired') throw new AgentError('conflict', { reason: 'expired' });
+    if (a.state !== 'pending') throw new AgentError('conflict', { reason: 'answered' });
+    if (a.expiresAt <= this.now()) {
+      this.expireOne(a, 'timeout');
+      throw new AgentError('conflict', { reason: 'expired' });
+    }
+    if (decision.sha256 !== a.sha256) throw new AgentError('bad_request', { detail: 'sha256' });
+    const spec = this.askSpecs.get(a.id) ?? null;
+    const now = this.now();
+    let next: Approval;
+    if (decision.approve) {
+      next = { ...a, state: 'approved', decidedAt: now, decidedBy: 'owner' };
+      this.setApproval(next);
+      this.record('user', 'approval.decide', `approval:${a.id} tool:${a.tool} run:${a.runId}`, 'approved', null, now, this.detailOf(a, spec, { approvedBy: 'member' }));
+      this.startCall(next, spec);
+    } else {
+      next = { ...a, state: 'declined', decidedAt: now, decidedBy: 'owner', note: decision.note ?? null };
+      this.setApproval(next);
+      this.record('user', 'approval.decide', `approval:${a.id} tool:${a.tool} run:${a.runId}`, 'declined', null, now, this.detailOf(a, spec, { approval: 'declined' }));
+      this.record(`agent:${a.agentId}`, 'tool.call', `tool:${a.tool} run:${a.runId} approval:${a.id}`, 'refused:declined', null, now, this.detailOf(a, spec, { approval: 'declined', approvedBy: null }));
+      // What the agent reads (the spec's 1.3), kept with the run as the desk would hand it to the model.
+      void TOLD.declined(next.title);
+      this.settle(a.runId);
+    }
+    this.decisions.set(m.idem, next);
+    this.countWaiting(a.agentId);
+    return clone(this.approvals.get(a.id) ?? next);
+  }
+
+  private startCall(a: Approval, spec: AskSpec | null): void {
+    const callId = this.id('call');
+    const call: RunningCall = { callId, agentId: a.agentId, runId: a.runId, tool: a.tool, doing: spec?.doing ?? 'Working', target: spec?.target2 ?? '', risk: a.risk, startedAt: this.now(), approvedBy: 'member', stoppable: true, state: 'running' };
+    const held: Live = { call, approvalId: a.id, messageId: a.messageId, spec, timer: null };
+    this.live.set(callId, held);
+    this.emitTools({ type: 'call', call });
+    held.timer = setTimeout(() => this.endCall(callId, spec?.fails ? 'failed' : 'done'), spec?.runMs ?? 1500);
+  }
+
+  private endCall(callId: string, how: 'done' | 'failed' | 'stopped', goOn = true): void {
+    const held = this.live.get(callId);
+    if (!held) return;
+    if (held.timer) clearTimeout(held.timer);
+    this.live.delete(callId);
+    const c = held.call;
+    this.emitTools({ type: 'end', callId, agentId: c.agentId, result: how });
+    const durationMs = this.now() - c.startedAt;
+    if (held.approvalId) {
+      const a = this.approvals.get(held.approvalId);
+      if (a) {
+        const error = how === 'stopped' ? 'stopped' : how === 'failed' ? (held.spec?.fails ?? 'timeout') : null;
+        this.setApproval({ ...a, state: how === 'done' ? 'done' : 'failed', result: error ? { ok: false, error, durationMs } : { ok: true, durationMs } });
+      }
+    }
+    if (held.messageId) {
+      const base = (this.threads[c.agentId] ?? []).find((x) => x.id === held.messageId);
+      if (base) {
+        const chip: ToolChip = {
+          name: c.tool,
+          summary: doneWord(c.tool) === 'Used a tool' ? c.doing : doneWord(c.tool),
+          ok: how === 'done',
+          risk: c.risk,
+          ...(held.approvalId ? { approval: { id: held.approvalId, decision: 'approved' as const } } : {}),
+          ...(held.spec?.target ? { target: held.spec.target } : {}),
+          ...(how === 'stopped' ? { stopped: true } : {}),
+          ...(how === 'failed' ? { reason: held.spec?.fails ?? 'timeout' } : {}),
+          durationMs,
+        };
+        this.putMessage(c.agentId, { ...base, tools: [...(base.tools ?? []), chip] });
+      }
+    }
+    const spec = held.spec;
+    this.record(`agent:${c.agentId}`, 'tool.call', `tool:${c.tool} run:${c.runId}${held.approvalId ? ` approval:${held.approvalId}` : ''}`, how === 'done' ? 'ok' : `error:${how === 'stopped' ? 'stopped' : (spec?.fails ?? 'timeout')}`, null, this.now(), {
+      agentId: c.agentId,
+      tool: c.tool,
+      risk: c.risk,
+      done: doneWord(c.tool) === 'Used a tool' ? c.doing : doneWord(c.tool),
+      asked: askedWord(c.tool),
+      target: c.target || null,
+      approvedBy: held.approvalId ? 'member' : 'none',
+      undoable: levelOf(c.risk) === 'read',
+    });
+    if (goOn) this.settle(c.runId);
+  }
+
+  /** A waiting run whose cards are all answered and whose calls have ended goes on, and says what it did instead or next. */
+  private settle(runId: string): void {
+    const run = this.runs.get(runId);
+    if (!run?.waiting) return;
+    const mine = run.waiting.map((id) => this.approvals.get(id)).filter((a): a is Approval => !!a);
+    if (mine.some((a) => a.state === 'pending' || a.state === 'approved') || [...this.live.values()].some((h) => h.call.runId === runId)) {
+      this.countWaiting(run.agentId);
+      return;
+    }
+    const words = mine
+      .map((a) => {
+        const spec = this.askSpecs.get(a.id);
+        if (a.state === 'done') return spec?.then.approved ?? 'Done.';
+        if (a.state === 'declined') return spec?.then.declined ?? 'Understood.';
+        if (a.state === 'expired') return 'No one answered, so I didn’t do it.';
+        return 'That didn’t finish, so I stopped there.';
+      })
+      .join(' ');
+    delete run.waiting;
+    this.clearWaiting(run);
+    run.sent = `${run.sent}\n\n${words}`;
+    this.finish(run, 'done');
+  }
+
+  watchTools(onEvent: (e: ToolsEvent) => void): () => void {
+    this.toolWatchers.add(onEvent);
+    const snapshot: ToolsEvent = { type: 'snapshot', serverNow: this.now(), calls: [...this.live.values()].map((h) => h.call) };
+    queueMicrotask(() => this.toolWatchers.has(onEvent) && onEvent(clone(snapshot)));
+    return () => this.toolWatchers.delete(onEvent);
+  }
+
+  private emitTools(e: ToolsEvent): void {
+    const event = clone(e);
+    queueMicrotask(() => this.toolWatchers.forEach((fn) => fn(clone(event))));
+  }
+
+  async stopTool(callId: string, m: Mutation): Promise<void> {
+    this.log('agent.tool.stop', { callId, idem: m.idem });
+    await this.wait();
+    const held = this.live.get(callId);
+    if (!held) throw new AgentError('not_found', { detail: 'call' });
+    if (!held.call.stoppable) throw new AgentError('precondition_failed', { reason: 'not_stoppable' });
+    held.call = { ...held.call, state: 'stopping' };
+    this.emitTools({ type: 'call', call: held.call });
+    setTimeout(() => this.endCall(callId, 'stopped'), Math.max(50, this.latency));
+  }
+
+  async listMemories(agentId: string): Promise<MemoryList> {
+    await this.wait();
+    this.agent(agentId);
+    return { agentId, memories: clone([...(this.memories[agentId] ?? [])].sort((a, b) => b.createdAt - a.createdAt)), summary: null, limits: { ...MEMORY_LIMITS } };
+  }
+
+  async deleteMemory(agentId: string, memoryId: string, m: Mutation): Promise<void> {
+    this.log('agent.memory.delete', { agentId, memoryId, idem: m.idem });
+    await this.wait();
+    this.agent(agentId);
+    const list = this.memories[agentId] ?? [];
+    if (!list.some((x) => x.id === memoryId)) throw new AgentError('not_found', { detail: 'memory' });
+    this.memories[agentId] = list.filter((x) => x.id !== memoryId);
+    this.record('user', 'memory.delete', `agent:${agentId} memory:${memoryId}`, 'ok');
+  }
+
+  async clearMemories(agentId: string, m: Mutation): Promise<{ deleted: number }> {
+    this.log('agent.memory.clear', { agentId, idem: m.idem });
+    await this.wait();
+    this.agent(agentId);
+    const deleted = (this.memories[agentId] ?? []).length;
+    this.memories[agentId] = [];
+    this.record('user', 'memory.clear', `agent:${agentId}`, `deleted:${deleted}`);
+    return { deleted };
+  }
+
+  /** The `tools` fixture's history in Activity (still 07): reads, a memory, a decline, a request no one answered. */
+  private seedToolsAudit(): void {
+    const now = this.now();
+    const ago = (min: number): number => now - min * 60_000;
+    this.record('agent:scout', 'tool.call', 'tool:browser_read run:run-old-2', 'refused:expired', null, ago(2 * 24 * 60), { agentId: 'scout', tool: 'browser_open', risk: 'egress', asked: 'open a web page', target: 'news.example.net', approval: 'expired' });
+    this.record('agent:writer', 'tool.call', 'tool:notebook_trash run:run-old-1 approval:ap-old', 'refused:declined', null, ago(60), { agentId: 'writer', tool: 'notebook_trash', risk: 'delete', asked: 'move a page to Trash', target: '“Old drafts, spring”', approval: 'declined' });
+    this.record('agent:scout', 'tool.call', 'tool:notebook_read run:run-scout-1', 'ok', null, ago(8), { agentId: 'scout', tool: 'notebook_read', risk: 'read', done: 'Read your note', target: '“Home office”', approvedBy: 'none' });
+    this.record('agent:scout', 'memory.save', 'agent:scout memory:mem-1', 'ok', null, ago(7), { agentId: 'scout', tool: 'memory_save', risk: 'own', done: 'Saved a memory', approvedBy: 'none', undoable: true });
+    this.record('agent:scout', 'tool.call', 'tool:browser_read run:run-scout-1', 'ok', null, ago(6), { agentId: 'scout', tool: 'browser_read', risk: 'read', done: 'Read a web page', target: 'reviews.example.org', approvedBy: 'none' });
   }
 
   // ------------------------------------------------------------ the lead's proposals (multi-agent.md section 3)
@@ -1464,7 +1919,7 @@ export class MockAgentClient implements AgentClient {
     const version = (this.icons[agentId]?.version ?? a.look?.png ?? 0) + 1;
     this.icons[agentId] = { png: mask ?? pngBase64, version };
     this.record('user', 'icon.upload', `agent:${agentId}`, 'ok');
-    const look = a.look ?? { icon: 'spark', tone: 'graphite', png: null };
+    const look = a.look ?? { icon: 'nodes', tone: 'graphite', png: null };
     return clone(this.patchAgent(agentId, { look: { ...look, icon: 'png', png: version } }));
   }
 

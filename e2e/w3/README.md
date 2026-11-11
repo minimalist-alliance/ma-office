@@ -40,6 +40,7 @@ python3 w3/wake-report.py ~/ma-design-drafts/w3/<W3_LABEL> asbuilt [<a>+<b>]
 CREDITS_LABEL=default CREDITS_MINUTES=10 CREDITS_SETTLE_S=240 W3_VIDEO=<url> npx playwright test -c w3 'credits\.spec'
 ```
 - **`wake.spec.ts`** stops the desk with EC2's `StopInstances`, waits for EC2 and the desks table to say `stopped` and 8 s more, then loads the office afresh, which wakes it (the desk row needs `starts_with_office`). It opens the Browser as soon as the tile is there and records: the `connect` calls and their answers, EC2 `pending` and `running` (about 1 s resolution), the app's window-open and first-frame marks, Chromium's tabs, and afterwards the guest's journal and `systemd-analyze` over SSM. `wake-report.py` puts them on one clock and prints the phases and the four stretches (A EC2, B the guest's boot, C the app's poll, D the stream). A sample whose desk never stopped is marked `valid: false` and dropped; an office that answers "Desk is unavailable right now" is retried.
+- **`WAKE_OWNER`** is the task's AWS owner tag (default `syseng-td227`); `wake.spec.ts` refuses an instance whose `Owner` tag doesn't start with it.
 - **`credits.spec.ts`** runs each activity (`office`: the Browser never opened; `idle`; `reading`: a page turned every 20 s; `scroll`; `video`) for `CREDITS_MINUTES` while reading the desk's CPU time either side, then sums CloudWatch's `CPUCreditUsage` over exactly that window. The instance needs detailed monitoring (`aws ec2 monitor-instances`) for 1-minute points. `W3_LEVEL=low` sets the picture quality in the window's menu, for both `measure` and `credits`; the account's setting is put back to High at the end.
 
 ## What it writes
@@ -86,3 +87,12 @@ Read from `ma-desk` and `ma-platform`, 2026-11-06.
 **Words only:** `image/recipe/files/etc/systemd/system/desk-xorg.service:2` (left stale by the edit: it changes nothing); `image/recipe/desk-stream/stream.conf:7,17`; `image/README.md:42`; `image/RELEASES.md:22`; `desk-rtc/README.md:196,214`; `docs/desk-design.md:1110,1610`; `docs/interfaces/desk-runtime.md:232`; in `ma-platform`, `docs/platform-design.md:905` mentions 1080p in passing.
 
 **Not a size, but related:** the answer declares H.264 level 3.1 (`desk-rtc/internal/rtcserver/media.go:80`). 1280x800 at 60 fps is over that level, as 1080p60 is. The edit's readback prints the level x264 chose.
+
+## Ten-minute sessions and the simplified view (TD-128, `docs/benchmarks/2026-11-m7g-large.md`)
+
+```bash
+SESSION_LABEL=<l> SESSION_MINUTES=10 SESSION_KINDS=browse,video npx playwright test -c w3 'session\.spec'   # about 22 minutes for both
+SIMPLE_LABEL=<l> SIMPLE_ROUNDS=3 SIMPLE_SITES=<url>,<url> npx playwright test -c w3 'simple\.spec'           # about 6 minutes for 4 pages
+```
+- **`session.spec.ts`**: the follow-up's 10-minute sessions through the real window, the simplified view switched off as in `measure`. Browse: ten cycles, the odd ones on the scroll page (read, a 12 s wheel, read), the even ones on the static article with a page turned every 7 s; video: the clip page in 56 s stretches. Page fps per second over the whole session, the client's `getStats`, the desk's CPU per cycle and the units' memory at the start and end. Writes `session-<SESSION_LABEL>.json`.
+- **`simple.spec.ts`**: the simplified view as a member gets it (client-config's switch left on), on real pages typed into the window's address bar: the time from Enter to the view (or the real page with the desk's reason), `browser.minified.get`'s time on the desk off `rpc` (method names, codes and timings only, never a document), the desk's CPU, then 10 s of scrolling inside the view (drawn by the client). Writes `simple-<SIMPLE_LABEL>.json`. It types nothing into any page and signs in to nothing.

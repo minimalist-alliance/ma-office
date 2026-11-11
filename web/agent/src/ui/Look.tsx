@@ -18,7 +18,7 @@ const DEFAULT_LIMITS = { maxBytes: 262_144, maxPx: 512 };
 
 export function LookEditor({ client, agent, caps, theme }: { client: AgentClient; agent: Agent; caps: AgentCaps | null; theme: LookTheme }) {
   const ids = useId();
-  const look = agent.look ?? { icon: 'spark', tone: 'graphite', png: null };
+  const look = agent.look ?? { icon: 'nodes', tone: 'graphite', png: null };
   const pngUrl = useMaskUrl(client, agent);
   const file = useRef<HTMLInputElement>(null);
   const [busy, setBusy] = useState(false);

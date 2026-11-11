@@ -24,7 +24,7 @@ import { blit, blitTileLive, glyphSprite, tileSprite } from './sprites';
 import { CANVAS_FONT } from './font';
 import type { AppSummary } from '../desk/deskLink';
 import { appLabel } from '../shell/actions';
-import { useGlyph, useRosterAgent } from '../agent/roster';
+import { useGlyph, useRosterAgent, useTeamWaiting } from '../agent/roster';
 import { CLEANUP_MS, isTidying, restack } from '../shell/cleanup';
 
 const T = { fontFamily: CANVAS_FONT, listening: false, perfectDrawEnabled: false } as const;
@@ -104,7 +104,9 @@ export const ItemTile = memo(function ItemTile({
   const label = appLabel(item.app, deskId);
   // An agent's own tile counts that agent's unseen replies; the lead's `agent` tile keeps the desk's word.
   const own = useRosterAgent(deskId, item.app);
-  const badge = own ? own.unseen : appBadge;
+  // The lead's tile counts the team's requests waiting for the member, where the desk's own word says fewer (S-14).
+  const teamWaiting = useTeamWaiting(deskId);
+  const badge = own ? own.unseen : item.app === 'agent' && teamWaiting > appBadge ? teamWaiting : appBadge;
 
   // Glide to the slot whenever the layout moves it (others reflow in 120 ms, design 3.7).
   useLayoutEffect(() => {
@@ -239,7 +241,7 @@ export const ItemTile = memo(function ItemTile({
     bodyRef.current?.height(to.h - 76 - 34);
     footRef.current?.width(inner);
     footRef.current?.y(to.h - 28);
-    const next = detailLevel(to.w, to.h);
+    const next = detailLevel(to.w, to.h, item.app);
     if (next !== liveLevelNow.current) {
       liveLevelNow.current = next;
       setLiveLevel(next);
@@ -295,6 +297,9 @@ export const ItemTile = memo(function ItemTile({
   const showText = isWidget && !shield;
   const textVisible = camera.lod === 'full';
   const widget = summary?.widget;
+  // An open tile whose window is open says so in its foot (ADR 0053): one place per app.
+  const note = level === 'open' && windowOpen;
+  const foot = note ? 'Open in its window' : widget?.foot;
 
   return (
     <Group
@@ -354,8 +359,8 @@ export const ItemTile = memo(function ItemTile({
           {widget?.text && (
             <Text {...T} ref={bodyRef} name="lod-text" visible={textVisible} x={16} y={76} width={inner} height={h - 76 - 34} text={widget.text} fontSize={13} lineHeight={1.38} fill={t.text.secondary} wrap="word" ellipsis />
           )}
-          {widget?.foot && (
-            <Text {...T} ref={footRef} name="lod-text" visible={textVisible} x={16} y={h - 28} width={inner} text={widget.foot} fontSize={13} fill={t.text.tertiary} wrap="none" ellipsis />
+          {foot && (
+            <Text {...T} ref={footRef} name={note ? 'lod-text open-tile-note' : 'lod-text'} visible={textVisible} x={16} y={h - 28} width={inner} text={foot} fontSize={13} fill={note ? t.text.secondary : t.text.tertiary} wrap="none" ellipsis />
           )}
         </>
       )}

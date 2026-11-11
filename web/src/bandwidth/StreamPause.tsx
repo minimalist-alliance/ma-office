@@ -6,11 +6,15 @@
 //
 // A desk on the member's own computer costs the cloud nothing, so Platform's pause never reaches it (contract
 // bandwidth.md, "What counts"): only that desk's own refusal could, and it never makes one today.
-import { useEffect, useReducer, type ComponentType } from 'react';
+import { useEffect, useReducer, type ComponentType, type ReactNode } from 'react';
 import type { AppWindowProps } from '../apps/registry';
+import { useFree } from '../free/door';
 import { announce } from '../shell/announce';
 import { useDeskStore } from '../state/deskStore';
+import { currentBand } from '../platform/age';
+import { loadedConfig } from '../platform/clientConfig';
 import { pausedCopy } from './meter';
+import { officerOffer } from './upgrade';
 import { deskPause, isPaused, useBandwidth } from './store';
 import { Words } from './Words';
 
@@ -35,12 +39,15 @@ export function pausable(Window: ComponentType<AppWindowProps>, appName: string)
       return () => window.clearTimeout(t);
     }, [wakeAt]);
     // The desk's time when it said so, as it said it; this browser's clock only decides when to ask it again.
-    const copy =
+    // A free member's Browser paused at the day's limit has the free tier's own words (`free/office.tsx`).
+    const copy: { title: string; body: string; link?: ReactNode } | null =
       !byDesk && !byMeter
         ? null
         : byDesk
-          ? pausedCopy(meter, appName, { now }, byDesk.resumesAt ?? (meter?.paused ? meter.resumesAt : null))
+          ? (useFree.getState().pause?.(byDesk.resumesAt) ?? pausedCopy(meter, appName, { now }, byDesk.resumesAt ?? (meter?.paused ? meter.resumesAt : null)))
           : pausedCopy(meter, appName, { now });
+    // The weekly pause only (A3): a month's pause isn't answered by a week's allowance. Adults on {alliance}, nobody else.
+    const offer = copy && meter?.limitedBy !== 'month' ? officerOffer(meter, currentBand(), loadedConfig()) : null;
     const line = copy ? `${copy.title}. ${copy.body}` : null;
     // Said through the shell's live region, which is there, empty, from the start, so a pause (the meter's or the desk's
     // own) is a change a screen reader hears, one that's there as the window opens included. The panel isn't live: one
@@ -57,6 +64,14 @@ export function pausable(Window: ComponentType<AppWindowProps>, appName: string)
         <p>
           <Words text={copy.body} />
         </p>
+        {copy.link}
+        {offer?.href && (
+          <p className="bw-offer-link">
+            <a href={offer.href} target="_blank" rel="noopener" aria-description="Opens in a new tab">
+              <Words text={offer.link} />
+            </a>
+          </p>
+        )}
       </div>
     );
   }

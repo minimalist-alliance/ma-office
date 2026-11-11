@@ -10,6 +10,8 @@
 // wrong, from what its backend reports.
 import type { Awareness } from 'y-protocols/awareness';
 import type * as Y from 'yjs';
+import type { PaletteId } from './colors.ts';
+import type { ImportedPage } from './notebookFile.ts';
 import type { PMNode } from './schema.ts';
 import type {
   ActivityRow,
@@ -63,6 +65,15 @@ export interface NotebookBackend {
   movePage(pageId: string, tabId: string, index?: number): Promise<void>;
   trashPage(pageId: string): Promise<void>;
   restorePage(pageId: string): Promise<void>;
+  /**
+   * A page's label (ADR 0091): a color's name (the tabs' six), or null for none. Metadata, as a tab's color is: last writer wins, it reaches
+   * everyone through the tree, and the page's `updatedAt` stays.
+   */
+  setPageLabel(pageId: string, label: PaletteId | null): Promise<void>;
+  /** A copy right after the page in its tab: its text, colors and label, under the copier's name on a guild's desk. Its history starts fresh. */
+  duplicatePage(pageId: string): Promise<PageRec>;
+  /** A new page from a notebook file's page (`notebookFile.ts`): first in the tab, or right after the page `after` names. */
+  importPage(tabId: string, page: ImportedPage, opts?: { after?: string }): Promise<PageRec>;
 
   // Text.
   openPage(pageId: string): PageSession;

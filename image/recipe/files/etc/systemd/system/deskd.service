@@ -7,11 +7,13 @@ Wants=desk-rtc.service network-online.target
 # The shaper goes on first if it can. Wants, not Requires: its failure never stops this unit (ADR 0036).
 Wants=desk-egress.service
 After=desk-egress.service
+StartLimitIntervalSec=0
 
 [Service]
 Environment=RELEASE_DIR=/opt/ma/deskd/current
 ExecStartPre=-/usr/bin/docker rm -f deskd
 ExecStart=/opt/ma/deskd/current/run
+ExecStartPost=-/usr/local/lib/ma/desk-oom-container deskd -500
 ExecStop=/usr/bin/docker stop -t 60 deskd
 # docker stop sends the JVM SIGTERM, and it exits 143, which the docker client passes on: without this a stop ends
 # the unit as failed (0.2.8's note in image/RELEASES.md). verify.sh section 3f checks it.
@@ -19,6 +21,9 @@ SuccessExitStatus=143
 TimeoutStopSec=70
 Restart=always
 RestartSec=3
+RestartSteps=8
+RestartMaxDelaySec=300
+OOMScoreAdjust=-500
 
 [Install]
 WantedBy=multi-user.target

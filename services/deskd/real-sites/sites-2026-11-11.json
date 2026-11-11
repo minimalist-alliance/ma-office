@@ -1,0 +1,130 @@
+[
+  {
+    "id": "T01",
+    "slug": "guardian-front",
+    "kind": "news",
+    "src": "common sites, 2026-11-11",
+    "url": "https://www.theguardian.com/international",
+    "why": "A news front page, other than AP's"
+  },
+  {
+    "id": "T02",
+    "slug": "npr-article",
+    "kind": "news",
+    "src": "common sites, 2026-11-11",
+    "url": "https://www.npr.org/2025/11/25/nx-s1-5607262/oregon-japan-earthquake-pacific-northwest",
+    "why": "A news article with photos and audio"
+  },
+  {
+    "id": "T03",
+    "slug": "ars-article",
+    "kind": "news",
+    "src": "common sites, 2026-11-11",
+    "url": "https://arstechnica.com/cars/2026/11/polestar-has-a-new-look-with-its-formula-2030-concept/",
+    "why": "A tech article with a gallery and ads"
+  },
+  {
+    "id": "T04",
+    "slug": "archive-video",
+    "kind": "video",
+    "src": "common sites, 2026-11-11",
+    "url": "https://archive.org/details/BigBuckBunny_124",
+    "why": "A video page on a site other than YouTube"
+  },
+  {
+    "id": "T05",
+    "slug": "target-search",
+    "kind": "shopping",
+    "src": "common sites, 2026-11-11",
+    "url": "https://www.target.com/s?searchTerm=desk+lamp",
+    "why": "A store's search results"
+  },
+  {
+    "id": "T06",
+    "slug": "bestbuy-search",
+    "kind": "shopping",
+    "src": "common sites, 2026-11-11",
+    "url": "https://www.bestbuy.com/site/searchpage.jsp?st=desk+lamp",
+    "why": "A store's search results"
+  },
+  {
+    "id": "T07",
+    "slug": "etsy-search",
+    "kind": "shopping",
+    "src": "common sites, 2026-11-11",
+    "url": "https://www.etsy.com/search?q=desk+lamp",
+    "why": "A marketplace's search results"
+  },
+  {
+    "id": "T08",
+    "slug": "lobsters-front",
+    "kind": "forum",
+    "src": "common sites, 2026-11-11",
+    "url": "https://lobste.rs/",
+    "why": "A link forum's front page"
+  },
+  {
+    "id": "T09",
+    "slug": "unix-se-question",
+    "kind": "forum",
+    "src": "common sites, 2026-11-11",
+    "url": "https://unix.stackexchange.com/questions/4126/what-is-the-exact-difference-between-a-terminal-a-shell-a-tty-and-a-con",
+    "why": "A Q&A page on a Stack Exchange site other than Stack Overflow"
+  },
+  {
+    "id": "T10",
+    "slug": "python-discourse",
+    "kind": "forum",
+    "src": "common sites, 2026-11-11",
+    "url": "https://discuss.python.org/t/is-cpython-sovereignty-at-risk/110006",
+    "why": "A Discourse thread"
+  },
+  {
+    "id": "T11",
+    "slug": "brave-search",
+    "kind": "search",
+    "src": "common sites, 2026-11-11",
+    "url": "https://search.brave.com/search?q=desk+lamp+reviews",
+    "why": "A search engine's results"
+  },
+  {
+    "id": "T12",
+    "slug": "yahoo-search",
+    "kind": "search",
+    "src": "common sites, 2026-11-11",
+    "url": "https://search.yahoo.com/search?p=desk+lamp+reviews",
+    "why": "A search engine's results"
+  },
+  {
+    "id": "T13",
+    "slug": "react-docs",
+    "kind": "docs",
+    "src": "common sites, 2026-11-11",
+    "url": "https://react.dev/reference/react/useState",
+    "why": "A framework's reference page"
+  },
+  {
+    "id": "T14",
+    "slug": "rust-book",
+    "kind": "docs",
+    "src": "common sites, 2026-11-11",
+    "url": "https://doc.rust-lang.org/book/ch04-01-what-is-ownership.html",
+    "why": "A book chapter in docs"
+  },
+  {
+    "id": "T15",
+    "slug": "k8s-docs",
+    "kind": "docs",
+    "src": "common sites, 2026-11-11",
+    "url": "https://kubernetes.io/docs/concepts/overview/",
+    "why": "A docs page with a side rail"
+  },
+  {
+    "id": "T16",
+    "slug": "wikipedia-article",
+    "kind": "article",
+    "src": "common sites, 2026-11-11",
+    "url": "https://en.wikipedia.org/wiki/Minimalism",
+    "why": "An encyclopedia article other than P01"
+  }
+]

@@ -1,8 +1,8 @@
 // A channel's chat thread, beside the board: like a Slack or Discord channel that's always open. Messages show at
 // once, pending, until the guild server gives them a number; links are plain links, never previewed.
 import { useEffect, useLayoutEffect, useMemo, useRef, useState } from 'react';
-import { MAX_CHAT, type ChatMsg, type RoomClient, type RoomState } from '../room/client.ts';
-import { initials } from './names.ts';
+import { MAX_CHAT, type ChatMsg, type Member, type RoomClient, type RoomState } from '../room/client.ts';
+import { Face } from './Face.tsx';
 import { IconClose, IconHash, IconRename, IconSend, IconTrash, Seal } from './icons.tsx';
 import { colorOf, linkify, timeOf } from './text.tsx';
 
@@ -80,6 +80,7 @@ export function Chat({ client, st, onClose }: { client: RoomClient; st: RoomStat
               client={client}
               m={m}
               color={colors.get(m.from) ?? colorOf(m.from)}
+              who={st.members.find((p) => p.id === m.from)}
               head={head}
               mine={m.from === myId}
               canModerate={st.can.moderate}
@@ -97,6 +98,7 @@ function Message({
   client,
   m,
   color,
+  who,
   head,
   mine,
   canModerate,
@@ -105,6 +107,7 @@ function Message({
   client: RoomClient;
   m: ChatMsg;
   color: number;
+  who: Member | undefined;
   head: boolean;
   mine: boolean;
   canModerate: boolean;
@@ -124,7 +127,7 @@ function Message({
     <div className="ma-cm-msg" data-head={head ? '1' : '0'} data-pending={m.pending ? '1' : '0'} data-failed={m.failed ? '1' : '0'}>
       {head ? (
         <span className="ma-cm-avatar ma-cm-msg-avatar" style={{ ['--ma-cm-c' as string]: `var(--ma-cm-member-${color})` }} aria-hidden="true">
-          {initials(m.name)}
+          <Face name={m.name} url={who?.avatarUrl} recipe={who?.avatarRecipe} size={28} />
         </span>
       ) : null}
       <div className="ma-cm-msg-body">

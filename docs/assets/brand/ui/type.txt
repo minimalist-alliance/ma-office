@@ -1,3 +1,5 @@
+Superseded Nov 10: the face is Inter Variable, as the apps ship it; the Nunito notes below are kept for the record.
+
 Minimalist Alliance apps: type (2026-11-05)
 Covers the Desk, Platform and Guild apps and the sign-in pages, not the landing page. Draft: nothing is committed.
 

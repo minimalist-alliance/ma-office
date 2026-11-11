@@ -32,6 +32,10 @@ export interface MockFilesControl {
   totalBytes: number;
   otherBytes: number;
   floorBytes: number;
+  /** A free desk's cap; null is none (ADR 0090). */
+  capBytes: number | null;
+  /** Bytes the cap counts that the mock holds nowhere (unfinished uploads on a real desk), so a test can fill a 2 GB drive. */
+  capExtraBytes: number;
   /** Every method asked, in order. */
   calls: { m: string; p: Record<string, unknown> }[];
   /** Uploads finished: path and size. */
@@ -125,6 +129,8 @@ export class MockFilesDesk {
       totalBytes: 32 * GiB,
       otherBytes: 9 * GiB,
       floorBytes: 2 * GiB,
+      capBytes: null,
+      capExtraBytes: 0,
       calls: [],
       landed: [],
       reads: [],
@@ -193,6 +199,11 @@ export class MockFilesDesk {
   subscribe(fn: (m: Omit<FilesChangesMessage, 'seq'>) => void): () => void {
     this.listeners.add(fn);
     return () => void this.listeners.delete(fn);
+  }
+
+  /** Tells every open window to ask for the usage again, as the desk does when a cap changes. */
+  usageChanged(): void {
+    this.emit([], true);
   }
 
   private emit(dirs: string[] | null, usage = true, trash = false): void {
@@ -363,6 +374,7 @@ export class MockFilesDesk {
           trash: { bytes: this.trashBytes(), items: this.trash.size },
           floorBytes: this.control.floorBytes,
           uploadableBytes: this.uploadable(),
+          ...(this.control.capBytes === null ? {} : { capBytes: this.control.capBytes, capUsedBytes: this.filesBytes() + this.trashBytes() + this.partialBytes() + this.control.capExtraBytes }),
           computedAt: new Date().toISOString(),
         };
         return usage;

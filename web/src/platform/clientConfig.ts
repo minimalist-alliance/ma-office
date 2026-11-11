@@ -38,11 +38,32 @@ export interface ClientConfig {
    * `{ enabled: false }` is off (`simple/decide.ts`).
    */
   simpleView?: { enabled?: boolean };
+  /**
+   * Links in and out (#9, S-141): the desk's hand-off card, `/open` and a pasted link (Send to my desk), and a download's
+   * "Get it on this device". A kill switch: absent is on, `{ enabled: false }` is off (`open/intent.ts` `linksOn`). Open on
+   * this device (the address's button) stays: it needs nothing from anyone.
+   */
+  browserLinks?: { enabled?: boolean };
+  /** Open tiles (ADR 0053): an app enlarged on its desk is the live app there. A kill switch: absent is on (`opentile/door.ts`). */
+  openTiles?: { enabled?: boolean };
 }
 
 /** The member's account page on the Platform app, if client-config gives a good one. */
 export function accountUrl(cfg: ClientConfig, hostname: string = window.location.hostname): string | null {
   return siblingUrl(cfg.links?.['account'], hostname)?.href ?? null;
+}
+
+/**
+ * The billing page, where a failed payment is paid (card C's "Update payment"): client-config's `links.billing`, else
+ * `/v1/me`'s `membership.billingUrl`, whichever is a good one first.
+ */
+export function billingUrl(cfg: ClientConfig | null, fromMe?: string | null, hostname: string = window.location.hostname): string | null {
+  return (siblingUrl(cfg?.links?.['billing'], hostname) ?? siblingUrl(fromMe, hostname))?.href ?? null;
+}
+
+/** The office's own export page, where client-config turns it on (`App.tsx`); null where it's off or unknown. */
+export function exportPageUrl(cfg: ClientConfig | null): string | null {
+  return cfg?.export?.enabled === true ? '/export' : null;
 }
 
 /**
@@ -74,6 +95,32 @@ export function supportAddress(cfg: ClientConfig | null): string {
   return /^[^\s@<>"(),;:]+@[a-z0-9-]+(\.[a-z0-9-]+)+$/i.test(address) ? address : SUPPORT_ADDRESS;
 }
 
+/** Client-config, checked enough to use: it must say where the API and sign-in are. Null for anything else. */
+export function usableConfig(v: unknown): ClientConfig | null {
+  if (!v || typeof v !== 'object') return null;
+  const c = v as Partial<ClientConfig> & { app?: unknown };
+  if (c.app !== undefined && c.app !== 'desk-web') return null;
+  return typeof c.api === 'string' && c.auth && typeof c.auth === 'object' && typeof c.auth.domain === 'string' && typeof c.auth.clientId === 'string'
+    ? (v as ClientConfig)
+    : null;
+}
+
+/**
+ * The loader's own answer from this page load, if it handed one over (`window.__maClientConfig`, ma-platform
+ * `sites/desk-loader/loader.js`): it asked the same question a moment ago to pick this bundle, so the first ask here
+ * needn't go out again, and the token refresh, `/v1/me` and the desk list don't wait for it. Taken once.
+ */
+function fromLoader(): ClientConfig | null {
+  try {
+    const w = window as unknown as { __maClientConfig?: unknown };
+    const handed = w.__maClientConfig;
+    delete w.__maClientConfig;
+    return usableConfig(handed);
+  } catch {
+    return null;
+  }
+}
+
 let loaded: ClientConfig | null = null;
 /** The config once it has loaded, for what can't wait for a promise. */
 export const loadedConfig = (): ClientConfig | null => loaded;
@@ -90,7 +137,8 @@ export async function fetchClientConfig(signal?: AbortSignal): Promise<ClientCon
 }
 
 export function getClientConfig(): Promise<ClientConfig> {
-  cached ??= fetchClientConfig()
+  const handed = cached ? null : fromLoader();
+  cached ??= (handed ? Promise.resolve(handed) : fetchClientConfig())
     .then((cfg) => {
       loaded = cfg;
       return cfg;

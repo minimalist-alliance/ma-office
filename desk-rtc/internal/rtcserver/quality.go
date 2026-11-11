@@ -1,6 +1,9 @@
 package rtcserver
 
 import (
+	"io"
+	"os"
+	"strings"
 	"time"
 
 	"github.com/minimalist-alliance/ma-desk/desk-rtc/internal/xinput"
@@ -8,8 +11,9 @@ import (
 
 // Stream quality levels (ADR 0039, docs/interfaces/stream-quality.md sections 3 and 4). Each session asks for a
 // level with QUALITY on keys. The stream runs at the highest ask among the sessions viewing, a session that never
-// asked counting as High, lowered to deskd's stream.limit. desk-stream hears it as "level <name>", at most once per
-// levelPace, and each session viewing hears it as a QUALITY reply on keys.
+// asked counting as High, lowered to deskd's stream.limit and to the ceiling of the allowance profile desk-egress has
+// picked (profileCeilings). desk-stream hears it as "level <name>", at most once per levelPace, and each session viewing
+// hears it as a QUALITY reply on keys.
 
 // level is a quality level. The numbers are the wire's, and their order is what "highest" and "at most" compare.
 type level uint8
@@ -105,17 +109,80 @@ func (s *session) ask() level {
 
 // qualityState is the hub's half. streamHub.mu guards it.
 type qualityState struct {
-	asked  level       // the highest ask among the sessions viewing, kept while nobody views
-	limit  level       // deskd's stream.limit, levelNone for none
-	level  level       // in effect: asked, lowered to limit
-	sent   level       // the last level line on this desk-stream connection
-	sentAt time.Time   // when it went
-	timer  *time.Timer // a paced level line, waiting out levelPace
-	closed bool
+	asked   level       // the highest ask among the sessions viewing, kept while nobody views
+	limit   level       // deskd's stream.limit, levelNone for none
+	profile string      // desk-egress's allowance profile (ADR 0036) as last read, "" for the normal picture
+	level   level       // in effect: asked, lowered to the ceiling
+	sent    level       // the last level line on this desk-stream connection
+	sentAt  time.Time   // when it went
+	timer   *time.Timer // a paced level line, waiting out levelPace
+	closed  bool
 }
 
 func newQualityState() qualityState {
 	return qualityState{asked: levelHigh, level: levelHigh}
+}
+
+// Past a member's allowance desk-egress picks a softer profile (ADR 0036 section 5), and desk-stream's run starts the
+// conf it names. Each profile's conf holds every level to its own picture (stream-quality.md section 5): capped keeps
+// Low as Low and gives Medium, High and Max the capped picture, which is Medium's size and ceiling (1080p, 4 Mbit, a
+// quantizer of 28 against Medium's 27); deep gives every level its 540-line picture, at Low's 2.5 Mbit ceiling. So the
+// profile is a ceiling here, as deskd's stream.limit is, and the reply says plainly that the level is held (flags bit 0,
+// with the ceiling in its limit byte) rather than echo an ask the picture isn't keeping. S-29.
+var profileCeilings = map[string]level{"capped": levelMedium, "deep": levelLow}
+
+// profileFileMax is the most of the profile file read: desk-egress writes one word and a newline.
+const profileFileMax = 64
+
+// ceiling is the lower of deskd's limit and the allowance profile's, levelNone when neither is set.
+func (q *qualityState) ceiling() level {
+	c := profileCeilings[q.profile] // levelNone for normal and anything unknown
+	if q.limit != levelNone && (c == levelNone || q.limit < c) {
+		c = q.limit
+	}
+
+	return c
+}
+
+// readProfile is the profile named in path: "capped" or "deep", or "" for the normal picture, a missing or unreadable
+// file and anything else, as desk-stream's run reads it.
+func readProfile(path string) string {
+	if path == "" {
+		return ""
+	}
+	f, err := os.Open(path)
+	if err != nil {
+		return ""
+	}
+	defer f.Close()
+	b := make([]byte, profileFileMax)
+	n, _ := io.ReadFull(f, b)
+	name := strings.TrimSpace(string(b[:n]))
+	if _, known := profileCeilings[name]; !known {
+		return ""
+	}
+
+	return name
+}
+
+// readProfileLocked takes the profile file as it is now, and follows a change. desk-egress writes it before it restarts
+// desk-stream, and desk-stream reads it as it starts, so a new desk-stream connection is when both agree.
+func (h *streamHub) readProfileLocked() {
+	p := readProfile(h.profileFile)
+	if p == h.q.profile {
+		return
+	}
+	h.log.Info("stream profile", "profile", profileName(p), "ceiling", profileCeilings[p].String())
+	h.q.profile = p
+	h.updateLevelLocked()
+}
+
+func profileName(p string) string {
+	if p == "" {
+		return "normal"
+	}
+
+	return p
 }
 
 func (h *streamHub) setQuality(s *session, l level) {
@@ -170,17 +237,17 @@ func (h *streamHub) updateLevelLocked() {
 		}
 		h.q.asked = asked
 	}
-	l := h.q.asked
-	if h.q.limit != levelNone {
-		l = min(l, h.q.limit)
+	l, ceiling := h.q.asked, h.q.ceiling()
+	if ceiling != levelNone {
+		l = min(l, ceiling)
 	}
 	if l != h.q.level {
-		h.log.Info("stream level", "level", l.String(), "limit", h.q.limit.String())
+		h.log.Info("stream level", "level", l.String(), "limit", h.q.limit.String(), "profile", profileName(h.q.profile))
 		h.q.level = l
 	}
 	h.paceLevelLocked()
 	for s := range h.viewers {
-		msg := qualityMessage(h.q.level, h.q.limit, s.ask())
+		msg := qualityMessage(h.q.level, ceiling, s.ask())
 		// Marked sent only if keys is open. Until it is, the client hasn't asked yet, and its QUALITY gets the reply.
 		if msg != s.qualitySent && s.sendKeys(msg[:]) {
 			s.qualitySent = msg
@@ -188,7 +255,8 @@ func (h *streamHub) updateLevelLocked() {
 	}
 }
 
-// qualityMessage is the reply on keys: [0x82, level, stream 0, flags, limit, 0...].
+// qualityMessage is the reply on keys: [0x82, level, stream 0, flags, limit, 0...]. limit is the ceiling in effect:
+// deskd's stream.limit or the allowance profile's, whichever is lower.
 func qualityMessage(l, limit, ask level) [xinput.EventSize]byte {
 	var b [xinput.EventSize]byte
 	b[0] = qualityReply
@@ -196,7 +264,7 @@ func qualityMessage(l, limit, ask level) [xinput.EventSize]byte {
 	b[4] = byte(limit)
 	switch {
 	case l < ask:
-		b[3] = flagHeld // only the limit can put it below a viewer's ask
+		b[3] = flagHeld // only a ceiling can put it below a viewer's ask
 	case l > ask:
 		b[3] = flagRaised
 	}

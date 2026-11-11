@@ -1,5 +1,5 @@
 #!/bin/sh
-# Exit 0 when the desk-rtc unit is active and it holds UDP and TCP on its port: 443, or the one the desk's
+# Exit 0 when the desk-rtc unit is active and it holds UDP and TCP on its ports: 443, or the ones the desk's
 # config sets (/etc/ma/desk-rtc.conf, as run reads it; desk-rtc itself says which, so the two can't differ)
 # (docs/interfaces/desk-runtime.md section 6). ma-update and the smoke test run this as root, which is
 # what lets ss name the process; as another user only the ports are checked.
@@ -16,15 +16,18 @@ systemctl is-active --quiet desk-rtc || fail "unit is not active"
 RELEASE_DIR=${RELEASE_DIR:-$(cd "$(dirname "$0")" && pwd)}
 port=$("$RELEASE_DIR/desk-rtc" --config "${DESK_RTC_CONF:-/etc/ma/desk-rtc.conf}" --print-port 2>&1) || fail "$port"
 case "$port" in '' | *[!0-9]*) fail "no port from desk-rtc: $port" ;; esac
+# TCP is on the same port but on a shared host's slot (tcp_port=443 there, desk-rtc's shared.go)
+tport=$("$RELEASE_DIR/desk-rtc" --config "${DESK_RTC_CONF:-/etc/ma/desk-rtc.conf}" --print-tcp-port 2>&1) || fail "$tport"
+case "$tport" in '' | *[!0-9]*) fail "no TCP port from desk-rtc: $tport" ;; esac
 
 udp=$(ss -Hlnup "sport = :$port" 2>/dev/null) || fail "ss failed"
-tcp=$(ss -Hlntp "sport = :$port" 2>/dev/null) || fail "ss failed"
+tcp=$(ss -Hlntp "sport = :$tport" 2>/dev/null) || fail "ss failed"
 [ -n "$udp" ] || fail "nothing holds UDP $port"
-[ -n "$tcp" ] || fail "nothing holds TCP $port"
+[ -n "$tcp" ] || fail "nothing holds TCP $tport"
 
 if [ "$(id -u)" = 0 ]; then
   case "$udp" in *'"desk-rtc"'*) ;; *) fail "UDP $port is held by something else: $udp" ;; esac
-  case "$tcp" in *'"desk-rtc"'*) ;; *) fail "TCP $port is held by something else: $tcp" ;; esac
+  case "$tcp" in *'"desk-rtc"'*) ;; *) fail "TCP $tport is held by something else: $tcp" ;; esac
 fi
 
 exit 0

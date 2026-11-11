@@ -39,8 +39,8 @@ test('loads under the CSP with no errors and no network beyond this page', async
   const problems = await open(page);
   await expect(page.getByRole('tab', { name: 'Trips' })).toHaveAttribute('aria-selected', 'true');
   await expect(page.locator('.nb-prose h1')).toHaveText('Lake weekend');
-  await page.getByRole('radio', { name: 'Temporal view' }).click();
-  await page.getByRole('radio', { name: 'Tab view' }).click();
+  await page.getByRole('radio', { name: 'By day' }).click();
+  await page.getByRole('radio', { name: 'By tab' }).click();
   expect(problems).toEqual([]);
 });
 
@@ -198,7 +198,7 @@ test('history lists versions and restores one without losing the current text', 
 
 test('temporal view: days with notes, open a page, step days, and view a page as of a day', async ({ page }) => {
   await open(page);
-  await page.getByRole('radio', { name: 'Temporal view' }).click();
+  await page.getByRole('radio', { name: 'By day' }).click();
   await expect(page.locator('.nb-tl-title')).toHaveCount(2);
   await expect(page.locator('.nb-tl-entries')).toContainText('Spring planting');
   await expect(page.locator('.nb-tl-entries')).toContainText('Small app ideas');
@@ -220,7 +220,7 @@ test('temporal view: days with notes, open a page, step days, and view a page as
   await page.getByTestId('temporal-search').fill('soup');
   await expect(page.locator('.nb-day-list .nb-list-btn')).toHaveCount(2);
   await page.locator('.nb-tl-open', { hasText: 'lentil' }).click();
-  await expect(page.getByRole('radio', { name: 'Tab view' })).toHaveAttribute('aria-checked', 'true');
+  await expect(page.getByRole('radio', { name: 'By tab' })).toHaveAttribute('aria-checked', 'true');
   await expect(page.locator('.nb-prose h1')).toHaveText('Weeknight lentil soup');
 });
 

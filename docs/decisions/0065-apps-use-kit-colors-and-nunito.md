@@ -39,3 +39,6 @@ The owner asked to see the kit's colors and Nunito against today's look on the r
 
 ## Addendum, 2026-11-07: `/account` adopts the kit early
 - `/account` on Platform adopts the kit's colors and Nunito ahead of the rest of Platform (task 26), as the start of this ADR's rollout there. The Product Designer decided this for the owner on 2026-11-06, in the task 26 row of the decisions log.
+
+## Addendum, 2026-11-11: Inter, not Nunito
+The owner, Nov 10, on Forums v2: "Nunito is goofy and off brand". Every app and the sign-in pages now self-host Inter Variable, and the kit's colors stand. Unread badges are the accent in every theme, and red is for errors only.

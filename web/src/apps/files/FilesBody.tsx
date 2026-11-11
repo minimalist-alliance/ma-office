@@ -7,19 +7,24 @@ import { useCallback, useEffect, useMemo, useRef, useState, useSyncExternalStore
 import type { HostShell } from '../../agent/AgentWindow';
 import type { DeskLink } from '../../desk/deskLink';
 import { formatBytes } from '../../export/format';
+import { useFree } from '../../free/door';
+import { billingUrl } from '../../platform/clientConfig';
+import { useSession } from '../../platform/session';
 import { chooseImageCheck } from '../../platform/imageCheckClient';
 import type { ImageCheck } from '../../platform/imageCheck';
 import { FilesApi, FilesError, toFilesError } from './api';
 import { fromEntries, entriesOf, fromInput, type Collected } from './collect';
+import { ContextMenu, type MenuAt } from './ContextMenu';
 import { ConfirmDialog, MoveDialog, NameDialog } from './Dialogs';
 import { TransferEngine } from './engine';
 import { DRAG_TYPE, FileList, type ListActions } from './FileList';
+import { menuItems, type MenuAction } from './menu';
 import { baseName, crumbs, join, parent } from './paths';
 import { askWhere } from './save';
 import { EMPTY_SEL, follow, reconcile, type Sel } from './selection';
 import { Tray } from './Tray';
 import { useFilesModel, type Place, type Row } from './useFilesModel';
-import { EMPTY_FOLDER, EMPTY_SEARCH, EMPTY_TRASH, errorWords, movedToTrashWords, READ_ONLY_WORDS, SKIPPED_NOTE, TRASH_NOTE, usageDetailWords, usageWords } from './words';
+import { EMPTY_FOLDER, EMPTY_SEARCH, EMPTY_TRASH, errorWords, movedToTrashWords, READ_ONLY_WORDS, SKIPPED_NOTE, TRASH_NOTE, usageDetailWords, usageWords, capDetailWords, capNote, capState, capWords, NEW_TAB, SEE_MEMBERSHIP } from './words';
 import { daysUntil } from './dates';
 import './files.css';
 
@@ -45,7 +50,9 @@ type Dialog =
 
 function UsageLine({ model }: { model: ReturnType<typeof useFilesModel> }) {
   const u = model.usage;
+  const driveOf = useFree((s) => s.drive);
   if (!u) return <div className="files-usage" aria-hidden="true" />;
+  if (typeof u.capBytes === 'number' && u.capBytes > 0 && typeof u.capUsedBytes === 'number') return <CapLine usage={u} cap={u.capBytes} used={u.capUsedBytes} driveOf={driveOf} />;
   const other = Math.max(0, u.drive.usedBytes - u.files.bytes - u.trash.bytes);
   const total = Math.max(1, u.drive.totalBytes);
   const pct = (n: number): string => `${Math.min(100, (n / total) * 100)}%`;
@@ -58,6 +65,53 @@ function UsageLine({ model }: { model: ReturnType<typeof useFilesModel> }) {
         <span className="u-other" style={{ width: pct(other) }} />
       </div>
       <p data-testid="files-usage-words">{usageWords(u.drive.usedBytes, u.drive.totalBytes)}</p>
+    </div>
+  );
+}
+
+/** A free desk's drive: the cap is the whole bar, and the line is "1.4 GB of 2 GB used" (ADR 0090). Nothing is ever deleted over it. */
+function CapLine({ usage: u, cap, used, driveOf }: { usage: NonNullable<ReturnType<typeof useFilesModel>['usage']>; cap: number; used: number; driveOf: (() => { alliance: string; allianceDrive: string | null; href: string | null }) | undefined }) {
+  const pct = (n: number): string => `${Math.min(100, (n / cap) * 100)}%`;
+  const drive = driveOf?.() ?? null;
+  // Over the cap on a free desk is just full: a paid member's is a step down's drive, and says what stays.
+  const raw = capState(used, cap);
+  const state = raw === 'over' && drive ? 'full' : raw;
+  const cfg = useSession((s) => s.config);
+  const billing = useSession((s) => s.me?.membership?.billingUrl);
+  const upHref = state === 'over' ? billingUrl(cfg, billing) : null;
+  const note = capNote(state, drive, { used, cap });
+  const detail = capDetailWords({ cap, used, files: u.files.bytes, trash: u.trash.bytes });
+  return (
+    <div className="files-usage files-cap" data-testid="files-usage" data-cap={state} title={detail}>
+      <div className="files-usage-bar" role="img" aria-label={detail}>
+        <span className="u-files" style={{ width: pct(u.files.bytes) }} />
+        <span className="u-trash" style={{ width: pct(u.trash.bytes) }} />
+        <span className="u-other" style={{ width: pct(Math.max(0, used - u.files.bytes - u.trash.bytes)) }} />
+      </div>
+      <p data-testid="files-usage-words">{capWords(used, cap)}</p>
+      {note && (
+        <p className="files-cap-note" data-testid="files-cap-note">
+          {note}
+          {drive?.href && (
+            <>
+              {' '}
+              <a className="files-cap-link" href={drive.href} target="_blank" rel="noopener noreferrer">
+                {SEE_MEMBERSHIP}
+                <span className="sr-only">{NEW_TAB}</span>
+              </a>
+            </>
+          )}
+          {upHref && (
+            <>
+              {' '}
+              <a className="files-cap-link" href={upHref} target="_blank" rel="noopener noreferrer" data-testid="files-over-link">
+                {SEE_MEMBERSHIP}
+                <span className="sr-only">{NEW_TAB}</span>
+              </a>
+            </>
+          )}
+        </p>
+      )}
     </div>
   );
 }
@@ -77,6 +131,8 @@ export default function FilesBody({ deskId, link, session, offline, parked, shel
   const folderInput = useRef<HTMLInputElement>(null);
   const searchInput = useRef<HTMLInputElement>(null);
   const activeKey = useRef<string | null>(null);
+  const root = useRef<HTMLDivElement>(null);
+  const [menu, setMenu] = useState<(MenuAt & { keys: string[] | null }) | null>(null);
 
   const folder = place.kind === 'folder' ? place.path : lastFolder.current;
   if (place.kind === 'folder') lastFolder.current = place.path;
@@ -143,6 +199,7 @@ export default function FilesBody({ deskId, link, session, offline, parked, shel
       activeKey.current = null;
       renamedTo.current = null;
       setNotice(null);
+      setMenu(null);
       if (p.kind !== 'search') setQuery('');
       model.go(p);
     },
@@ -301,6 +358,60 @@ export default function FilesBody({ deskId, link, session, offline, parked, shel
     remove: (rs) => (inTrash ? setDialog({ kind: 'trashForGood', rows: rs }) : void trashRows(rs)),
     restore: (rs) => void restore(rs),
     dropOn: (rs, to) => void moveRows(rs, to),
+    menu: ({ x, y, keys, fromKeyboard }) => {
+      const box = root.current;
+      if (!box) return;
+      const rs = keys ? rows.filter((r) => keys.includes(r.key)) : null;
+      const items = menuItems({ mode: inTrash ? 'trash' : place.kind === 'search' ? 'search' : 'folder', locked: readOnly || !engine, rowCount: rows.length }, rs);
+      // The browser's own menu is already suppressed in the list; with nothing to offer, ours stays shut too.
+      if (!items.length) return setMenu(null);
+      // Window pixels: the window can be scaled with the office, so the point is taken back through that.
+      const r = box.getBoundingClientRect();
+      const k = box.offsetWidth ? r.width / box.offsetWidth : 1;
+      const label = !rs ? (inTrash ? 'Trash actions' : 'Folder actions') : rs.length === 1 ? `Actions for ${rs[0]!.name}` : `Actions for ${rs.length} items`;
+      setMenu({ x: (x - r.left) / k, y: (y - r.top) / k, fromKeyboard, items, label, keys });
+    },
+  };
+
+  const closeMenu = useCallback((back: boolean): void => {
+    setMenu(null);
+    if (back) {
+      focusList();
+      // A click away moves the keyboard to where it landed after this: once more, when it has.
+      window.setTimeout(() => !document.querySelector('.files-dialog, .files-menu') && focusList(), 0);
+    }
+  }, []);
+
+  /** The bar's own doing for each action, on the rows the menu was opened on. */
+  const chooseMenu = (id: MenuAction): void => {
+    const rs = menu?.keys ? rows.filter((r) => menu.keys!.includes(r.key)) : [];
+    const one = rs.length === 1 ? rs[0]! : null;
+    setMenu(null);
+    focusList();
+    switch (id) {
+      case 'open':
+        return void (one && open(one));
+      case 'download':
+        return void (one && download(one));
+      case 'rename':
+        return void (one && setDialog({ kind: 'rename', row: one }));
+      case 'move':
+        return setDialog({ kind: 'move', rows: rs });
+      case 'delete':
+        return void trashRows(rs);
+      case 'restore':
+        return void restore(rs);
+      case 'deleteForever':
+        return setDialog({ kind: 'trashForGood', rows: rs });
+      case 'emptyTrash':
+        return setDialog({ kind: 'emptyTrash' });
+      case 'uploadFiles':
+        return fileInput.current?.click();
+      case 'uploadFolder':
+        return folderInput.current?.click();
+      case 'newFolder':
+        return setDialog({ kind: 'newFolder' });
+    }
   };
 
   // ---- drag and drop from the computer
@@ -354,7 +465,7 @@ export default function FilesBody({ deskId, link, session, offline, parked, shel
   }
 
   return (
-    <div className={`files-root${offline ? ' offline' : ''}`} data-testid="files-body" data-offline={offline} onDragEnter={onDragEnter} onDragOver={onDragOver} onDragLeave={onDragLeave} onDrop={onDrop}>
+    <div ref={root} className={`files-root${offline ? ' offline' : ''}`} data-testid="files-body" data-offline={offline} onDragEnter={onDragEnter} onDragOver={onDragOver} onDragLeave={onDragLeave} onDrop={onDrop}>
       <div className="files-top">
         {inTrash ? (
           <h3 className="files-where">Trash</h3>
@@ -534,6 +645,8 @@ export default function FilesBody({ deskId, link, session, offline, parked, shel
           {picked[0]!.name} goes for good {daysUntil(picked[0]!.trash.purgeAt)}.
         </p>
       )}
+
+      {menu && root.current && <ContextMenu at={menu} box={root.current} onClose={closeMenu} onChoose={chooseMenu} />}
 
       {engine && <Tray views={views} engine={engine} browserOnScreen={browserOnScreen} />}
       <UsageLine model={model} />

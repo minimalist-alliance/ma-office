@@ -45,6 +45,9 @@ try {
   const storeMaxWaitMs = num('DESK_NOTEBOOK_STORE_MAX_MS');
   const readableDebounceMs = num('DESK_NOTEBOOK_READABLE_MS');
   const pageFullBytes = num('DESK_NOTEBOOK_PAGE_FULL_BYTES');
+  const backlogPageBytes = num('DESK_NOTEBOOK_BACKLOG_PAGE_BYTES');
+  const backlogTotalBytes = num('DESK_NOTEBOOK_BACKLOG_TOTAL_BYTES');
+  const refuseAfterMs = num('DESK_NOTEBOOK_REFUSE_AFTER_MS');
   service = await startService({
     dataDir: env['DESK_NOTEBOOK_DATA_DIR'] || '/data/notebook',
     socketPath: env['DESK_NOTEBOOK_SOCKET'] || '/run/desk-notebook/notebook.sock',
@@ -55,6 +58,9 @@ try {
     ...(storeMaxWaitMs !== undefined ? { storeMaxWaitMs } : {}),
     ...(readableDebounceMs !== undefined ? { readableDebounceMs } : {}),
     ...(pageFullBytes !== undefined ? { pageFullBytes } : {}),
+    ...(backlogPageBytes !== undefined ? { backlogPageBytes } : {}),
+    ...(backlogTotalBytes !== undefined ? { backlogTotalBytes } : {}),
+    ...(refuseAfterMs !== undefined ? { refuseAfterMs } : {}),
   });
   const rssMiB = (process.memoryUsage.rss() / 1048576).toFixed(1);
   log('INFO', `ready in ${(process.uptime() * 1000).toFixed(0)} ms rss=${rssMiB}MiB node=${process.version} arch=${process.arch} version=${env['DESK_NOTEBOOK_VERSION'] || 'dev'}`);

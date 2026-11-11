@@ -27,8 +27,37 @@ final class PageWorld {
     /** Frames looked at in one tab for one action. Past this the action refuses, since it can't guard them all. */
     static final int MAX_FRAMES = 64;
 
-    /** A frame of a tab, on the session it's reached by, with the document it holds. */
-    record Frame(String sessionId, String frameId, String loaderId, boolean onTab) {}
+    /**
+     * A frame of a tab, on the session it's reached by, with the document it holds.
+     *
+     * @param foreign its document isn't a web page's ({@link #webDocument}), as a password manager's in-page menu isn't:
+     *     nothing of deskd's is ever run in it
+     */
+    record Frame(String sessionId, String frameId, String loaderId, boolean onTab, boolean foreign) {
+        Frame(String sessionId, String frameId, String loaderId, boolean onTab) {
+            this(sessionId, frameId, loaderId, onTab, false);
+        }
+    }
+
+    /**
+     * Whether a frame's document, by its URL and origin as Chromium says them, is a web page's: http or https, or an
+     * {@code about:}, {@code data:} or {@code blob:} document of a web origin or an opaque one (a sandboxed frame's).
+     * A browser's or an extension's own page ({@code chrome-extension:}, its {@code about:blank} or {@code blob:} included)
+     * never is, and neither is a frame with no URL yet, until it commits to one (the sign-ins work's finding, Nov 11).
+     */
+    static boolean webDocument(String url, String origin) {
+        String u = url == null ? "" : url.strip().toLowerCase(java.util.Locale.ROOT);
+        String o = origin == null ? "" : origin.strip().toLowerCase(java.util.Locale.ROOT);
+        if (u.startsWith("blob:")) {
+            String inner = u.substring(5);
+            if (!(inner.startsWith("http://") || inner.startsWith("https://") || inner.startsWith("null"))) {
+                return false;
+            }
+        } else if (!(u.startsWith("http://") || u.startsWith("https://") || u.startsWith("about:") || u.startsWith("data:"))) {
+            return false;
+        }
+        return o.startsWith("http://") || o.startsWith("https://") || o.isEmpty() || o.equals("null") || o.equals("://");
+    }
 
     /**
      * A tab's frames at one moment.
@@ -80,7 +109,9 @@ final class PageWorld {
      * so the stream is as it was before. Frames already attached go with the attach.
      */
     void leave(TabRef tab, String scriptId, Duration timeout) throws CdpFailure, InterruptedException {
-        access.call(tab, "Target.setAutoAttach", Map.of("autoAttach", false, "waitForDebuggerOnStart", false, "flatten", true), timeout);
+        if (!access.keepsFrameAttach()) {
+            access.call(tab, "Target.setAutoAttach", Map.of("autoAttach", false, "waitForDebuggerOnStart", false, "flatten", true), timeout);
+        }
         if (scriptId != null) {
             access.call(tab, "Page.removeScriptToEvaluateOnNewDocument", Map.of("identifier", scriptId), timeout);
         }
@@ -114,6 +145,18 @@ final class PageWorld {
             access.callSession(sessionId, "Target.setAutoAttach", autoAttach(), timeout);
         } catch (CdpFailure e) {
             log.debug("couldn't put the guard in a frame: {}", e.kind());
+        }
+    }
+
+    /**
+     * A frame whose document isn't known yet: Page only, so its commit is heard (MinifiedModule.frameCommitted). No script,
+     * no world and no attach to its own frames until it's a web page's.
+     */
+    void watchFrame(String sessionId, Duration timeout) throws InterruptedException {
+        try {
+            access.callSession(sessionId, "Page.enable", Map.of(), timeout);
+        } catch (CdpFailure e) {
+            log.debug("couldn't enable Page in a frame: {}", e.kind());
         }
     }
 
@@ -162,6 +205,12 @@ final class PageWorld {
     /** Hands deskd an island's own element, by deskd's island id, as a remote object: nothing else is ever handed out. */
     static final String ELEMENT = "function(a){var p=globalThis.__maProxy;return p&&p.element?p.element(a):null}";
 
+    /** Whether this is one of the scripts or functions this sends: {@link Scripts}' and {@link #ELEMENT}. */
+    boolean ownScript(String source) {
+        return source != null && (source.equals(Scripts.RUN) || source.equals(ELEMENT) || source.equals(scripts.top)
+                || source.equals(scripts.frame));
+    }
+
     /**
      * The frame an island's iframe holds, as Chromium says it (DOM.describeNode on the element), never from anything the
      * page wrote on it (Security's Ask 2, condition 2).
@@ -192,6 +241,10 @@ final class PageWorld {
 
     /** One op in a frame's world, the guard put there first if it isn't. */
     Map<String, Object> runIn(TabRef tab, Frame frame, Map<String, Object> args, Duration timeout) throws CdpFailure, InterruptedException {
+        if (frame.foreign()) {
+            // Never a world, a guard or a read in a frame that isn't a web page's: it can't be armed, so it refuses.
+            throw new CdpFailure(CdpFailure.Kind.REMOTE, 0);
+        }
         String session = frame.onTab() ? null : frame.sessionId();
         String key = frame.loaderId().isEmpty() ? null : (session == null ? tab.sessionId() : session) + "|" + frame.frameId() + "|" + frame.loaderId();
         CachedWorld cached = key == null ? null : contexts.get(key);
@@ -437,7 +490,8 @@ final class PageWorld {
             String id = frame == null ? null : Json.string(frame, "id");
             if (id != null && !skip.contains(id)) {
                 String loader = Json.string(frame, "loaderId");
-                frames.add(new Frame(session, id, loader == null ? "" : loader, onTab));
+                boolean foreign = !webDocument(Json.string(frame, "url"), Json.string(frame, "securityOrigin"));
+                frames.add(new Frame(session, id, loader == null ? "" : loader, onTab, foreign));
             }
             if (node.get("childFrames") instanceof List<?> children) {
                 for (Object child : children) {

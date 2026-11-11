@@ -1,6 +1,23 @@
 // Export a page (design 5.6, Phase 1): GitHub-flavoured Markdown and self-contained HTML. Pure.
 // PDF is the browser's own print of the page (ui/print.ts). Notebook ZIPs are Phase 2.
+//
+// Colors (ADR 0091), as each format allows. The page stores colors' names; `palette` says what each looks like at export
+// time. HTML keeps the names as `data-*` attributes, so pasting it back into a page keeps them, and draws them from a
+// stylesheet made from `palette`. Markdown has no colors: a highlight stays `<mark>`, and with `palette` the inline HTML GitHub drops and most
+// other readers draw (`style`). Block colors and labels are only in HTML and the notebook file (`notebookFile.ts`).
+import { DEFAULT_HIGHLIGHT, highlightId, isPaletteId, type PaletteColors, type PaletteId } from './colors.ts';
 import { LINK_PROTOCOLS, type PMNode } from './schema.ts';
+
+export interface ExportOptions {
+  /** Light-theme values for each color, from the UI's palette. Without it, Markdown has no colors and HTML only the names. */
+  palette?: PaletteColors | undefined;
+}
+
+/** A palette value as CSS, or null: only `#rgb`/`#rrggbb`, so nothing from a palette can break out of a style. */
+function cssColor(palette: PaletteColors | undefined, id: PaletteId | null, role: 'highlight' | 'text' | 'callout' | 'label'): string | null {
+  const v = id && palette?.[id]?.[role];
+  return typeof v === 'string' && /^#[0-9a-fA-F]{3}([0-9a-fA-F]{3})?$/.test(v) ? v : null;
+}
 
 type Mark = NonNullable<PMNode['marks']>[number];
 
@@ -13,22 +30,31 @@ export function safeHref(href: unknown): string | null {
 
 // ------------------------------------------------------------------ Markdown
 
-const MD_ORDER = ['link', 'bold', 'italic', 'strike', 'underline', 'highlight', 'code'];
-const MD_OPEN: Record<string, (m: Mark) => string> = {
+const MD_ORDER = ['link', 'bold', 'italic', 'strike', 'underline', 'highlight', 'textColor', 'code'];
+type MdTag = (m: Mark, palette?: PaletteColors) => string;
+const MD_OPEN: Record<string, MdTag> = {
   bold: () => '**',
   italic: () => '_',
   strike: () => '~~',
   underline: () => '<u>',
-  highlight: () => '<mark>',
+  highlight: (m, palette) => {
+    const bg = cssColor(palette, highlightId(m.attrs?.['color']), 'highlight');
+    return bg ? `<mark style="background-color: ${bg}">` : '<mark>';
+  },
+  textColor: (m, palette) => {
+    const fg = cssColor(palette, isPaletteId(m.attrs?.['color']) ? m.attrs['color'] : null, 'text');
+    return fg ? `<span style="color: ${fg}">` : '';
+  },
   code: () => '`',
   link: () => '[',
 };
-const MD_CLOSE: Record<string, (m: Mark) => string> = {
+const MD_CLOSE: Record<string, MdTag> = {
   bold: () => '**',
   italic: () => '_',
   strike: () => '~~',
   underline: () => '</u>',
   highlight: () => '</mark>',
+  textColor: (m, palette) => (cssColor(palette, isPaletteId(m.attrs?.['color']) ? m.attrs['color'] : null, 'text') ? '</span>' : ''),
   code: () => '`',
   link: (m) => `](${(safeHref(m.attrs?.['href']) ?? '').replace(/[()\s]/g, encodeURIComponent)})`,
 };
@@ -46,13 +72,15 @@ function sortedMarks(node: PMNode): Mark[] {
 const sameMark = (a: Mark, b: Mark): boolean => a.type === b.type && JSON.stringify(a.attrs ?? {}) === JSON.stringify(b.attrs ?? {});
 
 /** Inline content with marks opened and closed across neighbouring text nodes, as prosemirror-markdown does. */
+let mdPalette: PaletteColors | undefined;
+
 function mdInline(nodes: PMNode[] = []): string {
   let out = '';
   const open: Mark[] = [];
   const closeTo = (n: number) => {
     while (open.length > n) {
       const m = open.pop() as Mark;
-      out += MD_CLOSE[m.type]?.(m) ?? '';
+      out += MD_CLOSE[m.type]?.(m, mdPalette) ?? '';
     }
   };
   for (const node of nodes) {
@@ -67,7 +95,7 @@ function mdInline(nodes: PMNode[] = []): string {
     while (keep < open.length && keep < marks.length && sameMark(open[keep] as Mark, marks[keep] as Mark)) keep += 1;
     closeTo(keep);
     for (const m of marks.slice(keep)) {
-      out += MD_OPEN[m.type]?.(m) ?? '';
+      out += MD_OPEN[m.type]?.(m, mdPalette) ?? '';
       open.push(m);
     }
     const inCode = open.some((m) => m.type === 'code');
@@ -149,9 +177,14 @@ function mdBlock(node: PMNode, indent: string): string | null {
   }
 }
 
-export function toMarkdown(doc: PMNode): string {
-  const blocks = mdBlocks(doc.content).filter((b, i, all) => b !== '' || (i > 0 && all[i - 1] !== ''));
-  return `${blocks.join('\n\n').replace(/\n{3,}/g, '\n\n').trim()}\n`;
+export function toMarkdown(doc: PMNode, o: ExportOptions = {}): string {
+  mdPalette = o.palette;
+  try {
+    const blocks = mdBlocks(doc.content).filter((b, i, all) => b !== '' || (i > 0 && all[i - 1] !== ''));
+    return `${blocks.join('\n\n').replace(/\n{3,}/g, '\n\n').trim()}\n`;
+  } finally {
+    mdPalette = undefined;
+  }
 }
 
 // ------------------------------------------------------------------ HTML
@@ -166,8 +199,17 @@ const HTML_MARK: Record<string, [string, string]> = {
   strike: ['<s>', '</s>'],
   underline: ['<u>', '</u>'],
   code: ['<code>', '</code>'],
-  highlight: ['<mark>', '</mark>'],
 };
+
+/** A highlight's or text color's tags, carrying the name as the editor renders it, so the HTML pastes back with its colors. */
+function htmlColorMark(m: Mark): [string, string] | null {
+  if (m.type === 'highlight') return [`<mark data-color="${highlightId(m.attrs?.['color']) ?? DEFAULT_HIGHLIGHT}">`, '</mark>'];
+  if (m.type === 'textColor' && isPaletteId(m.attrs?.['color'])) return [`<span data-text-color="${m.attrs['color']}">`, '</span>'];
+  return null;
+}
+
+/** ` data-block-color="green"` for a colored block (a callout), else nothing. */
+const blockColorAttr = (node: PMNode): string => (isPaletteId(node.attrs?.['color']) ? ` data-block-color="${node.attrs['color']}"` : '');
 
 function htmlInline(nodes: PMNode[] = []): string {
   return nodes
@@ -180,7 +222,7 @@ function htmlInline(nodes: PMNode[] = []): string {
           const href = safeHref(m.attrs?.['href']);
           if (href) s = `<a href="${escapeHtml(href)}" rel="noopener noreferrer">${s}</a>`;
         } else {
-          const tags = HTML_MARK[m.type];
+          const tags = HTML_MARK[m.type] ?? htmlColorMark(m);
           if (tags) s = `${tags[0]}${s}${tags[1]}`;
         }
       }
@@ -191,36 +233,58 @@ function htmlInline(nodes: PMNode[] = []): string {
 
 function htmlBlock(node: PMNode): string {
   const inner = () => (node.content ?? []).map(htmlBlock).join('');
+  const c = blockColorAttr(node);
   switch (node.type) {
     case 'heading': {
       const l = Math.min(6, Math.max(1, Number(node.attrs?.['level'] ?? 1)));
-      return `<h${l}>${htmlInline(node.content)}</h${l}>`;
+      return `<h${l}${c}>${htmlInline(node.content)}</h${l}>`;
     }
     case 'paragraph':
-      return `<p>${htmlInline(node.content)}</p>`;
+      return `<p${c}>${htmlInline(node.content)}</p>`;
     case 'bulletList':
-      return `<ul>${inner()}</ul>`;
+      return `<ul${c}>${inner()}</ul>`;
     case 'orderedList': {
       const start = Number(node.attrs?.['start'] ?? 1);
-      return start === 1 ? `<ol>${inner()}</ol>` : `<ol start="${start}">${inner()}</ol>`;
+      return start === 1 ? `<ol${c}>${inner()}</ol>` : `<ol start="${start}"${c}>${inner()}</ol>`;
     }
     case 'listItem':
-      return `<li>${inner()}</li>`;
+      return `<li${c}>${inner()}</li>`;
     case 'taskList':
-      return `<ul class="tasks">${inner()}</ul>`;
+      return `<ul class="tasks"${c}>${inner()}</ul>`;
     case 'taskItem': {
       const checked = !!node.attrs?.['checked'];
-      return `<li class="task${checked ? ' done' : ''}"><input type="checkbox" disabled${checked ? ' checked' : ''}><div>${inner()}</div></li>`;
+      return `<li class="task${checked ? ' done' : ''}"${c}><input type="checkbox" disabled${checked ? ' checked' : ''}><div>${inner()}</div></li>`;
     }
     case 'blockquote':
-      return `<blockquote>${inner()}</blockquote>`;
+      return `<blockquote${c}>${inner()}</blockquote>`;
     case 'codeBlock':
-      return `<pre><code>${escapeHtml((node.content ?? []).map((c) => c.text ?? '').join(''))}</code></pre>`;
+      return `<pre${c}><code>${escapeHtml((node.content ?? []).map((x) => x.text ?? '').join(''))}</code></pre>`;
     case 'horizontalRule':
       return '<hr>';
     default:
       return inner();
   }
+}
+
+/** The stylesheet for the palette's colors, for a file that has no theme: the values `palette` gives, light. */
+export function paletteCss(palette: PaletteColors | undefined): string {
+  if (!palette) return '';
+  const rules: string[] = [];
+  for (const id of Object.keys(palette) as PaletteId[]) {
+    if (!isPaletteId(id)) continue;
+    const hl = cssColor(palette, id, 'highlight');
+    const fg = cssColor(palette, id, 'text');
+    const bg = cssColor(palette, id, 'callout');
+    const rule = cssColor(palette, id, 'label');
+    if (hl) rules.push(`mark[data-color="${id}"]{background:${hl}}`);
+    if (fg) rules.push(`[data-text-color="${id}"]{color:${fg}}`);
+    // A callout: its background, and the spec's 3 px rule on the left in the color's label value.
+    if (bg) rules.push(`[data-block-color="${id}"]{background:${bg};${rule ? `border-left:3px solid ${rule};` : ''}border-radius:6px;padding:4px 8px}`);
+  }
+  // An old page's highlight is "yellow", which is amber.
+  const amber = cssColor(palette, DEFAULT_HIGHLIGHT, 'highlight');
+  if (amber) rules.push(`mark[data-color="yellow"]{background:${amber}}`);
+  return rules.join('\n');
 }
 
 /** The page body as HTML, without a document around it. */
@@ -229,7 +293,8 @@ export function toHtmlBody(doc: PMNode): string {
 }
 
 /** A complete HTML file that opens anywhere, with its stylesheet inside and nothing fetched. */
-export function toHtmlDocument(doc: PMNode, title: string, css: string): string {
+export function toHtmlDocument(doc: PMNode, title: string, css: string, o: ExportOptions = {}): string {
+  const colors = paletteCss(o.palette);
   return [
     '<!doctype html>',
     '<html lang="en">',
@@ -237,7 +302,7 @@ export function toHtmlDocument(doc: PMNode, title: string, css: string): string 
     '<meta charset="utf-8">',
     '<meta name="viewport" content="width=device-width, initial-scale=1">',
     `<title>${escapeHtml(title || 'Note')}</title>`,
-    `<style>${css}</style>`,
+    `<style>${colors ? `${css}\n${colors}` : css}</style>`,
     '</head>',
     '<body>',
     '<main>',

@@ -1,0 +1,4 @@
+<g data-part="eyes-round">
+  <g data-eye="left"><ellipse cx="110" cy="119" rx="10" ry="7" fill="{{sclera}}"/><circle cx="110" cy="119" r="6.5" fill="{{eye}}"/><circle cx="112.1" cy="116.8" r="1.6" fill="{{catch}}"/></g>
+  <g data-eye="right"><ellipse cx="146" cy="119" rx="10" ry="7" fill="{{sclera}}"/><circle cx="146" cy="119" r="6.5" fill="{{eye}}"/><circle cx="148.1" cy="116.8" r="1.6" fill="{{catch}}"/></g>
+</g>

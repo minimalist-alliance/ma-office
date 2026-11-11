@@ -18,7 +18,7 @@ export const DEFAULT_TIER_NAMES: TierNames = { alliance: 'Alliance Member', offi
 const MAX_NAME = 24;
 // Control characters, which no name may hold. Built from code points so the source holds none.
 const CONTROL = new RegExp(`[${String.fromCharCode(0)}-${String.fromCharCode(31)}${String.fromCharCode(127)}]`);
-function usable(v: unknown): string | null {
+export function usable(v: unknown): string | null {
   if (typeof v !== 'string') return null;
   const name = v.trim();
   const length = Array.from(name).length;

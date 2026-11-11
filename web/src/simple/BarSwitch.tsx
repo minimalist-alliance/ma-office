@@ -62,14 +62,16 @@ export function BarSwitch({ ui }: { ui: SimpleUi }) {
                 <path d={LINE_ICONS[line.icon]} />
               </svg>
             )}
-            <span className="br-line-text">{line.text}</span>
+            {/* The dot before the action is the sentence's, so it goes with it: hidden with the words on a phone, and cut
+                first by the ellipsis on a short screen. On its own it was a lone "· Undo". */}
+            <span className="br-line-text">
+              {line.text}
+              {line.action && <span className="br-line-sep" aria-hidden="true">{' · '}</span>}
+            </span>
             {line.action && (
-              <>
-                <span aria-hidden="true"> · </span>
-                <button type="button" className="br-line-action" data-testid="browser-simple-line-action" onClick={() => ui.lineAction()}>
-                  {line.action === 'undo' ? 'Undo' : line.action === 'retry' ? 'Try again' : 'Use the real page'}
-                </button>
-              </>
+              <button type="button" className="br-line-action" data-testid="browser-simple-line-action" onClick={() => ui.lineAction()}>
+                {line.action === 'undo' ? 'Undo' : line.action === 'retry' ? 'Try again' : 'Use the real page'}
+              </button>
             )}
           </span>
         )}

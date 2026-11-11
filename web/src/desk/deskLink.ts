@@ -38,6 +38,8 @@ export interface BrowserTab {
   active: boolean;
   canGoBack: boolean;
   canGoForward: boolean;
+  /** The page was refused protected playback (EME), once per page (deskd da3738de, TD-225); `browser/protectedPlayback.ts` is the one reader. */
+  protectedMedia?: { at: string; keySystem: string };
 }
 
 /** RPC methods the app calls, with their result types. Grows with the apps. */
@@ -47,6 +49,8 @@ export interface DeskRpc {
   'desk.attention.set': { seen?: boolean; frozen?: boolean };
   'browser.stream.set': { state?: StreamState };
   'browser.text.insert': Record<string, never>;
+  /** Chromium's own zoom of the tab on screen (API.md section 10, "On a phone"). Not used: a pinch zooms the picture here. */
+  'browser.pinch': Record<string, never>;
   'browser.tab.list': { tabs: BrowserTab[] };
   /** `netError` is a normal result: Chromium shows its own error page in the stream. */
   'browser.tab.navigate': { tabId: string; netError?: string };
@@ -135,6 +139,10 @@ export interface DeskRpc {
   'notebook.page.move': Record<string, never>;
   'notebook.page.trash': Record<string, never>;
   'notebook.page.restore': Record<string, never>;
+  // Colors (ADR 0091): a page's label, a copy of a page, and a page from a notebook file.
+  'notebook.page.label': Record<string, never>;
+  'notebook.page.duplicate': { page: PageRec };
+  'notebook.page.import': { page: PageRec };
   'notebook.page.content': { part: string; next: string | null };
   'notebook.version.list': { versions: VersionMeta[] };
   'notebook.version.get': { meta: VersionMeta | null; part: string; next: string | null };
@@ -185,6 +193,9 @@ export interface FilesUsage {
   trash: { bytes: number; items: number };
   floorBytes: number;
   uploadableBytes: number;
+  /** A free desk's Files cap (ADR 0090) and what it counts (the tree, the trash and unfinished uploads). Absent from an older desk; null with no cap. */
+  capBytes?: number | null;
+  capUsedBytes?: number | null;
   computedAt: string;
 }
 
@@ -304,6 +315,79 @@ export interface BrowserClipboardMessage {
   type: string;
 }
 
+/**
+ * One Browser download as the desk tells of it (topic `browser.downloads`, ADR 0092, LS-31). `name` is the file's name, from
+ * web content: show it as plain text only. Nothing says where it came from.
+ */
+export interface BrowserDownload {
+  id: string;
+  name: string;
+  state: 'inProgress' | 'completed' | 'canceled';
+  receivedBytes: number;
+  /** 0 when the size isn't known. */
+  totalBytes: number;
+  /** Where the finished file is in Files, only when it landed there; no image puts Browser downloads there yet. */
+  filesPath?: string;
+  /**
+   * The download's own final http(s) address, for "Get it on this device" (#9). Asked of the Desk Engineer; no deskd sends it
+   * yet, so the button stays hidden. Untrusted, and opened only as http or https (`browser/openOnDevice.ts`).
+   */
+  url?: string;
+}
+
+/** The desk's newest Browser downloads, newest first, at most 5. Every event is the whole list; a deskd before it refuses the SUB. */
+export interface BrowserDownloadsMessage {
+  seq: number;
+  downloads: BrowserDownload[];
+}
+
+/**
+ * A link a page on the desk tried to open and only the member's own device can (topic `browser.links`, event `linkOut`,
+ * API.md section 10 "Links out"; #9). Every field is untrusted: `browser/handoff.ts` is the one reader. No first event and
+ * nothing kept; a deskd before it refuses the SUB with `not_found`.
+ */
+export interface BrowserLinkOutMessage {
+  seq: number;
+  type?: string;
+  url?: string;
+  scheme?: string;
+  displayText?: string;
+  reason?: string;
+  at?: string;
+  tabId?: string;
+}
+
+/** A box in the picture, normalized to the whole picture (0 to 65535), as input is. */
+export interface NormBox {
+  x: number;
+  y: number;
+  width: number;
+  height: number;
+}
+
+/**
+ * Topic `browser.view` (API.md section 10, "On a phone"): whose view the tabs have. While a phone's session has them,
+ * Chromium draws the phone's view in `region` of the `screen` (screen pixels) and `field` is what has focus in the tab on
+ * screen (never its value). A desk's own view is `{mode: "desktop", field: null}`. A deskd before it refuses the SUB.
+ */
+export interface BrowserViewMessage {
+  mode: 'phone' | 'desktop';
+  sessionId?: string;
+  width?: number;
+  height?: number;
+  scale?: number;
+  region?: { x: number; y: number; width: number; height: number };
+  screen?: { width: number; height: number };
+  field: { tabId?: string; kind: string; enterKey: string | null; box?: NormBox } | null;
+}
+
+/** `desk.attention.set`'s `device` on a phone: the CSS size of the box the Browser's picture fills. */
+export interface PhoneDevice {
+  kind: 'phone';
+  width: number;
+  height: number;
+}
+
 /** The whole list of a desk's agents, on each change. No first event while `desk-agent` isn't running. */
 export interface AgentStateMessage {
   seq: number;
@@ -378,16 +462,30 @@ export interface FilesChangesMessage {
   trash?: boolean;
 }
 
+/**
+ * Proposed (the free tier, S-119; STATUS.md "For the Desk Engineer"): the desk's container is being held back on its
+ * shared host, from its own cgroup `cpu.stat`. No deskd serves it yet, so a SUB is refused and nothing is ever said.
+ */
+export interface DeskContentionMessage {
+  seq: number;
+  type?: string;
+  held?: boolean;
+}
+
 export type LinkTopics = {
   'files.changes': FilesChangesMessage;
   summary: SummaryMessage;
   'desk.attention': DeskAttentionMessage;
+  'desk.contention': DeskContentionMessage;
   'browser.tabs': BrowserTabsMessage;
   'browser.clipboard': BrowserClipboardMessage;
   'notebook.tree': NotebookTreeMessage;
   'agent.state': AgentStateMessage;
   [conversation: `agent.conversation:${string}`]: AgentConversationMessage;
   [minified: `browser.minified:${string}`]: BrowserMinifiedEvent;
+  'browser.downloads': BrowserDownloadsMessage;
+  'browser.links': BrowserLinkOutMessage;
+  'browser.view': BrowserViewMessage;
 };
 
 /** What Platform last reported about this desk, through `connect` or the gateway. */
@@ -398,6 +496,11 @@ export interface LinkDeskState {
   stopAt: string | null;
   /** Why a stop is announced (`data_guard`, ...), when the platform says. */
   stopReason?: string | null;
+  /**
+   * When the link last heard any of this, on this tab's clock (`Date.now()`). A desk list asked for before then is
+   * older, and doesn't overrule it (`setDeskList`). Left out, the list always wins.
+   */
+  heardAt?: number;
 }
 
 /** Everything a link reports besides its state. Changes often, so none of it may drive a panel render. */
@@ -410,6 +513,8 @@ export interface LinkDetails {
   desk: LinkDeskState | null;
   /** `connect` said no for a reason the member should see (contract 0.3.11). Kept until a `connect` answers. */
   refusal: DeskRefusal | null;
+  /** `connect` said `503 free_capacity_wait`: a free desk is waiting for room, and the link asks again at the pace given. */
+  busy?: boolean;
 }
 
 /**
@@ -483,6 +588,13 @@ export interface DeskLink {
    * new session. Never wakes anything: with no session open, it waits for one.
    */
   setSeen(seen: boolean): void;
+  /**
+   * The phone this office is on, while its Browser shows the real page here, or null (API.md section 10, "On a phone"):
+   * goes with every `desk.attention.set`, so the desk lays the tabs out for it. Never for a keyboard coming or going.
+   */
+  setDevice?(device: PhoneDevice | null): void;
+  /** This session's id, to tell whether `browser.view`'s phone is this one. Null with no session. */
+  currentSessionId?(): string | null;
   /**
    * This session's desk said yes to `desk.attention.set`, so it holds an unseen session's `live` at `warm`'s cost and
    * sends media again the moment it's looked at (deskd API.md section 10, "Nobody looking"). False on a desk before that.

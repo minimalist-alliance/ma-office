@@ -6,7 +6,7 @@ import { afterEach, beforeEach, describe, expect, it } from 'vitest';
 import * as Y from 'yjs';
 import { Client, DeskdSession, sleep, synced, until } from './helpers/deskd.ts';
 import { doc, fakeState, h1, p, setBody, textOf, typeInto } from './helpers/docs.ts';
-import { child, makeNotebook, tempDir, type Child } from './helpers/service.ts';
+import { child, harness, makeNotebook, tempDir, type Child, type Harness } from './helpers/service.ts';
 
 let dir = '';
 let running: Child | null = null;
@@ -215,3 +215,188 @@ describe('SIGTERM', () => {
     s.close();
   });
 });
+
+// ---------------------------------------------------------------------------------------------------------------------
+// A full disk (reliability audit D6). SQLite's own limit stands in for it: with `max_page_count` at the file's size, every
+// write that needs a new page fails with the binding's SQLITE_FULL (errcode 13), as it does on a full volume.
+
+describe('the disk is full', () => {
+  const MARK = 'SECRETMARKER';
+  let h: Harness;
+  let lines: string[] = [];
+  let realWrite: typeof process.stdout.write;
+
+  const pagesOfFile = (): number => (h.service.db.raw.prepare('PRAGMA page_count').get() as { page_count: number }).page_count;
+  const fill = (): void => {
+    // Checkpoint first, so the limit is the file's own size and not the WAL's.
+    h.service.db.raw.exec('PRAGMA wal_checkpoint(TRUNCATE)');
+    h.service.db.raw.exec(`PRAGMA max_page_count = ${pagesOfFile()}`);
+  };
+  const free = (): void => void h.service.db.raw.exec('PRAGMA max_page_count = 1073741823');
+  const noise = (n: number): string => Array.from({ length: n }, () => Math.random().toString(36).slice(2)).join('');
+  const storage = async (s: DeskdSession): Promise<any> => (await s.health()).storage;
+  const rows = (): number => h.service.db.get<{ n: number }>('SELECT count(*) AS n FROM page_updates')?.n ?? 0;
+
+  beforeEach(() => {
+    lines = [];
+    realWrite = process.stdout.write.bind(process.stdout);
+    process.stdout.write = ((chunk: string | Uint8Array, ...rest: unknown[]): boolean => {
+      lines.push(String(chunk));
+      return (realWrite as (...a: unknown[]) => boolean)(chunk, ...rest);
+    }) as typeof process.stdout.write;
+  });
+  afterEach(async () => {
+    process.stdout.write = realWrite;
+    for (const c of clients.splice(0)) c.destroy();
+    await h?.clean();
+  });
+
+  it('keeps the edits, says degraded, logs once with no text, and writes everything when there is room again', async () => {
+    h = await harness({ commitMs: 20, storeDebounceMs: 30, storeMaxWaitMs: 60, readableDebounceMs: 60_000 });
+    const s = h.session();
+    const { pageId } = await makeNotebook(s);
+    const c = new Client(h.socket);
+    clients.push(c);
+    const provider = c.open(pageId);
+    await synced(provider);
+    typeInto(provider.document, 'before the disk filled ');
+    await until('saved', () => !provider.hasUnsyncedChanges && rows() === 0 && h.service.pages.storage().unsavedBytes === 0);
+    expect((await storage(s)).state).toBe('ok');
+
+    fill();
+    for (let i = 0; i < 10; i += 1) typeInto(provider.document, `${MARK} ${noise(2000)} `);
+    await until('degraded', async () => (await storage(s)).state === 'degraded');
+    const st = await storage(s);
+    expect(st.unsavedPages).toBe(1);
+    expect(st.unsavedBytes).toBeGreaterThan(10_000);
+    expect(st.refusing).toBe(false);
+    // The service is still healthy, so the container isn't restarted and the edits aren't lost with it.
+    expect((await s.health()).ok).toBe(true);
+    // Edits are still applied in memory and acknowledged: below the caps nothing is refused.
+    await until('acked', () => !provider.hasUnsyncedChanges);
+
+    await sleep(300); // Several failed commits and stores.
+    const failed = lines.filter((l) => l.includes('storage failing'));
+    expect(failed).toHaveLength(1);
+    expect(failed[0]).toMatch(/ERR_SQLITE_ERROR 13/);
+    expect(lines.join('')).not.toContain(MARK);
+    expect(lines.join('')).not.toContain('before the disk');
+
+    free();
+    await until('flushed and clear', async () => (await storage(s)).state === 'ok', 10_000);
+    expect((await storage(s)).unsavedBytes).toBe(0);
+    expect(lines.filter((l) => l.includes('storage works again'))).toHaveLength(1);
+    expect(lines.join('')).not.toContain(MARK);
+
+    // On disk, not in memory: a restart with nobody holding the document.
+    c.destroy();
+    await sleep(100);
+    const again = await h.restart();
+    expect(again.pages.open.size).toBe(0);
+    const c2 = new Client(h.socket);
+    clients.push(c2);
+    const fresh = c2.open(pageId);
+    await synced(fresh);
+    expect(textOf(fresh.document)).toContain('before the disk filled');
+    expect((textOf(fresh.document).match(new RegExp(MARK, 'g')) ?? []).length).toBe(10);
+  });
+
+  it('refuses new edits past the per-page cap with storage_full, and takes them again after recovery', async () => {
+    h = await harness({ commitMs: 20, storeDebounceMs: 30, storeMaxWaitMs: 60, readableDebounceMs: 60_000, backlogPageBytes: 20_000, backlogTotalBytes: 1_000_000 });
+    const s = h.session();
+    const { pageId } = await makeNotebook(s);
+    const c = new Client(h.socket);
+    clients.push(c);
+    const provider = c.open(pageId);
+    const seen = closesOf(provider);
+    await synced(provider);
+    typeInto(provider.document, 'kept ');
+    await until('saved', () => !provider.hasUnsyncedChanges);
+
+    fill();
+    typeInto(provider.document, noise(2000));
+    await until('degraded', async () => (await storage(s)).state === 'degraded');
+    expect(seen).toEqual([]);
+    // Each paste adds ~10 KB of waiting edits; the cap is 20 KB, so the third is refused.
+    for (let i = 0; i < 4 && !seen.includes('storage_full'); i += 1) {
+      typeInto(provider.document, noise(1500));
+      await sleep(100);
+    }
+    await until('the refusal', () => seen.includes('storage_full'));
+    const st = await storage(s);
+    expect(st.refusing).toBe(true);
+    expect(st.unsavedBytes).toBeLessThan(40_000); // The backlog stopped growing at the cap.
+    const bytes = st.unsavedBytes;
+    typeInto(provider.document, noise(1500));
+    await sleep(150);
+    expect((await storage(s)).unsavedBytes).toBe(bytes);
+    expect(lines.filter((l) => l.includes('refusing new edits'))).toHaveLength(1);
+
+    free();
+    await until('clear', async () => (await storage(s)).state === 'ok', 10_000);
+    // The page opens again and takes edits; what was refused was never applied.
+    const c2 = new Client(h.socket);
+    clients.push(c2);
+    const again = c2.open(pageId);
+    await synced(again);
+    expect(textOf(again.document)).toContain('kept');
+    typeInto(again.document, ' after recovery');
+    await until('acked', () => !again.hasUnsyncedChanges);
+  });
+
+  it('refuses new edits once storage has failed for the grace period, whatever the size', async () => {
+    let skew = 0;
+    h = await harness({ commitMs: 20, storeDebounceMs: 30, storeMaxWaitMs: 60, readableDebounceMs: 60_000, refuseAfterMs: 60_000, now: () => Date.now() + skew });
+    const s = h.session();
+    const { pageId } = await makeNotebook(s);
+    const c = new Client(h.socket);
+    clients.push(c);
+    const provider = c.open(pageId);
+    const seen = closesOf(provider);
+    await synced(provider);
+    typeInto(provider.document, 'kept ');
+    await until('saved', () => !provider.hasUnsyncedChanges);
+
+    fill();
+    typeInto(provider.document, noise(2000));
+    await until('degraded', async () => (await storage(s)).state === 'degraded');
+    expect((await storage(s)).refusing).toBe(false);
+    skew = 61_000;
+    expect((await storage(s)).refusing).toBe(true);
+    typeInto(provider.document, 'one more');
+    await until('the refusal', () => seen.includes('storage_full'));
+    free();
+    await until('clear', async () => (await storage(s)).state === 'ok', 10_000);
+  });
+
+  it('a page that closes with edits unwritten keeps them and writes them later', async () => {
+    h = await harness({ commitMs: 20, storeDebounceMs: 30, storeMaxWaitMs: 60, readableDebounceMs: 60_000 });
+    const s = h.session();
+    const { pageId } = await makeNotebook(s);
+    const c = new Client(h.socket);
+    clients.push(c);
+    const provider = c.open(pageId);
+    await synced(provider);
+    typeInto(provider.document, 'kept ');
+    await until('saved', () => !provider.hasUnsyncedChanges);
+
+    fill();
+    typeInto(provider.document, `${MARK} ${noise(500)}`);
+    await until('acked', () => !provider.hasUnsyncedChanges);
+    await until('degraded', async () => (await storage(s)).state === 'degraded');
+    c.destroy(); // The last connection leaves; the document unloads with its edits unwritten.
+    await until('unloaded', () => h.service.pages.open.size === 0, 5000);
+    expect((await storage(s)).unsavedBytes).toBeGreaterThan(0);
+
+    free();
+    await until('clear', async () => (await storage(s)).state === 'ok', 10_000);
+    const again = await h.restart(); // Recovery folds the log rows in.
+    expect(again.db.get<{ n: number }>("SELECT count(*) AS n FROM pages WHERE plain_text LIKE ?", `%${MARK}%`)?.n).toBe(1);
+  });
+});
+
+function closesOf(provider: ReturnType<Client['open']>): string[] {
+  const out: string[] = [];
+  provider.on('close', ({ event }: { event: { reason: string } }) => out.push(event.reason));
+  return out;
+}

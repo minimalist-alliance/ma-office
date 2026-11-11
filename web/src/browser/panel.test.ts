@@ -5,6 +5,12 @@ const base: PanelInput = { vm: 'running', phase: 'ready', queuePosition: null, l
 const panel = (p: Partial<PanelInput>) => browserPanel({ ...base, ...p });
 
 describe('browserPanel', () => {
+  it('a free desk waiting for room is a wait, shown before anything the desk or link might say', () => {
+    expect(panel({ busy: true, link: 'retrying' })).toEqual({ kind: 'busy' });
+    expect(panel({ busy: true, vm: 'held' })).toEqual({ kind: 'support' });
+    expect(panel({ busy: false, link: 'retrying' })).toEqual({ kind: 'reconnecting' });
+  });
+
   it('a running desk with a frame shows the picture and nothing else', () => {
     expect(panel({})).toEqual({ kind: 'playing' });
   });

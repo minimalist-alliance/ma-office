@@ -45,13 +45,34 @@ public final class DataVolume {
      */
     public record VolumeRecord(String volumeId, String formattedAt) {}
 
+    /**
+     * Under this much usable space the heartbeat says the volume is failing (audit D5). Below it the desk's own small
+     * writes can fail at any moment: deskd's state files (each well under 1 MiB, written whole to a temporary file first),
+     * desk-notebook's and desk-agent's SQLite journals, and Chromium's profile (ADR 0035), whose databases and
+     * {@code Local State} are rewritten as it runs. So the desk is broken for its member even while it answers. Above it
+     * those writes fit. The Files app's 2 GiB floor is another thing: what an upload may take, not whether the desk works.
+     */
+    public static final long LOW_SPACE_BYTES = 64L * 1024 * 1024;
+
+    /** What a write by deskd's uid can still take, as statvfs says ({@code f_bavail}): ext4's root reserve isn't counted. */
+    public interface Space {
+        long usable(Path directory) throws IOException;
+    }
+
     private final Path directory;
+    private final Space space;
     private final ReentrantLock recordLock = new ReentrantLock();
     private boolean recordRead;
     private VolumeRecord record;
 
     public DataVolume(Path directory) {
+        this(directory, dir -> Files.getFileStore(dir).getUsableSpace());
+    }
+
+    /** With the space read some other way: a test's. */
+    public DataVolume(Path directory, Space space) {
         this.directory = directory;
+        this.space = space;
     }
 
     public Path directory() {
@@ -74,6 +95,19 @@ public final class DataVolume {
     /** Just the permission check, cheap enough for every heartbeat. */
     public boolean looksWritable() {
         return Files.isDirectory(directory) && Files.isWritable(directory);
+    }
+
+    /**
+     * One statvfs, no write, so cheap enough for every heartbeat; a full disk still {@link #looksWritable looks writable}.
+     *
+     * @return true if the volume has under {@link #LOW_SPACE_BYTES} usable, false if more or if it can't be read
+     */
+    public boolean lowOnSpace() {
+        try {
+            return space.usable(directory) < LOW_SPACE_BYTES;
+        } catch (IOException | RuntimeException e) {
+            return false;
+        }
     }
 
     /** @return null if the directory isn't there */

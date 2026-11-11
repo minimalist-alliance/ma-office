@@ -128,8 +128,9 @@ export class Db {
   }
 
   /**
-   * Guild desks' writers and names. Created if missing at every start, without a schema bump, because a build without
-   * them ignores them: a rollback still opens the file. Personal and Work desks get them empty.
+   * Guild desks' writers and names, and pages' labels (ADR 0091). Created if missing at every start, without a schema bump,
+   * because a build without them ignores them: a rollback still opens the file, and leaves a label as it found it, since no
+   * statement of its names the column. Personal and Work desks get the guild's tables empty.
    */
   private additive(): void {
     this.tx(() => {
@@ -140,6 +141,10 @@ export class Db {
       `);
       const cols = this.raw.prepare('PRAGMA table_info(page_updates)').all() as { name: string }[];
       if (!cols.some((c) => c.name === 'actors')) this.raw.exec('ALTER TABLE page_updates ADD COLUMN actors TEXT');
+      const pageCols = this.raw.prepare('PRAGMA table_info(pages)').all() as { name: string }[];
+      if (!pageCols.some((c) => c.name === 'label')) this.raw.exec('ALTER TABLE pages ADD COLUMN label TEXT');
+      // Who trashed a page, so on a guild desk only they or a moderator may bring it back (authz-5). Null until trashed.
+      if (!pageCols.some((c) => c.name === 'deleted_by')) this.raw.exec('ALTER TABLE pages ADD COLUMN deleted_by TEXT');
     });
   }
 
@@ -168,6 +173,11 @@ export class Db {
 
   all<T>(sql: string, ...params: SQLInputValue[]): T[] {
     return this.q(sql).all(...params) as T[];
+  }
+
+  /** Rows one at a time, so a reader that stops early reads no more. Leaving the loop resets the statement. */
+  iterate<T>(sql: string, ...params: SQLInputValue[]): IterableIterator<T> {
+    return this.q(sql).iterate(...params) as IterableIterator<T>;
   }
 
   get<T>(sql: string, ...params: SQLInputValue[]): T | undefined {

@@ -6,6 +6,7 @@ After=desk-host-boot.service desk-host-shutdown.service network-online.target nf
 Wants=network-online.target
 
 [Service]
+OOMScoreAdjust=-900
 Type=simple
 ExecStart=/usr/local/lib/desk-host/desk-host-link
 Restart=always

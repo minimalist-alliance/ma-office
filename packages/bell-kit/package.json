@@ -1,0 +1,9 @@
+{
+  "name": "@minimalist-alliance/bell-kit",
+  "version": "1.0.0",
+  "private": true,
+  "type": "module",
+  "description": "The one notification row and panel model every MA bell renders (ADR 0125). Imported by relative path; vendored in ma-desk.",
+  "exports": { ".": { "types": "./model.d.mts", "default": "./model.mjs" } },
+  "scripts": { "test": "node --test tests/*.test.mjs" }
+}

@@ -25,6 +25,7 @@ import java.time.Clock;
 import java.util.List;
 import java.util.Locale;
 import java.util.Objects;
+import java.util.Set;
 import java.util.concurrent.CompletableFuture;
 import java.util.concurrent.ExecutionException;
 import java.util.concurrent.atomic.AtomicBoolean;
@@ -91,6 +92,28 @@ public final class ManagerAgent {
 
         ToolResult call(ToolCall call, String runId) throws InterruptedException;
 
+        /**
+         * The call with the gate's verdict, which runs it: {@link com.minimalistalliance.desk.agent.approval.Verdict.Auto}
+         * or {@link com.minimalistalliance.desk.agent.approval.Verdict.Approved}, whose {@code {approvalId, sha256}} a
+         * deskd-hosted tool sends with the call. An approved call runs with exactly the approval's stored payload, which
+         * is the call's input. Tools that never ask needn't override it.
+         */
+        default ToolResult call(ToolCall call, String runId,
+                com.minimalistalliance.desk.agent.approval.Verdict verdict) throws InterruptedException {
+            return call(call, runId);
+        }
+
+        /**
+         * The call with its run and the gate's verdict: what a gated run calls. A tool that reads untrusted or private
+         * content beyond its declaration's {@code taints} (a workspace file a {@code U} run wrote) adds it with
+         * {@code run.add}, and a deskd-hosted tool sends {@code run.taint()} with the call. By default
+         * {@link #call(ToolCall, String, com.minimalistalliance.desk.agent.approval.Verdict)}.
+         */
+        default ToolResult call(ToolCall call, com.minimalistalliance.desk.agent.tool.RunContext run,
+                com.minimalistalliance.desk.agent.approval.Verdict verdict) throws InterruptedException {
+            return call(call, run.runId(), verdict);
+        }
+
         /** A few words for the reply's tool chip: what was done, never the content. */
         default String chip(ToolCall call, ToolResult result) {
             return call.name();
@@ -100,24 +123,49 @@ public final class ManagerAgent {
     /**
      * What one run is told and may do: its system prompt, its tools and, for a run another agent's message started, the
      * most it may spend in µ$ (what's left of the share of spend on agent messages; null for no cap of its own). That cap
-     * tightens the run scope of every step's reservation, never loosens it.
+     * tightens the run scope of every step's reservation, never loosens it. {@code gating}, when present, puts every
+     * step's calls through the policy and the approval gate (draft ADR "the Agent's tools and approvals", section 11).
      */
-    public record RunSetup(String instructions, Tools tools, Long maxMicroUsd) {
+    public record RunSetup(String instructions, Tools tools, Long maxMicroUsd,
+            Set<com.minimalistalliance.desk.agent.tool.Taint> taint, Gating gating) {
+        /**
+         * {@code taint} is the run's flags from its start (the tools and approvals draft, section 6), live: the very set
+         * a {@link com.minimalistalliance.desk.agent.tool.RunContext} keeps by reference, so a run context made with it
+         * shares it, and what the loop adds is what a tool that reads it sees. What a run reads before its first step
+         * goes in here: memory's {@code S} for pinned lines and {@code U} for a marked one ({@code Memories.seed}).
+         */
         public RunSetup {
             Objects.requireNonNull(instructions, "instructions");
             tools = tools == null ? Tools.NONE : tools;
             if (maxMicroUsd != null && maxMicroUsd < 0) {
                 throw new IllegalArgumentException("negative cap");
             }
+            // A run context made with null makes the run's own grow-only set; one made with that set keeps it.
+            taint = new com.minimalistalliance.desk.agent.tool.RunContext("setup", "setup",
+                    com.minimalistalliance.desk.agent.service.Caller.OWNER, null, taint, null).taint();
+        }
+
+        public RunSetup(String instructions, Tools tools, Long maxMicroUsd,
+                Set<com.minimalistalliance.desk.agent.tool.Taint> taint) {
+            this(instructions, tools, maxMicroUsd, taint, null);
+        }
+
+        public RunSetup(String instructions, Tools tools, Long maxMicroUsd) {
+            this(instructions, tools, maxMicroUsd, null, null);
         }
 
         public RunSetup(String instructions, Tools tools) {
-            this(instructions, tools, null);
+            this(instructions, tools, null, null);
         }
 
-        /** The same setup with other tools, keeping its cap. */
+        /** The same setup with other tools, keeping its cap, its taint and its gating. */
         public RunSetup withTools(Tools other) {
-            return new RunSetup(instructions, other, maxMicroUsd);
+            return new RunSetup(instructions, other, maxMicroUsd, taint, gating);
+        }
+
+        /** The same setup with the policy and the gate, keeping its taint. */
+        public RunSetup withGating(Gating other) {
+            return new RunSetup(instructions, tools, maxMicroUsd, taint, other);
         }
 
         /** The policy a step reserves against: the agent's, with the run scope at most this setup's cap. */
@@ -130,6 +178,21 @@ public final class ManagerAgent {
             return new LimitPolicy(policy.agentDay(), policy.agentWeek(), policy.agentMonth(), policy.deskDay(),
                     policy.deskMonth(), policy.keyMonth(),
                     new com.minimalistalliance.desk.agent.limits.Limit(cap, run.maxTokens()), policy.runMaxSteps());
+        }
+    }
+
+    /**
+     * How a run's calls are let through: {@code policy} classifies each call of a step, {@code gate} admits the step
+     * (asking the member where the class says so) and settles each call, and {@code context} makes the run's
+     * {@link com.minimalistalliance.desk.agent.tool.RunContext} from its id, once, as the run starts.
+     */
+    public record Gating(com.minimalistalliance.desk.agent.tool.ToolPolicy policy,
+            com.minimalistalliance.desk.agent.approval.ApprovalGate gate,
+            java.util.function.Function<String, com.minimalistalliance.desk.agent.tool.RunContext> context) {
+        public Gating {
+            Objects.requireNonNull(policy, "policy");
+            Objects.requireNonNull(gate, "gate");
+            Objects.requireNonNull(context, "context");
         }
     }
 
@@ -405,6 +468,8 @@ public final class ManagerAgent {
             throw new AgentException(AgentException.Code.BUSY, null);
         }
         Run run = new Run(RunIds.next(clock).toString());
+        com.minimalistalliance.desk.agent.tool.RunContext context = setup.gating() == null ? null
+                : setup.gating().context().apply(run.runId());
         LlmGateway.Reserved reserved;
         try {
             ChatRequest request = new ChatRequest(current.model(), setup.instructions(), thread,
@@ -438,9 +503,27 @@ public final class ManagerAgent {
             sink.delta(text);
         };
         run.thread = Thread.ofVirtual().name("run-" + run.runId()).unstarted(() -> complete(run, reserved, current,
-                tee, streamed, thread, setup));
+                tee, streamed, thread, setup, context));
         run.thread.start();
         return run;
+    }
+
+    /**
+     * One call on this agent's binding that isn't a run: no tools, nothing streamed, no thread, and the agent's status
+     * and its one run at a time untouched (a thread's compaction, S-14). It goes through the gateway like any step, so
+     * it's reserved against the agent's limits under {@code runId}, audited and settled. An interrupt of the caller's
+     * thread stops it.
+     *
+     * @throws AgentException {@code no_key} with no binding or no key held, before anything is reserved
+     */
+    public LlmGateway.Outcome sideCall(String system, List<ChatMessage> messages, int maxOutputTokens, String runId)
+            throws AgentException, LimitReachedException, GatewayException, ProviderException, SQLException {
+        Binding current = binding;
+        if (current == null || keys.providerOf(current.keyId()) == null) {
+            throw new AgentException(AgentException.Code.NO_KEY, null);
+        }
+        return gateway.call(new LlmGateway.Call(id, runId, current.keyId(), current.provider()),
+                new ChatRequest(current.model(), system, messages, maxOutputTokens), policy.get(), text -> {});
     }
 
     /** {@link #start}, then waits for the run's end. */
@@ -454,7 +537,8 @@ public final class ManagerAgent {
     static final int MAX_RESULT_CHARS = 20_000;
 
     private void complete(Run run, LlmGateway.Reserved first, Binding current, DeltaSink sink,
-            StringBuilder streamed, List<ChatMessage> thread, RunSetup setup) {
+            StringBuilder streamed, List<ChatMessage> thread, RunSetup setup,
+            com.minimalistalliance.desk.agent.tool.RunContext context) {
         RunResult result;
         List<Map<String, Object>> chips = new ArrayList<>();
         Usage total = null;
@@ -506,7 +590,10 @@ public final class ManagerAgent {
                 }
                 conversation.add(ChatMessage.toolCalls(outcome.result().text(), calls));
                 List<ToolResult> results = new ArrayList<>();
-                for (int i = 0; i < calls.size(); i++) {
+                if (setup.gating() != null) {
+                    results = gatedStep(setup, context, calls, chips);
+                }
+                for (int i = 0; setup.gating() == null && i < calls.size(); i++) {
                     ToolCall call = calls.get(i);
                     ToolResult answer = i < MAX_CALLS_PER_STEP
                             ? callTool(setup.tools(), call, run.runId())
@@ -581,13 +668,146 @@ public final class ManagerAgent {
         return Long.valueOf((cost == null ? 0L : cost) + kept);
     }
 
+    /**
+     * One step's calls through the policy and the gate (draft ADR, section 3): every call classified first, the step
+     * admitted at once (waiting for the member where it asks), then each call in its order, run or answered with the
+     * verdict's words, settled, and its declared taints added to the run. A read never runs ahead of a write the model
+     * put before it, and a call's class comes from what the run held when the step began, since the model wrote every
+     * call of a step before it saw any result.
+     *
+     * @throws InterruptedException a stop while the step waited for the member; its approvals have expired
+     */
+    private static List<ToolResult> gatedStep(RunSetup setup, com.minimalistalliance.desk.agent.tool.RunContext context,
+            List<ToolCall> calls, List<Map<String, Object>> chips) throws InterruptedException {
+        Gating gating = setup.gating();
+        Tools tools = setup.tools();
+        ToolResult[] results = new ToolResult[calls.size()];
+        List<com.minimalistalliance.desk.agent.tool.Classified> step = new ArrayList<>();
+        List<Integer> at = new ArrayList<>();
+        for (int i = 0; i < calls.size(); i++) {
+            ToolCall call = calls.get(i);
+            if (i >= MAX_CALLS_PER_STEP) {
+                results[i] = new ToolResult(call.id(), "Too many tool calls at once; this one didn't run.", true);
+            } else if (call.malformed()) {
+                results[i] = new ToolResult(call.id(), "The tool's input wasn't a JSON object.", true);
+            } else {
+                com.minimalistalliance.desk.agent.tool.Classified classified;
+                try {
+                    classified = gating.policy().classify(call, context);
+                } catch (RuntimeException e) {
+                    log.warn("a call wasn't classified: {} {}", call.name(), e.getClass().getSimpleName());
+                    classified = null;
+                }
+                if (classified == null) {
+                    results[i] = new ToolResult(call.id(), "There's no such tool.", true);
+                } else {
+                    // Whatever the policy said: U and S make a browse action egress, the member's session at least write,
+                    // a navigation there egress; the session grant only in a run the member started.
+                    classified = classified.backstopped(context);
+                    step.add(classified);
+                    at.add(i);
+                }
+            }
+        }
+        List<com.minimalistalliance.desk.agent.approval.Verdict> verdicts = step.isEmpty() ? List.of()
+                : gating.gate().admit(context, step);
+        Map<Integer, Map<String, Object>> extra = new java.util.HashMap<>();
+        for (int k = 0; k < step.size(); k++) {
+            com.minimalistalliance.desk.agent.tool.Classified classified = step.get(k);
+            com.minimalistalliance.desk.agent.approval.Verdict verdict = verdicts.get(k);
+            ToolCall call = classified.call();
+            ToolResult raw;
+            ToolResult forModel;
+            if (verdict.runs()) {
+                // An approved call runs with exactly the payload the member saw and its hash covers.
+                ToolCall running = verdict instanceof com.minimalistalliance.desk.agent.approval.Verdict.Approved
+                        ? new ToolCall(call.id(), call.name(), classified.payload(), false, call.reasoning()) : call;
+                gating.gate().starting(verdict);
+                try {
+                    raw = callTool(tools, running, context, verdict);
+                } finally {
+                    context.add(classified.decl().taints());
+                }
+                forModel = verdict instanceof com.minimalistalliance.desk.agent.approval.Verdict.Approved
+                        ? new ToolResult(call.id(), raw.error()
+                                ? "Approved by the member, but it failed: " + raw.content()
+                                : "Approved by the member.\n" + raw.content(), raw.error())
+                        : raw;
+            } else {
+                raw = new ToolResult(call.id(), verdict.modelText(), true);
+                forModel = raw;
+            }
+            try {
+                gating.gate().settle(context, classified, verdict, raw);
+            } catch (RuntimeException e) {
+                log.warn("a call wasn't settled: {} {}", call.name(), e.getClass().getSimpleName());
+            }
+            results[at.get(k)] = forModel;
+            Map<String, Object> fields = new LinkedHashMap<>();
+            fields.put("risk", classified.risk().wireName());
+            String decision = switch (verdict) {
+                case com.minimalistalliance.desk.agent.approval.Verdict.Approved a -> "approved";
+                case com.minimalistalliance.desk.agent.approval.Verdict.Declined d -> "declined";
+                case com.minimalistalliance.desk.agent.approval.Verdict.Expired x -> "expired";
+                default -> null;
+            };
+            String approvalId = switch (verdict) {
+                case com.minimalistalliance.desk.agent.approval.Verdict.Approved a -> a.approvalId();
+                case com.minimalistalliance.desk.agent.approval.Verdict.Declined d -> d.approvalId();
+                case com.minimalistalliance.desk.agent.approval.Verdict.Expired x -> x.approvalId();
+                default -> null;
+            };
+            if (decision != null && approvalId != null) {
+                fields.put("approval", Map.of("id", approvalId, "decision", decision));
+            }
+            if (!classified.target().isEmpty()) {
+                fields.put("target", classified.target());
+            }
+            if (verdict.runs() && classified.decl().taints().contains(com.minimalistalliance.desk.agent.tool.Taint.U)) {
+                fields.put("untrusted", true);
+            }
+            if (classified.decl().scope().startsWith("browser:")) {
+                fields.put("session", classified.context().startsWith("member:") ? "member" : "agent");
+            }
+            extra.put(at.get(k), fields);
+        }
+        List<ToolResult> out = new ArrayList<>();
+        for (int i = 0; i < calls.size(); i++) {
+            ToolCall call = calls.get(i);
+            ToolResult answer = results[i];
+            out.add(answer);
+            Map<String, Object> chip = new LinkedHashMap<>();
+            chip.put("name", call.name());
+            chip.put("summary", tools.chip(call, answer));
+            chip.put("ok", !answer.error());
+            savedRefused(call, answer, chip);
+            if (extra.containsKey(i)) {
+                chip.putAll(extra.get(i));
+            }
+            chips.add(chip);
+        }
+        return out;
+    }
+
     private static ToolResult callTool(Tools tools, ToolCall call, String runId) throws InterruptedException {
+        return callTool(tools, call, null, null, runId);
+    }
+
+    private static ToolResult callTool(Tools tools, ToolCall call,
+            com.minimalistalliance.desk.agent.tool.RunContext context,
+            com.minimalistalliance.desk.agent.approval.Verdict verdict) throws InterruptedException {
+        return callTool(tools, call, context, verdict, context.runId());
+    }
+
+    private static ToolResult callTool(Tools tools, ToolCall call,
+            com.minimalistalliance.desk.agent.tool.RunContext context,
+            com.minimalistalliance.desk.agent.approval.Verdict verdict, String runId) throws InterruptedException {
         ToolResult result;
         if (call.malformed()) {
             result = new ToolResult(call.id(), "The tool's input wasn't a JSON object.", true);
         } else {
             try {
-                result = tools.call(call, runId);
+                result = context == null ? tools.call(call, runId) : tools.call(call, context, verdict);
             } catch (InterruptedException e) {
                 throw e;
             } catch (RuntimeException e) {

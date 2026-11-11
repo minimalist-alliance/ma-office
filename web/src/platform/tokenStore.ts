@@ -231,7 +231,13 @@ export function placeTokenFor(me: { preferences?: { staySignedIn?: unknown; stay
 // never refuses an action. Nothing else in this app reads the time of a sign-in.
 export const SIGNED_IN_AT_KEY = 'ma-desk-web-signed-in-at';
 export const CHOICE_KEY = 'ma-desk-web-session-choice';
-const EXTRAS = [SIGNED_IN_AT_KEY, CHOICE_KEY];
+/**
+ * What the office last drew for this member (`platform/lastKnown.ts`) and the desk list's mirror (`state/deskStore.ts`),
+ * kept beside the token for the same reasons: in this tab's sessionStorage under `browser`, and gone with the token.
+ */
+export const LAST_KNOWN_KEY = 'ma-desk-web-last-known';
+export const DESK_MIRROR_KEY = 'ma.desks.v1';
+const EXTRAS = [SIGNED_IN_AT_KEY, CHOICE_KEY, LAST_KNOWN_KEY, DESK_MIRROR_KEY];
 
 /** How long each shorter choice lasts, from the later of the sign-in and the save. `browser` is 12 hours: a server can't see a close. */
 export const HOLD_MS: Record<string, number> = { '7d': 7 * 86_400_000, '1d': 86_400_000, browser: 12 * 3_600_000 };
@@ -276,6 +282,27 @@ function dropExtras(): void {
     putIn('local', key, null);
   }
 }
+
+/** A value kept beside the token: where the token is, this tab's sessionStorage first. Null if there's none or storage refuses. */
+export function readBeside(key: string): string | null {
+  return getIn('session', key) ?? (get('session') === null ? getIn('local', key) : null);
+}
+
+/**
+ * Keeps a value beside the token, in the store the token is in (localStorage when there's none yet, as for a sign-in on
+ * its way), and never in the other. Null removes it from both. Never throws: storage that refuses keeps nothing.
+ */
+export function writeBeside(key: string, value: string | null): void {
+  if (value === null) {
+    putIn('session', key, null);
+    putIn('local', key, null);
+    return;
+  }
+  setExtra(key, value);
+}
+
+/** True while a refresh token is kept in this tab's sessionStorage or the browser's localStorage. */
+export const hasStoredToken = (): boolean => get('session') !== null || get('local') !== null;
 
 /** When this sign-in happened, as the ID token's `auth_time` (epoch seconds), or null if not kept yet. */
 export function readSignedInAt(): number | null {

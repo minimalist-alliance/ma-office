@@ -6,6 +6,7 @@ import com.minimalistalliance.desk.agent.service.AgentService;
 import com.minimalistalliance.desk.agent.service.Caller;
 import com.minimalistalliance.desk.agent.service.RpcError;
 import com.minimalistalliance.desk.agent.service.TopicHub;
+import com.minimalistalliance.desk.agent.tool.DeskLink;
 import java.io.IOException;
 import java.net.StandardProtocolFamily;
 import java.net.UnixDomainSocketAddress;
@@ -18,7 +19,15 @@ import java.nio.file.Path;
 import java.nio.file.StandardCopyOption;
 import java.nio.file.attribute.PosixFilePermissions;
 import java.sql.SQLException;
+import java.time.Duration;
 import java.util.ArrayList;
+import java.util.Collection;
+import java.util.HashSet;
+import java.util.Set;
+import java.util.concurrent.CompletableFuture;
+import java.util.concurrent.ExecutionException;
+import java.util.concurrent.TimeUnit;
+import java.util.concurrent.TimeoutException;
 import java.util.LinkedHashMap;
 import java.util.List;
 import java.util.Map;
@@ -41,11 +50,16 @@ import org.slf4j.LoggerFactory;
  * {@code evt} back. {@code 0x02} is a key for {@code agent.key.add}, read straight into a direct buffer so it's never
  * a {@code String} here.
  *
+ * <p><b>Tool calls the other way</b> (the tools and approvals draft, section 11): once deskd's hello
+ * ({@value #TOOLS_HELLO}) has said which tools it runs, desk-agent may send {@code tcall}, which deskd answers
+ * {@code tres} or {@code terr}. Before the hello nothing is sent, so an older deskd, which drops the link on a {@code t}
+ * it doesn't know, never sees one. A call waiting when the connection goes gets {@link DeskLink.Reply#unavailable}.
+ *
  * <p>Each request runs on a virtual thread of its own, so a slow provider call doesn't hold up the reader. Replies
  * and events go through one writer queue; if deskd stops reading and it passes 16 MiB, the connection is dropped,
  * as a peer that doesn't read can't be allowed to grow desk-agent's memory.
  */
-public final class AgentSocketServer implements AutoCloseable {
+public final class AgentSocketServer implements AutoCloseable, DeskLink {
 
     private static final Logger log = LoggerFactory.getLogger(AgentSocketServer.class);
 
@@ -54,6 +68,10 @@ public final class AgentSocketServer implements AutoCloseable {
     static final int MAX_IN_FLIGHT = 64;
     static final byte JSON = 0x01;
     static final byte KEY = 0x02;
+    /** deskd's announcement of the tools it runs, a plain {@code req} on each connection. */
+    public static final String TOOLS_HELLO = "desk.tools.hello";
+    /** Tool calls waiting at once, per connection. More are answered {@code unavailable} at once. */
+    static final int MAX_TOOL_CALLS = 32;
 
     private final Path socket;
     private final PeerCheck peers;
@@ -88,6 +106,21 @@ public final class AgentSocketServer implements AutoCloseable {
     public boolean connected() {
         Connection c = current;
         return c != null && !c.closed;
+    }
+
+    @Override
+    public Set<String> offered() {
+        Connection c = current;
+        return c == null || c.closed ? Set.of() : c.offered;
+    }
+
+    @Override
+    public DeskLink.Reply call(Map<String, Object> call, Duration wait) throws InterruptedException {
+        Connection c = current;
+        if (c == null || c.closed || c.offered.isEmpty()) {
+            return DeskLink.Reply.unavailable();
+        }
+        return c.toolCall(call, wait);
     }
 
     private void acceptLoop() {
@@ -152,6 +185,10 @@ public final class AgentSocketServer implements AutoCloseable {
         private final AtomicLong queuedBytes = new AtomicLong();
         private final Map<Long, Thread> requests = new ConcurrentHashMap<>();
         private final Map<Long, Long> subscriptions = new ConcurrentHashMap<>();
+        /** The tools deskd said it runs on this connection: empty until its hello. */
+        private volatile Set<String> offered = Set.of();
+        private final AtomicLong toolIds = new AtomicLong();
+        private final Map<Long, CompletableFuture<Map<String, Object>>> toolCalls = new ConcurrentHashMap<>();
         /** Set as the connection starts to close, so nothing more is queued. */
         private volatile boolean closed;
         /** {@link #close}'s work runs once. */
@@ -300,6 +337,12 @@ public final class AgentSocketServer implements AutoCloseable {
                         request.interrupt();
                     }
                 }
+                case "tres", "terr" -> {
+                    CompletableFuture<Map<String, Object>> waiting = toolCalls.remove(number(message, "id"));
+                    if (waiting != null) {
+                        waiting.complete(message);
+                    }
+                }
                 case "sub" -> onSubscribe(number(message, "sid"), Json.string(message, "topic"), message.get("caller"));
                 case "unsub" -> {
                     Long key = subscriptions.remove(number(message, "sid"));
@@ -323,6 +366,22 @@ public final class AgentSocketServer implements AutoCloseable {
                 return;
             }
             Object rawCaller = message.get("caller");
+            if (TOOLS_HELLO.equals(method)) {
+                // deskd's own: never relayed for a client, and refused if it ever came with a caller.
+                if (rawCaller != null) {
+                    reply(error(id, RpcError.of("forbidden", "reason", "permission")));
+                    return;
+                }
+                offered = toolNames(p.get("tools"));
+                reply(result(id, Map.of()));
+                return;
+            }
+            // deskd's own push carries no caller; every request it relays for a client carries one (ADR 0080's
+            // addendum of 2026-11-10). deskd never relays this method, and this holds even if it did.
+            if (AgentService.MEMBER_PURGE.equals(method) && rawCaller != null) {
+                reply(error(id, RpcError.of("forbidden", "reason", "permission")));
+                return;
+            }
             Thread thread = Thread.ofVirtual().name("agent-request").unstarted(() -> {
                 Map<String, Object> answer;
                 try {
@@ -419,11 +478,42 @@ public final class AgentSocketServer implements AutoCloseable {
             }
         }
 
+        /** One {@code tcall}, and its answer. Never logs the call or the answer. */
+        DeskLink.Reply toolCall(Map<String, Object> call, Duration wait) throws InterruptedException {
+            if (toolCalls.size() >= MAX_TOOL_CALLS) {
+                return DeskLink.Reply.unavailable();
+            }
+            long id = toolIds.incrementAndGet();
+            CompletableFuture<Map<String, Object>> answer = new CompletableFuture<>();
+            toolCalls.put(id, answer);
+            try {
+                Map<String, Object> message = new LinkedHashMap<>(call);
+                // Ours, whatever the call's fields hold.
+                message.put("t", "tcall");
+                message.put("id", id);
+                reply(message);
+                if (closed) {
+                    return DeskLink.Reply.unavailable();
+                }
+                Map<String, Object> m = answer.get(wait.toMillis(), TimeUnit.MILLISECONDS);
+                return replyOf(m);
+            } catch (TimeoutException | ExecutionException e) {
+                return DeskLink.Reply.unavailable();
+            } finally {
+                toolCalls.remove(id);
+            }
+        }
+
         void close() {
             if (!closing.compareAndSet(false, true)) {
                 return;
             }
             closed = true;
+            offered = Set.of();
+            for (CompletableFuture<Map<String, Object>> waiting : List.copyOf(toolCalls.values())) {
+                waiting.complete(Map.of("t", "terr", "code", "unavailable", "details", Map.of("reason", "unavailable")));
+            }
+            toolCalls.clear();
             for (Long key : subscriptions.values()) {
                 topics.unsubscribe(key);
             }
@@ -475,6 +565,40 @@ public final class AgentSocketServer implements AutoCloseable {
         m.put("type", type);
         m.put("data", data);
         return m;
+    }
+
+    /** The hello's tool names: wire names of at most 64 characters, at most 64 of them; anything else is dropped. */
+    static Set<String> toolNames(Object raw) {
+        Set<String> names = new HashSet<>();
+        if (raw instanceof Collection<?> list) {
+            for (Object name : list) {
+                if (name instanceof String s && s.matches("[a-z][a-z0-9_]{0,63}") && names.size() < 64) {
+                    names.add(s);
+                }
+            }
+        }
+        return Set.copyOf(names);
+    }
+
+    @SuppressWarnings("unchecked")
+    static DeskLink.Reply replyOf(Map<String, Object> m) {
+        List<String> taint = new ArrayList<>();
+        if (m.get("taint") instanceof List<?> list) {
+            for (Object flag : list) {
+                if ("U".equals(flag) || "S".equals(flag)) {
+                    taint.add((String) flag);
+                }
+            }
+        }
+        if ("tres".equals(m.get("t"))) {
+            Map<String, Object> r = m.get("r") instanceof Map<?, ?> map ? (Map<String, Object>) map : Map.of();
+            return new DeskLink.Reply(true, r, null, null, taint);
+        }
+        String code = m.get("code") instanceof String c && c.matches("[a-z_]{1,32}") ? c : "internal";
+        Object details = m.get("details");
+        String reason = details instanceof Map<?, ?> d && d.get("reason") instanceof String r
+                && r.matches("[a-z_]{1,40}") ? r : code;
+        return new DeskLink.Reply(false, null, code, reason, taint);
     }
 
     /** For tests: subscriptions held by the current connection. */

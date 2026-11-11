@@ -226,15 +226,18 @@ public final class TeamStore {
     }
 
     /**
-     * Removes a staff agent and everything of it in {@code agent.db}, in one transaction: its thread, proposals, links
-     * both ways, timers, and its id from every other agent's shares. The agent-message log keeps its rows, as the
-     * audit log does.
+     * Removes a staff agent and everything of it in {@code agent.db}, in one transaction: its thread, proposals, memories
+     * and thread summary, approvals and its replies' marks, links both ways, timers, and its id from every other
+     * agent's shares. The agent-message log keeps its rows, as the audit log does.
      */
     public void deleteAgent(String id) throws SQLException {
         db().transaction(connection -> {
             for (String sql : List.of(
                     "DELETE FROM message_files WHERE message_id IN (SELECT id FROM messages WHERE agent_id = ?)",
                     "DELETE FROM messages WHERE agent_id = ?", "DELETE FROM proposals WHERE agent_id = ?",
+                    "DELETE FROM memories WHERE agent_id = ?", "DELETE FROM thread_summaries WHERE agent_id = ?",
+                    "DELETE FROM approvals WHERE agent_id = ?", "DELETE FROM run_marks WHERE agent_id = ?",
+                    "DELETE FROM run_plans WHERE agent_id = ?", "DELETE FROM workspace_marks WHERE agent_id = ?",
                     "DELETE FROM links WHERE from_id = ? OR to_id = ?", "DELETE FROM timers WHERE agent_id = ?",
                     "DELETE FROM agents WHERE id = ? AND role = 'staff'")) {
                 try (PreparedStatement delete = connection.prepareStatement(sql)) {

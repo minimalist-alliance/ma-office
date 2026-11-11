@@ -1,0 +1,26 @@
+[Unit]
+Description=desk-host-egress for slot %i: ADR 0036's outbound budgets for the desk on it (ADR 0072 section 8, egress.py)
+# Started by desk-host up once the slot's classes are on its veth, and stopped by the slot's reset (every stop) before its network
+# namespace goes. Never enabled: nothing runs for a slot with no desk.
+After=desk-host-boot.service nftables.service
+StartLimitIntervalSec=0
+
+[Service]
+Type=simple
+ExecStart=/usr/bin/python3 -I /usr/local/lib/desk-host/egress.py run %i
+# No clamp outlives the process (as desk-egress.service on a desk of its own). The classes' ceilings stay.
+ExecStopPost=-/usr/bin/python3 -I /usr/local/lib/desk-host/egress.py unclamp %i
+Restart=always
+RestartSec=10
+RestartSteps=8
+RestartMaxDelaySec=300
+# 75: the slot holds another desk now (desk-host's reset stops this unit first; this is the belt to it)
+RestartPreventExitStatus=75
+TimeoutStopSec=20
+OOMScoreAdjust=-900
+MemoryMax=64M
+# Root in the host's own namespaces, as desk-host-link: it reaches the slot's network namespace by the host-owned bind desk-host
+# made, which a mount namespace of its own (ProtectSystem, PrivateTmp) would copy and keep alive after the slot's reset.
+# CAP_SYS_ADMIN is nsenter's setns into that namespace; CAP_NET_ADMIN is tc's.
+NoNewPrivileges=yes
+CapabilityBoundingSet=CAP_NET_ADMIN CAP_SYS_ADMIN

@@ -6,6 +6,7 @@ import { mkdirSync, mkdtempSync, readFileSync, writeFileSync } from 'node:fs';
 import { tmpdir } from 'node:os';
 import { join } from 'node:path';
 import { expect, test, type APIRequestContext, type Locator, type Page } from '@playwright/test';
+import { APP_INKS } from '../../src/theme/tokens';
 import { canvasPainted, harness, setTheme, signIn, watchConsole, type ThemeId } from './helpers';
 
 const AXE = readFileSync(createRequire(import.meta.url).resolve('axe-core/axe.min.js'), 'utf8');
@@ -33,6 +34,13 @@ const list = (page: Page): Locator => page.getByRole('listbox', { name: /^Files 
 const row = (page: Page, name: string): Locator => page.locator(`[data-testid="files-row"][data-name="${name}"]`);
 const xfer = (page: Page, name: string): Locator => page.locator(`[data-testid="files-xfer"][data-name="${name}"]`);
 const live = (page: Page): Locator => page.getByTestId('live-region');
+/** Whether leaving the office now would ask first (`shell/closeGuard.ts`), from the guard's own answer, without leaving. */
+const wouldAsk = (page: Page): Promise<boolean> =>
+  page.evaluate(() => {
+    const e = new Event('beforeunload', { cancelable: true });
+    window.dispatchEvent(e);
+    return e.defaultPrevented;
+  });
 
 async function axe(page: Page): Promise<string[]> {
   await page.evaluate(AXE);
@@ -108,6 +116,84 @@ async function fastStub(page: Page, ms = 40): Promise<void> {
   }, ms);
 }
 
+// A free member's drive (S-119, ADR 0090): the footer reads against the desk's cap, in the office's own words.
+const FREE_ME = { status: 'active', tier: 'free', ageBand: 'adult', adultFrom: null, parent: null };
+const GIB = 1024 ** 3;
+const setCap = (page: Page, cap: number | null, extra = 0): Promise<void> =>
+  page.evaluate(
+    async ([c, x]) => {
+      const deskId = document.querySelector('[data-testid="window-files"]')?.getAttribute('data-desk') ?? '';
+      const d = (await __maDeskMock.files).desk(deskId);
+      Object.assign(d.control, { capBytes: c, capExtraBytes: x });
+      (d as unknown as { usageChanged(): void }).usageChanged();
+    },
+    [cap, extra] as const,
+  );
+
+for (const theme of THEMES) {
+  test(`the drive line of a free desk, ${theme}`, async ({ page, request }) => {
+    await harness(request, { membership: FREE_ME, configExtra: { tierAllowances: { alliance: { driveGb: 25 } }, links: {} } });
+    const errors = await arrive(page, theme, request);
+    await openFiles(page);
+    await setCap(page, 2 * GIB, 1.4 * GIB);
+    const words = page.getByTestId('files-usage-words');
+    await expect(words).toHaveText('1.4 GB of 2 GB used');
+    await expect(page.getByTestId('files-usage')).toHaveAttribute('data-cap', 'ok');
+    await expect(page.getByTestId('files-cap-note')).toHaveCount(0);
+    expect(await axe(page)).toEqual([]);
+    await shot(page, `${theme}-free-drive`);
+
+    // Near the cap: the calm second line and the link.
+    await setCap(page, 2 * GIB, 1.85 * GIB);
+    await expect(page.getByTestId('files-usage')).toHaveAttribute('data-cap', 'near');
+    await expect(page.getByTestId('files-cap-note')).toContainText('has a 25 GB drive.');
+    const link = page.getByRole('link', { name: 'See membership (opens in a new tab)' });
+    await expect(link).toHaveAttribute('href', /^https:\/\/platform\.localhost\//);
+    await expect(link).toHaveAttribute('target', '_blank');
+    expect(await axe(page)).toEqual([]);
+    await shot(page, `${theme}-free-drive-near`);
+
+    // Full: the Designer's sentence. Nothing is hidden or deleted.
+    await setCap(page, 2 * GIB, 2.1 * GIB);
+    await expect(page.getByTestId('files-usage')).toHaveAttribute('data-cap', 'full');
+    await expect(page.getByTestId('files-cap-note')).toContainText('Your drive is full. Delete something to make room, or get 25 GB with');
+    await expect(row(page, 'readme.txt')).toBeVisible();
+    expect(await axe(page)).toEqual([]);
+    await shot(page, `${theme}-free-drive-full`);
+    expect(errors).toEqual([]);
+  });
+}
+
+// A step down to a smaller drive (billing spec 4.4): more is kept than the plan's drive holds. Paid, so not the free tier's words.
+for (const theme of THEMES) {
+  test(`the over-drive line of a stepped-down desk, ${theme}`, async ({ page, request }) => {
+    await harness(request, { membership: { status: 'active', tier: 'alliance', ageBand: 'adult', adultFrom: null, parent: null }, configExtra: { links: { billing: 'https://platform.localhost/billing' } } });
+    const errors = await arrive(page, theme, request);
+    await openFiles(page);
+    await setCap(page, 25 * GIB, 31.2 * GIB);
+    await expect(page.getByTestId('files-usage')).toHaveAttribute('data-cap', 'over');
+    await expect(page.getByTestId('files-cap-note')).toHaveText(/^You have 31\.2 GB in Files, more than 25 GB\. It all stays readable; to add more, make room or move back up\./);
+    await expect(page.getByTestId('files-over-link')).toHaveAttribute('href', 'https://platform.localhost/billing');
+    await expect(row(page, 'readme.txt')).toBeVisible();
+    expect(await axe(page)).toEqual([]);
+    await shot(page, `${theme}-over-drive`);
+    // Back under the drive: the line goes.
+    await setCap(page, 25 * GIB, 10 * GIB);
+    await expect(page.getByTestId('files-cap-note')).toHaveCount(0);
+    expect(errors).toEqual([]);
+  });
+}
+
+test('a paid desk keeps its own line', async ({ page, request }) => {
+  const errors = await arrive(page, 'light', request);
+  await openFiles(page);
+  await setCap(page, null);
+  await expect(page.getByTestId('files-usage')).not.toHaveAttribute('data-cap', /.+/);
+  await expect(page.getByTestId('files-usage-words')).toContainText('of 34 GB used');
+  await expect(page.getByTestId('files-cap-note')).toHaveCount(0);
+  expect(errors).toEqual([]);
+});
+
 for (const theme of THEMES) {
   test.describe(theme, () => {
     test('browse folders and breadcrumbs, with axe, and the dialogs and the trash', async ({ page, request }) => {
@@ -162,6 +248,9 @@ for (const theme of THEMES) {
       await page.keyboard.press('ArrowDown'); // Backups
       await page.keyboard.press('ArrowDown'); // Documents
       await expect(row(page, 'Documents')).toHaveAttribute('aria-selected', 'true');
+      // One ring at a time: the row's, not the list's.
+      expect(await row(page, 'Documents').evaluate((e) => getComputedStyle(e).outlineStyle)).toBe('solid');
+      expect(await list(page).evaluate((e) => getComputedStyle(e).outlineStyle)).toBe('none');
       await page.keyboard.press('Enter');
       await expect(row(page, 'report.pdf')).toBeVisible();
       await page.keyboard.type('re');
@@ -382,12 +471,15 @@ for (const theme of THEMES) {
       });
       await page.getByTestId('files-pick-files').setInputFiles([{ name: 'keeps-going.bin', mimeType: 'application/octet-stream', buffer: Buffer.alloc(3_000_000, 4) }]);
       await expect(xfer(page, 'keeps-going.bin')).toHaveAttribute('data-state', /sending|finishing/);
+      await expect.poll(() => wouldAsk(page)).toBe(true); // closing the office would stop it, so the browser asks first
       await page.getByRole('button', { name: 'Close Files' }).click();
       await expect(win(page)).toHaveCount(0);
       await page.waitForTimeout(300);
       await openFiles(page);
       await expect(xfer(page, 'keeps-going.bin')).toHaveAttribute('data-state', 'done', { timeout: 30_000 });
       expect(await ask(page, 'len', 'keeps-going.bin')).toBe(3_000_000);
+      await expect.poll(() => wouldAsk(page)).toBe(false); // done: nothing to lose
+
     });
 
     test('a lost session pauses a transfer as "Waiting for your desk" and it finishes when the desk is back', async ({ page, request }) => {
@@ -402,6 +494,248 @@ for (const theme of THEMES) {
       await expect(xfer(page, 'long.bin')).toHaveAttribute('data-state', 'done', { timeout: 30_000 });
       expect(await ask(page, 'len', 'long.bin')).toBe(4_000_000);
     });
+
+    // ---- the context menu: the toolbar's actions again, on a right click, a long press or a key
+    const menu = (page: Page): Locator => page.getByRole('menu', { name: /^Actions for|actions$/ });
+    const names = (page: Page): Promise<string[]> => menu(page).getByRole('menuitem').allInnerTexts();
+    const rightClick = (page: Page, name: string, modifiers: ('Control')[] = []): Promise<void> => row(page, name).click({ button: 'right', modifiers });
+    const rowSelected = (page: Page, name: string): Locator => page.locator(`[data-testid="files-row"][data-name="${name}"][aria-selected="true"]`);
+
+    test('its own colors: the Files accent inside the window, the office\'s outside, with a selection, axe and a picture', async ({ page, request }) => {
+      const errors = await arrive(page, theme, request);
+      await openFiles(page);
+      await row(page, 'readme.txt').click();
+      await expect(row(page, 'readme.txt')).toHaveAttribute('aria-selected', 'true');
+      const ink = APP_INKS["files"]![theme];
+      const props = await page.evaluate(() => {
+        const v = (el: Element, p: string) => getComputedStyle(el).getPropertyValue(p).trim();
+        const w = document.querySelector('.ma-window[data-app="files"]')!;
+        const body = document.querySelector('[data-testid="files-body"]')!;
+        const bar = document.querySelector('.top-bar, header, [role="banner"]') ?? document.body;
+        const sel = document.querySelector('[data-testid="files-row"][aria-selected="true"]')!;
+        return {
+          inside: v(body, '--ma-accent'),
+          window: v(w, '--ma-surface-window'),
+          ring: v(body, '--ma-focus-ring'),
+          outside: v(document.documentElement, '--ma-accent'),
+          outsideBar: v(bar, '--ma-accent'),
+          selBg: getComputedStyle(sel).backgroundColor,
+        };
+      });
+      expect(props.inside.toLowerCase()).toBe(ink.accent.toLowerCase());
+      expect(props.ring.toLowerCase()).toBe(ink.accent.toLowerCase());
+      expect(props.window.toLowerCase()).toBe(ink.window.toLowerCase());
+      expect(props.outside.toLowerCase()).not.toBe(ink.accent.toLowerCase());
+      expect(props.outsideBar.toLowerCase()).not.toBe(ink.accent.toLowerCase());
+      const n = parseInt(ink.accentSubtle.slice(1), 16);
+      expect(props.selBg).toBe(`rgb(${(n >> 16) & 255}, ${(n >> 8) & 255}, ${n & 255})`);
+      expect(await axe(page)).toEqual([]);
+      await shot(page, `${theme}-selection`);
+      expect(errors).toEqual([]);
+    });
+
+    test('context menu: a right click on a file, a folder, a selection and empty space', async ({ page, request }) => {
+      const errors = await arrive(page, theme, request);
+      await openFiles(page);
+      // The bar stays as it was: nothing selected, so no Download.
+      await rightClick(page, 'readme.txt');
+      await expect(menu(page)).toBeVisible();
+      await expect(menu(page)).toHaveAttribute('aria-label', 'Actions for readme.txt');
+      expect(await names(page)).toEqual(['Download', 'Rename', 'Move to…', 'Delete']);
+      await expect(rowSelected(page, 'readme.txt')).toHaveCount(1);
+      await expect(menu(page)).toBeFocused();
+      // It is inside the window.
+      const inside = await page.evaluate(() => {
+        const m = document.querySelector('[data-testid="files-menu"]')!.getBoundingClientRect();
+        const w = document.querySelector('[data-testid="files-body"]')!.getBoundingClientRect();
+        return m.left >= w.left && m.top >= w.top && m.right <= w.right && m.bottom <= w.bottom;
+      });
+      expect(inside).toBe(true);
+      // Delete is last, after a separator, in the danger color; the separator is not an item.
+      const order = await menu(page).evaluate((m) => Array.from(m.children).map((c) => c.getAttribute('role') ?? c.tagName));
+      expect(order).toEqual(['menuitem', 'menuitem', 'menuitem', 'separator', 'menuitem']);
+      await expect(menu(page).getByRole('separator')).toHaveCount(1);
+      const dangerRgb = await page.evaluate(() => {
+        const probe = document.createElement('i');
+        probe.style.color = 'var(--ma-text-danger)';
+        document.querySelector('[data-testid="files-menu"]')!.append(probe);
+        const c = getComputedStyle(probe).color;
+        probe.remove();
+        return c;
+      });
+      expect(await menu(page).getByRole('menuitem', { name: 'Delete' }).evaluate((e) => getComputedStyle(e).color)).toBe(dangerRgb);
+      expect(await menu(page).getByRole('menuitem', { name: 'Rename' }).evaluate((e) => getComputedStyle(e).color)).not.toBe(dangerRgb);
+      expect(await axe(page)).toEqual([]);
+      await shot(page, `${theme}-menu-file`);
+      // Keys: arrows wrap, End, Home, type-ahead.
+      await page.keyboard.press('ArrowDown');
+      await expect(menu(page).getByRole('menuitem', { name: 'Download' })).toBeFocused();
+      await page.keyboard.press('End');
+      await expect(menu(page).getByRole('menuitem', { name: 'Delete' })).toBeFocused();
+      await page.keyboard.press('ArrowUp'); // the separator is skipped: Move to… is above Delete
+      await expect(menu(page).getByRole('menuitem', { name: 'Move to…' })).toBeFocused();
+      await page.keyboard.press('ArrowDown');
+      await expect(menu(page).getByRole('menuitem', { name: 'Delete' })).toBeFocused();
+      await page.keyboard.press('ArrowDown');
+      await expect(menu(page).getByRole('menuitem', { name: 'Download' })).toBeFocused();
+      await page.keyboard.press('r');
+      await expect(menu(page).getByRole('menuitem', { name: 'Rename' })).toBeFocused();
+      await page.keyboard.press('Home');
+      await expect(menu(page).getByRole('menuitem', { name: 'Download' })).toBeFocused();
+      // Esc closes it and the keyboard is back on the list's row.
+      await page.keyboard.press('Escape');
+      await expect(menu(page)).toHaveCount(0);
+      await expect(list(page)).toBeFocused();
+      await expect(win(page)).toBeVisible(); // Esc was the menu's, not the window's
+
+      // A folder adds Open; choosing it goes in.
+      await rightClick(page, 'Documents');
+      expect(await names(page)).toEqual(['Open', 'Download', 'Rename', 'Move to…', 'Delete']);
+      await expect(rowSelected(page, 'readme.txt')).toHaveCount(0);
+      await menu(page).getByRole('menuitem', { name: 'Open' }).click();
+      await expect(menu(page)).toHaveCount(0);
+      await expect(page.getByRole('navigation', { name: 'Folder path' }).locator('[aria-current="location"]')).toHaveText('Documents');
+      await page.getByRole('navigation', { name: 'Folder path' }).getByRole('button', { name: 'Files' }).click();
+
+      // Choosing Rename does what the bar's does.
+      await rightClick(page, 'readme.txt');
+      await menu(page).getByRole('menuitem', { name: 'Rename' }).click();
+      const dialog = page.getByRole('dialog', { name: 'Rename' });
+      await expect(dialog).toBeVisible();
+      // The browser's own menu is only suppressed in the list: in the text field it is left alone.
+      const prevented = await dialog.getByRole('textbox').evaluate((el) => {
+        const ev = new MouseEvent('contextmenu', { bubbles: true, cancelable: true });
+        el.dispatchEvent(ev);
+        return ev.defaultPrevented;
+      });
+      expect(prevented).toBe(false);
+      await dialog.getByRole('button', { name: 'Cancel' }).click();
+
+      // Empty space: the uploads and New folder, and the selection is as it was.
+      const box = (await list(page).boundingBox())!;
+      await list(page).click({ button: 'right', position: { x: 40, y: box.height - 12 } });
+      await expect(menu(page)).toHaveAttribute('aria-label', 'Folder actions');
+      expect(await names(page)).toEqual(['Upload files', 'Upload folder', 'New folder']);
+      expect(await axe(page)).toEqual([]);
+      await shot(page, `${theme}-menu-space`);
+      // A click away closes it, and the keyboard is on the list.
+      await page.getByRole('navigation', { name: 'Folder path' }).click({ position: { x: 4, y: 4 } });
+      await expect(menu(page)).toHaveCount(0);
+      await expect(list(page)).toBeFocused();
+      await list(page).click({ button: 'right', position: { x: 40, y: box.height - 12 } });
+      await menu(page).getByRole('menuitem', { name: 'New folder' }).click();
+      await expect(page.getByRole('dialog', { name: 'New folder' })).toBeVisible();
+      await page.keyboard.press('Escape');
+      expect(errors).toEqual([]);
+    });
+
+    test('context menu: a multi-selection keeps its rows, and a row outside it takes over', async ({ page, request }) => {
+      await arrive(page, theme, request);
+      await openFiles(page);
+      await row(page, 'readme.txt').click();
+      await row(page, 'Photos').click({ modifiers: ['Control'] });
+      await rightClick(page, 'Photos');
+      await expect(menu(page)).toHaveAttribute('aria-label', 'Actions for 2 items');
+      expect(await names(page)).toEqual(['Move to…', 'Delete']);
+      await expect(rowSelected(page, 'readme.txt')).toHaveCount(1);
+      await expect(rowSelected(page, 'Photos')).toHaveCount(1);
+      await page.keyboard.press('Escape');
+      await rightClick(page, 'Backups');
+      expect(await names(page)).toEqual(['Open', 'Download', 'Rename', 'Move to…', 'Delete']);
+      await expect(rowSelected(page, 'readme.txt')).toHaveCount(0);
+      await expect(rowSelected(page, 'Backups')).toHaveCount(1);
+      await page.keyboard.press('Escape');
+      // Delete on two moves both to the trash.
+      await row(page, 'readme.txt').click();
+      await row(page, 'Photos').click({ modifiers: ['Control'] });
+      await rightClick(page, 'readme.txt');
+      await menu(page).getByRole('menuitem', { name: 'Delete' }).click();
+      await expect(row(page, 'readme.txt')).toHaveCount(0);
+      await expect(row(page, 'Photos')).toHaveCount(0);
+      expect(await ask(page, 'trashed')).toEqual(expect.arrayContaining(['readme.txt', 'Photos']));
+    });
+
+    test('context menu: Shift+F10 and the Menu key open it on the keyboard row, and the list', async ({ page, request }) => {
+      await arrive(page, theme, request);
+      await openFiles(page);
+      await list(page).focus();
+      // With no row yet, it is the list's.
+      await page.keyboard.press('Shift+F10');
+      await expect(menu(page)).toHaveAttribute('aria-label', 'Folder actions');
+      await expect(menu(page).getByRole('menuitem', { name: 'Upload files' })).toBeFocused();
+      await page.keyboard.press('Escape');
+      await expect(list(page)).toBeFocused();
+      await page.keyboard.press('ArrowDown');
+      await page.keyboard.press('ArrowDown');
+      await page.keyboard.press('ContextMenu');
+      await expect(menu(page)).toHaveAttribute('aria-label', 'Actions for Documents');
+      await expect(menu(page).getByRole('menuitem', { name: 'Open' })).toBeFocused();
+      await page.keyboard.press('Escape');
+      await expect(list(page)).toBeFocused();
+      await expect(menu(page)).toHaveCount(0);
+      await page.keyboard.press('Shift+F10');
+      await expect(menu(page).getByRole('menuitem', { name: 'Open' })).toBeFocused();
+      await page.keyboard.press('Enter');
+      await expect(page.getByRole('navigation', { name: 'Folder path' }).locator('[aria-current="location"]')).toHaveText('Documents');
+    });
+
+    test('context menu: in the trash', async ({ page, request }) => {
+      await arrive(page, theme, request);
+      await openFiles(page);
+      await row(page, 'readme.txt').click();
+      await page.keyboard.press('Delete');
+      await page.getByRole('button', { name: /^Trash/ }).click();
+      await rightClick(page, 'readme.txt');
+      expect(await names(page)).toEqual(['Restore', 'Delete forever']);
+      await expect(menu(page).getByRole('separator')).toHaveCount(1);
+      expect(await menu(page).evaluate((m) => Array.from(m.children).map((c) => c.getAttribute('role')))).toEqual(['menuitem', 'separator', 'menuitem']);
+      expect(await menu(page).getByRole('menuitem', { name: 'Delete forever' }).evaluate((e) => getComputedStyle(e).color))
+        .not.toBe(await menu(page).getByRole('menuitem', { name: 'Restore' }).evaluate((e) => getComputedStyle(e).color));
+      expect(await axe(page)).toEqual([]);
+      await shot(page, `${theme}-menu-trash`);
+      await page.keyboard.press('Escape');
+      const box = (await list(page).boundingBox())!;
+      await list(page).click({ button: 'right', position: { x: 40, y: box.height - 12 } });
+      await expect(menu(page)).toHaveAttribute('aria-label', 'Trash actions');
+      expect(await names(page)).toEqual(['Empty trash']);
+      await expect(menu(page).getByRole('separator')).toHaveCount(0);
+      await menu(page).getByRole('menuitem', { name: 'Empty trash' }).click();
+      await expect(page.getByRole('dialog', { name: 'Empty the trash?' })).toBeVisible();
+      await page.getByRole('dialog').getByRole('button', { name: 'Cancel' }).click();
+      await rightClick(page, 'readme.txt');
+      await menu(page).getByRole('menuitem', { name: 'Restore' }).click();
+      await expect(row(page, 'readme.txt')).toHaveCount(0);
+      await page.getByRole('button', { name: 'Back to files' }).click();
+      await expect(row(page, 'readme.txt')).toBeVisible();
+    });
+
+    test.describe('on touch', () => {
+      test.use({ hasTouch: true });
+      test('a long press opens it, and lifting the finger selects nothing else', async ({ page, request }) => {
+        await arrive(page, theme, request);
+        await openFiles(page);
+        const b = (await row(page, 'readme.txt').boundingBox())!;
+        const at = { x: Math.round(b.x + 60), y: Math.round(b.y + b.height / 2) };
+        const cdp = await page.context().newCDPSession(page);
+        // A short tap is a tap: no menu.
+        await cdp.send('Input.dispatchTouchEvent', { type: 'touchStart', touchPoints: [at] });
+        await cdp.send('Input.dispatchTouchEvent', { type: 'touchEnd', touchPoints: [] });
+        await expect(menu(page)).toHaveCount(0);
+        await row(page, 'Photos').click();
+        await row(page, 'Backups').click({ modifiers: ['Control'] });
+        await expect(rowSelected(page, 'Photos')).toHaveCount(1);
+        // A long one is a menu, on the row, in the window.
+        await cdp.send('Input.dispatchTouchEvent', { type: 'touchStart', touchPoints: [at] });
+        await expect(menu(page)).toBeVisible();
+        await cdp.send('Input.dispatchTouchEvent', { type: 'touchEnd', touchPoints: [] });
+        await expect(menu(page)).toHaveAttribute('aria-label', 'Actions for readme.txt');
+        await expect(rowSelected(page, 'readme.txt')).toHaveCount(1);
+        await expect(rowSelected(page, 'Photos')).toHaveCount(0);
+        expect(await names(page)).toEqual(['Download', 'Rename', 'Move to…', 'Delete']);
+        await page.keyboard.press('Escape');
+        await expect(menu(page)).toHaveCount(0);
+      });
+    });
   });
 }
 
@@ -409,7 +743,7 @@ test.describe('a desk that is asleep', () => {
   const stopped = { fleet: [{ deskId: PERSONAL, name: 'Personal', kind: 'personal', state: 'stopped' }] };
 
   for (const theme of THEMES) {
-    test(`${theme}: "Wake your desk", with axe`, async ({ page, request }) => {
+    test(`${theme}: "Wake this desk", with axe`, async ({ page, request }) => {
       const errors = watchConsole(page);
       await setTheme(page, theme);
       await harness(request, { ...stopped, files: { enabled: true }, refuseWake: { status: 409, code: 'downtime_active' } });
@@ -419,7 +753,7 @@ test.describe('a desk that is asleep', () => {
       await page.waitForTimeout(300);
       await page.getByRole('group', { name: 'Personal desk' }).getByRole('button', { name: /^Files/ }).evaluate((el) => (el as HTMLButtonElement).click());
       await expect(page.getByTestId('files-panel')).toHaveAttribute('data-panel', 'asleep');
-      await expect(page.getByRole('button', { name: 'Wake your desk' })).toBeVisible();
+      await expect(page.getByRole('button', { name: 'Wake this desk' })).toBeVisible();
       await page.waitForTimeout(500); // the window finishes opening: axe measures its buttons' size
       expect(await axe(page)).toEqual([]);
       await shot(page, `${theme}-asleep`);

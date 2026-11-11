@@ -5,6 +5,7 @@ import com.minimalistalliance.desk.deskd.auth.JwksCache;
 import com.minimalistalliance.desk.deskd.data.Transfers;
 import com.minimalistalliance.desk.deskd.events.EventHub;
 import com.minimalistalliance.desk.deskd.platform.StreamingPause;
+import com.minimalistalliance.desk.deskd.platform.TierLimits;
 import com.minimalistalliance.desk.deskd.rpc.RpcDispatcher;
 import com.minimalistalliance.desk.deskd.session.SessionManager;
 import java.nio.charset.StandardCharsets;
@@ -69,6 +70,7 @@ public final class FilesModule {
     private final FilesMethods methods;
     private final ScheduledExecutorService timer;
     private final Clock clock;
+    private final Quota quota;
 
     /**
      * @param jwks where Platform's keys come from, unless the settings name a file
@@ -137,6 +139,7 @@ public final class FilesModule {
         }
         this.tree = opened;
         if (tree == null) {
+            this.quota = null;
             this.uploads = null;
             this.trash = null;
             this.feed = null;
@@ -154,7 +157,10 @@ public final class FilesModule {
         hub.topics().register(ChangeFeed.TOPIC, feed);
         this.trash = new Trash(tree, clock, settings.trashKeep());
         Uploads[] later = new Uploads[1];
-        Quota quota = new Quota(tree, trash, space != null ? space : Quota.spaceOf(tree), settings.floorBytes(), () -> later[0] == null ? 0 : later[0].owedBytes(), clock);
+        Quota quota = new Quota(
+                tree, trash, space != null ? space : Quota.spaceOf(tree), settings.floorBytes(),
+                () -> later[0] == null ? 0 : later[0].owedBytes(), () -> later[0] == null ? 0 : later[0].reservedBytes(), clock);
+        this.quota = quota;
         this.uploads = new Uploads(tree, quota, trash, transfers, sessions, verifier, clock, feed, sessions::noteTransferActivity, settings.partialKeep(), settings.finishWait());
         later[0] = uploads;
         this.methods = new FilesMethods(tree, trash, quota, uploads, transfers, feed, sessions::noteTransferActivity, guildDesk, clock);
@@ -169,9 +175,39 @@ public final class FilesModule {
         }
     }
 
+    /**
+     * Holds a free desk's Files to {@code filesGb} (ADR 0090, section 7), on top of the floor: a new upload past it gets
+     * {@code no_space} with {@code reason: cap}, {@code files.usage} reports it, and nothing already there is touched. A
+     * change applies at once and tells the Files app ({@code files.changes {usage: true}}). Called once, before anything
+     * can call.
+     */
+    public void followTierLimits(TierLimits limits) {
+        if (quota == null) {
+            return;
+        }
+        quota.capFrom(() -> {
+            TierLimits.Limits now = limits.current();
+            return now == null ? -1 : now.filesCapBytes();
+        });
+        limits.onChange(now -> feed.usage());
+    }
+
     /** True if the tree opened and the methods are live. */
     public boolean available() {
         return tree != null;
+    }
+
+    /**
+     * The Browser's import's way to one file ({@link ImportFiles}): read it whole. While the tree can't be used, the read
+     * says so with {@code unavailable}, {@code reason: tree}.
+     */
+    public ImportFiles importFiles() {
+        if (tree == null) {
+            return (path, maxBytes) -> {
+                throw Errs.tree();
+            };
+        }
+        return new TreeImports(tree);
     }
 
     /** Removes expired trash and stale partials. Also runs hourly. */
@@ -202,6 +238,10 @@ public final class FilesModule {
         return uploads;
     }
 
+    Quota quota() {
+        return quota;
+    }
+
     SafeTree tree() {
         return tree;
     }
@@ -212,6 +252,14 @@ public final class FilesModule {
 
     ChangeFeed feed() {
         return feed;
+    }
+
+    /**
+     * The Agent's Files tools' way in (draft ADR "the Agent's tools and approvals"): the same tree, trash, quota and
+     * change feed, narrowed. Its {@code available()} is false when the tree can't be used.
+     */
+    public AgentFiles agentAccess() {
+        return new AgentFiles(tree, trash, quota, feed, methods);
     }
 
     /** Ends running uploads (their partials stay) and stops the sweep. */

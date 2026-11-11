@@ -16,7 +16,7 @@ import java.util.Locale;
 import java.util.Map;
 import java.nio.charset.StandardCharsets;
 
-/** Helpers both adapters use to turn a thread into a request body. */
+/** Helpers the adapters use to turn a thread into a request body. */
 public final class Messages {
 
     /** Tool calls one model turn may make, and the bytes of arguments one call may stream. Past either, the reply is refused. */
@@ -266,7 +266,7 @@ public final class Messages {
      * A file read to text, between lines the file can't forge: the boundary code is random per file and appears only
      * here. The notice in the system part tells the model what the lines mean.
      */
-    static String fenced(Attachment attachment) {
+    public static String fenced(Attachment attachment) {
         String text = attachment.text();
         StringBuilder out = new StringBuilder();
         out.append("<<<file ").append(attachment.fence()).append(" name=\"").append(attachment.name())

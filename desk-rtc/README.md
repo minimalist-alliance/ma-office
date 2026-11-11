@@ -27,7 +27,7 @@ Output in `dist/`, with `CGO_ENABLED=0`:
 
 `run` execs `$RELEASE_DIR/desk-rtc` with the production flags and `GOMEMLIMIT=96MiB`, which keeps the Go heap under the unit's `MemoryMax=128M` with room for what the runtime doesn't count. A `GOMEMLIMIT` the unit sets wins. `health` exits 0 when the `desk-rtc` unit is active and it holds UDP and TCP on its port; as root, it also checks that `desk-rtc` is the process holding them.
 
-**The port is a desk setting.** `run` passes `--config /etc/ma/desk-rtc.conf` and no `--port`. With no file there, as on every cloud desk, `desk-rtc` listens on 443. A self-hosted desk's installer writes `port=4443` there, because Chrome drops a home-network ICE candidate on a port below 1024 (`selfhost/README.md`, "The port"). `health` runs `$RELEASE_DIR/desk-rtc --config … --print-port` to learn which port to check, so it always checks the one `run` listens on. The file is `key=value` lines, `#` comments; `port` (1 to 65535) is the only key so far. A value it can't use stops `desk-rtc` with a `config:` error, and `health` fails with it; a key it doesn't know is logged and skipped, so a file written for a later version doesn't stop an older one. `--port` on the command line wins over the file (dev runs). `DESK_RTC_CONF` names another file for `run` and `health`, for tests. Code: `cmd/desk-rtc/config.go`.
+**The port is a desk setting.** `run` passes `--config /etc/ma/desk-rtc.conf` and no `--port`. With no file there, as on every cloud desk, `desk-rtc` listens on 443. A self-hosted desk's installer writes `port=4443` there, because Chrome drops a home-network ICE candidate on a port below 1024 (`selfhost/README.md`, "The port"). `health` runs `$RELEASE_DIR/desk-rtc --config … --print-port` to learn which port to check, so it always checks the one `run` listens on. The file is `key=value` lines, `#` comments; `port` (1 to 65535) is the only key so far. A value it can't use stops `desk-rtc` with a `config:` error, and `health` fails with it; a key it doesn't know is logged and skipped, so a file written for a later version doesn't stop an older one. `--port` on the command line wins over the file (dev runs). `DESK_RTC_CONF` names another file for `run` and `health`, for tests. Code: `cmd/desk-rtc/config.go`. From 0.5.0 a shared host's slot adds `tcp_port`, `slot` and `public_ipv4` ("Shared hosts", below); `health` then checks UDP on `port` and TCP on `tcp_port` (`--print-tcp-port`).
 
 The unit needs `User=rtc`, `AmbientCapabilities=CAP_NET_BIND_SERVICE`, `SupplementaryGroups=desk` and `After=network-online.target`: `run` passes `--socket-group desk`, and `--bind auto` needs a default route at startup. It also needs `/run/desk-media` in `ReadWritePaths`. On an older image with no `stream` user or `/run/desk-media`, `desk-rtc` logs a warning and runs without video: data channels and input still work.
 
@@ -67,7 +67,7 @@ dist/amd64/deskctl status --gateway ws://127.0.0.1:8787/v1 --transport udp
 dist/amd64/deskctl status --gateway ws://127.0.0.1:8787/v1 --transport tcp
 ```
 
-`deskctl` prints the status, transport, setup time and round-trip time, and exits non-zero on failure. `--bad-cnf` asks for a token bound to another certificate, which must fail with `identity_mismatch`.
+`deskctl` prints the status, transport, setup time and round-trip time, and exits non-zero on failure. `--bad-cnf` asks for a token bound to another certificate, which must fail with `identity_mismatch`. `--call '<method> [<JSON params>]'` (repeatable) makes more RPCs on the same session after `desk.status.get`, such as `--call 'files.list {"path":""}'`, printing each result or error; any error exits 1 (free walk H5's lab, `image/lab/h5-files/`).
 
 The socket path has to fit the OS limit of 107 bytes.
 
@@ -187,8 +187,8 @@ A frame is at most 16 KiB with its 12-byte header. The answer advertises `a=max-
 ## Flags
 
 ```
-desk-rtc   --socket --socket-group --data-dir --bind --port --config --print-port --consent-timeout -v --version
-           --stream-socket --stream-user --display --no-playout-delay --guild-max-sessions --guild-voice-relay
+desk-rtc   --socket --socket-group --data-dir --bind --port --tcp-port --config --print-port --print-tcp-port --consent-timeout -v --version
+           --stream-socket --stream-user --profile-file --display --no-playout-delay --guild-max-sessions --guild-voice-relay
 gateway-shim --addr --allow-non-loopback --desk-id --owner-id --owner-name --issuer --origins
              --max-conn-age --idle-timeout --resume-hold --max-sessions --desk-kind --guild-id --max-guild-members
 fake-deskd --rtc-sock --api --public-ip --desk-kind
@@ -258,6 +258,40 @@ Setup took 207 to 211 ms at the median in every member phase, as with no flood, 
 
 **Not measured here:** a real browser on a real network against a flood, real networks with loss and long round trips, the 3 s deadline at a 500 ms round trip, IPv6 on a real desk (no desk has IPv6, and `desk-rtc` listens on IPv4 only), and an attacker with real handshakes from 64 or more /24s.
 
+## Shared hosts: one public IPv4 for the host (from 0.5.0)
+
+On a shared desk host under `SlotMode=port` (the owner's choice B, 2026-11-10; ADR 0072 section 6's note; `image/host/README.md`,
+"One address per host"), every slot shares the host's one public IPv4: slot k gets UDP 4430+k, DNATed from the host's address
+unchanged, and every slot's ICE-TCP comes in on the host's one TCP 443 through the host's `desk-ice-demux`, which routes a
+connection by the slot's tag on the ufrag its first STUN request names. `desk-host` writes the slot's own `/etc/ma/desk-rtc.conf`
+(the host's `/run/desk-host/<k>/desk-rtc.conf`, read-only in the desk):
+
+```
+port=4434            # UDP: the slot's own port
+tcp_port=443         # the passive ICE-TCP listener, which the demux reaches through the slot's veth
+slot=4               # every local ICE ufrag starts s04
+public_ipv4=<the host's public IPv4, from the host's IMDS at this start>
+```
+
+- **The ufrag's tag.** Each session's local ufrag is `s<kk>` and 13 random letters (16 in all, as Pion's), and a new one, with
+  the same tag and a new password, at every ICE restart. The setting is the vendored Pion's `SetICEUfragPrefix`
+  (`third_party/README.md`); `rtcserver.SlotOfUfrag` is the rule the demux reads, `s01` to `s32` and nothing else (Pion's own
+  ufrags are letters only, so a desk of its own never carries a tag).
+- **The candidates** name `public_ipv4` in place of `configure`'s `publicIpv4`, which `deskd` gets from the slot's metadata
+  stand-in (Platform's slot session); a difference is logged once per `configure`. Still exactly two: `<host> 4430+k udp host` and
+  `<host> 443 tcp host tcptype passive`.
+- **The client's address survives the demux.** The demux opens each connection to `10.98.<k>.2:443` with the client's own
+  address and port as its source (`IP_TRANSPARENT`), so the ICE-TCP gate's per-network places, reserves and caps (above) see the
+  real client. Measured on the lab host: `desk-rtc`'s TCP 443 sockets in both slots named the client box's own public address
+  and port (`spikes/host-shared-address/README.md`).
+- `slot` and `public_ipv4` go together, and a value it can't use stops `desk-rtc` with a `config:` error, as `port` does. A
+  desk of its own, a self-hosted one and `SlotMode=address`'s slots set none of the three, so nothing changes for them (tested:
+  `TestADeskOfItsOwnIsUnchanged`, and `e2e/` on the staging test desk with 0.5.0, "Status").
+
+Tests: `internal/rtcserver/shared_test.go` (the answer's candidates and tag, an ICE restart's new tagged ufrag, a Pion client on
+ICE-TCP alone to the TCP port through the gate, the tag rule) and `cmd/desk-rtc/shared_config_test.go` (the keys, refusals,
+`--print-tcp-port`, `health` on both ports). `go test -race ./...` on a build box: every package ok.
+
 ## Media and input
 
 Spec: `desk-runtime.md` §8. `internal/rtcserver/stream.go` is the `desk-stream` link and the fan-out, `media.go` the tracks and per-viewer forwarding, `internal/xinput` the event layout and XTEST.
@@ -270,6 +304,7 @@ Spec: `desk-runtime.md` §8. `internal/rtcserver/stream.go` is the `desk-stream`
 - **Sender reports are on the capture clock** (ADR 0037, `srclock.go`). `desk-stream` 0.2.3 and later stamp RTP from CLOCK_MONOTONIC with no offset, so `desk-rtc` rewrites each report Pion makes to say exactly which RTP time is now on each track, and a browser can tell which sound goes with which picture. Pion's own reports tie RTP time to when the last frame was sent, which put audio and video 15 to 35 ms apart in the tests. `forward` sees per packet whether the source is clocked (within 2 s of the clock), keeps a random offset fixed across pauses and new `desk-stream` processes for one that is, and drops the single stale audio packet the encoder sends after a resume. An older `desk-stream` keeps the old re-anchoring and Pion's reports.
 - **`playout-delay` at 0, 0** goes on every video packet when the offer has the extension. It cuts Chrome's smoothing delay. `--no-playout-delay` turns it off for measuring. **A `HOLD` from the client** (type 6 on `keys`, `desk-runtime.md` 8.6) sets this session's to `ms, ms` instead, capped at 500 ms, and `HOLD 0` puts it back: that's how the Desk app holds the picture to match the sound while the member only watches (ADR 0037). Chrome ignores the video receiver's `jitterBufferTarget` while frames say 0, 0, so the hold has to come from here.
 - **Quality levels** (ADR 0039, `docs/interfaces/stream-quality.md` sections 3 and 4, `quality.go`). A `QUALITY` on `keys` (type 7, not input, `input` permission or not) is that session's ask, kept until it closes or sends level 0. The stream runs at the highest ask among the sessions viewing, one that never asked counting as High and the level staying put while nobody views, lowered to `deskd`'s `stream.limit`, which lasts until `deskd`'s next connection. `desk-stream` hears `level <name>` as its first line on every connection, before `resume`, and then on a change at most every 500 ms, the newest value winning; an older one logs each as an unknown command and stays at High. A viewing session gets a 16-byte `0x82` reply on `keys` when it starts viewing and whenever its reply would change, or with its first `QUALITY` if `keys` wasn't open yet. `stats` adds `stream.level`, `stream.limit` (null for none) and a session's `quality` (absent until it asks).
+- **The allowance profile** (from 0.5.1, S-29, ADR 0036; `quality.go`, `profile_test.go`). `run` passes `--profile-file /run/desk-egress/profile`. `desk-rtc` reads it at start and each time `desk-stream` connects (`desk-egress` writes it before it restarts `desk-stream`, so that's when the two agree), and takes the profile's ceiling as it takes `stream.limit`: `capped` Medium, `deep` Low; `normal`, a missing file or anything else is none. The level in effect is lowered to the lower of the two ceilings, the reply's limit byte carries it and flag bit 0 says held, so a member on Max past 100 GB reads "held at Medium" instead of Max. `stats` adds `stream.profile` (absent for normal). Before 0.5.1 a capped desk answered with the member's own level.
 - **X is reached lazily and again after a restart,** because `desk-xorg` starts on demand. Access comes from `xhost +SI:localuser:rtc`, so xgb's "no authority" fallback is the normal path. Connecting turns X's own auto-repeat off.
 - **Keys and the wheel depend on the image.** `desk-rtc` 0.2.1 goes with `ma-desk-0.2.2` or later: evdev keycodes, the keymap `desk-xorg-ready` loads, and 1920x1080. On an older image it logs a warning, and `e.code` stays wrong on some named keys. Which keycodes are safe for spare characters, and why, is in `internal/xinput/spares.go` and `desk-runtime.md` §8.6.
 

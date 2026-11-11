@@ -375,8 +375,12 @@ class Levels(unittest.TestCase):
         x264 = dict(kv.split("=", 1) for kv in cfg["video"]["x264"].split() if "=" in kv)
         for key in M.ENCODER_KEYS:
             self.assertEqual(int(x264[key]), SPEC["high"][key], f"[level.high] {key} differs from [video]")
-        for name in ("stream-capped.conf", "stream-deep.conf"):
-            self.assertEqual(M.read_levels(conf(name)), {}, name)
+        # S-29: the capped conf's levels are stream.conf's held to its own picture; the deep conf has none (each would be it).
+        capped = {name: {"max-height": v["max-height"] if v["max-height"] else 0, "quantizer": max(v["quantizer"], 28),
+                         "bitrate": min(v["bitrate"], 4000), "vbv-buf-capacity": v["vbv-buf-capacity"]} for name, v in SPEC.items()}
+        self.assertEqual(M.read_levels(conf("stream-capped.conf")), capped)
+        self.assertEqual(capped["low"], SPEC["low"])
+        self.assertEqual(M.read_levels(conf("stream-deep.conf")), {})
         bad = configparser.ConfigParser(interpolation=None)
         bad.read_string(
             "[level.low]\nmax-height = 720        # a comment, as in the contract\nquantizer = 30\nbitrate = 2500\n"
@@ -507,8 +511,10 @@ class Levels(unittest.TestCase):
               f" one SSRC, sequence numbers unbroken")
 
     def test_5_warm_level_before_first_resume(self):
-        """What desk-rtc does: level first, then resume. The very first frame is already Low: with the screen's size known
-        while warm (the source has negotiated), and with it not known yet (sized when the caps go by)."""
+        """What desk-rtc does: level first, then resume. The very first frame is already Low's size: with the screen's size known
+        while warm (the source has negotiated), and with it not known yet (sized when the caps go by). Its quantizer and ceiling
+        are [video]'s, and Low's follow at once after it (S-29: the encoder takes a level's values only once it has opened on a
+        frame, which on a real desk at Max failed 4 starts in 10 when reopened while warm)."""
         for known in (True, False):
             t = start = time.monotonic()
             if known:
@@ -522,25 +528,79 @@ class Levels(unittest.TestCase):
             self.assertEqual([x for x in logged_since(t) if x.startswith("level")], expect)
             t = d.send("resume")
             first, _ = d.rx.first(t, lambda a: True)
+            time.sleep(max(0.0, first["t0"] + 1.1 - time.monotonic()))
             later = d.rx.window(first["t0"], first["t0"] + 1)
             d.stop()
             self.assertTrue(first["idr"])
             self.assertEqual(first["sps"], LOW)
-            self.assertEqual((first["sei"]["crf"], first["sei"]["vbv_maxrate"]), ("30.0", "2500"))
-            self.assertEqual([a["idr"] for a in later].count(True), 1)
+            self.assertEqual((first["sei"]["crf"], first["sei"]["vbv_maxrate"]), ("23.0", "8000"))
+            low = [i for i, a in enumerate(later) if a["idr"] and a["sei"] and a["sei"]["crf"] == "30.0"]
+            self.assertTrue(low and low[0] <= 3, f"Low's values {low[:1]} frames after the first, want within 3")
+            self.assertEqual({a["size"] for a in later}, {LOW})
+            self.assertEqual([a["idr"] for a in later].count(True), 2)
             if not known:
                 self.assertIn("screen 1920x1080: level low is 1280x720", logged_since(start))
             print(f"\nwarm, screen {'known' if known else 'not known yet'}, level low, resume: first frame a"
                   f" {first['sps'][0]}x{first['sps'][1]} keyframe in {(first['t1'] - t) * 1000:.1f} ms")
 
-    def test_6_capped_conf_ignores_level(self):
-        """stream-capped.conf has no levels: the pipeline is today's, and level is logged once and changes nothing."""
+    def test_5b_a_new_process_told_max_opens_then_takes_it(self):
+        """S-29, from a real desk: a new desk-stream told `level max`, then `resume` and `keyframe` together, as desk-rtc's
+        connection sends them. The encoder opens on the first frame with [video]'s values, then reopens at Max's right after,
+        at 60 fps, and never errors. Before, it reopened while warm, and on a desk 4 starts in 10 met "encoder not initialized"."""
+        for trial in range(3):
+            d = Desk(conf("stream.conf", BALL))
+            t = time.monotonic()
+            d.sock.sendall(b"level max\nresume\nkeyframe\n")
+            first, _ = d.rx.first(t, lambda a: True)
+            self.assertIsNotNone(first, "no frame after resume")
+            time.sleep(1.6)
+            later = d.rx.window(first["t0"], first["t0"] + 1.5)
+            d.stop()
+            self.assertTrue(first["idr"])
+            self.assertEqual((first["sei"]["crf"], first["sei"]["vbv_maxrate"]), ("23.0", "8000"), "the first frame is [video]'s")
+            mx = [i for i, a in enumerate(later) if a["idr"] and a["sei"] and a["sei"]["crf"] == "19.0"]
+            self.assertTrue(mx and mx[0] <= 3, f"Max's values {mx[:1]} frames after the first, want within 3")
+            fps = len(later) / 1.5
+            self.assertTrue(58 <= fps <= 62, f"{fps:.1f} fps")
+            self.assertFalse([x for x in logged_since(t) if "error" in x])
+            print(f"\n(start at max, trial {trial + 1}) first frame q23, Max's keyframe {mx[0]} frames on, {fps:.1f} fps")
+
+    def test_6_capped_conf_holds_each_level_to_its_picture(self):
+        """S-29: past 100 GB the member's level counts within the cap. Low stays Low (1280x720, q30, 2.5 Mbit); Medium, High and
+        Max are the capped picture (1920x1080, q28, 4 Mbit). Before, stream-capped.conf had no levels, so Low got the capped
+        picture: sharper and more data than the member chose. Every switch keeps 60 fps."""
         d = Desk(conf("stream-capped.conf", BALL))
-        # From 0.3.0 its [adapt] adds the scaler (ADR 0073), in passthrough unless the machine is busy; a level still changes nothing.
-        size = d.stream.pipeline.get_by_name("size")
-        self.assertTrue(size is None or size.get_property("caps").is_any())
+        rx = d.rx
         t = d.send("resume")
-        d.rx.first(t, lambda a: a["idr"])
+        au, _ = rx.first(t, lambda a: a["idr"])
+        self.assertEqual(au["sps"], FULL)
+        self.assertEqual((au["sei"]["crf"], au["sei"]["vbv_maxrate"], au["sei"]["vbv_bufsize"]), ("28.0", "4000", "600"))
+        capped = ("28.0", "4000", "600")
+        # high after low reopens the encoder (its SEI carries the values); medium after high has the same values, so it's a
+        # keyframe on the open encoder with no SEI, and the encoder's own properties say what runs.
+        for level, size, sei in (("low", LOW, ("30.0", "2500", "375")), ("max", FULL, capped), ("low", LOW, None),
+                                 ("high", FULL, capped), ("medium", FULL, None)):
+            t = d.send(f"level {level}")
+            idr, frames = rx.first(t, lambda a, size=size: a["idr"] and a["size"] == size)
+            self.assertIsNotNone(idr, f"no keyframe at {size} after level {level}")
+            self.assertLessEqual(frames, 3, f"level {level}: keyframe {frames} frames after the command")
+            if sei:
+                self.assertEqual((idr["sei"]["crf"], idr["sei"]["vbv_maxrate"], idr["sei"]["vbv_bufsize"]), sei, level)
+            time.sleep(max(0.0, idr["t0"] + 1.6 - time.monotonic()))
+            aus = rx.window(idr["t0"], idr["t0"] + 1.5)
+            self.assertEqual({a["size"] for a in aus}, {size}, level)
+            fps = len(aus) / 1.5
+            self.assertTrue(58 <= fps <= 62, f"level {level}: {fps:.1f} fps")
+            print(f"\n(capped) level {level}: {size[0]}x{size[1]}, keyframe {frames} frames after, {fps:.1f} fps")
+        self.assertEqual(d.stream.encoder.get_property("quantizer"), 28)
+        self.assertEqual(d.stream.encoder.get_property("bitrate"), 4000)
+        d.stop()
+
+    def test_6b_deep_conf_ignores_level(self):
+        """stream-deep.conf has no levels: every level held to its picture is its picture. level is logged once and changes nothing."""
+        d = Desk(conf("stream-deep.conf", BALL))
+        t = d.send("resume")
+        first, _ = d.rx.first(t, lambda a: a["idr"])  # this test's capture replaces the conf's convert, scaler included
         time.sleep(0.5)
         t = d.send("level low")
         d.send("level max")
@@ -549,8 +609,8 @@ class Levels(unittest.TestCase):
         d.stop()
         self.assertEqual(len([x for x in logged_since(t) if "level" in x]), 1)
         self.assertFalse([a for a in aus if a["idr"]])
-        self.assertEqual({a["size"] for a in aus}, {FULL})
-        self.assertEqual(d.stream.encoder.get_property("quantizer"), 28)
+        self.assertEqual({a["size"] for a in aus}, {first["sps"]})
+        self.assertEqual(d.stream.encoder.get_property("quantizer"), 30)
 
     def test_7_ceilings_on_noise(self):
         """Snow is more than any level's ceiling, so each runs at its VBV cap: each level's bitrate holds after the encoder

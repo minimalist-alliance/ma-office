@@ -10,6 +10,7 @@ import com.minimalistalliance.desk.deskd.rpc.TokenBucket;
 import java.nio.file.Path;
 import java.time.Clock;
 import java.time.Duration;
+import java.time.Instant;
 import java.util.ArrayList;
 import java.util.HashMap;
 import java.util.HashSet;
@@ -17,7 +18,13 @@ import java.util.LinkedHashMap;
 import java.util.List;
 import java.util.Map;
 import java.util.Set;
+import java.util.concurrent.ScheduledExecutorService;
+import java.util.concurrent.ScheduledFuture;
 import java.util.concurrent.Semaphore;
+import java.util.concurrent.TimeUnit;
+import java.util.function.BooleanSupplier;
+import java.util.function.Consumer;
+import java.util.function.Supplier;
 import java.util.concurrent.locks.Condition;
 import java.util.concurrent.locks.ReentrantLock;
 import java.util.regex.Pattern;
@@ -130,6 +137,15 @@ public final class MinifiedModule implements TabEvents, Topic {
         boolean consentRejected;
         /** The label of the button deskd pressed for the member. */
         String consentLabel;
+        /** The document a pre-scroll was started for, so there's one per document; -1 before any. */
+        long prescrollGeneration = -1;
+        /** A pre-scroll is in the page now: an action or the member's choice for the site stops it at once. */
+        boolean prescrolling;
+        boolean prescrollStopping;
+        /** The document an action last came for: its pre-scroll, if not begun, never begins after the member acted. */
+        long actedGeneration = -1;
+        /** What this tab's last pre-scroll did, in counts, for the real-site harness: never page text or an address. */
+        Map<String, Object> prescrolled;
 
         TabState(String id) {
             this.id = id;
@@ -159,12 +175,67 @@ public final class MinifiedModule implements TabEvents, Topic {
     record FrameSession(String tabId, String targetId) {}
 
     private final Map<String, FrameSession> frameSessions = new HashMap<>();
+    /**
+     * Frames attached before their document is known (no URL yet, or {@code about:blank}): nothing of deskd's goes in one
+     * until it commits to a web page, and one that commits to anything else (a password manager's in-page menu, which is
+     * {@code chrome-extension:}) is let go. Not in {@link #frameSessions}, so a tab's actions refuse meanwhile (T47-3).
+     */
+    private final Map<String, FrameSession> pendingFrames = new HashMap<>();
+    /** The session each frame session was attached under, which is where a detach from it goes. */
+    private final Map<String, String> frameParents = new HashMap<>();
+    /** Frames let go as no web page's, when attached or when they committed: counts for /health, never which. */
+    private long framesLeftAtAttach;
+    private long framesLeftAtCommit;
+    /** Frames attached before their document was known that then committed to a web page's, and were guarded. */
+    private long framesGuardedAtCommit;
+
+    /** What a frame's document is, as far as deskd may go into it. */
+    enum FrameDoc {
+        /** A web page's: guarded and read as any frame. */
+        WEB,
+        /** Not known yet: no URL, or {@code about:blank}. Watched for its commit, nothing else. */
+        PENDING,
+        /** A browser's or an extension's own page: never armed, walked or read, and let go. */
+        FOREIGN
+    }
+
+    static FrameDoc frameDoc(String url, String origin) {
+        String u = url == null ? "" : url.strip();
+        if (u.isEmpty() || u.equalsIgnoreCase("about:blank")) {
+            return origin != null && !PageWorld.webDocument(u.isEmpty() ? "about:blank" : u, origin) ? FrameDoc.FOREIGN : FrameDoc.PENDING;
+        }
+        return PageWorld.webDocument(u, origin) ? FrameDoc.WEB : FrameDoc.FOREIGN;
+    }
     /** Sites (registrable domains) that showed a sensitive signal since deskd started: sticky for the session (T47-7). */
     private final Set<String> sensitiveHosts = new HashSet<>();
     private final Semaphore snapshots = new Semaphore(SNAPSHOTS_AT_ONCE, true);
+    /** Pre-scrolls by what came of them, for /health: counts, never a page. Under {@code lock}. */
+    private final Map<String, Long> prescrolls = new java.util.TreeMap<>();
     final TokenBucket deskActions = new TokenBucket(ActionProxy.DESK_PER_SECOND, ActionProxy.DESK_PER_SECOND, System::nanoTime);
     private final ActionProxy proxy;
     private volatile boolean closed;
+    /**
+     * Sites another view's member marked sensitive, which this one falls back on too: the Agent's view ({@link AgentView})
+     * follows the member's marks, never writing them. Must not block.
+     */
+    private volatile java.util.function.Predicate<String> alsoSensitive = host -> false;
+
+    // ---- Browser time on a free desk (ADR 0090 section 2): the view in use, and refused once the day's time is used
+
+    /** How long after a page call the view still counts as in use, so a client that polls without subscribing is counted. */
+    static final Duration USE_LEASE = Duration.ofSeconds(15);
+    /** Until when today's Browser time is used up, or null: {@link #followBrowserTime}. Must not block. */
+    private volatile Supplier<Instant> timeUsedUntil = () -> null;
+    /** Whether anyone looks at the desk (ADR 0045). */
+    private volatile BooleanSupplier lookedAt = () -> true;
+    private volatile Consumer<Boolean> useListener = in -> {};
+    private volatile Duration useLease = USE_LEASE;
+    private final Object useLock = new Object();
+    /** The last page call's lease end, in nanoTime, or 0. Under {@code useLock}. */
+    private long leaseUntilNanos;
+    private boolean inUse;
+    private ScheduledExecutorService leaseTimer;
+    private ScheduledFuture<?> leaseCheck;
 
     /** @param dataDirectory the data volume's directory, where per-site memory lives, or null to keep it in memory */
     public MinifiedModule(
@@ -183,8 +254,27 @@ public final class MinifiedModule implements TabEvents, Topic {
         hub.topics().register(TOPIC, this);
     }
 
+    /** For the Agent's view: these sites fall back as the member's own marks do here. Before the first look. */
+    void alsoSensitive(java.util.function.Predicate<String> marked) {
+        this.alsoSensitive = marked;
+    }
+
+    boolean alsoSensitiveSite(String host) {
+        return alsoSensitive.test(host);
+    }
+
+    /** Whether the member marked this host's site sensitive, read only. */
+    boolean markedSensitive(String host) {
+        return host != null && memory.get(host).sensitive();
+    }
+
     public void close() {
         closed = true;
+        synchronized (useLock) {
+            if (leaseTimer != null) {
+                leaseTimer.shutdownNow();
+            }
+        }
         List<Thread> watchers = new ArrayList<>();
         lock.lock();
         try {
@@ -231,7 +321,10 @@ public final class MinifiedModule implements TabEvents, Topic {
                 watched += state.watcher != null ? 1 : 0;
                 kept += state.doc != null ? 1 : 0;
             }
-            return Map.of("tabs", tabs.size(), "watched", watched, "kept", kept, "frames", frameSessions.size());
+            return Map.of("tabs", tabs.size(), "watched", watched, "kept", kept, "frames", frameSessions.size(),
+                    "framesPending", pendingFrames.size(), "framesGuardedAtCommit", framesGuardedAtCommit,
+                    "framesLeft", Map.of("attach", framesLeftAtAttach, "commit", framesLeftAtCommit),
+                    "prescroll", Map.copyOf(prescrolls));
         } finally {
             lock.unlock();
         }
@@ -261,13 +354,17 @@ public final class MinifiedModule implements TabEvents, Topic {
                 lock.lock();
                 try {
                     frameSessions.remove(Json.string(params, "sessionId"));
+                    pendingFrames.remove(Json.string(params, "sessionId"));
+                    frameParents.remove(Json.string(params, "sessionId"));
                 } finally {
                     lock.unlock();
                 }
             }
             case "Page.frameNavigated" -> {
                 Map<String, Object> frame = Json.object(params, "frame");
-                if (tabId != null && frame != null && frame.get("parentId") == null) {
+                if (tabId == null && sessionId != null && frame != null) {
+                    frameCommitted(sessionId, frame);
+                } else if (tabId != null && frame != null && frame.get("parentId") == null) {
                     newDocument(tabId);
                 }
             }
@@ -294,6 +391,9 @@ public final class MinifiedModule implements TabEvents, Topic {
             return;
         }
         boolean frame = info != null && "iframe".equals(Json.string(info, "type"));
+        // What its document is, as Chromium says at attach: a password manager's menu frame is attached with no URL, held
+        // for the debugger before its document is known, so the commit is looked at again (frameCommitted).
+        FrameDoc doc = frame ? frameDoc(Json.string(info, "url"), null) : null;
         // Switched off since the tab was set up: the frame runs free with nothing of deskd's in it, and the tab leaves.
         boolean on = flags.on();
         TabState leaving = null;
@@ -306,14 +406,22 @@ public final class MinifiedModule implements TabEvents, Topic {
             TabState ownerState = owner == null ? null : tabs.get(owner);
             if (!on) {
                 leaving = ownerState;
-            } else if (frame && owner != null && (frameSessions.size() >= MAX_FRAME_SESSIONS || frameCount(owner) >= MAX_FRAMES_PER_TAB
+            } else if (frame && doc == FrameDoc.FOREIGN) {
+                // Not a web page's: no record, and deskd lets it go (below). Chromium still lists it under the tab, so the
+                // tab's actions refuse while it's there, as for any frame that can't be guarded (T47-3).
+                framesLeftAtAttach++;
+            } else if (frame && owner != null && (frameSessions.size() + pendingFrames.size() >= MAX_FRAME_SESSIONS || frameCount(owner) >= MAX_FRAMES_PER_TAB
                     || targetId == null || !TAB_ID.matcher(targetId).matches())) {
                 // A frame deskd can't keep track of can't be armed, so the tab's actions refuse from here (T47-3).
                 if (ownerState != null) {
                     ownerState.framesUnrecorded = true;
                 }
+            } else if (frame && owner != null && doc == FrameDoc.PENDING) {
+                pendingFrames.put(child, new FrameSession(owner, targetId));
+                frameParents.put(child, parentSession);
             } else if (frame && owner != null) {
                 frameSessions.put(child, new FrameSession(owner, targetId));
+                frameParents.put(child, parentSession);
                 String host = SiteMemory.hostOf(Text.clean(Json.string(info, "url"), MDocBuilder.MAX_URL_CHARS));
                 TabState state = tabs.get(owner);
                 if (host != null && HostLists.on(lists.payment, host) && ownerState != null && ownerState.doc != null) {
@@ -336,7 +444,29 @@ public final class MinifiedModule implements TabEvents, Topic {
         TabState holder = owner == null ? null : existing(owner);
         Thread.ofVirtual().name("minified-frame-attach").start(() -> {
             try {
-                if (frame && on) {
+                if (frame && on && doc == FrameDoc.FOREIGN) {
+                    leaveFrame(child, parentSession, waiting);
+                } else if (frame && on && doc == FrameDoc.PENDING && !access.frameAttached(child)) {
+                    // The tab's owner couldn't make it safe to run (an Agent tab's frame whose requests didn't stop,
+                    // S-14): it stays held at its start, and never loads.
+                    log.debug("a frame stays held: its tab's owner refused it");
+                } else if (frame && on && doc == FrameDoc.PENDING) {
+                    // Only told of its commit: no guard, no world, no script until it's a web page's.
+                    world.watchFrame(child, timing.request());
+                    if (waiting && !holdWhileActing(holder, child)) {
+                        world.release(child, timing.request());
+                    }
+                    if (!waiting) {
+                        // It may have committed before the watch began: its own tree says what it holds now.
+                        Map<String, Object> tree = Json.object(access.callSession(child, "Page.getFrameTree", Map.of(), timing.request()), "frameTree");
+                        Map<String, Object> root = tree == null ? null : Json.object(tree, "frame");
+                        if (root != null) {
+                            frameCommitted(child, root);
+                        }
+                    }
+                } else if (frame && on && !access.frameAttached(child)) {
+                    log.debug("a frame stays held: its tab's owner refused it");
+                } else if (frame && on) {
                     world.guardFrame(child, timing.request());
                     // T47D-1: a frame born while its tab has an action in flight waits for the action to end.
                     if (waiting && !holdWhileActing(holder, child)) {
@@ -353,9 +483,84 @@ public final class MinifiedModule implements TabEvents, Topic {
         });
     }
 
+    /**
+     * A frame session's own frame committed a document (its {@code Page.frameNavigated}): one that was pending is guarded
+     * once it's a web page's, and any that's now a browser's or an extension's page is let go, its record dropped first,
+     * so nothing of deskd's runs in it from here (the sign-ins work's finding, Nov 11). Frames inside it are judged where
+     * anything would run in them ({@link PageWorld#runIn}).
+     */
+    private void frameCommitted(String session, Map<String, Object> frame) {
+        String frameId = Json.string(frame, "id");
+        FrameDoc doc = frameDoc(Json.string(frame, "url"), Json.string(frame, "securityOrigin"));
+        boolean guard = false;
+        boolean drop = false;
+        String parent;
+        lock.lock();
+        try {
+            parent = frameParents.get(session);
+            FrameSession pending = pendingFrames.get(session);
+            FrameSession known = pending != null ? pending : frameSessions.get(session);
+            if (known == null || frameId == null || !frameId.equals(known.targetId())) {
+                return;
+            }
+            if (doc == FrameDoc.FOREIGN) {
+                pendingFrames.remove(session);
+                frameSessions.remove(session);
+                frameParents.remove(session);
+                framesLeftAtCommit++;
+                drop = true;
+            } else if (doc == FrameDoc.WEB && pending != null && flags.on()) {
+                pendingFrames.remove(session);
+                frameSessions.put(session, pending);
+                framesGuardedAtCommit++;
+                guard = true;
+            }
+        } finally {
+            lock.unlock();
+        }
+        if (drop) {
+            Thread.ofVirtual().name("minified-frame-leave").start(() -> {
+                try {
+                    leaveFrame(session, parent, false);
+                } catch (InterruptedException e) {
+                    Thread.currentThread().interrupt();
+                }
+            });
+        } else if (guard) {
+            // Its document now started without the guard's script, which an action's arm puts in it; the next ones have it.
+            Thread.ofVirtual().name("minified-frame-guard").start(() -> {
+                try {
+                    world.guardFrame(session, timing.request());
+                } catch (InterruptedException e) {
+                    Thread.currentThread().interrupt();
+                }
+            });
+        }
+    }
+
+    /**
+     * Lets a frame that isn't a web page's run, and detaches from it, on the session that attached it (which is the only
+     * one that can): deskd holds no session in it at all.
+     */
+    private void leaveFrame(String session, String parent, boolean waiting) throws InterruptedException {
+        if (waiting) {
+            world.release(session, timing.request());
+        }
+        try {
+            access.callSession(parent, "Target.detachFromTarget", Map.of("sessionId", session), timing.request());
+        } catch (CdpFailure e) {
+            log.debug("couldn't detach from a frame: {}", e.kind());
+        }
+    }
+
     /** With the lock held. */
     private int frameCount(String tabId) {
         int count = 0;
+        for (FrameSession session : pendingFrames.values()) {
+            if (session.tabId().equals(tabId)) {
+                count++;
+            }
+        }
         for (FrameSession session : frameSessions.values()) {
             count += session.tabId().equals(tabId) ? 1 : 0;
         }
@@ -384,6 +589,7 @@ public final class MinifiedModule implements TabEvents, Topic {
             state.latestFill.clear();
             state.consentRejected = false;
             state.consentLabel = null;
+            state.prescrolled = null;
             signalWake();
         } finally {
             lock.unlock();
@@ -427,6 +633,8 @@ public final class MinifiedModule implements TabEvents, Topic {
             state.closed = true;
             state.doc = null;
             frameSessions.values().removeIf(session -> session.tabId().equals(tabId));
+            pendingFrames.values().removeIf(session -> session.tabId().equals(tabId));
+            frameParents.keySet().removeIf(session -> !frameSessions.containsKey(session) && !pendingFrames.containsKey(session));
             watcher = state.watcher;
             signalWake();
         } finally {
@@ -462,6 +670,8 @@ public final class MinifiedModule implements TabEvents, Topic {
         lock.lock();
         try {
             frameSessions.clear();
+            pendingFrames.clear();
+            frameParents.clear();
             for (TabState state : tabs.values()) {
                 dropView(state);
                 state.injectedSession = null;
@@ -476,6 +686,112 @@ public final class MinifiedModule implements TabEvents, Topic {
         } finally {
             lock.unlock();
         }
+    }
+
+    // ---- Browser time (ADR 0090)
+
+    /**
+     * Follows Browser time on a free desk. The simplified view is in use while the desk is looked at and any session holds a
+     * {@code browser.minified} subscription, or for {@link #USE_LEASE} after a page call; {@code inUse} hears it begin and
+     * end. While {@code usedUntil} says when, the page calls and a new subscription are refused as {@code live} is, and
+     * {@link #endForTimeUsed} ends the open ones. Nothing here touches a tab, a cookie or the session. Call once, before the
+     * lifecycle starts.
+     *
+     * @param usedUntil until when the day's time is used up, or null. Must not block or take a lock of this module's
+     * @param lookedAt whether anyone looks at the desk. Must not block
+     * @param inUse hears the view become in use, and stop. Called under a lock of its own, never this module's main one. Must not block
+     */
+    public void followBrowserTime(Supplier<Instant> usedUntil, BooleanSupplier lookedAt, Consumer<Boolean> inUse) {
+        this.timeUsedUntil = usedUntil;
+        this.lookedAt = lookedAt;
+        this.useListener = inUse;
+        useChanged();
+    }
+
+    /** For tests: how long a page call keeps the view in use. */
+    public void useLease(Duration lease) {
+        this.useLease = lease;
+    }
+
+    /** Whether the view counts as in use now. */
+    public boolean inUse() {
+        synchronized (useLock) {
+            return inUseLocked();
+        }
+    }
+
+    /** Who is looking, or who is subscribed, may have changed. Never blocks for long, and takes none of this module's locks. */
+    public void useChanged() {
+        // The listener is told under the lock so two threads can't tell it in the wrong order; it takes only the Browser
+        // time's own lock, and nothing there calls back in.
+        synchronized (useLock) {
+            boolean now = inUseLocked();
+            if (now == inUse) {
+                return;
+            }
+            inUse = now;
+            useListener.accept(now);
+        }
+    }
+
+    private boolean inUseLocked() {
+        if (closed) {
+            return false;
+        }
+        if (leaseUntilNanos - System.nanoTime() > 0) {
+            return true;
+        }
+        return lookedAt.getAsBoolean() && hub.hasSubscribersTo(key -> key.startsWith(TOPIC));
+    }
+
+    /** A page call that was answered: the view is in use for the lease. */
+    void used() {
+        synchronized (useLock) {
+            leaseUntilNanos = System.nanoTime() + useLease.toNanos();
+            scheduleCheckLocked();
+        }
+        useChanged();
+    }
+
+    private void scheduleCheckLocked() {
+        if (closed) {
+            return;
+        }
+        if (leaseTimer == null) {
+            leaseTimer = java.util.concurrent.Executors.newSingleThreadScheduledExecutor(
+                    task -> Thread.ofVirtual().name("minified-use").unstarted(task));
+        }
+        if (leaseCheck != null) {
+            leaseCheck.cancel(false);
+        }
+        long wait = Math.max(1, leaseUntilNanos - System.nanoTime()) + TimeUnit.MILLISECONDS.toNanos(5);
+        leaseCheck = leaseTimer.schedule(this::useChanged, wait, TimeUnit.NANOSECONDS);
+    }
+
+    /** The refusal a page call or a new subscription gets once the day's time is used up, or nothing while there's time. */
+    void requireTime() throws RpcException {
+        Instant until = timeUsedUntil.get();
+        if (until != null) {
+            throw MinifiedMethods.timeUsed(until);
+        }
+    }
+
+    /**
+     * Today's Browser time has just been used up: every open subscription to a tab's view ends, each with an {@code error}
+     * event of {@code unavailable}, as the live pause leaves its sessions {@code off}, and the client's next ask gets the
+     * refusal. Only the subscriptions: no tab, cookie or the session is touched (ADR 0035), and Chromium freezes as any
+     * unviewed one does. Does nothing if there's time again by now. Returns quickly.
+     */
+    public void endForTimeUsed() {
+        if (timeUsedUntil.get() == null) {
+            return;
+        }
+        hub.endTopics(key -> key.startsWith(TOPIC), RpcException.UNAVAILABLE);
+        synchronized (useLock) {
+            // A call's lease ends with the rest: nothing is in use, and no further call is answered.
+            leaseUntilNanos = 0;
+        }
+        useChanged();
     }
 
     // ---- the topic
@@ -499,6 +815,7 @@ public final class MinifiedModule implements TabEvents, Topic {
         if (!flags.on()) {
             throw MinifiedMethods.disabled();
         }
+        requireTime();
         if (!TAB_ID.matcher(topicKey.substring(TOPIC.length())).matches()) {
             throw new RpcException(RpcException.BAD_REQUEST, "No such tab id", Map.of("reason", "tabId"));
         }
@@ -613,6 +930,11 @@ public final class MinifiedModule implements TabEvents, Topic {
             if (state.actionsWaiting == 0) {
                 actionsGone.signalAll();
             }
+            if (waiting) {
+                // The member acts: the page goes back where it was at once, and the action runs.
+                state.actedGeneration = state.generation;
+                stopPrescroll(state);
+            }
         } finally {
             lock.unlock();
         }
@@ -692,6 +1014,7 @@ public final class MinifiedModule implements TabEvents, Topic {
 
     @Override
     public void subscribersChanged() {
+        useChanged();
         List<Thread> idle = new ArrayList<>();
         lock.lock();
         try {
@@ -1169,6 +1492,8 @@ public final class MinifiedModule implements TabEvents, Topic {
         }
         // A watched tab's view is current unless it's been told otherwise; anything else is looked at now.
         refresh(tab, state, !watched, retry);
+        Map<String, Object> reply;
+        long prescroll = -1;
         lock.lock();
         try {
             Map<String, Object> status = state.status != null ? state.status : pendingStatus(state);
@@ -1177,12 +1502,203 @@ public final class MinifiedModule implements TabEvents, Topic {
                 same.put("unchanged", true);
                 return same;
             }
-            Map<String, Object> reply = new LinkedHashMap<>(status);
+            reply = new LinkedHashMap<>(status);
             if (state.doc != null && state.fallback == null) {
                 reply.put("mdoc", state.doc.wire());
+                // The client has this document's view in hand now, and covers the real page with it: its pre-scroll is due.
+                if (flags.prescroll() && state.prescrollGeneration != state.generation && !state.doc.loading && !state.doc.sensitive) {
+                    state.prescrollGeneration = state.generation;
+                    state.prescrolled = Map.of("outcome", "pending");
+                    prescroll = state.generation;
+                }
             }
             state.usedNanos = System.nanoTime();
-            return reply;
+        } finally {
+            lock.unlock();
+        }
+        if (prescroll >= 0) {
+            startPrescroll(state, prescroll);
+        }
+        return reply;
+    }
+
+    // ---- the pre-scroll: once per document, the real page brings in what it loads only as it's scrolled to
+
+    /** How long after a client was handed a document's view its pre-scroll starts, so the view covers the real page first. */
+    public static final Duration PRESCROLL_AFTER = Duration.ofMillis(400);
+    /** Its caps on the page: screens, and time, after which it goes back at once (an infinite feed stops there). */
+    public static final int PRESCROLL_SCREENS = 12;
+    static final Duration PRESCROLL_FOR = Duration.ofMillis(1500);
+    /** How long it waits, back where the page was, for the pictures it came near to finish loading. */
+    static final Duration PRESCROLL_SETTLE = Duration.ofMillis(600);
+
+    /**
+     * The tab's real page, scrolled down in steps of a screen and put back exactly, once per document, so lazy pictures,
+     * a thread's later replies and a list's next items are in the page before deskd looks again (task 47, round 3). Only
+     * once a client has the view in hand (never on a navigation alone, and never while the real page is what shows),
+     * under the tab's work, so no action comes between. Never on a sensitive site or page, with focus in a field, or
+     * with an action waiting; an action, or the member choosing the real page for the site, stops it at the next step.
+     * It scrolls and nothing else: no press and no key (proxy.js, {@code prescroll}). What came of it is counted, never
+     * which page.
+     */
+    private void startPrescroll(TabState state, long generation) {
+        Thread.ofVirtual().name("minified-prescroll").start(() -> {
+            Map<String, Object> outcome;
+            try {
+                outcome = prescroll(state, generation);
+            } catch (InterruptedException e) {
+                Thread.currentThread().interrupt();
+                outcome = Map.of("outcome", "interrupted");
+            } catch (RuntimeException e) {
+                outcome = Map.of("outcome", "failed");
+            }
+            lock.lock();
+            try {
+                if (state.prescrollGeneration == generation) {
+                    state.prescrolled = outcome;
+                }
+                prescrolls.merge(String.valueOf(outcome.get("outcome")), 1L, Long::sum);
+            } finally {
+                lock.unlock();
+            }
+        });
+    }
+
+    private Map<String, Object> prescroll(TabState state, long generation) throws InterruptedException {
+        pause(PRESCROLL_AFTER);
+        // Never a thaw for it: a frozen desk has nobody looking (ADR 0045).
+        if (closed || access.frozen()) {
+            return Map.of("outcome", "skipped_frozen");
+        }
+        Map<String, Object> answer;
+        try (AutoCloseable use = access.use()) {
+            TabRef tab = access.resolve(state.id);
+            state.work.lockInterruptibly();
+            try {
+                String host = SiteMemory.hostOf(tab.url());
+                lock.lock();
+                try {
+                    String refused = prescrollRefusal(state, generation, host);
+                    if (refused != null) {
+                        return Map.of("outcome", "skipped_" + refused);
+                    }
+                    state.prescrolling = true;
+                    state.prescrollStopping = false;
+                } finally {
+                    lock.unlock();
+                }
+                try {
+                    ensureInjected(tab, state);
+                    answer = world.run(tab, prescrollArgs(), PRESCROLL_FOR.plus(PRESCROLL_SETTLE).plus(timing.request()));
+                } finally {
+                    lock.lock();
+                    try {
+                        state.prescrolling = false;
+                        state.prescrollStopping = false;
+                    } finally {
+                        lock.unlock();
+                    }
+                }
+            } finally {
+                state.work.unlock();
+            }
+        } catch (InterruptedException e) {
+            throw e;
+        } catch (RpcException e) {
+            return Map.of("outcome", "skipped_gone");
+        } catch (CdpFailure e) {
+            // REMOTE: the document went meanwhile, and its page with it.
+            return Map.of("outcome", e.kind() == CdpFailure.Kind.REMOTE ? "skipped_changed" : "failed");
+        } catch (Exception e) {
+            return Map.of("outcome", "failed");
+        }
+        Map<String, Object> outcome = new LinkedHashMap<>();
+        if (answer.get("skipped") instanceof String skipped && skipped.matches("[a-z]{1,16}")) {
+            outcome.put("outcome", "skipped_" + skipped);
+            return outcome;
+        }
+        if (answer.get("error") != null || !(answer.get("steps") instanceof Number steps)) {
+            outcome.put("outcome", "failed");
+            return outcome;
+        }
+        boolean stopped = Boolean.TRUE.equals(answer.get("stopped"));
+        boolean capped = Boolean.TRUE.equals(answer.get("capped"));
+        outcome.put("outcome", !Boolean.TRUE.equals(answer.get("restored")) ? "not_restored" : stopped ? "stopped" : capped ? "capped" : "done");
+        outcome.put("steps", steps.intValue());
+        outcome.put("grew", Boolean.TRUE.equals(answer.get("grew")));
+        if (answer.get("ms") instanceof Number ms) {
+            outcome.put("ms", ms.longValue());
+        }
+        if (steps.intValue() > 0) {
+            // What it brought in is the view's next look: the watcher's at once, or the next get's.
+            markDirty(state);
+        }
+        return outcome;
+    }
+
+    /** Why this tab's pre-scroll mustn't run now, or null. With the lock held. */
+    private String prescrollRefusal(TabState state, long generation, String host) {
+        if (!flags.on() || !flags.prescroll()) {
+            return "off";
+        }
+        if (state.closed || state.generation != generation) {
+            return "changed";
+        }
+        if (state.doc == null || state.fallback != null) {
+            return "stream";
+        }
+        if (state.dialog) {
+            return "dialog";
+        }
+        if (state.actionsWaiting > 0 || state.acting > 0 || state.actedGeneration == generation) {
+            return "acting";
+        }
+        if (host == null || state.doc.sensitive || sensitiveHosts.contains(SiteMemory.registrable(host)) || HostLists.on(lists.sensitive, host)) {
+            return "sensitive";
+        }
+        // SiteMemory's lock is a leaf, so it's safe to take under this one.
+        SiteMemory.Site site = memory.get(host);
+        if (site.sensitive()) {
+            return "sensitive";
+        }
+        if (site.view() == SiteMemory.View.STREAM) {
+            return "stream";
+        }
+        return null;
+    }
+
+    private static Map<String, Object> prescrollArgs() {
+        Map<String, Object> args = new LinkedHashMap<>();
+        args.put("op", "prescroll");
+        args.put("screens", PRESCROLL_SCREENS);
+        args.put("ms", PRESCROLL_FOR.toMillis());
+        args.put("settle", PRESCROLL_SETTLE.toMillis());
+        return args;
+    }
+
+    /** Ends the tab's pre-scroll at its next step, if one is running. With the lock held; the call goes on a thread of its own. */
+    private void stopPrescroll(TabState state) {
+        if (!state.prescrolling || state.prescrollStopping) {
+            return;
+        }
+        state.prescrollStopping = true;
+        Thread.ofVirtual().name("minified-prescroll-stop").start(() -> {
+            try {
+                world.run(access.resolve(state.id), Map.of("op", "prescrollStop"), timing.request());
+            } catch (RpcException | CdpFailure e) {
+                // A tab or document that's gone took the pre-scroll with it.
+            } catch (InterruptedException e) {
+                Thread.currentThread().interrupt();
+            }
+        });
+    }
+
+    /** What the tab's last pre-scroll did, for the real-site harness: counts, never page text. No RPC reaches it. */
+    public Map<String, Object> lastPrescroll(String tabId) {
+        lock.lock();
+        try {
+            TabState state = tabs.get(tabId);
+            return state == null || state.prescrolled == null ? Map.of() : state.prescrolled;
         } finally {
             lock.unlock();
         }
@@ -1318,7 +1834,7 @@ public final class MinifiedModule implements TabEvents, Topic {
             return Fallback.NOT_PAGE;
         }
         SiteMemory.Site site = memory.get(host);
-        if (HostLists.on(lists.sensitive, host) || site.sensitive()) {
+        if (HostLists.on(lists.sensitive, host) || site.sensitive() || alsoSensitive.test(host)) {
             return Fallback.SENSITIVE_SITE;
         }
         if (site.view() == SiteMemory.View.STREAM) {
@@ -1520,6 +2036,18 @@ public final class MinifiedModule implements TabEvents, Topic {
                 said.put("blocking", false);
                 doc = doc.withFact("hidden", said);
             }
+            // Round 6: a long page that went blank for a moment while it draws its rows again (a store's virtual grid after
+            // the pre-scroll put it back, Best Buy's) isn't given up for the real page when this document's view already
+            // had something: that view stays until the page's next change is looked at. Never for a wall or a check (they
+            // fall back for their own reasons, before this one), and only while the page is still as long as a page of
+            // results.
+            if (built.fallback() == Fallback.LOW_CONFIDENCE && state.fallback == null && MDocBuilder.hadSomething(state.doc)
+                    && MDocBuilder.almostNothingOfALongPage(doc) && !doc.sensitive) {
+                state.count = raw.count();
+                state.dirty = false;
+                state.usedNanos = System.nanoTime();
+                return true;
+            }
             if (flags.consentReject() && doc.consent != null && state.consentGeneration != generation && !doc.sensitive) {
                 state.consentGeneration = generation;
                 pressConsent = true;
@@ -1677,6 +2205,8 @@ public final class MinifiedModule implements TabEvents, Topic {
                 if (state.doc == null || site != null && site.equals(SiteMemory.registrable(SiteMemory.hostOf(state.doc.url)))) {
                     state.dirty = true;
                     state.fallbackGeneration = -1;
+                    // The member chose for the site, perhaps the real page: no pre-scroll goes on under it.
+                    stopPrescroll(state);
                     if (state.parked) {
                         parked.add(state);
                     }

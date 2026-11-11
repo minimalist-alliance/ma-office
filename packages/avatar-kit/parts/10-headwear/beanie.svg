@@ -1,0 +1,5 @@
+<g data-part="beanie" data-hair-clip="M0,150 C30,140 52,104 72,86 H184 C204,104 226,140 256,150 V256 H0 Z">
+  <path fill="{{hw}}" d="M76,88 C76,52 99,32 128,32 C157,32 180,52 180,88 Z"/>
+  <rect x="71" y="70" width="114" height="24" rx="11" fill="{{hwShade}}"/>
+  <g data-min-size="64" fill="none" stroke="{{hwStep}}" stroke-width="1.8" stroke-linecap="round" stroke-linejoin="round"><path d="M84,74 V90 M92.8,74 V90 M101.6,74 V90 M110.4,74 V90 M119.2,74 V90 M128,74 V90 M136.8,74 V90 M145.60000000000002,74 V90 M154.4,74 V90 M163.2,74 V90 M172,74 V90"/></g>
+</g>

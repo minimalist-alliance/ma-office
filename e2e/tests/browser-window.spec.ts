@@ -70,7 +70,7 @@ test('the Browser window on the real desk: opens, plays, navigates, takes input,
   const keys = win.getByLabel("Keyboard for the page in this desk's browser", { exact: true });
   const address = win.getByRole('textbox', { name: 'Address' });
   const tabs = win.getByTestId('browser-tab');
-  const activeTab = win.getByRole('tab', { selected: true });
+  const activeTab = win.getByRole('group', { name: 'Tabs on this desk' }).locator('[aria-current="true"]');
 
   /** The newest report from the page on screen, from the window's tab strip. The last one seen if `ok` never holds. */
   async function pageReport<T>(tag: string, ok: (s: T) => boolean = () => true, ms = 8000): Promise<T | null> {
@@ -131,7 +131,7 @@ test('the Browser window on the real desk: opens, plays, navigates, takes input,
     await win.getByRole('button', { name: 'New tab', exact: true }).click();
     await expect(tabs, 'the new tab').toHaveCount(before + 1, { timeout: 20_000 });
     // Only ever a tab on screen whose title is one of these pages' reports, so never a tab someone else left on this desk.
-    tabToClose = tabs.filter({ has: page.getByRole('tab', { selected: true }) }).getByRole('button', { name: /^Close [RI]\{/ });
+    tabToClose = tabs.filter({ has: page.locator('[aria-current="true"]') }).getByRole('button', { name: /^Close [RI]\{/ });
     const url = `bars.html?n=${nonce}`;
     await go(url);
     // Only the page can write this nonce in the title. The address bar on its own could still be the text we typed.

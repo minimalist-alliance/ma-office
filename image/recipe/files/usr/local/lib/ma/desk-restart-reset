@@ -1,0 +1,66 @@
+#!/usr/bin/python3 -I
+"""desk-restart-reset: a service that has run healthy for a while starts its next restart back-off from the beginning.
+
+systemd's RestartSteps=/RestartMaxDelaySec= (the unit files) lengthen the wait before each automatic restart: from RestartSec=
+toward the cap, one step for every restart in a row. systemd resets that count only on a manual start or a clean exit, never
+because a service ran well for a long time, so a deskd that crashes once a day would be waiting five minutes by the end of the
+week. This runs from desk-restart-reset.timer (every 30 s) and, for each long-running unit that has restarted (NRestarts above
+0) and has been active for HEALTHY_SEC without a break, runs `systemctl reset-failed`, which sets that count back to 0.
+Nothing is restarted, stopped or signalled, and a unit that isn't active is never touched, so a loop keeps its back-off.
+(docs/interfaces/desk-runtime.md, "Restarts and memory pressure"; ADR-less: Reliability audit S1.)
+"""
+import subprocess
+import sys
+import time
+
+HEALTHY_SEC = 120
+UNITS = ("deskd", "desk-agent", "desk-notebook", "desk-rtc", "desk-stream", "commons-server",
+         "desk-agent-filter", "desk-egress", "desk-browser", "desk-xorg", "desk-audio")
+
+
+def parse(text):
+    """`systemctl show` of several units: blocks of Key=Value separated by blank lines -> list of dicts."""
+    out, cur = [], {}
+    for line in text.splitlines():
+        if not line.strip():
+            if cur:
+                out.append(cur)
+            cur = {}
+            continue
+        k, _, v = line.partition("=")
+        cur[k] = v
+    if cur:
+        out.append(cur)
+    return out
+
+
+def due(block, now_us, healthy=HEALTHY_SEC):
+    """True if this unit restarted before and has been active, unbroken, for `healthy` seconds."""
+    try:
+        n = int(block.get("NRestarts", "0"))
+        since = int(block.get("ActiveEnterTimestampMonotonic", "0"))
+    except ValueError:
+        return False
+    return n > 0 and block.get("ActiveState") == "active" and since > 0 and now_us - since >= healthy * 1_000_000
+
+
+def run(systemctl=("/usr/bin/systemctl",), now_us=None, healthy=HEALTHY_SEC, units=UNITS):
+    names = [f"{u}.service" for u in units]
+    p = subprocess.run([*systemctl, "show", "-p", "Id", "-p", "NRestarts", "-p", "ActiveState",
+                        "-p", "ActiveEnterTimestampMonotonic", *names],
+                       capture_output=True, text=True, timeout=30, check=False)
+    if now_us is None:
+        now_us = int(time.monotonic() * 1_000_000)
+    reset = []
+    for b in parse(p.stdout):
+        if due(b, now_us, healthy):
+            r = subprocess.run([*systemctl, "reset-failed", b["Id"]], capture_output=True, text=True, timeout=30, check=False)
+            if r.returncode == 0:
+                reset.append(b["Id"])
+                print(f"desk-restart-reset: {b['Id']} ran {healthy} s without a break after {b['NRestarts']} restart(s); back-off starts over")
+    return reset
+
+
+if __name__ == "__main__":
+    run()
+    sys.exit(0)

@@ -333,6 +333,86 @@ class PrepareActivateTest(unittest.TestCase):
         self.ok("desk-rtc", *self.artifact("desk-rtc", "0.4.2", salt="-b"))
         self.assertEqual(self.links("desk-rtc"), {"current": "0.4.2", "previous": "0.4.0", "prepared": None})
 
+    # ---- a rollout of a version the desk already holds (same artifact), found by hash with no download
+    GONE = "file:///nonexistent/never-fetched.tgz"
+
+    def baked(self, comp, version):
+        """The image's layout: installed with MA_INSTALL_ONLY=1, as build.sh does, current and no previous."""
+        url, sha = self.artifact(comp, version)
+        env = {"PATH": f"{self.bin}:/usr/bin:/bin", "MA_ROOT": str(self.root), "MA_SMOKE_TEST": str(self.bin / "smoke"),
+               "MA_SMOKE_WAIT": "0", "MA_RELEASE_FILE": str(self.release), "STUB_DIR": str(self.stub), "MA_INSTALL_ONLY": "1"}
+        r = subprocess.run(NS + ["bash", str(MA_UPDATE), comp, url, sha], env=env, capture_output=True, text=True, timeout=60)
+        self.assertEqual(r.returncode, 0, r.stderr)
+        return url, sha
+
+    def test_a_rollout_to_previous_by_version_needs_no_download(self):
+        old = self.artifact("deskd", "1.0")
+        self.ok("deskd", *old)
+        self.ok("deskd", *self.artifact("deskd", "1.1"))
+        (self.stub / "systemctl.log").unlink(missing_ok=True)
+        r = self.ok("deskd", self.GONE, old[1])
+        self.assertIn("nothing downloaded", r.stderr)
+        self.assertEqual(self.links("deskd"), {"current": "1.0", "previous": "1.1", "prepared": None})
+        self.assertEqual(self.log("systemctl.log"), ["restart deskd.service"])
+        self.assertEqual(self.releases("deskd"), ["1.0", "1.1"])
+
+    def test_baked_then_one_rollout_then_the_baked_version_by_name_and_forward_again(self):
+        baked = self.baked("deskd", "1.0")
+        new = self.artifact("deskd", "1.1")
+        self.ok("deskd", *new)
+        self.assertEqual(self.links("deskd"), {"current": "1.1", "previous": "1.0", "prepared": None})
+        r = self.ok("deskd", self.GONE, baked[1])           # back to the baked version, by name
+        self.assertIn("nothing downloaded", r.stderr)
+        self.assertEqual(self.links("deskd"), {"current": "1.0", "previous": "1.1", "prepared": None})
+        self.ok("deskd", self.GONE, new[1])                  # and forward again
+        self.assertEqual(self.links("deskd"), {"current": "1.1", "previous": "1.0", "prepared": None})
+        self.assertEqual(self.log("docker.log"), [])
+
+    def test_a_rollout_to_a_prepared_release_is_a_prepare_then_an_activate(self):
+        self.ok("deskd", *self.artifact("deskd", "1.0"))
+        prepared = self.artifact("deskd", "1.1")
+        self.ok("deskd", "--prepare", *prepared)
+        self.ok("deskd", self.GONE, prepared[1])
+        self.assertEqual(self.links("deskd"), {"current": "1.1", "previous": "1.0", "prepared": None})
+
+    def test_a_failing_switch_to_a_held_release_puts_the_pair_back(self):
+        old = self.artifact("deskd", "1.0")
+        self.ok("deskd", *old)
+        self.ok("deskd", *self.artifact("deskd", "1.1"))
+        (self.root / "deskd" / "releases" / "1.0" / "health").write_text("#!/bin/sh\nexit 1\n")
+        r = self.ma_update("deskd", self.GONE, old[1])
+        self.assertEqual(r.returncode, 1, r.stderr)
+        self.assertEqual(self.links("deskd"), {"current": "1.1", "previous": "1.0", "prepared": None})
+        self.assertEqual(self.releases("deskd"), ["1.0", "1.1"])
+
+    def test_the_same_version_from_a_different_artifact_is_still_refused_and_changes_nothing(self):
+        baked = self.baked("deskd", "1.0")
+        self.ok("deskd", *self.artifact("deskd", "1.1"))
+        before = self.links("deskd")
+        for version in ("1.0", "1.1"):   # previous and current
+            with self.subTest(version=version):
+                (self.root / "deskd" / "releases" / version / "run").stat()
+                (self.stub / "systemctl.log").unlink(missing_ok=True)
+                r = self.ma_update("deskd", *self.artifact("deskd", version, salt="-rebuilt"))
+                self.assertEqual(r.returncode, 2, r.stderr)
+                self.assertIn("from another artifact", r.stderr)
+                self.assertEqual(self.links("deskd"), before)
+                self.assertEqual(self.releases("deskd"), ["1.0", "1.1"])
+                self.assertEqual(self.log("systemctl.log"), [])
+        self.assertEqual((self.root / "deskd" / "releases" / "1.0" / "artifact.sha256").read_text().strip(),
+                         baked[1])
+
+    def test_desk_rtc_0_2_0_held_as_previous_is_still_refused_by_a_rollout(self):
+        self.release.write_text("version=0.2.1\n")
+        old = self.artifact("desk-rtc", "0.2.0")
+        self.ok("desk-rtc", *old)
+        self.ok("desk-rtc", *self.artifact("desk-rtc", "0.3.5"))
+        self.release.write_text("version=0.3.3\n")
+        r = self.ma_update("desk-rtc", self.GONE, old[1])
+        self.assertEqual(r.returncode, 2, r.stderr)
+        self.assertIn("must never run", r.stderr)
+        self.assertEqual(self.links("desk-rtc"), {"current": "0.3.5", "previous": "0.2.0", "prepared": None})
+
 
 if __name__ == "__main__":
     unittest.main(verbosity=2)

@@ -30,7 +30,9 @@ import org.slf4j.LoggerFactory;
  * settle what it reported, and write one audit row, whatever the outcome.
  *
  * <p>It fails closed: with the audit log or the ledger not open, nothing is sent. A refused call writes a
- * {@code limit.hit} row and sends nothing. Every call that went out writes one {@code llm.call} row, which is also
+ * {@code limit.hit} row and sends nothing. What's settled is the table's price for the usage the provider reported, or
+ * what the provider says it billed when it says and that's more (OpenRouter's {@code usage.cost}). Every call that
+ * went out writes one {@code llm.call} row, which is also
  * the key's use (design 9.11's "key use"): its target names the key and the model, its payload hash covers the
  * model, the instructions and the thread, and its decision is {@code ok} or {@code error:<kind>}.
  */
@@ -207,6 +209,11 @@ public final class LlmGateway {
         }
 
         Long cost = reserved.price == null ? null : Pricing.costMicroUsd(reserved.price, result.usage());
+        // What the provider says it billed counts when it's more: a free model that cost something is charged it.
+        Long billed = result.providerMicroUsd();
+        if (billed != null && (cost == null || billed > cost)) {
+            cost = billed;
+        }
         ledger.settle(reservation, result.usage(), cost);
         appendQuietly(new AuditLog.Entry(reserved.actor, "llm.call", reserved.target, payloadHash, "ok", cost));
         return new Outcome(result, cost);

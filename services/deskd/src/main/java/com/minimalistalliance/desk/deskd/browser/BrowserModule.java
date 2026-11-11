@@ -2,7 +2,9 @@ package com.minimalistalliance.desk.deskd.browser;
 
 import com.minimalistalliance.desk.deskd.browser.minified.MinifiedModule;
 import com.minimalistalliance.desk.deskd.browser.minified.MinifiedSwitch;
+import com.minimalistalliance.desk.deskd.data.Transfers;
 import com.minimalistalliance.desk.deskd.events.EventHub;
+import com.minimalistalliance.desk.deskd.files.ImportFiles;
 import com.minimalistalliance.desk.deskd.platform.AgeBand;
 import com.minimalistalliance.desk.deskd.platform.PlatformHttp;
 import com.minimalistalliance.desk.deskd.platform.StreamingPause;
@@ -52,12 +54,36 @@ public final class BrowserModule implements SessionListener {
     private final BrowserTabs tabs;
     private final BrowserFreeze freeze;
     private final DeskAttention attention;
+    private final BrowserView view;
     private final FilteredSites filtered;
     private final RpcDispatcher dispatcher;
     private final EventHub hub;
     private MinifiedModule minified;
+    /** Links Chromium hands the OS, once {@link #serveLinks} has its socket up; null before, or on a desk without one. */
+    private volatile BrowserLinks links;
+    private volatile LinkSocket linkSocket;
+    /** The simplified view's switch and timing, which the Agent's walker follows. */
+    private MinifiedSwitch minifiedFlags;
+    private MinifiedModule.Timing minifiedTiming;
+    /** The Agent's Browser, once enabled. */
+    private AgentBrowsing agent;
+    /** Signing in, once enabled: what it holds in memory is zeroed as deskd stops. */
+    private SignIns signIns;
+    private final SessionManager sessions;
     /** At most one thread waits to log, so a client flipping states can't make more. */
     private final AtomicBoolean loggerWaiting = new AtomicBoolean();
+    /**
+     * The sessions the Browser's video goes to now, which Browser time counts (ADR 0090). Changed under {@link #videoLock}
+     * only, by {@link #setVideo} under the stream's lock and as a session ends.
+     */
+    private final java.util.Set<String> videoOn = new java.util.HashSet<>();
+    private final Object videoLock = new Object();
+    /** The simplified view is in use ({@link MinifiedModule#followBrowserTime}), which Browser time counts too. Under {@link #videoLock}. */
+    private boolean simplifiedOn;
+    /** Until when today's Browser time is used up, or null: {@link #followBrowserTime}. */
+    private volatile Supplier<Instant> timeUsedUntil = () -> null;
+    /** Hears the Browser go live to any session, and stop: {@link #followBrowserTime}. Must not block. */
+    private volatile java.util.function.Consumer<Boolean> liveListener = live -> {};
     /** When a move kept the Browser held, or null: {@link #followMovedHold}. Must take no lock of this module's. */
     private volatile Supplier<Instant> movedSince = () -> null;
 
@@ -139,6 +165,7 @@ public final class BrowserModule implements SessionListener {
             DeskAttention.Timing attentionTiming,
             BrowserFreeze.Timing freezeTiming) {
         this.rtc = rtc;
+        this.sessions = sessions;
         this.dispatcher = dispatcher;
         this.hub = hub;
         this.filtered = new FilteredSites(familyDns);
@@ -149,7 +176,7 @@ public final class BrowserModule implements SessionListener {
                 http, cdpPort, cdpListener, hub, this::hasViewer, this::browserLost, this::browserDisplaced, filtered, freeze, timing);
         this.stream = new BrowserStream(
                 units,
-                rtc::setVideo,
+                this::setVideo,
                 sessions::isLive,
                 this::viewersChanged,
                 tabs::browserStarting,
@@ -160,7 +187,9 @@ public final class BrowserModule implements SessionListener {
                     CdpListener.Kind kind = cdpListener.get().kind();
                     return kind == CdpListener.Kind.TRUSTED || kind == CdpListener.Kind.DISPLACED;
                 });
-        this.attention = new DeskAttention(stream, freeze, hub, sessions::isLive, tabs::wake, attentionTiming);
+        // The phone view goes by who wants live and who looks: what the stream and the attention say.
+        this.view = new BrowserView(tabs, stream::liveSessions, freeze, hub, this::looked, BrowserView.Timing.DEFAULT);
+        this.attention = new DeskAttention(stream, freeze, hub, sessions::isLive, this::lookChanged, view::said, attentionTiming);
         stream.attentionFrom(attention::attended, freeze);
         freeze.follow(
                 stream::browserSettled,
@@ -186,21 +215,68 @@ public final class BrowserModule implements SessionListener {
         hub.topics().register(BrowserTabs.TOPIC, tabs);
         new BrowserClipboard(rtc, hub, clipboardTiming).register(dispatcher, freeze);
         attention.register(dispatcher);
+        view.register(dispatcher);
         sessions.addSessionListener(this);
         attention.start();
         freeze.start();
+        view.start();
     }
 
     @Override
     public void onSessionEnded(String sessionId) {
         stream.sessionEnded(sessionId);
         attention.sessionEnded(sessionId);
+        view.sessionEnded(sessionId);
+        noteVideo(sessionId, false);
     }
 
-    /** Input from desk-rtc is work, and thaws Chromium to take it. */
+    /** The stream's {@code session.video}, under its lock: to desk-rtc, and noted for Browser time. Must not block. */
+    private void setVideo(String sessionId, boolean view) {
+        rtc.setVideo(sessionId, view);
+        noteVideo(sessionId, view);
+    }
+
+    private void noteVideo(String sessionId, boolean on) {
+        synchronized (videoLock) {
+            boolean before = inUseLocked();
+            if (on) {
+                videoOn.add(sessionId);
+            } else {
+                videoOn.remove(sessionId);
+            }
+            tellUse(before);
+        }
+    }
+
+    /**
+     * The simplified view has become in use, or stopped: Browser time counts it once with the video, never twice, and the
+     * tabs keep the desk's own view while it's in use (BrowserView).
+     */
+    private void noteSimplified(boolean on) {
+        synchronized (videoLock) {
+            boolean before = inUseLocked();
+            simplifiedOn = on;
+            tellUse(before);
+        }
+        view.simplified(on);
+    }
+
+    private boolean inUseLocked() {
+        return !videoOn.isEmpty() || simplifiedOn;
+    }
+
+    private void tellUse(boolean before) {
+        boolean after = inUseLocked();
+        if (before != after) {
+            liveListener.accept(after);
+        }
+    }
+
+    /** Input from desk-rtc is work, and thaws Chromium to take it. It's also a session taking the view (BrowserView). */
     @Override
     public void onDeskInput(String sessionId) {
         freeze.input();
+        view.input(sessionId);
     }
 
     @Override
@@ -213,9 +289,20 @@ public final class BrowserModule implements SessionListener {
      * before desk-browser, and systemd won't stop a frozen unit.
      */
     public void close() {
+        if (agent != null) {
+            // Its tabs and contexts go while the connection is still here; Chromium drops them with it anyway.
+            agent.close();
+        }
+        if (linkSocket != null) {
+            linkSocket.close();
+        }
         if (minified != null) {
             minified.close();
         }
+        if (signIns != null) {
+            signIns.close();
+        }
+        view.close();
         attention.close();
         freeze.close(BrowserFreeze.CLOSE_THAW_WAIT);
         tabs.close();
@@ -227,6 +314,46 @@ public final class BrowserModule implements SessionListener {
      */
     public MinifiedModule enableMinified(Path dataDirectory) {
         return enableMinified(dataDirectory, java.time.Clock.systemUTC(), MinifiedModule.Timing.DEFAULT, MinifiedSwitch.file(dataDirectory));
+    }
+
+    /**
+     * Reads the protected-media kill switch from {@code protected-media-switch} in this directory, the data volume
+     * (API.md section 10). With no file it is on. Call once, before the lifecycle starts.
+     */
+    public void followProtectedMediaSwitch(Path dataDirectory) {
+        tabs.protectedMediaSwitch(ProtectedMedia.switchIn(dataDirectory));
+    }
+
+    /** For tests: any switch. */
+    void followProtectedMediaSwitch(java.util.function.BooleanSupplier on) {
+        tabs.protectedMediaSwitch(on);
+    }
+
+    /**
+     * Signing in that works on the desk ({@link SignIns}, API.md section 10, "Signing in"): {@code browser.import} of
+     * bookmarks from {@code files}, a passwords file over the session into memory only ({@code browser.import.begin},
+     * its bytes on bulk through {@code transfers}, {@code finish} and {@code abort}), {@code browser.bookmarks.list} and
+     * the key button's {@code browser.extensions.list}, {@code browser.extension.open} and {@code close}, for the password
+     * managers on {@link PasswordManagers#LAUNCH}. Refused unless {@code band} says adult. Call once, before the lifecycle
+     * starts.
+     */
+    public void enableSignIns(ImportFiles files, Transfers transfers, Supplier<AgeBand.Band> band) {
+        enableSignIns(files, transfers, band, new PasswordManagers(PasswordManagers.LAUNCH), SignIns.Timing.DEFAULT,
+                PasswordUploads.Timing.DEFAULT);
+    }
+
+    /** @return the passwords file's table, for tests */
+    PasswordUploads enableSignIns(
+            ImportFiles files,
+            Transfers transfers,
+            Supplier<AgeBand.Band> band,
+            PasswordManagers managers,
+            SignIns.Timing timing,
+            PasswordUploads.Timing uploadTiming) {
+        PasswordUploads uploads = new PasswordUploads(transfers, sessions::session, uploadTiming);
+        signIns = new SignIns(tabs.signInAccess(), freeze, files, uploads, band, managers, timing);
+        signIns.register(dispatcher);
+        return uploads;
     }
 
     /** {@link MinifiedModule#mayShareWithModel}, for whatever would hand a tab to a model: default deny (T47-7). */
@@ -244,7 +371,81 @@ public final class BrowserModule implements SessionListener {
             throw new IllegalStateException("the simplified view is enabled already");
         }
         minified = new MinifiedModule(tabs.minifiedAccess(), dispatcher, hub, dataDirectory, clock, timing, flags);
+        minifiedFlags = flags;
+        minifiedTiming = timing;
+        // Browser time (ADR 0090): the view in use counts with the video, and is refused with it once the day's time is used.
+        minified.followBrowserTime(() -> timeUsedUntil.get(), attention::seen, this::noteSimplified);
         return minified;
+    }
+
+    /**
+     * Passes the links Chromium hands the desk's OS to the member's device (API.md section 10, "Links out"): listens on
+     * {@code socket} for the image's {@code xdg-open} stand-in, from {@code chromiumUid} alone, and registers the topic
+     * {@value BrowserLinks#TOPIC}. A desk whose image has no stand-in has no directory for the socket, so neither happens, and
+     * a SUB to the topic gets not_found. Call once, before the lifecycle starts.
+     *
+     * @return true if it's listening
+     */
+    public boolean serveLinks(Path socket, int chromiumUid) {
+        return serveLinks(socket, chromiumUid, BrowserLinks.Timing.DEFAULT, java.time.Clock.systemUTC(), System::nanoTime);
+    }
+
+    boolean serveLinks(Path socket, int chromiumUid, BrowserLinks.Timing timing, java.time.Clock clock, java.util.function.LongSupplier nanos) {
+        if (links != null) {
+            throw new IllegalStateException("links are served already");
+        }
+        Path directory = socket.toAbsolutePath().getParent();
+        if (directory == null || !java.nio.file.Files.isDirectory(directory)) {
+            log.info("links out: no {}, so links Chromium hands the desk's OS go nowhere (an image without the stand-in)", directory);
+            return false;
+        }
+        BrowserLinks topic = new BrowserLinks(hub, tabs::knownTabOnScreen, clock, nanos, timing);
+        try {
+            LinkSocket server = new LinkSocket(socket, chromiumUid, new LinkSocket.Sink() {
+                @Override
+                public String offer(String url) {
+                    return topic.offer(url);
+                }
+
+                @Override
+                public String refused(String reason) {
+                    return topic.refused(reason);
+                }
+            });
+            server.start();
+            linkSocket = server;
+        } catch (java.io.IOException e) {
+            log.warn("links out: can't listen on {}: {}", socket, e.getClass().getSimpleName());
+            return false;
+        }
+        hub.topics().register(BrowserLinks.TOPIC, topic);
+        links = topic;
+        log.info("links out: listening on {}", socket);
+        return true;
+    }
+
+    /**
+     * The Agent's Browser (draft ADR "the Agent's tools and approvals", section 5; {@link AgentBrowsing}): a run's own
+     * off-the-record context, a granted site of the member's session, hidden tabs that are never the member's, and the
+     * simplified view's walker and action proxy over them. It follows the view's kill switch. Call once, after
+     * {@link #enableMinified}, before the lifecycle starts.
+     *
+     * @param freeDesk whether this is a free desk, which has one Agent tab. Must not block
+     */
+    public AgentBrowser enableAgentBrowsing(java.util.function.BooleanSupplier freeDesk) {
+        if (agent != null) {
+            throw new IllegalStateException("the agent's browser is enabled already");
+        }
+        if (minified == null) {
+            throw new IllegalStateException("the agent's browser needs the simplified view");
+        }
+        agent = new AgentBrowsing(tabs, freeze, minifiedFlags, minifiedTiming, minified, freeDesk);
+        return agent;
+    }
+
+    /** The Agent's Browser, or null if it isn't enabled. */
+    public AgentBrowser agentBrowser() {
+        return agent;
     }
 
     /**
@@ -278,6 +479,29 @@ public final class BrowserModule implements SessionListener {
         band.onSettled(stream::ageGateMoved);
     }
 
+    /**
+     * Follows Browser time (ADR 0090): whether the Browser's video goes to any session goes to {@code live} as it changes,
+     * under the stream's lock, so it must not block; while {@code usedUntil} says when, {@code live} is refused as during
+     * the bandwidth pause, with {@code limit: browser_time}, and {@link #browserTimeUsed} ends what's open. Call once,
+     * before the lifecycle starts.
+     *
+     * @param usedUntil until when today's time is used up, or null. Must not block or take a lock of this module's
+     */
+    public void followBrowserTime(Supplier<Instant> usedUntil, java.util.function.Consumer<Boolean> live) {
+        stream.timeUsedFrom(usedUntil);
+        timeUsedUntil = usedUntil;
+        liveListener = live;
+    }
+
+    /** Today's Browser time has just been used up: {@link BrowserStream#endForTimeUsed}. Returns quickly. */
+    public void browserTimeUsed() {
+        stream.endForTimeUsed();
+        MinifiedModule view = minified;
+        if (view != null) {
+            view.endForTimeUsed();
+        }
+    }
+
     /** For tests. */
     BrowserStream stream() {
         return stream;
@@ -286,6 +510,11 @@ public final class BrowserModule implements SessionListener {
     /** For tests. */
     BrowserFreeze freeze() {
         return freeze;
+    }
+
+    /** For tests. */
+    BrowserView view() {
+        return view;
     }
 
     /** {@link FilteredSites#counts}, for tests. */
@@ -332,6 +561,7 @@ public final class BrowserModule implements SessionListener {
         streamHealth.put("seen", attention.seen());
         Map<String, Object> browserHealth = tabs.health();
         browserHealth.put("freeze", freeze.health());
+        browserHealth.put("view", view.health());
         if (stream.chromiumRefused()) {
             browserHealth.put("chromium", CHROMIUM_OLDER_THAN_PROFILE);
         }
@@ -346,9 +576,22 @@ public final class BrowserModule implements SessionListener {
             // Says only that it's shut, which is true of any desk for a moment, and never whose band is what.
             browserHealth.put("ageGate", "closed");
         }
+        Instant timeUsed = stream.timeUsedUntil();
+        if (timeUsed != null) {
+            browserHealth.put("timeUsedUntil", timeUsed.toString());
+        }
         Instant paused = stream.pausedUntil();
         if (paused != null) {
             browserHealth.put("bandwidthPaused", paused.equals(Instant.MAX) ? true : paused.toString());
+        }
+        BrowserLinks served = links;
+        if (served != null) {
+            browserHealth.put("links", served.health());
+        }
+        MinifiedModule view = minified;
+        if (view != null) {
+            // The simplified view's tabs, frames and pre-scrolls, by what came of them: counts, never a page.
+            browserHealth.put("simplified", view.health());
         }
         Map<String, Object> health = new LinkedHashMap<>();
         health.put("browser", browserHealth);
@@ -404,10 +647,27 @@ public final class BrowserModule implements SessionListener {
         return stream.hasViewer() && attention.seen();
     }
 
+    /** Somebody started or stopped looking at the desk: the tabs are woken, and the simplified view's use may have changed. */
+    private void lookChanged() {
+        tabs.wake();
+        MinifiedModule simplified = minified;
+        if (simplified != null) {
+            simplified.useChanged();
+        }
+        view.recompute();
+    }
+
     /** Who looks first, so the tabs are woken with it settled. */
     private void viewersChanged() {
         attention.recompute();
         tabs.wake();
+        view.recompute();
+    }
+
+    /** Somebody looks at the desk. Read through here so the phone view can be made before the attention is. */
+    private boolean looked() {
+        DeskAttention said = attention;
+        return said != null && said.seen();
     }
 
     private void browserLost() {

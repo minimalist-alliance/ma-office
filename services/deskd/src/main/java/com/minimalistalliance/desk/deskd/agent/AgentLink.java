@@ -38,7 +38,8 @@ import org.slf4j.LoggerFactory;
  *
  * <p><b>Frames.</b> {@code u32be length} of what follows, {@code u8 type}, the body, at most 4 MiB. {@code 0x01} is a
  * JSON object with a {@code t}: deskd sends {@code req}, {@code cancel}, {@code sub} and {@code unsub}, and reads
- * {@code res}, {@code err} and {@code evt}. {@code 0x02} carries a key for {@code agent.key.add}: {@code u32be id},
+ * {@code res}, {@code err} and {@code evt}; desk-agent's {@code tcall}, a tool call deskd runs (tools/ToolHost), is
+ * answered {@code tres} or {@code terr}. {@code 0x02} carries a key for {@code agent.key.add}: {@code u32be id},
  * {@code u16be} length and a JSON head, {@code u16be} length and the key's bytes. deskd zeroes its copies once written or
  * dropped.
  *
@@ -81,6 +82,8 @@ public final class AgentLink implements AutoCloseable {
     private static final int IO_BYTES = 64 << 10;
     /** What cancels and subscriptions may add past {@link #MAX_QUEUED}: they mustn't lose to a queue of calls. */
     private static final int CONTROL_SLACK = 64 << 10;
+    /** What tool replies may add past {@link #MAX_QUEUED}: each is at most a frame, and only so many run at once. */
+    private static final int REPLY_SLACK = 8 << 20;
 
     /** deskd's error codes (API.md section 4). desk-agent's {@code err} is relayed only with one of these. */
     private static final Set<String> CODES = Set.of(
@@ -92,9 +95,17 @@ public final class AgentLink implements AutoCloseable {
     /**
      * @param minBackoff the first gap between tries to connect, doubling to {@code maxBackoff}
      * @param writeStall how long a write may go with no progress before the connection goes
+     * @param healthyAfter a connection that lasted this long starts the backoff again; a shorter one doesn't, so a peer
+     *     that accepts and drops at once is tried with the backoff, not four times a second (audit D7)
      */
-    public record Timing(Duration minBackoff, Duration maxBackoff, Duration writeStall) {
-        public static final Timing DEFAULT = new Timing(Duration.ofMillis(250), Duration.ofSeconds(5), Duration.ofSeconds(5));
+    public record Timing(Duration minBackoff, Duration maxBackoff, Duration writeStall, Duration healthyAfter) {
+        public static final Duration HEALTHY_AFTER = Duration.ofSeconds(10);
+        public static final Timing DEFAULT =
+                new Timing(Duration.ofMillis(250), Duration.ofSeconds(5), Duration.ofSeconds(5), HEALTHY_AFTER);
+
+        public Timing(Duration minBackoff, Duration maxBackoff, Duration writeStall) {
+            this(minBackoff, maxBackoff, writeStall, HEALTHY_AFTER);
+        }
 
         public Timing(Duration minBackoff, Duration maxBackoff) {
             this(minBackoff, maxBackoff, DEFAULT.writeStall());
@@ -109,6 +120,12 @@ public final class AgentLink implements AutoCloseable {
 
         /** One {@code evt}: {@code data} as desk-agent sent it, never logged. */
         void event(long sid, String topic, String type, Map<String, Object> data);
+
+        /**
+         * One {@code tcall} from desk-agent (proposals.md section 5, "Tool calls"), the whole frame, never logged. It must
+         * not block: the answer goes back through {@link AgentLink#reply}. desk-agent sends none until deskd's hello.
+         */
+        default void toolCall(Map<String, Object> message) {}
     }
 
     /** Runs on the writer, right before a call's bytes go: {@code beginEffect} for a mutation. */
@@ -350,6 +367,31 @@ public final class AgentLink implements AutoCloseable {
         control(message);
     }
 
+    /**
+     * Sends a {@code tres} or {@code terr} for desk-agent's {@code tcall}. A reply isn't a call: nothing waits for an
+     * answer to it, and it's dropped with the connection, as desk-agent's call then fails anyway. It may pass
+     * {@link #MAX_QUEUED} by up to {@link #REPLY_SLACK}, as replies are bounded by deskd's own tool calls at once.
+     *
+     * @return false if there's no connection, or no room
+     */
+    public boolean reply(Map<String, Object> message) {
+        byte[] body = Json.bytes(message);
+        if (body.length > MAX_FRAME - 1) {
+            return false;
+        }
+        byte[] frame = frame(JSON, body);
+        lock.lock();
+        try {
+            if (closed || current == null || queuedBytes + frame.length > MAX_QUEUED + REPLY_SLACK) {
+                return false;
+            }
+            enqueue(new Outgoing(frame, null));
+            return true;
+        } finally {
+            lock.unlock();
+        }
+    }
+
     /** SIGTERM's path. Never blocks, however stalled desk-agent is: every call waiting gets {@code unavailable}. */
     @Override
     public void close() {
@@ -515,8 +557,11 @@ public final class AgentLink implements AutoCloseable {
                 }
             } else {
                 saidWaiting = false;
-                backoff = timing.minBackoff().toNanos();
+                long connected = System.nanoTime();
                 serve(channel);
+                if (System.nanoTime() - connected >= timing.healthyAfter().toNanos()) {
+                    backoff = timing.minBackoff().toNanos();
+                }
             }
             if (!sleep(backoff)) {
                 return;
@@ -617,6 +662,9 @@ public final class AgentLink implements AutoCloseable {
             if (call != null) {
                 call.done.complete(message);
             }
+        } else if ("tcall".equals(t)) {
+            number(message, "id");
+            listener.toolCall(message);
         } else if ("evt".equals(t)) {
             Map<String, Object> data = Json.object(message, "data");
             String type = Json.string(message, "type");

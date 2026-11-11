@@ -1,0 +1,55 @@
+{
+  "manifest": 1,
+  "id": "com.minimalistalliance.bible",
+  "name": "Bible",
+  "version": "1.0.0",
+  "publisher": "Minimalist Alliance",
+  "description": "Read, search and keep notes in four translations.",
+  "source": "https://github.com/minimalist-alliance/ma-office/tree/main/apps/bible",
+  "license": "Apache-2.0",
+  "appApi": ">=1.0 <2",
+  "arch": "",
+  "run": {
+    "exec": ["bin/bible-app"],
+    "start": "on-demand",
+    "startTimeoutSec": 3,
+    "stopTimeoutSec": 3
+  },
+  "resources": {
+    "memoryMaxMiB": 64,
+    "cpuMax": 0.25,
+    "tasksMax": 32,
+    "diskMaxMiB": 160
+  },
+  "permissions": [],
+  "views": {
+    "window": {
+      "html": "view/index.html",
+      "script": "view/view.js",
+      "style": "view/view.css",
+      "width": 560,
+      "height": 720,
+      "minWidth": 320,
+      "minHeight": 400
+    },
+    "widget": true
+  },
+  "methods": [
+    { "name": "bible.state", "mutation": false },
+    { "name": "bible.info", "mutation": false },
+    { "name": "bible.about", "mutation": false },
+    { "name": "bible.books", "mutation": false },
+    { "name": "bible.chapter", "mutation": false },
+    { "name": "bible.lookup", "mutation": false },
+    { "name": "bible.search", "mutation": false },
+    { "name": "bible.marks.chapter", "mutation": false },
+    { "name": "bible.marks.list", "mutation": false },
+    { "name": "bible.mark.put", "mutation": true },
+    { "name": "bible.mark.remove", "mutation": true },
+    { "name": "bible.highlight.clear", "mutation": true },
+    { "name": "bible.prefs.get", "mutation": false },
+    { "name": "bible.prefs.set", "mutation": true }
+  ],
+  "topics": ["bible.marks"],
+  "files": {}
+}

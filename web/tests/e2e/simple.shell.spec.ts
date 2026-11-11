@@ -1,5 +1,6 @@
 // The Browser's simple view (task 47) on `MockDeskLink`, whose `mockSimpleView.ts` plays the desk: its made-up pages and
-// synthetic captures in the prototype's MDoc format (`tests/fixtures/captures/`: real pages' structure with
+// synthetic captures in the
+ prototype's MDoc format (`tests/fixtures/captures/`: real pages' structure with
 // made-up text and `.example` links). On by default, as it ships: client-config's `simpleView: { enabled: false }` is only a kill switch. The mock
 // desk is a desk of today unless a test says it serves section 14 (`serves`), as `arrive` and `openOn` do.
 import { readdirSync, readFileSync, mkdirSync, writeFileSync } from 'node:fs';
@@ -1137,6 +1138,48 @@ test('a sign-in is never an input here: "Sign in on (site)" shows the real page 
   await goTo(page, 'https://shop.example/notebook-a5');
   await expect(simpleView(page)).toHaveAttribute('data-view', 'simple');
   await expect(line(page)).toHaveCount(0);
+  expect(errors).toEqual([]);
+});
+
+test('"Use the real page" and "Sign in on" drawn inside a link press only themselves, never the link (T47V-1)', async ({ page }) => {
+  const errors = watchConsole(page);
+  const pickerPage = 'https://shop.example/t47v-picker';
+  const signinPage = 'https://shop.example/t47v-signin';
+  await arrive(page);
+  await mock(page, (c, a) => {
+    c.simple.loadPage(a.picker, { title: 'Pick a day', kind: 'page', blocks: [{ t: 'heading', level: 1, runs: ['Pick a day'] }, { t: 'para', runs: [{ r: 'link', node: 'v1', url: 'https://shop.example/calendar', runs: ['Calendar ', { r: 'field', node: 'v2', kind: 'date_choice', label: 'Date', value: '' }] }] }] });
+    c.simple.loadPage(a.signin, { title: 'Your orders', kind: 'page', blocks: [{ t: 'heading', level: 1, runs: ['Your orders'] }, { t: 'heading', level: 2, runs: [{ r: 'link', node: 'v3', url: 'https://shop.example/account', runs: ['Your account ', { r: 'sensitive', kind: 'password', origin: 'https://shop.example' }] }] }] });
+  }, { picker: pickerPage, signin: signinPage });
+  // Clicks only: going to the real page scrolls it to where the member was reading (`act scroll`), which may be the link.
+  const linkActs = async (): Promise<unknown[]> => (await acts(page)).filter((a) => a['action'] === 'click' && (a['nodeId'] === 'v1' || a['nodeId'] === 'v3'));
+
+  // "Use the real page" inside a link: the real page, and nothing pressed on it.
+  await openOn(page, pickerPage);
+  const picker = simplePage(page).getByTestId('simple-picker');
+  await expect(picker.locator('xpath=ancestor::*[@data-ref="v1"]')).toHaveCount(1);
+  await picker.getByRole('button', { name: 'Date: use the real page' }).click();
+  await expect(simpleView(page)).toHaveCount(0);
+  await page.waitForTimeout(400);
+  expect(await linkActs()).toEqual([]);
+
+  // "Sign in on" inside a link: a middle click opens no desk tab, and a click goes to the real page with its line only.
+  await goTo(page, signinPage);
+  await expect(simplePage(page)).toHaveAttribute('data-page', signinPage);
+  const signin = simplePage(page).getByTestId('simple-signin');
+  await expect(signin.locator('xpath=ancestor::*[@data-ref="v3"]')).toHaveCount(1);
+  await signin.click({ button: 'middle' });
+  await signin.click();
+  await expect(simpleView(page)).toHaveCount(0);
+  await expect(line(page)).toHaveText('Sign-in is always the real page');
+  await page.waitForTimeout(400);
+  expect(await linkActs()).toEqual([]);
+  expect(await rpcs(page, 'browser.tab.open')).toEqual([]);
+
+  // The link itself still goes where it goes.
+  await goTo(page, pickerPage);
+  await expect(simplePage(page)).toHaveAttribute('data-page', pickerPage);
+  await simplePage(page).getByText('Calendar').click();
+  await expect.poll(linkActs).toEqual([expect.objectContaining({ action: 'click', nodeId: 'v1' })]);
   expect(errors).toEqual([]);
 });
 

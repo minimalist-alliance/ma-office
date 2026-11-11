@@ -8,6 +8,8 @@ import { applyAwarenessUpdate, Awareness, encodeAwarenessUpdate } from 'y-protoc
 import * as Y from 'yjs';
 import { LocalBackend } from '../../notebook/src/local/localBackend.ts';
 import type { PageSession } from '../../notebook/src/model/backend.ts';
+import type { PaletteId } from '../../notebook/src/model/colors.ts';
+import type { ImportedPage } from '../../notebook/src/model/notebookFile.ts';
 import type { TabColor } from '../../notebook/src/model/types.ts';
 
 const MESSAGE = { Sync: 0, Awareness: 1, Auth: 2, Close: 7, SyncStatus: 8, Ping: 9, Pong: 10 } as const;
@@ -34,6 +36,10 @@ export interface MockNotebookControl {
   silent: boolean;
   /** Pages the desk refuses to grow, with the provider's close reason `page_full`. */
   fullPages: string[];
+  /** Pages whose changes the desk refuses as from an older app (ADR 0091's guard), with the close reason `reload`. */
+  outdatedPages: string[];
+  /** Each provider's Auth token, in order: the app says its page schema there. */
+  tokens: string[];
   /** The next call of each applies, then answers `unavailable` with `mayHaveApplied`, as a restart can, and so does a retry on its key. */
   cutOff: Record<string, boolean>;
   /** Mutations by method, as they ran rather than as they were asked. */
@@ -57,6 +63,8 @@ export const mockNotebookControl: MockNotebookControl = {
   oversize: 0,
   silent: false,
   fullPages: [],
+  outdatedPages: [],
+  tokens: [],
   cutOff: {},
   applied: [],
   presence: {},
@@ -277,6 +285,17 @@ export class MockNotebookDesk {
       case 'notebook.page.restore':
         await local.restorePage(pageId);
         return {};
+      case 'notebook.page.label':
+        await local.setPageLabel(pageId, (p['label'] ?? null) as PaletteId | null).catch(() => Promise.reject(refusal('bad_request', { reason: 'label' })));
+        return {};
+      case 'notebook.page.duplicate':
+        return { page: await local.duplicatePage(pageId).catch(() => Promise.reject(refusal('not_found'))) };
+      case 'notebook.page.import':
+        return {
+          page: await local
+            .importPage(p['tabId'] as string, { doc: p['doc'], label: p['label'] ?? null, title: '' } as ImportedPage, { after: p['after'] as string | undefined })
+            .catch(() => Promise.reject(refusal('bad_request', { reason: 'doc' }))),
+        };
       case 'notebook.version.save':
         return { version: await local.saveVersion(pageId, (p['reason'] as 'manual' | undefined) ?? 'manual') };
       case 'notebook.version.restore':
@@ -318,6 +337,9 @@ const MUTATIONS = new Set([
   'notebook.page.move',
   'notebook.page.trash',
   'notebook.page.restore',
+  'notebook.page.label',
+  'notebook.page.duplicate',
+  'notebook.page.import',
   'notebook.version.save',
   'notebook.version.restore',
   'notebook.settings.set',
@@ -417,6 +439,11 @@ export class MockCollabServer implements Peer {
     const name = decoding.readVarString(d);
     const type = decoding.readVarUint(d);
     if (type === MESSAGE.Auth) {
+      try {
+        if (decoding.readVarUint(d) === 0) mockNotebookControl.tokens.push(decoding.readVarString(d));
+      } catch {
+        // Not a token: nothing to note.
+      }
       this.send(message(name, MESSAGE.Auth, (e) => {
         encoding.writeVarUint(e, AUTHENTICATED);
         encoding.writeVarString(e, 'read-write');
@@ -457,6 +484,10 @@ export class MockCollabServer implements Peer {
     const update = decoding.readVarUint8Array(d);
     if (mockNotebookControl.fullPages.includes(name) && update.length > NOTHING) {
       this.send(message(name, MESSAGE.Close, (e) => encoding.writeVarString(e, 'page_full')));
+      return;
+    }
+    if (mockNotebookControl.outdatedPages.includes(name) && update.length > NOTHING) {
+      this.send(message(name, MESSAGE.Close, (e) => encoding.writeVarString(e, 'reload')));
       return;
     }
     if (mockNotebookControl.silent) return;

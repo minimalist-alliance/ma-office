@@ -130,6 +130,9 @@ func (s *session) newAPI(publicIP string, info offerInfo) (*webrtc.API, error) {
 	se.SetICETCPMux(srv.tcpMux)
 	se.SetNetworkTypes([]webrtc.NetworkType{webrtc.NetworkTypeUDP4, webrtc.NetworkTypeTCP4})
 	se.SetICEMulticastDNSMode(ice.MulticastDNSModeDisabled)
+	if prefix := srv.ufragPrefix(); prefix != "" {
+		se.SetICEUfragPrefix(prefix) // a shared host's slot (shared.go): the host's TCP 443 demux routes by it
+	}
 	se.SetIncludeLoopbackCandidate(srv.bindIP.IsLoopback())
 	if err := se.SetICEAddressRewriteRules(webrtc.ICEAddressRewriteRule{
 		External:        []string{publicIP},

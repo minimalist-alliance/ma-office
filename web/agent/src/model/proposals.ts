@@ -26,13 +26,22 @@ export async function sha256Hex(text: string): Promise<string> {
   return [...new Uint8Array(digest)].map((b) => b.toString(16).padStart(2, '0')).join('');
 }
 
-/** The payload this card shows is the one its `sha256` names. */
-export async function proposalChecks(p: Pick<Proposal, 'payload' | 'sha256'>): Promise<boolean> {
+/**
+ * What a card shows is what its `sha256` names: the canonical JSON of `value` hashes to it. Proposals hash their payload;
+ * approvals hash `{v: 1, agentId, runId, tool, context, payload}` (deskd API.md section 18). Either way the card hashes what it
+ * shows, never a copy of the field, and offers its yes only on a match.
+ */
+export async function payloadChecks(value: unknown, sha256: string): Promise<boolean> {
   try {
-    return (await sha256Hex(canonicalJson(p.payload))) === p.sha256.toLowerCase();
+    return typeof sha256 === 'string' && (await sha256Hex(canonicalJson(value))) === sha256.toLowerCase();
   } catch {
     return false;
   }
+}
+
+/** The payload this card shows is the one its `sha256` names. */
+export function proposalChecks(p: Pick<Proposal, 'payload' | 'sha256'>): Promise<boolean> {
+  return payloadChecks(p.payload, p.sha256);
 }
 
 /** Waiting for the member, and not past its 24 hours. */
@@ -158,7 +167,7 @@ export function runsPerMonth(t: Partial<Pick<TimerInput, 'kind' | 'days' | 'ever
 }
 
 /** What a removal takes with it, and what it leaves (the message log keeps its rows 100 days). */
-export const GOES_WITH = 'Its thread, workspace, timers, links and icon. Its messages stay in the Agent messages log for 100 days.';
+export const GOES_WITH = 'Its thread, memories, workspace, timers, links and icon. Its messages stay in the Agent messages log for 100 days.';
 
 const RETIRED_ICON: Record<string, string> = { globe: 'plane', chat: 'person', heart: 'wallet', star: 'bulb', puzzle: 'terminal', briefcase: 'document' };
 const RETIRED_TONE: Record<string, string> = { moss: 'green', sky: 'blue' };
@@ -273,7 +282,7 @@ export function describeProposal(
     if (icon !== null) row('Icon', ctx.iconLabel(icon), oldIcon != null ? ctx.iconLabel(oldIcon) : undefined);
     if (tone !== null) row('Color', ctx.toneLabel(tone), oldTone != null ? ctx.toneLabel(oldTone) : undefined);
     if (icon !== null || tone !== null) {
-      look = { icon: icon ?? oldIcon ?? 'spark', tone: tone ?? oldTone ?? 'graphite' };
+      look = { icon: icon ?? oldIcon ?? 'nodes', tone: tone ?? oldTone ?? 'graphite' };
       // Only a pair the member sees both halves of can clash: with no tone the desk picks a free one.
       const pair = icon !== null && tone !== null ? lookKey(icon, tone) : self && icon !== null && oldTone ? lookKey(icon, oldTone) : self && tone !== null && oldIcon ? lookKey(oldIcon, tone) : null;
       if (pending && pair && others(self).some((a) => a.look && lookKey(a.look.icon, a.look.tone) === pair)) lookTaken = true;
@@ -328,7 +337,7 @@ export function describeProposal(
       fields(agentId);
       // A change to the icon alone (or the color alone) previews the result: the half it leaves is the agent's current one.
       const now = ctx.agents.find((a) => a.id === agentId)?.look;
-      if (look && now) look = { icon: str(payload['icon']) ?? (now.icon === 'png' ? 'spark' : now.icon), tone: str(payload['tone']) ?? now.tone };
+      if (look && now) look = { icon: str(payload['icon']) ?? (now.icon === 'png' ? 'nodes' : now.icon), tone: str(payload['tone']) ?? now.tone };
       break;
     }
     case 'agent.delete': {

@@ -1,0 +1,4 @@
+<g data-part="ponytail">
+  <path fill="{{hair}}" d="M162,68 C182,74 197,92 197,120 C197,146 193,172 184,199 C178,191 174,181 172,170 C170,150 175,128 172,106 C170,92 166,81 158,74 Z"/>
+  <g data-min-size="40" fill="none" stroke="{{hairStep}}" stroke-width="2.4" stroke-linecap="round" stroke-linejoin="round"><path d="M186,96 C190,120 189,150 182,180"/><path d="M178,106 C181,130 180,152 177,170"/></g>
+</g>

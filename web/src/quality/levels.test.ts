@@ -1,5 +1,33 @@
 import { describe, expect, it } from 'vitest';
-import { decodeQualityReply, deskOverrideFor, encodeQuality, LEVEL_INFO, LEVELS, levelFor, levelOnDesk, NEVER_SET, overrideFor, parseDeskLevels, parseStreamQuality, STREAMING_APPS, streams, upTo, withDeskLevel, type Level } from './levels';
+import {
+  asDesks,
+  decodeQualityReply,
+  deskLevelFor,
+  deskLevelsToMove,
+  deskOverrideFor,
+  deskOwnLevel,
+  encodeQuality,
+  hasDeskLayer,
+  LEVEL_INFO,
+  LEVELS,
+  levelFor,
+  levelOnDesk,
+  mergeChanges,
+  NEVER_SET,
+  overlay,
+  overrideFor,
+  parseDeskLevels,
+  parseStreamQuality,
+  STREAMING_APPS,
+  streams,
+  upTo,
+  withDeskLevel,
+  type Level,
+  type StreamQuality,
+} from './levels';
+
+const DESK = 'd-testk3m7q2x';
+const OTHER = 'd-test7v4abk3';
 
 describe('the four levels', () => {
   it('are in order, with the words and the data members read (ADR 0039 section 1)', () => {
@@ -17,12 +45,32 @@ describe('the four levels', () => {
 });
 
 describe('parseStreamQuality', () => {
-  it('reads the contract document', () => {
-    expect(parseStreamQuality({ default: 'medium', apps: { browser: 'low' }, updatedAt: '2026-11-06T21:04:11.250Z' })).toEqual({
-      default: 'medium',
-      apps: { browser: 'low' },
-      updatedAt: '2026-11-06T21:04:11.250Z',
-    });
+  it('reads the contract document, desks included (0.3.70)', () => {
+    const raw = { default: 'medium', apps: { browser: 'low' }, desks: { [DESK]: { level: 'max', apps: { browser: 'high' } }, [OTHER]: { level: null, apps: { browser: 'low' } } }, updatedAt: '2026-11-10T21:04:11.250Z' };
+    expect(parseStreamQuality(raw)).toEqual(raw);
+    expect(hasDeskLayer(raw)).toBe(true);
+  });
+
+  it('a document from before 0.3.70: a default that was always a level, and no desks', () => {
+    const raw = { default: 'high', apps: { browser: 'low' }, updatedAt: '2026-11-06T21:04:11.250Z' };
+    expect(parseStreamQuality(raw)).toEqual({ ...raw, desks: {} });
+    expect(hasDeskLayer(raw)).toBe(false);
+    expect(hasDeskLayer({ ...raw, desks: [] })).toBe(false);
+    expect(hasDeskLayer(null)).toBe(false);
+  });
+
+  it('a default that is null or missing is not set, never High; an unknown one is High', () => {
+    expect(parseStreamQuality({ default: null, apps: {}, desks: {} }).default).toBeNull();
+    expect(parseStreamQuality({ apps: {} }).default).toBeNull();
+    expect(parseStreamQuality({ default: 'ultra' }).default).toBe('high');
+  });
+
+  it('desks: bad ids, empty desks and unknown parts are dropped; a null level is not set', () => {
+    const doc = parseStreamQuality(
+      JSON.parse(`{"desks":{"__proto__":{"level":"low"},"-x":{"level":"low"},"${DESK}":{"level":null,"apps":{}},"${OTHER}":"low","d-a":{"level":"ultra","apps":{"Bad":"low","browser":null}},"d-b":{"apps":{"browser":"max"}}}}`),
+    );
+    expect(doc.desks).toEqual({ 'd-a': { level: 'high', apps: {} }, 'd-b': { level: null, apps: { browser: 'max' } } });
+    expect(({} as Record<string, unknown>)['level']).toBeUndefined();
   });
 
   it.each([undefined, null, 'high', 3, [], [{ default: 'low' }]])('anything that is not a document reads as never set: %j', (raw) => {
@@ -31,7 +79,7 @@ describe('parseStreamQuality', () => {
 
   it('an unknown level is High, a null override is none, and a bad app id is dropped', () => {
     const doc = parseStreamQuality({ default: 'ultra', apps: { browser: 'ultra', claude: null, 'Bad Id': 'low', __proto__x: 'low', ['a'.repeat(33)]: 'low', chat: 'max' }, updatedAt: 5 });
-    expect(doc).toEqual({ default: 'high', apps: { browser: 'high', chat: 'max' }, updatedAt: null });
+    expect(doc).toEqual({ default: 'high', apps: { browser: 'high', chat: 'max' }, desks: {}, updatedAt: null });
   });
 
   it('apps that is not an object is no overrides', () => {
@@ -46,8 +94,8 @@ describe('parseStreamQuality', () => {
   });
 });
 
-describe('levelFor', () => {
-  it("is the app's override, else the default, else High", () => {
+describe('levelFor (the account\'s layers)', () => {
+  it("is the app's level on every desk, else the default, else High", () => {
     const doc = parseStreamQuality({ default: 'medium', apps: { browser: 'low' } });
     expect(levelFor(doc, 'browser')).toBe('low');
     expect(levelFor(doc, 'claude')).toBe('medium');
@@ -109,17 +157,98 @@ describe('QUALITY on the keys channel (interface section 3)', () => {
   });
 });
 
-describe('the desk layer (account, then desk, then High)', () => {
+describe('the layers: the app on the desk, the desk, the app on every desk, the account, High', () => {
+  it('every combination of set and not set', () => {
+    const picks = { deskApp: 'max', desk: 'low', accountApp: 'medium', account: 'low' } as const;
+    for (let mask = 0; mask < 32; mask++) {
+      const set = { deskApp: !!(mask & 1), desk: !!(mask & 2), accountApp: !!(mask & 4), account: !!(mask & 8), otherApp: !!(mask & 16) };
+      const deskApps: Record<string, Level> = { ...(set.deskApp ? { browser: picks.deskApp } : {}), ...(set.otherApp ? { claude: 'high' as const } : {}) };
+      const doc: StreamQuality = {
+        default: set.account ? picks.account : null,
+        apps: set.accountApp ? { browser: picks.accountApp } : {},
+        desks: set.desk || Object.keys(deskApps).length ? { [DESK]: { level: set.desk ? picks.desk : null, apps: deskApps } } : {},
+        updatedAt: null,
+      };
+      const account: Level = set.accountApp ? picks.accountApp : set.account ? picks.account : 'high';
+      const desk: Level = set.desk ? picks.desk : account;
+      const label = JSON.stringify(set);
+      expect(levelOnDesk(doc, DESK, 'browser'), label).toBe(set.deskApp ? picks.deskApp : desk);
+      expect(deskLevelFor(doc, DESK, 'browser'), label).toBe(desk);
+      expect(deskOwnLevel(doc, DESK), label).toBe(set.desk ? picks.desk : null);
+      expect(deskOverrideFor(doc, DESK, 'browser'), label).toBe(set.deskApp ? picks.deskApp : null);
+      expect(levelOnDesk(doc, OTHER, 'browser'), `another desk follows the account ${label}`).toBe(account);
+      expect(levelOnDesk(doc, undefined, 'browser'), `outside a desk ${label}`).toBe(account);
+      expect(levelFor(doc, 'browser'), label).toBe(account);
+    }
+  });
+
+  it('a layer set to High stays set when the one above changes; prototype names are never a layer', () => {
+    const doc: StreamQuality = { ...NEVER_SET, default: 'low', desks: { [DESK]: { level: 'high', apps: {} } } };
+    expect(levelOnDesk(doc, DESK, 'browser')).toBe('high');
+    expect(levelOnDesk(doc, OTHER, 'browser')).toBe('low');
+    expect(levelOnDesk(NEVER_SET, 'constructor', 'toString')).toBe('high');
+    expect(deskOwnLevel(NEVER_SET, '__proto__')).toBeNull();
+  });
+});
+
+describe('changes: overlay and mergeChanges', () => {
+  const start: StreamQuality = { default: 'medium', apps: { browser: 'low' }, desks: {}, updatedAt: '2026-11-10T10:00:00.000Z' };
+
+  it('overlay sets and clears each layer, drops a desk left with nothing, and keeps updatedAt', () => {
+    expect(overlay(start, { default: null })).toEqual({ ...start, default: null });
+    const a = overlay(start, { desks: { [DESK]: { level: 'max' } } });
+    expect(a.desks).toEqual({ [DESK]: { level: 'max', apps: {} } });
+    const b = overlay(a, { desks: { [DESK]: { apps: { browser: 'high' } } } });
+    expect(b.desks).toEqual({ [DESK]: { level: 'max', apps: { browser: 'high' } } });
+    expect(overlay(b, { desks: { [DESK]: { level: null } } }).desks).toEqual({ [DESK]: { level: null, apps: { browser: 'high' } } });
+    expect(overlay(b, { desks: { [DESK]: { level: null, apps: { browser: null } } } }).desks).toEqual({});
+    expect(b.updatedAt).toBe(start.updatedAt);
+    expect(overlay(start, null)).toBe(start);
+  });
+
+  it('the fallback (contract 0.3.78): a free member who never chose streams at Medium, a paid one at High, and a chosen level wins', () => {
+    const free = parseStreamQuality({ default: null, apps: {}, desks: {}, updatedAt: null, fallback: 'medium' });
+    expect(free.fallback).toBe('medium');
+    expect(levelFor(free, 'browser')).toBe('medium');
+    expect(levelOnDesk(free, 'd-a', 'browser')).toBe('medium');
+    expect(levelFor(parseStreamQuality({ default: 'high', fallback: 'medium' }), 'browser')).toBe('high');
+    // A Platform from before sends none: High, as before, and nothing is added to the document.
+    expect(parseStreamQuality({ default: null, apps: {}, desks: {}, updatedAt: null })).toEqual({ default: null, apps: {}, desks: {}, updatedAt: null });
+    expect(parseStreamQuality({ fallback: 'ultra' }).fallback).toBeUndefined();
+    // A change keeps it.
+    expect(overlay(free, { default: null }).fallback).toBe('medium');
+  });
+
+  it('mergeChanges: the later wins where both say something, desk by desk', () => {
+    expect(mergeChanges({ default: 'low' }, { default: null })).toEqual({ default: null });
+    expect(mergeChanges({ default: null }, { apps: { browser: 'low' } })).toEqual({ default: null, apps: { browser: 'low' } });
+    expect(mergeChanges({ desks: { [DESK]: { level: 'low' } } }, { desks: { [DESK]: { apps: { browser: 'max' } }, [OTHER]: { level: null } } })).toEqual({
+      desks: { [DESK]: { level: 'low', apps: { browser: 'max' } }, [OTHER]: { level: null } },
+    });
+    expect(mergeChanges({ desks: { [DESK]: { apps: { browser: 'max' } } } }, { desks: { [DESK]: { apps: { browser: null } } } })).toEqual({ desks: { [DESK]: { apps: { browser: null } } } });
+  });
+});
+
+describe("each desk's levels kept in this browser (before contract 0.3.70), and moving them to Platform", () => {
   const account = parseStreamQuality({ default: 'medium', apps: { browser: 'low' }, updatedAt: null });
 
-  it("a desk's own wins, a desk without one follows the account's app level, then its default", () => {
-    const desks = withDeskLevel({}, 'd-personal', 'browser', 'max');
-    expect(levelOnDesk(account, desks, 'd-personal', 'browser')).toBe('max');
-    expect(levelOnDesk(account, desks, 'd-work', 'browser')).toBe('low');
-    expect(levelOnDesk(account, desks, 'd-work', 'claude')).toBe('medium');
-    expect(levelOnDesk(NEVER_SET, {}, undefined, 'browser')).toBe('high');
-    expect(deskOverrideFor(desks, 'd-work', 'browser')).toBeNull();
-    expect(withDeskLevel(desks, 'd-personal', 'browser', null)).toEqual({});
+  it('as the document\'s desk layer, they are each the app on that desk', () => {
+    const local = withDeskLevel({}, 'd-personal', 'browser', 'max');
+    const doc = { ...account, desks: asDesks(local) };
+    expect(levelOnDesk(doc, 'd-personal', 'browser')).toBe('max');
+    expect(levelOnDesk(doc, 'd-work', 'browser')).toBe('low');
+    expect(levelOnDesk(doc, 'd-work', 'claude')).toBe('medium');
+    expect(deskOwnLevel(doc, 'd-personal')).toBeNull();
+    expect(withDeskLevel(local, 'd-personal', 'browser', null)).toEqual({});
+  });
+
+  it('what moves is only what Platform has no level for on that desk', () => {
+    const local = { 'd-personal': { browser: 'max' as const }, 'd-work': { browser: 'low' as const, claude: 'high' as const } };
+    expect(deskLevelsToMove(local, account)).toEqual({ desks: { 'd-personal': { apps: { browser: 'max' } }, 'd-work': { apps: { browser: 'low', claude: 'high' } } } });
+    const has: StreamQuality = { ...account, desks: { 'd-work': { level: 'max', apps: { browser: 'medium' } } } };
+    expect(deskLevelsToMove(local, has)).toEqual({ desks: { 'd-personal': { apps: { browser: 'max' } }, 'd-work': { apps: { claude: 'high' } } } });
+    expect(deskLevelsToMove({}, account)).toBeNull();
+    expect(deskLevelsToMove({ 'd-work': { browser: 'medium' } }, has)).toBeNull();
   });
 
   it('reads only desk ids, app ids and levels it knows', () => {

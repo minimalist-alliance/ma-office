@@ -2,7 +2,7 @@
 // (WCAG 2.1.4), the canvas's focus ring, the main landmark and reading order, and the account menu's words and its
 // list of keys. The unpaid notice is task 27's.
 import { expect, test, type Locator, type Page } from '@playwright/test';
-import { canvasPainted, focusCanvas, harness, setTheme, signIn, watchConsole, type ThemeId } from './helpers';
+import { canvasPainted, focusCanvas, harness, setTheme, signIn, themeRadio, watchConsole, type ThemeId } from './helpers';
 
 declare const __maDesk: { camera: { cam: { x: number; y: number; s: number } } };
 
@@ -48,7 +48,7 @@ test.describe('single keys act only while the canvas has focus', () => {
     await page.getByRole('button', { name: 'Next desk' }).focus();
     await expectNothing(page, chrome, 'the bottom bar', before);
     await page.getByRole('button', { name: 'Account', exact: true }).click();
-    await page.getByRole('radio', { name: 'Light' }).focus();
+    await themeRadio(page, 'Light').focus();
     await expectNothing(page, chrome, 'the account menu', before);
     await page.keyboard.press('Escape');
     expect(errors).toEqual([]);
@@ -262,7 +262,8 @@ test.describe('the account menu', () => {
     const list = page.getByTestId('shortcuts');
     await expect(list).toContainText('These work while your desks have focus');
     const rows = list.locator('.about-row');
-    await expect(rows).toHaveCount(12);
+    await expect(rows).toHaveCount(19); // with #9's "Open a copied link on a desk"
+    await expect(list).toContainText('In an app');
     // Each key on its own row, beside its words.
     const [first, second] = await rows.evaluateAll((els) => els.slice(0, 2).map((el) => el.getBoundingClientRect().top));
     expect(second! - first!).toBeGreaterThan(10);

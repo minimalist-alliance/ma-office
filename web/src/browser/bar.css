@@ -1,0 +1,124 @@
+/* The Browser bar's parts for Links in and out (#9, S-141), from the Product Designer's desk-browser.css as written: Open
+   on this device at the address's right end (section 1), the bar's right group and its More under 720 px of bar (section
+   3), and More's rows in the quality menu's look (section 4's plain row; the extension rows come with #11). Every color is
+   a token, every size final. In the Browser window's chunk. */
+
+/* ------------------------------------------------------------ Open on this device: the address's right end */
+.address:focus-within {
+  outline: none;
+}
+.address:has(input:focus) {
+  outline: 2px solid var(--ma-focus-ring);
+}
+.address-out {
+  flex: none;
+  display: inline-grid;
+  place-items: center;
+  width: 28px;
+  height: 28px;
+  margin-right: -8px; /* 4 px from the field's rounded end */
+  margin-left: 6px;
+  padding: 0;
+  border: 0;
+  border-radius: 8px;
+  background: none;
+  color: var(--ma-text-tertiary);
+  cursor: pointer;
+}
+.address-out:hover {
+  background: var(--ma-surface-fill-strong);
+  color: var(--ma-text-primary);
+}
+.address-out:focus-visible {
+  outline: 2px solid var(--ma-focus-ring);
+  outline-offset: 0;
+}
+/* While the member types a new address (a draft), BrowserBar doesn't render the button: the field is then about the new
+   address. Focus alone doesn't hide it, so Tab from the address reaches it. */
+@media (pointer: coarse) {
+  .address-out {
+    position: relative;
+    width: 40px;
+    height: 40px;
+    margin-right: -10px;
+    border-radius: 10px;
+  }
+  /* The spec draws it 40 by 40; the office's rule for a finger (LS-41) is a 44 px target, so it grows round the button,
+     invisibly, as .icon-btn's does, and fills the 44 px address top to bottom. */
+  .address-out::after {
+    content: '';
+    position: absolute;
+    inset: -2px;
+  }
+}
+
+/* ------------------------------------------------------------ the bar's tools and its More */
+.br-chrome {
+  container: br / inline-size;
+}
+.br-tools {
+  flex: none;
+  display: flex;
+  align-items: center;
+  gap: 2px;
+}
+.br-more-wrap {
+  position: relative;
+  display: none;
+}
+.icon-btn.sm.on {
+  background: var(--ma-surface-fill-strong);
+  color: var(--ma-text-primary);
+}
+@container br (max-width: 719px) {
+  .br-wide {
+    display: none;
+  }
+  .br-more-wrap {
+    display: block;
+  }
+}
+
+/* ------------------------------------------------------------ More's rows */
+.xm-item {
+  display: flex;
+  align-items: center;
+  gap: 10px;
+  width: 100%;
+  min-height: 40px;
+  padding: 8px 10px;
+  border: 0;
+  border-radius: 10px;
+  background: none;
+  color: inherit;
+  font: inherit;
+  font-size: 14px;
+  line-height: 20px;
+  text-align: left;
+  cursor: pointer;
+}
+.xm-item:hover {
+  background: var(--ma-surface-sunken);
+}
+.xm-item .icon {
+  flex: none;
+  color: var(--ma-glyph-soft);
+}
+.xm-item .xm-end {
+  display: inline-flex;
+  align-items: center;
+  gap: 4px;
+  white-space: nowrap;
+  margin-left: auto;
+  color: var(--ma-text-tertiary);
+  font-size: 13px;
+}
+.xm-item:focus-visible {
+  outline: 2px solid var(--ma-focus-ring);
+  outline-offset: -2px;
+}
+@media (pointer: coarse) {
+  .xm-item {
+    min-height: 48px;
+  }
+}

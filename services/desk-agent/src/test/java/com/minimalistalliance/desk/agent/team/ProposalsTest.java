@@ -411,7 +411,9 @@ class ProposalsTest {
         assertThat(lead).contains("propose_agent", "propose_agent_change", "propose_agent_removal", "propose_links",
                 "propose_timer", "propose_timer_removal", "desk_agents", "desk_choices", "workspace_list",
                 "workspace_read", "workspace_write");
-        assertThat(staff).containsExactly("workspace_list", "workspace_read", "workspace_write");
+        // With no deskd here, the Agent's own tools (the tools and approvals draft) but none of deskd's.
+        assertThat(staff).containsExactly("workspace_list", "workspace_read", "workspace_write", "plan_update",
+                "follow_up", "workspace_delete", "memory_save", "memory_forget");
     }
 
     @Test

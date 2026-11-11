@@ -149,7 +149,8 @@ class NotebookFailureTest {
 
         assertThat(rig.nextEvent(client)).containsEntry("type", "snapshot").containsEntry("data", Map.of("rev", 3));
         assertThat(rig.module.health()).containsEntry("notebook", "connected");
-        assertThat(service.last().next("hello")).containsEntry("sessionId", "a");
+        // The first connection is the session's; health's read of the storage state is one of its own, with no hello.
+        assertThat(service.connections.get(0).next("hello")).containsEntry("sessionId", "a");
     }
 
     @Test
@@ -356,6 +357,21 @@ class NotebookFailureTest {
         Map<String, Object> reply = client.nextReply();
         assertThat(reply).containsEntry("_id", id);
         assertMayHaveApplied(reply);
+    }
+
+    /** Audit D7: a subscription's link started its backoff again at each connect, so this went four times a second. */
+    @Test
+    void aDeskNotebookThatAcceptsAndDropsAtOnceIsTriedWithTheBackoff() throws Exception {
+        try (com.minimalistalliance.desk.deskd.testing.AcceptAndDrop peer =
+                new com.minimalistalliance.desk.deskd.testing.AcceptAndDrop(socket(), 0)) {
+            rig = new NotebookRig(dir, socket(), new NotebookModule.Timing(
+                    Duration.ofMillis(20), Duration.ofSeconds(2), Duration.ofSeconds(5), Duration.ofSeconds(2), Duration.ofSeconds(2)));
+            TestClient client = rig.connect("a");
+            client.subscribe("notebook.tree", null);
+            Thread.sleep(1500);
+            // 20, 40, 80, 160, 320, 640 ms: about 7 in 1.5 s, where it was one every 20 ms.
+            assertThat(peer.accepts.size()).isBetween(2, 14);
+        }
     }
 
     /** The defect in review of AgentLink: stuck calls took all 32 slots, and then every RPC was rate_limited. */

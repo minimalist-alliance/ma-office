@@ -1,7 +1,9 @@
 # 0019. Agent safety: deskd as the single policy point, sandboxed runtime, confirmed egress, audit log
 
-**Status:** Proposed (pending the owner's approval of design v1)
+**Status:** Proposed, amended 
+by [0040](0040-desk-services-spring-boot-docker.md) (the sandboxed runtime is `desk-agent`, Java 21 and Spring Boot, not Node). Pending the owner's approval of design v1
 **Date:** 2026-11-04
+**Amended:** 2026-11-05 by [0040](0040-desk-services-spring-boot-docker.md) (the runtime is Java; noted 2026-11-11)
 
 ## Context
 - Agents read untrusted web and chat content and can act on the desk. Prompt injection is unsolved, so approvals must hold even if the model is manipulated.

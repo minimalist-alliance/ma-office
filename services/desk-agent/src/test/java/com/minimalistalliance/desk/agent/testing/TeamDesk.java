@@ -42,7 +42,7 @@ import java.util.concurrent.atomic.AtomicReference;
  * SQLite files, a real vault and the workspaces and icons under {@code data}, with a fake provider and a clock the
  * test moves. Close it and open another on the same {@code data} and clock and that is a restart.
  *
- * <p>The timers' own thread is stopped right after the start, so a test fires timers when it says
+ * <p>The timers' own thread is never started, so a test fires timers when it says
  * ({@code team.timers().runDue()}); {@link #withTimerThread} keeps it.
  */
 public final class TeamDesk implements AutoCloseable {
@@ -101,10 +101,9 @@ public final class TeamDesk implements AutoCloseable {
         staging = new Staging(clock, AgentService.STAGING_BYTES);
         service = new AgentService(store, manager, keys, vault, providers, prices, limits, ledger, audit,
                 topics, clock, team, staging, new Preparer(parsers));
-        service.restore();
-        if (!timerThread) {
-            team.timers().close();
-        }
+        // Without the thread it is never started: start-then-close raced, and the thread could fire a due timer
+        // (one missed while "down") before the test said so.
+        service.restore(timerThread);
     }
 
     // ---------------------------------------------------------------- calls

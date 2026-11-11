@@ -1,0 +1,12 @@
+{
+  "category": "ears",
+  "layer": "06-ears",
+  "colorSlot": "skin",
+  "default": "ears",
+  "parts": [
+    {
+      "id": "ears",
+      "name": "Ears"
+    }
+  ]
+}

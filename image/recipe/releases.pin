@@ -15,10 +15,10 @@
 # which names the Go version, and refuses a hash that isn't this one (ADR 0070). A source change needs a new version here.
 #
 # component   version              sha256
-desk-rtc      0.4.2                8695cc39d3e6f8089d3976d980b00206e9da8b55a4e4f13024e28300ac8fdf48
-desk-stream   0.3.3                9ce9638a4e2ade5511b259351aadbf126e4694a4b9da7abd547d79bf2707c46c
-deskd         2026.11.10-5535d52   c7942505c1debd13f96bde7de0613453f4fb158d74e6f10de506c6ca0fa3f068
-desk-agent    2026.11.10-35df59e   db0cfa4c1f3b4dd87094d2c024316bd602ff1854c1a9c434bc1d0067b5d78fc8
-desk-notebook 2026.11.08-f435ef9   b929760ef2c7ddd17ee0ab6397200b8622a65a43ea9d95a84cfa0390dfb2cd1a
+desk-rtc      0.5.1                9681e43544f81e3434dee0bccd2132778ad4e8868981cd8315d47e3884f7f10f
+desk-stream   0.3.5                88f54a854e5f5f482731b0ae90a38f3c82c1cccfbf69d01db965a13ec10d78c7
+deskd         2026.11.10-01883dd   9ef4ee78ab308ec37076ec25993e44c10d09f2b427ca51343b64e36707a371ff
+desk-agent    2026.11.11-7ff8a2e   0ee8cc344dec571bd8dffd128c12f740ba7768afa19a96251e70c62201064e03
+desk-notebook 2026.11.10-01883dd   e1b6ba9ea41787d9cedca0e89077dac4741aa6de96edc9985fc99477bfe8f454
 desk-agent-filter 0.1.1            2c67e073c5a19ed758a8eadf88ad6e471fce3804657f0f0ef1eb83275e5afeeb
-commons-server 0.2.0-eb755719   60254e69e132caac2af9a5bdab41f356f395516fb6dc9401fc3473004230e0fb
+commons-server 0.2.1-820674c5   a2e4bcf527fe700bed768a9349dd58f79915d880be8aaacc3cb7ae69045e4da9

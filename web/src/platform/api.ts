@@ -1,6 +1,7 @@
 // Bearer calls to api. (contract auth.md section 3, errors.md).
 import { getAccessToken, SignInRequired } from './auth';
 import { getClientConfig } from './clientConfig';
+import { decodeJwtPayload } from './pkce';
 
 export class ApiError extends Error {
   readonly status: number;
@@ -85,6 +86,10 @@ export interface Me {
   userId: string;
   email?: string;
   displayName?: string | null;
+  /** The checked profile picture's address, or null (ma-platform profile-picture.md). Read through `pictureOf` in `chrome/avatar.ts`. */
+  avatarUrl?: string | null;
+  /** `{kind: "upload", url, setAt}` or `{kind: "built", config, setAt}`; read through `pictureOf` and `builtRecipeOf`. */
+  avatar?: unknown;
   /**
    * `tier` is `alliance`, `officer` or `lead`, or before the migration `member` or none (`readTier` in `tiers.ts`), and
    * `badge` the tier's badge while the membership is live, or null (contract tiers.md section 5).
@@ -101,6 +106,21 @@ export interface Me {
     adultFrom?: string | null;
     /** `pending`, `done`, or `null` when no parent is needed: not every teen has a parent step. */
     parent?: string | null;
+    /**
+     * Why the desks stopped, in the member's own terms only (ma-platform contract desks.md 0.3.69): `payment`, `member`,
+     * `other` (anything else, never more specific), or `null`. With `stoppedAt` and `dataDeleteAt`, read only through
+     * `stopCard` in `shell/deskNotice.ts`, which picks the office's card C, D or E. Absent, as from a Platform from before: F.
+     */
+    stoppedBy?: string | null;
+    stoppedAt?: string | null;
+    dataDeleteAt?: string | null;
+    /**
+     * The card Stripe charges next stops working before that charge (ma-platform contract billing.md 0.3.86, card rescue):
+     * `{month, year, last4}`, else null. Read only through `menuNoteOf` in `platform/billingNote.ts`.
+     */
+    cardExpiresSoon?: unknown;
+    /** Not built by Platform yet: `{kind: 'payment_failed', stopsAt}` while a payment has failed. Read only through `menuNoteOf`. */
+    billingNote?: unknown;
   };
   /** Platform groups, such as `owner` (contract desks.md). Read only to show the owner what only he sees, never for access. */
   roles?: string[];
@@ -132,6 +152,14 @@ export interface PlatformDesk {
   bootRefusedAt?: string | null;
   /** `true` on the Alliance Member's hosted small desk (contract desks.md 0.3.20, ma-platform ADR 0097). Absent otherwise. */
   startsWithOffice?: boolean;
+  /** Not built by Platform yet: a desk a step down ends at renewal (a Work desk below Officer), and when. */
+  endsAt?: string | null;
+  /** `true` on a kept desk the plan doesn't include, a Work desk after a step down (contract desks.md 0.3.24, ADR 0130): stopped, data kept, `allowedActions: ["export"]`. */
+  notInPlan?: boolean;
+  /** `retained` only: when the snapshot goes (contract desks.md). A Work desk ended by a step down may carry it (the spec's shape, not built). */
+  retainedUntil?: string | null;
+  /** When the desk's state last changed (contract desks.md): the day a step down stopped it, where `endsAt` is absent. */
+  stateChangedAt?: string | null;
 }
 
 export interface DesksResponse {
@@ -185,3 +213,9 @@ export const postSignOut = (everywhere = false) =>
     headers: { 'Content-Type': 'application/json' },
     body: JSON.stringify({ everywhere }),
   });
+
+/** The signed-in member's `sub`, read from the access token; null when it has none. */
+export async function accessSub(): Promise<string | null> {
+  const sub = decodeJwtPayload(await getAccessToken())?.['sub'];
+  return typeof sub === 'string' ? sub : null;
+}

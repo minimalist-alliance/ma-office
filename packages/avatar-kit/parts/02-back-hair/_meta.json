@@ -1,0 +1,121 @@
+{
+  "_about": "Hair ids that also draw in the back-hair layer (behind the neck and top). Same ids and names as 09-front-hair/_meta.json, which is the listing of record.",
+  "category": "hair",
+  "layer": "02-back-hair",
+  "colorSlot": "hairColor",
+  "default": "short",
+  "parts": [
+    {
+      "id": "curly-short",
+      "name": "Curly, short",
+      "layers": [
+        "back-hair",
+        "front-hair"
+      ]
+    },
+    {
+      "id": "curly-long",
+      "name": "Curly, long",
+      "layers": [
+        "back-hair",
+        "front-hair"
+      ]
+    },
+    {
+      "id": "coils",
+      "name": "Coils",
+      "layers": [
+        "back-hair",
+        "front-hair"
+      ]
+    },
+    {
+      "id": "afro",
+      "name": "Afro",
+      "layers": [
+        "back-hair",
+        "front-hair"
+      ]
+    },
+    {
+      "id": "twists",
+      "name": "Twists",
+      "layers": [
+        "back-hair",
+        "front-hair"
+      ]
+    },
+    {
+      "id": "locs",
+      "name": "Locs",
+      "layers": [
+        "back-hair",
+        "front-hair"
+      ]
+    },
+    {
+      "id": "braids",
+      "name": "Braids",
+      "layers": [
+        "back-hair",
+        "front-hair"
+      ]
+    },
+    {
+      "id": "bun",
+      "name": "Bun",
+      "layers": [
+        "back-hair",
+        "front-hair"
+      ]
+    },
+    {
+      "id": "top-knot",
+      "name": "Top knot",
+      "layers": [
+        "back-hair",
+        "front-hair"
+      ]
+    },
+    {
+      "id": "ponytail",
+      "name": "Ponytail",
+      "layers": [
+        "back-hair",
+        "front-hair"
+      ]
+    },
+    {
+      "id": "bob",
+      "name": "Bob",
+      "layers": [
+        "back-hair",
+        "front-hair"
+      ]
+    },
+    {
+      "id": "long-straight",
+      "name": "Long, straight",
+      "layers": [
+        "back-hair",
+        "front-hair"
+      ]
+    },
+    {
+      "id": "long-wavy",
+      "name": "Long, wavy",
+      "layers": [
+        "back-hair",
+        "front-hair"
+      ]
+    },
+    {
+      "id": "mullet",
+      "name": "Mullet",
+      "layers": [
+        "back-hair",
+        "front-hair"
+      ]
+    }
+  ]
+}

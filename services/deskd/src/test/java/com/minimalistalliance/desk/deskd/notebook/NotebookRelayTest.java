@@ -6,15 +6,18 @@ import static org.awaitility.Awaitility.await;
 import com.minimalistalliance.desk.deskd.protocol.Channels;
 import com.minimalistalliance.desk.deskd.protocol.Frame;
 import com.minimalistalliance.desk.deskd.protocol.FrameKind;
+import com.minimalistalliance.desk.deskd.protocol.Json;
 import com.minimalistalliance.desk.deskd.testing.FakeNotebookSocket;
 import com.minimalistalliance.desk.deskd.testing.TestClient;
 import java.nio.charset.StandardCharsets;
 import java.nio.file.Path;
 import java.util.ArrayList;
+import java.util.LinkedHashMap;
 import java.util.List;
 import java.util.Map;
 import java.util.Random;
 import java.util.UUID;
+import java.util.concurrent.CopyOnWriteArrayList;
 import java.util.concurrent.TimeUnit;
 import org.junit.jupiter.api.AfterEach;
 import org.junit.jupiter.api.BeforeEach;
@@ -73,7 +76,7 @@ class NotebookRelayTest {
             Map<String, Object> req = service.last().next("req");
             assertThat(req).as(method).containsEntry("m", method).containsEntry("p", params).containsKey("id");
         }
-        assertThat(all).hasSize(21).doesNotHaveDuplicates();
+        assertThat(all).hasSize(24).doesNotHaveDuplicates();
         assertThat(service.connections).hasSize(1);
     }
 
@@ -156,6 +159,96 @@ class NotebookRelayTest {
         assertThat(client.nextReply()).containsEntry("code", "too_large");
         assertThat(service.connections).hasSize(1);
         assertThat(service.last().isOpen()).isTrue();
+    }
+
+    // ---- notebook.activity, a page at a time
+
+    /** Rows shaped and sized as desk-notebook's: newest day first, then page id, highest first. */
+    private static List<Map<String, Object>> activityRows(int count) {
+        List<Map<String, Object>> rows = new ArrayList<>();
+        for (int i = 0; i < count; i++) {
+            int page = count - 1 - i;
+            Map<String, Object> row = new LinkedHashMap<>();
+            row.put("pageId", String.format("%08x-5eed-4000-8000-%012x", page % 3000, page % 3000));
+            row.put("day", String.format("2025-%02d-%02d", 12 - (i / 3000) % 12, 28 - (i / 3000) / 12));
+            row.put("created", false);
+            row.put("firstAt", 1_761_998_400_000L + i);
+            row.put("lastAt", 1_761_998_460_000L + i);
+            row.put("edits", 1 + i % 9);
+            row.put("added", i % 90);
+            row.put("removed", i % 7);
+            row.put("actors", List.of("user"));
+            rows.add(row);
+        }
+        return rows;
+    }
+
+    /** desk-notebook's paging: as many rows as fit 1 MiB less 4 KiB, from just after the cursor, and the next cursor. */
+    private static Map<String, Object> activityPage(List<Map<String, Object>> rows, Object cursor) {
+        int from = 0;
+        if (cursor != null) {
+            from = Integer.parseInt(((String) cursor).substring(2)) + 1;
+        }
+        int budget = (1 << 20) - 4096;
+        List<Map<String, Object>> page = new ArrayList<>();
+        int i = from;
+        for (; i < rows.size(); i++) {
+            int size = Json.bytes(rows.get(i)).length + (page.isEmpty() ? 0 : 1);
+            if (!page.isEmpty() && size > budget) {
+                break;
+            }
+            budget -= size;
+            page.add(rows.get(i));
+        }
+        Map<String, Object> result = new LinkedHashMap<>();
+        result.put("rows", page);
+        result.put("next", i < rows.size() ? "a:" + (i - 1) : null);
+        return result;
+    }
+
+    @Test
+    void activityComesAPageAtATimeWithTheCursorAndNextPassedOnAsTheyAre() throws Exception {
+        List<Map<String, Object>> rows = activityRows(30_000);
+        List<Map<String, Object>> asked = new CopyOnWriteArrayList<>();
+        service.handlers.put("notebook.activity", p -> {
+            asked.add(p);
+            return activityPage(rows, p.get("cursor"));
+        });
+        TestClient owner = rig.connect("a");
+        TestClient member = rig.connect("m", rig.member("gm-aaaa0001", "member", List.of(), false));
+
+        for (TestClient client : List.of(owner, member)) {
+            asked.clear();
+            List<Object> got = new ArrayList<>();
+            List<Object> nexts = new ArrayList<>();
+            Object cursor = null;
+            do {
+                Map<String, Object> params = new LinkedHashMap<>();
+                params.put("fromDay", "0000-01-01");
+                params.put("toDay", "9999-12-31");
+                if (cursor != null) {
+                    params.put("cursor", cursor);
+                }
+                Map<String, Object> reply = rig.call(client, "notebook.activity", params);
+                assertThat(reply).containsEntry("_kind", "RES").containsOnlyKeys("_kind", "_id", "rows", "next");
+                Map<String, Object> result = new LinkedHashMap<>(reply);
+                result.remove("_kind");
+                result.remove("_id");
+                assertThat(Json.bytes(result).length).isLessThanOrEqualTo(FrameKind.RES.maxMessageBytes());
+                got.addAll((List<?>) reply.get("rows"));
+                cursor = reply.get("next");
+                nexts.add(cursor);
+            } while (cursor != null);
+
+            assertThat(got).isEqualTo(rows);
+            assertThat(nexts.size()).isGreaterThan(4);
+            // deskd adds nothing and drops nothing: the first ask has no cursor, and each later one the last reply's next.
+            assertThat(asked).hasSize(nexts.size());
+            assertThat(asked.get(0)).isEqualTo(Map.of("fromDay", "0000-01-01", "toDay", "9999-12-31"));
+            for (int i = 1; i < asked.size(); i++) {
+                assertThat(asked.get(i)).isEqualTo(Map.of("fromDay", "0000-01-01", "toDay", "9999-12-31", "cursor", nexts.get(i - 1)));
+            }
+        }
     }
 
     // ---- the connection

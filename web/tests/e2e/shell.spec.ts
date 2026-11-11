@@ -1,6 +1,6 @@
 // The shell through its proxy layer (design 3.11), with MockDeskLink and fixtures.
 import { expect, test, type APIRequestContext, type Locator, type Page } from '@playwright/test';
-import { canvasPainted, focusCanvas, harness, setTheme, signIn, watchConsole, type ThemeId } from './helpers';
+import { canvasPainted, focusCanvas, harness, setTheme, signIn, themeRadio, watchConsole, type ThemeId } from './helpers';
 
 type KNode = {
   x(): number;
@@ -61,7 +61,7 @@ for (const theme of ['light', 'dusk', 'dark'] as ThemeId[]) {
         } else if (app === 'Notebook') {
           await expect(win.getByTestId('note-editor')).toBeVisible();
         } else {
-          await expect(win.getByText(`${app} isn't built yet`)).toBeVisible();
+          await expect(win.getByText(`${app} is on its way`)).toBeVisible();
           await expect(win.locator('input, textarea, [contenteditable="true"]')).toHaveCount(0);
         }
         // Shift+Esc always leaves; plain Esc too, except in Browser.
@@ -229,7 +229,7 @@ test('the top left is the mark alone, by theme, with an accessible name', async 
   await canvasPainted(page);
   await expect(page.getByRole('img', { name: 'Minimalist Alliance' })).toBeVisible();
   await expect(page.locator('.topbar')).toHaveText(''); // no words beside the mark, under any name
-  for (const [theme, file] of [['light', 'ma-mark-primary'], ['dusk', 'ma-mark-on-dark'], ['dark', 'ma-mark-on-dark']] as const) {
+  for (const [theme, file] of [['light', 'ma-mark-primary'], ['dusk', 'ma-mark-zen'], ['dark', 'ma-mark-on-dark']] as const) {
     await page.evaluate((t) => { document.documentElement.dataset['theme'] = t; }, theme);
     const shown = page.locator('.home-mark-img:visible');
     await expect(shown).toHaveCount(1);
@@ -308,11 +308,11 @@ test('theme switch applies to DOM and canvas, and persists', async ({ page }) =>
   await signIn(page, '/?fixture=one');
   await canvasPainted(page);
   await page.getByRole('button', { name: 'Account' }).click();
-  await page.getByRole('radio', { name: 'Dusk' }).click();
+  await themeRadio(page, 'Zen').click();
   await expect(page.locator('html')).toHaveAttribute('data-theme', 'dusk');
   expect(await page.evaluate(() => localStorage.getItem('ma.theme.resolved'))).toBe('dusk');
   const bg = await page.evaluate(() => getComputedStyle(document.body).backgroundColor);
-  expect(bg).toBe('rgb(88, 94, 104)'); // Dusk's ground, lighter than a desk
+  expect(bg).toBe('rgb(77, 84, 99)'); // Zen's slate ground (#4D5463), lighter than a desk
   const measure = await page.evaluate(() => performance.getEntriesByName('ma:theme-switch').at(-1)?.duration ?? -1);
   expect(measure).toBeGreaterThanOrEqual(0);
   expect(errors).toEqual([]);
@@ -375,7 +375,8 @@ test('the owner\'s About this desk starts shut, opens, and stays as he left it i
 test('perf fixture: 24 desks of 12 tiles render through the proxy layer', async ({ page }) => {
   await signIn(page, '/?fixture=perf');
   await canvasPainted(page);
-  await expect(page.locator('.proxy-layer button')).toHaveCount(24 + 24 * 12);
+  // Each desk, its carousel switch, and its 12 apps.
+  await expect(page.locator('.proxy-layer button')).toHaveCount(24 * 2 + 24 * 12);
 });
 
 test('a phone gets a sheet and no resize handles', async ({ browser }) => {
@@ -386,8 +387,9 @@ test('a phone gets a sheet and no resize handles', async ({ browser }) => {
   const tile = page.getByRole('button', { name: /^Chat/ });
   await tile.focus();
   await page.keyboard.press('Enter');
+  // The sheet is the desk's carousel on a phone (carousel.phone.shell.spec.ts), named by its app as a window is.
   const win = page.getByRole('dialog', { name: /Chat/ });
-  await expect(win).toHaveClass(/full/);
+  await expect(win).toHaveClass(/carousel-stage phone/);
   await page.waitForTimeout(350); // the open animation
   const box = await win.boundingBox();
   expect(box).toMatchObject({ x: 0, y: 0, width: 390, height: 844 });
@@ -1005,10 +1007,15 @@ test.describe('the etched strip', () => {
     await page.evaluate(() => new Promise((done) => { requestAnimationFrame(() => requestAnimationFrame(done)); }));
   }
 
-  /** A desk on screen, in CSS pixels, from where its proxy is. */
-  const rectOf = async (page: Page, id: string): Promise<{ left: number; top: number; right: number; bottom: number; cx: number; w: number; h: number }> => {
+  type Rect = { left: number; top: number; right: number; bottom: number; cx: number; w: number; h: number; s: number };
+  /**
+   * A desk on screen, in CSS pixels, from where its proxy is, and the zoom. The etched name and icons are in desk units, so
+   * on screen they're their size at 100 %, times the zoom (ADR 0064, Nov 9 note).
+   */
+  const rectOf = async (page: Page, id: string): Promise<Rect> => {
     const b = (await page.locator(`[id="proxy-${id}"]`).boundingBox())!;
-    return { left: b.x, top: b.y, right: b.x + b.width, bottom: b.y + b.height, cx: b.x + b.width / 2, w: b.width, h: b.height };
+    const s = await page.evaluate(() => __maDesk.camera.cam.s);
+    return { left: b.x, top: b.y, right: b.x + b.width, bottom: b.y + b.height, cx: b.x + b.width / 2, w: b.width, h: b.height, s };
   };
 
   /** What's in this box on the canvas against the color of its first pixel, in screen CSS pixels, with a signature of its pixels. */
@@ -1048,19 +1055,29 @@ test.describe('the etched strip', () => {
     return { count, x0: (left + x0) / d, x1: (left + x1) / d, y0: (top + y0) / d, y1: (top + y1) / d, darkest, lightest, sig: `${x1 - x0}x${y1 - y0}:${sig}` };
   }, box);
 
-  const nameBox = (r: { cx: number; bottom: number }, halfW = 118): Box => ({ x: r.cx - halfW, y: r.bottom - 40, w: 2 * halfW, h: 38 });
-  /** An icon's 16-pixel box, and a pixel round it for its lip, from its center on the name's center line. */
-  const iconBox = (r: { right: number; bottom: number }, fromRight: number): Box => ({ x: r.right - fromRight - 10, y: r.bottom - 22 - 10, w: 20, h: 20 });
-  // From the right: the grip's target is 6 to 34, cleanup's 42 to 70, and the hidden count's 78 to 124 while cleanup's slot is held.
+  /** Round the name at zoom `s`: at 100 % and under, this box holds it; over 100 %, the box grows with it. */
+  const nameBox = (r: { cx: number; bottom: number }, halfW = 118, s = 1): Box => {
+    const k = Math.max(1, s);
+    return { x: r.cx - halfW * k, y: r.bottom - 40 * k, w: 2 * halfW * k, h: 38 * k };
+  };
+  /** An icon's 16-unit box, and two units round it for its lip, from its center on the name's center line, at zoom `s`. */
+  const iconBox = (r: { right: number; bottom: number }, fromRight: number, s = 1): Box => ({ x: r.right - (fromRight + 10) * s, y: r.bottom - (22 + 10) * s, w: 20 * s, h: 20 * s });
+  // From the right, in desk units: the grip's target is 6 to 34, cleanup's 42 to 70, and the hidden count's 78 to 124 while
+  // cleanup's slot is held. On screen that's times the zoom.
   const GRIP = 20;
-  const SPARKLE = 56;
-  const COUNT = { x: 78, w: 46 };
+  // On a desk at least 300 units wide the carousel's switch is the grip's neighbour, and cleanup and the count are a
+  // slot further in (SPARKLE is that). Under that the row is as it was, and cleanup is the grip's neighbour.
+  const SWITCH = 56;
+  const SPARKLE = 92;
+  const COUNT = { x: 114, w: 46 };
 
   const hitAt = (page: Page, x: number, y: number): Promise<string> => page.evaluate((p) => {
     const n = __maDesk.camera.getStage().getIntersection(p);
     if (!n) return 'canvas';
-    return ['.app-tile', '.resize-handle', '.desk-cleanup', '.desk-undo', '.desk'].find((q) => n.findAncestor(q, true))?.slice(1) ?? 'other';
+    return ['.app-tile', '.resize-handle', '.desk-cleanup', '.desk-undo', '.desk-carousel', '.desk'].find((q) => n.findAncestor(q, true))?.slice(1) ?? 'other';
   }, { x, y });
+  /** What a press this many desk units in from the desk's bottom-right corner gets, at the zoom `r` was read at. */
+  const hitIn = (page: Page, r: Rect, dx: number, dy: number): Promise<string> => hitAt(page, r.right - dx * r.s, r.bottom - dy * r.s);
 
   const drawnName = (page: Page, id: string): Promise<{ text: string; x: number; y: number }> => page.evaluate((deskId) => {
     const n = __maDesk.camera.getStage().findOne(`#desk-${deskId}`).findOne('.desk-name');
@@ -1092,24 +1109,25 @@ test.describe('the etched strip', () => {
     await page.screenshot({ path: 'test-results/shots/etched-smallest.png' });
   });
 
-  test('it replaces the label: centered in the strip, baseline 17 up, with nothing above the desk', async ({ page }) => {
+  test('it replaces the label: centered in the strip, baseline 17 up times the zoom, with nothing above the desk', async ({ page }) => {
     const errors = watchConsole(page);
     await signIn(page, '/?fixture=one');
     await canvasPainted(page);
     await page.waitForTimeout(400);
     expect(await surfaceOf(page, 'd-personal')).toEqual({ status: [], dots: 0, texts: [], name: 'PERSONAL' });
     const r = await rectOf(page, 'd-personal');
-    const ink = await inkIn(page, nameBox(r));
+    // One desk fills the screen, over 100 %: the name is its size and place at 100 %, times the zoom.
+    const s = r.s;
+    const ink = await inkIn(page, nameBox(r, 118, s));
     expect(ink.count).toBeGreaterThan(100);
-    expect(Math.abs((ink.x0 + ink.x1) / 2 - r.cx)).toBeLessThan(1); // centered on what's seen
-    expect(r.bottom - ink.y1).toBeGreaterThanOrEqual(14.5); // the baseline, with its lip
-    expect(r.bottom - ink.y1).toBeLessThanOrEqual(17);
-    expect(ink.y1 - ink.y0).toBeGreaterThan(9.5); // capitals in 14 px
-    expect(ink.y1 - ink.y0).toBeLessThan(13);
+    expect(Math.abs((ink.x0 + ink.x1) / 2 - r.cx)).toBeLessThan(s); // centered on what's seen
+    expect(r.bottom - ink.y1).toBeGreaterThanOrEqual(14.5 * s); // the baseline, with its lip
+    expect(r.bottom - ink.y1).toBeLessThanOrEqual(17 * s);
+    expect(ink.y1 - ink.y0).toBeGreaterThan(9.5 * s); // capitals in 14 px
+    expect(ink.y1 - ink.y0).toBeLessThan(13 * s);
     // The desk's proxy is the panel, and no more.
     const proxy = (await page.locator('[id="proxy-d-personal"]').boundingBox())!;
     const chat = (await page.getByRole('button', { name: /^Chat/ }).boundingBox())!;
-    const s = await page.evaluate(() => __maDesk.camera.cam.s);
     expect((chat.y - proxy.y) / s).toBeCloseTo(24, 0);
     // An app's name on hover hangs just under it. Here that's the free band, well above the etched name.
     const browser = (await page.getByRole('button', { name: /^Browser/ }).boundingBox())!;
@@ -1161,9 +1179,10 @@ test.describe('the etched strip', () => {
     expect(long.text.endsWith('…')).toBe(true);
     expect(long.text.startsWith('THE VERY LONG')).toBe(true);
     const r = await rectOf(page, PERSONAL);
-    const ink = await inkIn(page, { x: r.left + 3, y: r.bottom - 32, w: r.w - 38, h: 20 });
-    expect(ink.x0).toBeGreaterThanOrEqual(r.left + 34 + 12 - 1);
-    expect(ink.x1).toBeLessThanOrEqual(r.right - 34 - 12 + 1);
+    // The grip's slot ends 34 in, and the name keeps 12 from it: in desk units, so at 0.7 that's 32 px on screen.
+    const ink = await inkIn(page, { x: r.left + 3, y: r.bottom - 32 * r.s, w: r.w - 38 * r.s, h: 20 * r.s });
+    expect(ink.x0).toBeGreaterThanOrEqual(r.left + (34 + 12) * r.s - 1);
+    expect(ink.x1).toBeLessThanOrEqual(r.right - (34 + 12) * r.s + 1);
 
     expect((await drawnName(page, WORK)).text).toBe('机の名前');
     expect((await inkIn(page, nameBox(await rectOf(page, WORK)))).count).toBeGreaterThan(50);
@@ -1209,7 +1228,7 @@ test.describe('the etched strip', () => {
 
   for (const theme of ['light', 'dusk', 'dark'] as ThemeId[]) {
     for (const scale of [1, 2]) {
-      test(`${theme} at ${scale}x: the name is the same pixels, the same size, in the same place, at every zoom`, async ({ browser }) => {
+      test(`${theme} at ${scale}x: the name scales with the desk, in the same place on it at every zoom, on whole pixels, and hides under 50 %`, async ({ browser }) => {
         const ctx = await browser.newContext({ viewport: { width: 1440, height: 900 }, deviceScaleFactor: scale, baseURL: test.info().project.use.baseURL });
         const page = await ctx.newPage();
         const errors = watchConsole(page);
@@ -1217,29 +1236,41 @@ test.describe('the etched strip', () => {
         await setTheme(page, theme);
         const big = BIG(PERSONAL);
         await seed(page, page.request, [big]);
-        const seen: Ink[] = [];
-        for (const s of [0.25, 0.41, 0.63, 1, 1.37, 1.75, 2.6]) {
+        const seen: (Ink & { s: number })[] = [];
+        for (const s of [0.25, 0.41, 0.49, 0.5, 0.63, 1, 1.37, 1.75, 2.6, 1]) {
           await aim(page, s, big.x + big.w / 2, big.y + big.h - 60);
           const r = await rectOf(page, PERSONAL);
-          const ink = await inkIn(page, nameBox(r));
-          seen.push(ink);
-          expect(Math.abs((ink.x0 + ink.x1) / 2 - r.cx), `centered at ${s}`).toBeLessThanOrEqual(1.5); // on its advance, and on a whole pixel
-          // Baseline 17 up. The cut's lip is a pixel below it, and a round letter's overshoot a little more.
-          expect(r.bottom - ink.y1, `baseline at ${s}`).toBeGreaterThanOrEqual(14.5);
-          expect(r.bottom - ink.y1, `baseline at ${s}`).toBeLessThanOrEqual(17);
+          if (s < 0.5) {
+            // 14 px times the zoom is under 7 px: it hides, and nothing of it is left.
+            expect((await drawnName(page, PERSONAL)).text, `hidden at ${s}`).toBe('');
+            expect((await inkIn(page, nameBox(r))).count, `no ink at ${s}`).toBe(0);
+            continue;
+          }
+          const ink = await inkIn(page, nameBox(r, 118, s));
+          seen.push({ ...ink, s });
+          expect(Math.abs((ink.x0 + ink.x1) / 2 - r.cx), `centered at ${s}`).toBeLessThanOrEqual(1.5 * Math.max(1, s)); // on its advance, and on a whole pixel
+          // Baseline 17 up at 100 %, times the zoom. The cut's lip is below it, and a round letter's overshoot a little more.
+          expect(r.bottom - ink.y1, `baseline at ${s}`).toBeGreaterThanOrEqual(14.5 * s - 0.5);
+          expect(r.bottom - ink.y1, `baseline at ${s}`).toBeLessThanOrEqual(17 * s + 0.5);
           expect((await drawnName(page, PERSONAL)).text).toBe('PERSONAL');
           // At rest, on whole device pixels.
           const at = await drawnName(page, PERSONAL);
           expect(Math.abs(at.x * scale - Math.round(at.x * scale))).toBeLessThan(1e-6);
           expect(Math.abs(at.y * scale - Math.round(at.y * scale))).toBeLessThan(1e-6);
         }
-        const first = seen[0]!;
-        expect(first.y1 - first.y0).toBeGreaterThan(9.5); // capitals in 14 px, with the cut
-        expect(first.y1 - first.y0).toBeLessThan(13);
-        expect(first.x1 - first.x0).toBeGreaterThan(84);
-        expect(first.x1 - first.x0).toBeLessThan(92);
-        // Not just the same size: not a pixel of the bevel is resampled at any zoom.
-        expect(new Set(seen.map((i) => i.sig)).size).toBe(1);
+        const [one, again] = seen.filter((i) => i.s === 1);
+        expect(one!.y1 - one!.y0).toBeGreaterThan(9.5); // capitals in 14 px, with the cut
+        expect(one!.y1 - one!.y0).toBeLessThan(13);
+        expect(one!.x1 - one!.x0).toBeGreaterThan(84);
+        expect(one!.x1 - one!.x0).toBeLessThan(92);
+        // At every other zoom it's that, times the zoom: the same cut, scaled with the desk.
+        console.log(`NAME ${theme} ${scale}x`, JSON.stringify(seen.map((i) => ({ s: i.s, w: +(i.x1 - i.x0).toFixed(2), h: +(i.y1 - i.y0).toFixed(2) }))));
+        for (const ink of seen) {
+          expect(Math.abs(ink.x1 - ink.x0 - (one!.x1 - one!.x0) * ink.s), `width at ${ink.s}`).toBeLessThanOrEqual(1.5 * Math.max(1, ink.s));
+          expect(Math.abs(ink.y1 - ink.y0 - (one!.y1 - one!.y0) * ink.s), `height at ${ink.s}`).toBeLessThanOrEqual(1.5 * Math.max(1, ink.s));
+        }
+        // Back at 100 % after all that, it's the same pixels: the 100 % bitmap, drawn as it was.
+        expect(again!.sig).toBe(one!.sig);
         expect(errors).toEqual([]);
         await ctx.close();
       });
@@ -1264,27 +1295,44 @@ test.describe('the etched strip', () => {
         for (let y = Math.round(y0 * d); y < Math.round(y1 * d); y += 1) out.push(Array.from(ctx2.getImageData(Math.round(x * d), y, 1, 1).data.slice(0, 3)));
         return out;
       }, { x: r.right - 18, y0: r.bottom - 22, y1: r.bottom - 8 });
-      // Dusk's highlight, .30 of 250 on the panel #4A5059.
-      const lip = [0x4a, 0x50, 0x59].map((c) => Math.round(c * 0.7 + 250 * 0.3));
+      // Zen's highlight, .30 of its white (241, 243, 247) on the panel #404654.
+      const lip = [0x40, 0x46, 0x54].map((c, i) => Math.round(c * 0.7 + [241, 243, 247][i]! * 0.3));
       const isLip = (p: number[]): boolean => p.every((c, i) => Math.abs(c - lip[i]!) <= 2);
       expect(rows.filter(isLip).length, JSON.stringify(rows)).toBe(scale);
       await ctx.close();
     }
   });
 
-  test('every bitmap is one per string, theme and scale: a zoom makes none, and panning makes none', async ({ page, request }) => {
+  test('every bitmap is one per string, theme and scale: a zoom at or under 100 % makes none, over it one per power of two, and panning makes none', async ({ page, request }) => {
     const big = BIG(PERSONAL);
     await seed(page, request, [big]);
-    await aim(page, 1, big.x + big.w / 2, big.y + big.h - 60);
-    const before = await page.evaluate(() => __maDesk.etchRasters());
-    for (const s of [0.3, 0.5, 0.77, 1.3, 2.2, 0.9]) await aim(page, s, big.x + big.w / 2, big.y + big.h - 60);
+    const at = (s: number, wx = big.x + big.w / 2): Promise<void> => aim(page, s, wx, big.y + big.h - 60);
+    const rasters = (): Promise<number> => page.evaluate(() => __maDesk.etchRasters());
+    await at(1);
+    const before = await rasters();
+    // At or under 100 % the name and the icons are the 100 % bitmaps, scaled down.
+    for (const s of [0.3, 0.5, 0.77, 0.9]) await at(s);
+    await at(0.9, big.x + 300); // a pan
+    expect(await rasters()).toBe(before);
+    // Over it they're cut again at twice the device scale up to 200 %, and at four times past it: once each.
+    await at(1.3);
+    const twice = await rasters();
+    expect(twice).toBeGreaterThan(before);
+    await at(1.9);
+    expect(await rasters()).toBe(twice);
+    await at(2.2);
+    const four = await rasters();
+    expect(four).toBeGreaterThan(twice);
+    for (const s of [3, 2.6, 1.3, 0.9]) await at(s);
+    await at(1.3, big.x + 300);
+    await at(0.9);
     await page.mouse.move(720, 450);
     await page.mouse.wheel(0, 200);
     await page.waitForTimeout(300);
-    expect(await page.evaluate(() => __maDesk.etchRasters())).toBe(before);
+    expect(await rasters()).toBe(four);
   });
 
-  test('a camera move renders nothing, and draws no new bitmap, even past where the name would be cut', async ({ page, request }) => {
+  test('a camera move renders nothing, draws no new bitmap, and holds the cut, out past where the name hides and back', async ({ page, request }) => {
     await page.addInitScript(() => {
       const w = window as unknown as Record<string, unknown>;
       w['__commits'] = 0;
@@ -1302,7 +1350,7 @@ test.describe('the etched strip', () => {
     await page.waitForTimeout(400);
     const cutAtRest = (await drawnName(page, PERSONAL)).text;
     await page.evaluate(() => {
-      const frames: { moving: boolean; commits: number; rasters: number; drawn: string }[] = [];
+      const frames: { moving: boolean; commits: number; rasters: number; drawn: string; s: number }[] = [];
       (window as unknown as { __frames: typeof frames }).__frames = frames;
       const loop = (): void => {
         const { camera, etchRasters } = __maDesk;
@@ -1311,21 +1359,22 @@ test.describe('the etched strip', () => {
           commits: (window as unknown as { __commits: number }).__commits,
           rasters: etchRasters(),
           drawn: camera.getStage().findOne(`#desk-d-personal00001`).findOne('.desk-name').getAttr('drawn') as string,
+          s: camera.cam.s,
         });
         if (frames.length < 600) requestAnimationFrame(loop);
       };
       requestAnimationFrame(loop);
     });
     for (let i = 0; i < 30; i += 1) {
-      await page.mouse.wheel(0, 60); // out: the desk narrows, and the name's room with it
+      await page.mouse.wheel(0, 60); // out to the smallest zoom, past 50 %, where the name hides
       await page.waitForTimeout(14);
     }
     for (let i = 0; i < 15; i += 1) {
-      await page.mouse.wheel(0, -60);
+      await page.mouse.wheel(0, -60); // and back in past it, to under 100 %
       await page.waitForTimeout(14);
     }
     await page.waitForTimeout(500);
-    const frames = await page.evaluate(() => (window as unknown as { __frames: { moving: boolean; commits: number; rasters: number; drawn: string }[] }).__frames);
+    const frames = await page.evaluate(() => (window as unknown as { __frames: { moving: boolean; commits: number; rasters: number; drawn: string; s: number }[] }).__frames);
     // A slow machine might settle between wheel events, so go by each unbroken run of frames in motion.
     const runs: (typeof frames)[] = [];
     frames.forEach((f, i) => {
@@ -1337,12 +1386,17 @@ test.describe('the etched strip', () => {
     for (const run of runs) {
       expect(new Set(run.map((f) => f.commits)).size, 'renders during a move').toBe(1);
       expect(new Set(run.map((f) => f.rasters)).size, 'bitmaps during a move').toBe(1);
-      expect(new Set(run.map((f) => f.drawn)).size, 'the cut held during a move').toBe(1);
+      // The cut is in desk units, so a zoom doesn't change it: one cut, or nothing where the name is under 7 px.
+      expect(new Set(run.map((f) => f.drawn).filter(Boolean)).size, 'the cut held during a move').toBeLessThanOrEqual(1);
     }
     expect(runs[0]![0]!.drawn).toBe(cutAtRest);
-    // It lands, and fits at rest: at most one new bitmap per landing.
+    // Out past 50 % it hid.
+    expect(Math.min(...frames.map((f) => f.s))).toBeLessThan(0.5);
+    expect(runs.flat().some((f) => !f.drawn)).toBe(true);
+    // It lands, and fits at rest, the same: at most one new bitmap per landing.
     const last = frames[frames.length - 1]!;
     expect(last.moving).toBe(false);
+    expect(last.drawn).toBe(cutAtRest);
     expect(last.rasters - runs[0]![0]!.rasters).toBeLessThanOrEqual(runs.length);
   });
 
@@ -1460,13 +1514,14 @@ test.describe('the etched strip', () => {
     expect(errors).toEqual([]);
   });
 
-  test('a tidy desk shows only the grip, and its ring shows it without the pointer', async ({ page, request }) => {
+  test('a tidy desk shows only the grip and the carousel\'s switch, and its ring shows them without the pointer', async ({ page, request }) => {
     await seed(page, request, WITH_WORK());
     await aim(page, 1, 300, 150);
     const r = await rectOf(page, PERSONAL);
     await page.mouse.move(10, 500);
     await page.waitForTimeout(200);
     expect((await inkIn(page, iconBox(r, GRIP))).count).toBeGreaterThan(20);
+    expect((await inkIn(page, iconBox(r, SWITCH))).count).toBeGreaterThan(20);
     expect((await inkIn(page, iconBox(r, SPARKLE))).count).toBe(0);
   });
 
@@ -1492,7 +1547,7 @@ test.describe('the etched strip', () => {
     expect(await pixel(r.right - 20, r.bottom - 34)).toEqual(PANEL);
   });
 
-  test('targets are 28 px at every zoom, the grip\'s runs on into the corner, and cleanup\'s is the grip\'s neighbour', async ({ page, request }) => {
+  test('targets are 28 at 100 %, times the zoom, the grip\'s runs on into the corner, cleanup\'s is the grip\'s neighbour, and under 50 % there are none', async ({ page, request }) => {
     await seed(page, request, WITH_WORK());
     for (const s of [0.37, 0.5, 1, 1.4]) {
       await aim(page, s, WORK_END, 300);
@@ -1500,109 +1555,128 @@ test.describe('the etched strip', () => {
       await page.mouse.move(r.right - 300 * s, r.top + 10);
       await page.waitForTimeout(150);
       const where = `at ${s}`;
-      expect(await hitAt(page, r.right - 6.5, r.bottom - 22), where).toBe('resize-handle');
-      expect(await hitAt(page, r.right - 33.5, r.bottom - 22), where).toBe('resize-handle');
-      expect(await hitAt(page, r.right - 20, r.bottom - 35.5), where).toBe('resize-handle');
-      expect(await hitAt(page, r.right - 1, r.bottom - 1), where).toBe('resize-handle'); // the corner
-      expect(await hitAt(page, r.right - 35, r.bottom - 22), where).toBe('desk');
-      expect(await hitAt(page, r.right - 20, r.bottom - 37), where).toBe('desk');
-      expect(await hitAt(page, r.right - 42.5, r.bottom - 22), where).toBe('desk-cleanup');
-      expect(await hitAt(page, r.right - 69.5, r.bottom - 22), where).toBe('desk-cleanup');
-      expect(await hitAt(page, r.right - SPARKLE, r.bottom - 8.5), where).toBe('desk-cleanup');
-      expect(await hitAt(page, r.right - SPARKLE, r.bottom - 35.5), where).toBe('desk-cleanup');
-      expect(await hitAt(page, r.right - 38, r.bottom - 22), where).toBe('desk'); // the gap between the grip's and cleanup's
-      expect(await hitAt(page, r.right - 71, r.bottom - 22), where).toBe('desk');
-      expect(await hitAt(page, r.right - SPARKLE, r.bottom - 7), where).toBe('desk');
-      expect(await hitAt(page, r.right - 101, r.bottom - 22), where).toBe('desk'); // the count's slot, with no count
+      // In desk units from the corner. `p` is a pixel on screen: the edges are on fractions of one now, and the hit graph
+      // is on whole pixels, so a press a pixel in from an edge is the nearest that's sure to be in.
+      const at = (dx: number, dy: number): Promise<string> => hitIn(page, r, dx, dy);
+      const p = 1 / s;
+      // The carousel's switch is the grip's neighbour on a desk 300 units wide or more, and cleanup's is the switch's.
+      const c = (r.right - r.left) / s >= 300 ? 36 : 0;
+      if (s < 0.5) {
+        // The icons hide with the name: in the strip a press is the desk's, and the corner is the panel's round one.
+        for (const [dx, dy] of [[GRIP, 22], [6 + p, 22], [56, 22], [(56 + c), 22], [101, 22]] as const) expect(await at(dx, dy), where).toBe('desk');
+        expect(await at(p, p), where).not.toBe('resize-handle');
+        continue;
+      }
+      expect(await at(6 + p, 22), where).toBe('resize-handle');
+      expect(await at(34 - p, 22), where).toBe('resize-handle');
+      expect(await at(GRIP, 36 - p), where).toBe('resize-handle');
+      expect(await at(p, p), where).toBe('resize-handle'); // the corner
+      expect(await at(34 + p, 22), where).toBe('desk');
+      expect(await at(GRIP, 36 + p), where).toBe('desk');
+      if (c) {
+        expect(await at(42 + p, 22), where).toBe('desk-carousel');
+        expect(await at(70 - p, 22), where).toBe('desk-carousel');
+        expect(await at(74, 22), where).toBe('desk'); // the gap between the switch's and cleanup's
+      }
+      expect(await at(42 + p + c, 22), where).toBe('desk-cleanup');
+      expect(await at(70 - p + c, 22), where).toBe('desk-cleanup');
+      expect(await at((56 + c), 8 + p), where).toBe('desk-cleanup');
+      expect(await at((56 + c), 36 - p), where).toBe('desk-cleanup');
+      expect(await at(38, 22), where).toBe('desk'); // the gap between the grip's and its neighbour
+      expect(await at(70 + p + c, 22), where).toBe('desk');
+      expect(await at((56 + c), 8 - p), where).toBe('desk');
+      expect(await at(101 + c, 22), where).toBe('desk'); // the count's slot, with no count
     }
   });
 
-  test('the row moves in from the corner at high zoom, so the grip stays on the panel, and press and proxy go with it', async ({ page, request }) => {
+  test('at high zoom the row scales with the corner, so it needs no inset to stay on the panel, and press and proxy go with it', async ({ page, request }) => {
     await seed(page, request, WITH_WORK());
     await aim(page, 3, WORK_END - 100, 250);
     const r = await rectOf(page, WORK);
     await page.mouse.move(r.right - 400, r.bottom - 300);
     await page.waitForTimeout(150);
-    const inset = 66 - 14 - Math.sqrt(58 ** 2 - 50 ** 2);
-    const ink = await inkIn(page, iconBox(r, GRIP + inset));
+    // The corner's 22 and the row are both in desk units, so the row is where it is at 100 %, times the zoom.
+    const ink = await inkIn(page, iconBox(r, GRIP, r.s));
     expect(ink.count).toBeGreaterThan(20);
-    expect(await hitAt(page, r.right - GRIP - inset, r.bottom - 22)).toBe('resize-handle');
-    expect(await hitAt(page, r.right - SPARKLE - inset, r.bottom - 22)).toBe('desk-cleanup');
+    expect(await hitIn(page, r, GRIP, 22)).toBe('resize-handle');
+    expect(await hitIn(page, r, SPARKLE, 22)).toBe('desk-cleanup');
     const proxy = (await page.getByRole('button', { name: 'Clean up Work desk' }).boundingBox())!;
-    expect(Math.abs(proxy.x + proxy.width / 2 - (r.right - SPARKLE - inset))).toBeLessThan(0.51);
-    await page.screenshot({ path: 'test-results/shots/strip-corner-at-3x.png', clip: { x: r.right - 220, y: r.bottom - 100, width: 240, height: 120 } });
+    expect(Math.abs(proxy.x + proxy.width / 2 - (r.right - SPARKLE * r.s))).toBeLessThan(0.51);
+    expect(Math.abs(proxy.y + proxy.height / 2 - (r.bottom - 22 * r.s))).toBeLessThan(0.51);
+    await page.screenshot({ path: 'test-results/shots/strip-corner-at-3x.png', clip: { x: r.right - 360, y: r.bottom - 160, width: 380, height: 180 } });
   });
 
-  test('they hide under 290 wide or 72 tall on screen, and then a press there is the desk\'s', async ({ page, request }) => {
-    const flat = { id: WORK, x: WORK_X, y: 0, w: 1000, h: 144, items: [tile(WORK, 'chat', 200, 24)] };
-    await seed(page, request, [WITH_WORK()[0]!, flat]);
-    // Wide enough, and just tall enough, then just not.
-    await aim(page, 0.51, WORK_X + 500, 72);
+  test('they hide on a desk under 290 wide at any zoom, and on any desk under 50 %, and then a press there is the desk\'s', async ({ page, request }) => {
+    // 289 and 290 wide, in desk units, and a flat one for the zoom. A desk is at least 124 tall, so the 72 never decides.
+    const narrow: Seed = { id: PERSONAL, x: 0, y: 0, w: 289, h: 400, items: [tile(PERSONAL, 'chat', 24, 24)] };
+    const flat: Seed = { id: WORK, x: WORK_X, y: 0, w: 1000, h: 144, items: [tile(WORK, 'chat', 200, 24)] };
+    const wide: Seed = { id: GUILD, x: WORK_X + 1100, y: 0, w: 290, h: 400, items: [tile(GUILD, 'chat', 24, 24)] };
+    await seed(page, request, [narrow, flat, wide]);
+    // At 50 % the name is 7 px, and they show; just under, they're gone.
+    await aim(page, 0.5, WORK_X + 500, 72);
     let r = await rectOf(page, WORK);
-    expect(r.h).toBeGreaterThanOrEqual(72);
     await page.mouse.move(r.left + 30, r.top + 12);
     await page.waitForTimeout(150);
-    expect(await hitAt(page, r.right - GRIP, r.bottom - 22)).toBe('resize-handle');
-    expect((await inkIn(page, iconBox(r, GRIP))).count).toBeGreaterThan(20);
+    expect(await hitIn(page, r, GRIP, 22)).toBe('resize-handle');
+    expect((await inkIn(page, iconBox(r, GRIP, r.s))).count).toBeGreaterThan(5);
     await aim(page, 0.49, WORK_X + 500, 72);
     r = await rectOf(page, WORK);
-    expect(r.h).toBeLessThan(72);
     await page.mouse.move(r.left + 30, r.top + 8);
     await page.waitForTimeout(150);
-    expect(await hitAt(page, r.right - GRIP, r.bottom - 22)).toBe('desk');
-    expect(await hitAt(page, r.right - SPARKLE, r.bottom - 22)).toBe('desk');
-    expect((await inkIn(page, { x: r.right - 40, y: r.bottom - 32, w: 28, h: 20 })).count).toBe(0);
+    expect(await hitIn(page, r, GRIP, 22)).toBe('desk');
+    expect(await hitIn(page, r, SPARKLE, 22)).toBe('desk');
+    expect((await inkIn(page, { x: r.right - 40 * r.s, y: r.bottom - 32 * r.s, w: 28 * r.s, h: 20 * r.s })).count).toBe(0);
 
-    // Tall enough, and just wide enough, then just not.
-    const tall = { id: WORK, x: WORK_X, y: 0, w: 400, h: 800, items: [tile(WORK, 'chat', 200, 24)] };
-    await page.evaluate((d) => {
-      const doc = JSON.parse(localStorage.getItem('ma.layout.v2')!) as { desks: Record<string, unknown> };
-      doc.desks[d.id] = d;
-      localStorage.setItem('ma.layout.v2', JSON.stringify(doc));
-    }, tall);
-    await harness(request, { layoutDocs: {} }); // the first seed was uploaded, and Platform's copy beats a mirror edited by hand
-    await page.reload();
-    await canvasPainted(page);
-    await page.waitForTimeout(500);
-    await aim(page, 0.73, WORK_X + 200, 400);
-    r = await rectOf(page, WORK);
-    expect(r.w).toBeGreaterThanOrEqual(290);
-    await page.mouse.move(r.left + 12, r.top + 12);
-    await page.waitForTimeout(150);
-    expect(await hitAt(page, r.right - GRIP, r.bottom - 22)).toBe('resize-handle');
-    await aim(page, 0.72, WORK_X + 200, 400);
-    r = await rectOf(page, WORK);
+    // 290 wide: they show, though at 0.73 it's 212 px on screen.
+    await aim(page, 0.73, wide.x + 145, 200);
+    r = await rectOf(page, GUILD);
     expect(r.w).toBeLessThan(290);
     await page.mouse.move(r.left + 12, r.top + 12);
     await page.waitForTimeout(150);
-    expect(await hitAt(page, r.right - GRIP, r.bottom - 22)).toBe('desk');
-    expect((await inkIn(page, { x: r.right - 34, y: r.bottom - 32, w: 28, h: 20 })).count).toBe(0);
+    expect(await hitIn(page, r, GRIP, 22)).toBe('resize-handle');
+    // 289 wide: they don't, though at 1.5 it's 433 px on screen.
+    await aim(page, 1.5, narrow.x + 144.5, 200);
+    r = await rectOf(page, PERSONAL);
+    expect(r.w).toBeGreaterThan(290);
+    await page.mouse.move(r.left + 12, r.top + 12);
+    await page.waitForTimeout(150);
+    expect(await hitIn(page, r, GRIP, 22)).toBe('desk');
+    expect((await inkIn(page, { x: r.right - 34 * r.s, y: r.bottom - 32 * r.s, w: 28 * r.s, h: 20 * r.s })).count).toBe(0);
   });
 
-  test('where an app is over an icon at low zoom, it covers it, and a press there is the app\'s', async ({ page, request }) => {
-    // An app in the work area's bottom right corner, right above the strip.
+  test('an app right above the strip never covers an icon, since the icons scale with the desk: a press on the app is the app\'s, on an icon the icon\'s, and under 50 % the desk\'s', async ({ page, request }) => {
+    // An app in the work area's bottom right corner, right above the strip. Apps stop at the strip's top edge, 44 up, and the
+    // icons are in the strip at every zoom (ADR 0064, Nov 9 note), so no app is ever over one.
     const under: Seed = { id: WORK, x: WORK_X, y: 0, w: 1000, h: 700, items: [tile(WORK, 'chat', 1000 - 8 - 460, 700 - 44 - 200, 460, 200)] };
     await seed(page, request, [WITH_WORK()[0]!, under]);
-    await aim(page, 0.3, WORK_X + 500, 350); // 300 wide, so the icons show, and the strip is 13 px tall
-    const r = await rectOf(page, WORK);
+    // At 0.3 the icons are hidden with the name: in the strip a press is the desk's, and above it the app's.
+    await aim(page, 0.3, WORK_X + 500, 350);
+    let r = await rectOf(page, WORK);
+    await page.mouse.move(r.left + 12, r.top + 12);
+    await page.waitForTimeout(200);
+    expect(await hitIn(page, r, GRIP, 22)).toBe('desk');
+    expect(await hitIn(page, r, SPARKLE, 22)).toBe('desk');
+    expect(await hitIn(page, r, GRIP, 60)).toBe('app-tile');
+    // At 0.6 they show, under the app's bottom edge, and are drawn whole.
+    await aim(page, 0.6, WORK_X + 500, 350);
+    r = await rectOf(page, WORK);
     await page.mouse.move(r.left + 12, r.top + 12);
     await page.waitForTimeout(200);
     await page.screenshot({ path: 'test-results/shots/strip-under-app.png', clip: { x: r.right - 200, y: r.bottom - 90, width: 210, height: 100 } });
-    // The grip's center, 22 up, is over the app.
-    expect(await hitAt(page, r.right - GRIP, r.bottom - 22)).toBe('app-tile');
-    expect(await hitAt(page, r.right - SPARKLE, r.bottom - 22)).toBe('app-tile');
-    // And it's what's drawn: the grip's glyph is under it, so the app's flat fill is all there is to see.
-    expect((await inkIn(page, { x: r.right - 28, y: r.bottom - 30, w: 16, h: 16 })).count).toBe(0);
-    // Under the app's bottom edge the strip is all that's left, and that's still the grip.
-    expect(await hitAt(page, r.right - GRIP, r.bottom - 10)).toBe('resize-handle');
-    expect(await hitAt(page, r.right - SPARKLE, r.bottom - 10)).toBe('desk-cleanup');
-    // A drag from there moves the app, and doesn't resize the desk.
+    const c = (r.right - r.left) / r.s >= 300 ? 36 : 0; // the carousel's switch takes a slot on a desk this wide
+    expect(await hitIn(page, r, GRIP, 22)).toBe('resize-handle');
+    expect(await hitIn(page, r, (56 + c), 22)).toBe('desk-cleanup');
+    expect(await hitIn(page, r, GRIP, 60)).toBe('app-tile');
+    expect(await hitIn(page, r, (56 + c), 60)).toBe('app-tile');
+    expect((await inkIn(page, iconBox(r, GRIP, r.s))).count).toBeGreaterThan(10);
+    // A drag from the app above the icons, clear of its own corner handle, moves the app, and doesn't resize the desk.
     const app = page.locator(`[id="proxy-${WORK}:chat"]`);
     const place = (): Promise<number> => app.evaluate((el: HTMLElement) => parseFloat(el.style.left));
     const before = await place();
-    await page.mouse.move(r.right - GRIP, r.bottom - 22);
+    const from = { x: r.right - SPARKLE * r.s, y: r.bottom - 100 * r.s };
+    await page.mouse.move(from.x, from.y);
     await page.mouse.down();
-    await page.mouse.move(r.right - GRIP - 30, r.bottom - 22 - 20, { steps: 6 });
+    await page.mouse.move(from.x - 60, from.y - 20, { steps: 6 });
     await page.waitForTimeout(200);
     await page.mouse.up();
     await page.waitForTimeout(200);
@@ -1616,7 +1690,7 @@ test.describe('the etched strip', () => {
     await aim(page, s, world.x, world.y);
     const r = await rectOf(page, id);
     const cornerAt = (): Promise<{ x: number; y: number }> => page.evaluate((deskId) => __maDesk.camera.getStage().findOne(`#desk-${deskId}`).findOne('.resize-handle').getAbsolutePosition(), id);
-    const from = { x: r.right - GRIP, y: r.bottom - 22 };
+    const from = { x: r.right - GRIP * s, y: r.bottom - 22 * s };
     await page.mouse.move(from.x, from.y);
     await page.waitForTimeout(80);
     await page.mouse.down();
@@ -1636,7 +1710,8 @@ test.describe('the etched strip', () => {
     expect(Math.abs(after.bottom - (r.bottom + 41))).toBeLessThan(1);
   }
 
-  for (const s of [0.37, 0.62, 1, 2.2]) {
+  // 50 % is the lowest zoom the grip shows at.
+  for (const s of [0.5, 0.62, 1, 2.2]) {
     test(`dragging the grip at zoom ${s} follows the pointer exactly, and the size lands in units`, async ({ page, request }) => {
       await seed(page, request, WITH_WORK());
       const before = 800;
@@ -1648,11 +1723,33 @@ test.describe('the etched strip', () => {
     });
   }
 
+  test('under 50 % there\'s no grip: at 0.37 and 0.45 a press where it would be is the desk\'s, and a drag there moves the desk and doesn\'t resize it', async ({ page, request }) => {
+    await seed(page, request, WITH_WORK());
+    for (const s of [0.45, 0.37]) {
+      await aim(page, s, WORK_END, 300);
+      const r = await rectOf(page, WORK);
+      await page.mouse.move(r.right - 300 * s, r.top + 10);
+      await page.waitForTimeout(150);
+      expect(await hitIn(page, r, GRIP, 22), `at ${s}`).toBe('desk');
+    }
+    const r = await rectOf(page, WORK);
+    const from = { x: r.right - GRIP * r.s, y: r.bottom - 22 * r.s };
+    await page.mouse.move(from.x, from.y);
+    await page.mouse.down();
+    await page.mouse.move(from.x + 73, from.y + 41, { steps: 6 });
+    await page.mouse.up();
+    await page.waitForTimeout(1_200); // the mirror is debounced by 1 s
+    const doc = await page.evaluate(() => JSON.parse(localStorage.getItem('ma.layout.v2')!) as { desks: Record<string, { x: number; w: number; h: number }> });
+    expect(doc.desks[WORK]!.x).toBeGreaterThan(WORK_X + 100);
+    expect(doc.desks[WORK]!.w).toBe(800);
+    expect(doc.desks[WORK]!.h).toBe(300);
+  });
+
   test('at low zoom the corner still stops at what the desk holds', async ({ page, request }) => {
     await seed(page, request, WITH_WORK());
-    await aim(page, 0.5, 1200, 300);
+    await aim(page, 0.5, 1200, 300); // the lowest zoom the grip shows at
     const r = await rectOf(page, WORK);
-    await page.mouse.move(r.right - GRIP, r.bottom - 22);
+    await page.mouse.move(r.right - GRIP * r.s, r.bottom - 22 * r.s);
     await page.mouse.down();
     await page.mouse.move(r.right - 2000, r.bottom - 1500, { steps: 8 });
     await page.mouse.up();
@@ -1662,12 +1759,13 @@ test.describe('the etched strip', () => {
     expect(after.h / 0.5).toBeCloseTo(100 + 76 + 44, 0);
   });
 
-  for (const s of [0.45, 1.6]) {
+  // Low and high: 0.6, since under 50 % there's no grip to drag.
+  for (const s of [0.6, 1.6]) {
     test(`at zoom ${s}, at the viewport's edge the camera still pans, and the corner stays under a still pointer`, async ({ page, request }) => {
       await seed(page, request, WITH_WORK());
       await aim(page, s, WORK_END, 300);
       const r = await rectOf(page, WORK);
-      const from = { x: r.right - GRIP, y: r.bottom - 22 };
+      const from = { x: r.right - GRIP * s, y: r.bottom - 22 * s };
       await page.mouse.move(from.x, from.y);
       await page.mouse.down();
       await page.mouse.move(1430, from.y, { steps: 12 });
@@ -1685,7 +1783,7 @@ test.describe('the etched strip', () => {
     });
   }
 
-  test('the proxy for cleanup is where the icon is, at its size, at every zoom, as the sparkle and as "Undo"', async ({ page, request }) => {
+  test('the proxy for cleanup is where the icon is, at its size, 28 at 100 % times the zoom, as the sparkle and as "Undo", and stays when the icon hides', async ({ page, request }) => {
     await seed(page, request, WITH_WORK());
     for (const s of [0.37, 0.62, 1, 1.75, 2.6]) {
       await aim(page, s, WORK_END - 100 / s, 300 - 100 / s);
@@ -1693,32 +1791,39 @@ test.describe('the etched strip', () => {
       await page.mouse.move(r.right - 200, r.bottom - 100);
       await page.waitForTimeout(120);
       const box = (await page.getByRole('button', { name: 'Clean up Work desk' }).boundingBox())!;
-      expect(box.width, `at ${s}`).toBeCloseTo(28, 1);
-      expect(box.height, `at ${s}`).toBeCloseTo(28, 1);
+      expect(box.width, `at ${s}`).toBeCloseTo(28 * s, 1);
+      expect(box.height, `at ${s}`).toBeCloseTo(28 * s, 1);
       const cx = box.x + box.width / 2;
       const cy = box.y + box.height / 2;
+      if (s < 0.5) {
+        // Under 50 % the icon hides with the name, and the proxy stays for the keyboard: a press there is the desk's.
+        expect(await hitAt(page, cx, cy), `at ${s}`).toBe('desk');
+        expect((await inkIn(page, { x: box.x, y: box.y, w: box.width, h: box.height })).count, `at ${s}`).toBe(0);
+        continue;
+      }
       expect(await hitAt(page, cx, cy), `at ${s}`).toBe('desk-cleanup');
       expect(await hitAt(page, box.x + 1, box.y + 1), `at ${s}`).toBe('desk-cleanup');
       expect(await hitAt(page, box.x + box.width - 1, box.y + box.height - 1), `at ${s}`).toBe('desk-cleanup');
       // And it's over the sparkle: its ink is centered in the proxy.
-      const ink = await inkIn(page, { x: box.x + 4, y: box.y + 4, w: 20, h: 20 });
-      expect(ink.count, `at ${s}`).toBeGreaterThan(20);
-      expect(Math.abs((ink.x0 + ink.x1) / 2 - cx), `at ${s}`).toBeLessThanOrEqual(1.5);
-      expect(Math.abs((ink.y0 + ink.y1) / 2 - cy), `at ${s}`).toBeLessThanOrEqual(1.5);
+      const ink = await inkIn(page, { x: box.x + 4 * s, y: box.y + 4 * s, w: 20 * s, h: 20 * s });
+      expect(ink.count, `at ${s}`).toBeGreaterThan(20 * Math.min(1, s * s));
+      expect(Math.abs((ink.x0 + ink.x1) / 2 - cx), `at ${s}`).toBeLessThanOrEqual(1.5 * Math.max(1, s));
+      expect(Math.abs((ink.y0 + ink.y1) / 2 - cy), `at ${s}`).toBeLessThanOrEqual(1.5 * Math.max(1, s));
     }
-    await aim(page, 0.62, WORK_END - 100 / 0.62, 300 - 100 / 0.62);
+    const s = 0.62;
+    await aim(page, s, WORK_END - 100 / s, 300 - 100 / s);
     await page.getByRole('button', { name: 'Clean up Work desk' }).focus();
     await page.keyboard.press('Enter');
     await page.waitForTimeout(100);
     const undo = (await page.getByRole('button', { name: 'Undo clean up Work desk' }).boundingBox())!;
-    expect(undo.width).toBeGreaterThan(28);
-    expect(undo.height).toBeCloseTo(28, 1);
-    expect(await hitAt(page, undo.x + 1, undo.y + 14)).toBe('desk-undo');
-    expect(await hitAt(page, undo.x + undo.width - 1, undo.y + 14)).toBe('desk-undo');
+    expect(undo.width).toBeGreaterThan(28 * s);
+    expect(undo.height).toBeCloseTo(28 * s, 1);
+    expect(await hitAt(page, undo.x + 1, undo.y + undo.height / 2)).toBe('desk-undo');
+    expect(await hitAt(page, undo.x + undo.width - 1, undo.y + undo.height / 2)).toBe('desk-undo');
     await page.screenshot({ path: 'test-results/shots/strip-undo-ring.png', clip: { x: undo.x - 40, y: undo.y - 20, width: undo.width + 100, height: 70 } });
   });
 
-  test('on touch the targets are 44, at every zoom', async ({ browser }) => {
+  test('on touch the targets are 44 at 100 %, times the zoom', async ({ browser }) => {
     const ctx = await browser.newContext({ viewport: { width: 1024, height: 768 }, hasTouch: true, isMobile: true, baseURL: test.info().project.use.baseURL });
     const page = await ctx.newPage();
     await page.request.post('/__harness', { data: { reset: true } });
@@ -1726,102 +1831,115 @@ test.describe('the etched strip', () => {
     for (const s of [0.5, 1, 1.5]) {
       await aim(page, s, 700, 400);
       const r = await rectOf(page, PERSONAL);
-      const inset = s === 1.5 ? 33 - 14 - Math.sqrt(25 ** 2 - 17 ** 2) : 0;
-      expect(await hitAt(page, r.right - 1, r.bottom - 1), `at ${s}`).toBe('resize-handle');
-      expect(await hitAt(page, r.right - inset - 43, r.bottom - 43), `at ${s}`).toBe('resize-handle');
-      expect(await hitAt(page, r.right - inset - 46, r.bottom - 22), `at ${s}`).toBe('desk-cleanup'); // the grip's neighbour: on touch a target is its own margin
-      expect(await hitAt(page, r.right - inset - 90, r.bottom - 22), `at ${s}`).toBe('desk');
+      const p = 1 / s; // a pixel on screen, in desk units
+      expect(await hitIn(page, r, p, p), `at ${s}`).toBe('resize-handle');
+      expect(await hitIn(page, r, 44 - p, 44 - p), `at ${s}`).toBe('resize-handle');
+      // The grip's neighbour, on touch a target being its own margin: the carousel's switch on a desk 300 units wide or more, then cleanup.
+      const c = (r.right - r.left) / s >= 300 ? 44 : 0;
+      if (c) expect(await hitIn(page, r, 46, 22), `at ${s}`).toBe('desk-carousel');
+      expect(await hitIn(page, r, 46 + c, 22), `at ${s}`).toBe('desk-cleanup');
+      expect(await hitIn(page, r, 90 + c, 22), `at ${s}`).toBe('desk');
       const box = (await page.getByRole('button', { name: 'Clean up Personal desk' }).boundingBox())!;
-      expect(box.width, `at ${s}`).toBeCloseTo(44, 1);
-      expect(box.height, `at ${s}`).toBeCloseTo(44, 1);
+      expect(box.width, `at ${s}`).toBeCloseTo(44 * s, 1);
+      expect(box.height, `at ${s}`).toBeCloseTo(44 * s, 1);
       expect(await hitAt(page, box.x + 1, box.y + 1), `at ${s}`).toBe('desk-cleanup');
-      expect(await hitAt(page, box.x + 43, box.y + 43), `at ${s}`).toBe('desk-cleanup');
+      expect(await hitAt(page, box.x + box.width - 1, box.y + box.height - 1), `at ${s}`).toBe('desk-cleanup');
     }
     await ctx.close();
   });
 
   // ----- when there's no room
-  test('the name ellipsizes and hides by what\'s on screen: 12 from the edges, and the icons going first clears the way', async ({ page, request }) => {
+  test('the name ellipsizes in desk units, the same at every zoom: 12 from the edges, the icons going first under 290 wide clears the way, and under 50 % it hides', async ({ page, request }) => {
     const long = 'The very long name of a desk that a member chose for a guild';
     await seed(page, request, [
-      { id: PERSONAL, x: 0, y: 0, w: 400, h: 400, items: [] },
-      { id: WORK, x: 500, y: 0, w: 400, h: 400, items: [] },
-    ], { [PERSONAL]: long, [WORK]: 'Work' });
-    const name = async (): Promise<string> => (await drawnName(page, PERSONAL)).text;
-    const inkOfName = async (r: { left: number; right: number; bottom: number }, stop: number): Promise<Ink> => inkIn(page, { x: r.left + 3, y: r.bottom - 32, w: r.right - r.left - 3 - stop, h: 20 });
+      { id: PERSONAL, x: 0, y: 0, w: 290, h: 400, items: [] },
+      { id: WORK, x: 400, y: 0, w: 289, h: 400, items: [] },
+      { id: GUILD, x: 800, y: 0, w: 400, h: 400, items: [] },
+    ], { [PERSONAL]: long, [WORK]: long });
+    const name = async (id: string): Promise<string> => (await drawnName(page, id)).text;
+    // From 8 in, clear of the active desk's ring and glow, which scale with it, to `stop` from the right.
+    const inkOfName = async (r: Rect, stop: number): Promise<Ink> => inkIn(page, { x: r.left + 8 * r.s, y: r.bottom - 32 * r.s, w: r.w - (8 + stop) * r.s, h: 20 * r.s });
 
-    // Just over 290 wide: the icons show, so the name keeps clear of the grip's slot, which stays reserved at rest.
-    await aim(page, 0.73, 450, 200);
-    await page.mouse.move(5, 5);
-    await page.waitForTimeout(200);
-    let r = await rectOf(page, PERSONAL);
-    expect(r.w).toBeCloseTo(292, 0);
-    const withIcons = await name();
-    expect(withIcons.endsWith('…')).toBe(true);
-    let ink = await inkOfName(r, 35);
-    expect(ink.x1).toBeLessThanOrEqual(r.right - 34 - 12 + 1);
-    expect(ink.x0).toBeGreaterThanOrEqual(r.left + 34 + 12 - 1); // centered, so the same at its left
-
-    // Just under 290: they're gone, and it has the desk, to 12 from each edge.
-    await aim(page, 0.72, 450, 200);
-    await page.waitForTimeout(100);
-    r = await rectOf(page, PERSONAL);
-    expect(r.w).toBeLessThan(290);
-    const withoutIcons = await name();
-    expect(withoutIcons.length).toBeGreaterThan(withIcons.length);
-    ink = await inkOfName(r, 3);
-    expect(ink.x1).toBeLessThanOrEqual(r.right - 12 + 1);
-    expect(ink.x0).toBeGreaterThanOrEqual(r.left + 12 - 1);
-    await page.screenshot({ path: 'test-results/shots/strip-ellipsis.png', clip: { x: r.left - 10, y: r.top - 10, width: r.w + 20, height: r.h + 20 } });
-
-    // Smaller still: fewer letters, then none, and it's never fewer than four with an ellipsis.
-    const seen: string[] = [];
-    for (const s of [0.45, 0.35, 0.28, 0.25, 0.22, 0.2]) {
-      await aim(page, s, 450, 200);
-      seen.push(await name());
-      const shown = seen[seen.length - 1]!;
-      if (shown) expect(Array.from(shown).length - 1, `${shown} at ${s}`).toBeGreaterThanOrEqual(4);
+    // The fit is in desk units (ADR 0064, Nov 9 note), so the cut is the same at every zoom the name shows at.
+    let withIcons = '';
+    let withoutIcons = '';
+    for (const s of [0.5, 0.73, 1, 1.5]) {
+      await aim(page, s, 345, 200);
+      await page.mouse.move(5, 5);
+      await page.waitForTimeout(200);
+      const at = `at ${s}`;
+      // 290 wide: the icons show, so the name keeps 12 clear of the grip's slot, 34 in, which stays reserved at rest.
+      let r = await rectOf(page, PERSONAL);
+      const a = await name(PERSONAL);
+      withIcons ||= a;
+      expect(a, at).toBe(withIcons);
+      let ink = await inkOfName(r, 35);
+      expect(ink.x1, at).toBeLessThanOrEqual(r.right - (34 + 12) * s + 1);
+      expect(ink.x0, at).toBeGreaterThanOrEqual(r.left + (34 + 12) * s - 1); // centered, so the same at its left
+      // 289: they're gone, and it has the desk, to 12 from each edge.
+      r = await rectOf(page, WORK);
+      const b = await name(WORK);
+      withoutIcons ||= b;
+      expect(b, at).toBe(withoutIcons);
+      ink = await inkOfName(r, 8);
+      expect(ink.x1, at).toBeLessThanOrEqual(r.right - 12 * s + 1);
+      expect(ink.x0, at).toBeGreaterThanOrEqual(r.left + 12 * s - 1);
+      if (s === 1) await page.screenshot({ path: 'test-results/shots/strip-ellipsis.png', clip: { x: r.left - 400, y: r.top - 10, width: r.w + 410, height: r.h + 20 } });
     }
-    expect(seen[0]!.endsWith('…')).toBe(true);
-    expect(seen[seen.length - 1]!.length).toBeLessThan(seen[0]!.length);
-    // Short names don't change at all down at the bottom of the zoom.
-    await aim(page, 0.2, 450, 200);
-    expect((await drawnName(page, WORK)).text).toBe('WORK');
+    expect(withIcons.endsWith('…')).toBe(true);
+    expect(withoutIcons.endsWith('…')).toBe(true);
+    expect(withoutIcons.length).toBeGreaterThan(withIcons.length);
+
+    // Under 50 % it would be under 7 px: long or short, it hides. And it comes back as it was.
+    for (const s of [0.45, 0.35, 0.2]) {
+      await aim(page, s, 600, 200);
+      for (const id of [PERSONAL, WORK, GUILD]) expect(await name(id), `${id} at ${s}`).toBe('');
+    }
+    await aim(page, 0.5, 600, 200);
+    expect(await name(PERSONAL)).toBe(withIcons);
+    expect(await name(WORK)).toBe(withoutIcons);
+    expect(await name(GUILD)).toBe('GUILD');
   });
 
-  test('a name fewer than four letters would fit on is gone, and comes back', async ({ page, request }) => {
+  test('a name is gone where it would be under 7 px, with nothing of it left, and comes back whole: a zoom never cuts it', async ({ page, request }) => {
+    // The smallest desk. Its name's room is in desk units, 208 of it, so it holds all of PERSONAL at every zoom it shows at.
     await seed(page, request, [{ id: PERSONAL, x: 0, y: 0, w: 232, h: 124, items: [] }]);
-    await aim(page, 0.2, 116, 62); // 46 wide: 22 of room
-    expect((await drawnName(page, PERSONAL)).text).toBe('');
-    const r = await rectOf(page, PERSONAL);
-    expect((await inkIn(page, { x: r.left + 8, y: r.bottom - 20, w: r.w - 16, h: 18 })).count).toBe(0);
-    await aim(page, 0.4, 116, 62); // 92 wide: 68 of room
-    expect((await drawnName(page, PERSONAL)).text).toMatch(/^PERS.*…$/);
-    await aim(page, 0.6, 116, 62);
-    expect((await drawnName(page, PERSONAL)).text).toBe('PERSONAL');
+    for (const s of [0.2, 0.45]) {
+      await aim(page, s, 116, 62);
+      expect((await drawnName(page, PERSONAL)).text, `at ${s}`).toBe('');
+      const r = await rectOf(page, PERSONAL);
+      expect((await inkIn(page, { x: r.left + 8, y: r.bottom - 20, w: r.w - 16, h: 18 })).count, `at ${s}`).toBe(0);
+    }
+    for (const s of [0.5, 0.6, 1]) {
+      await aim(page, s, 116, 62);
+      expect((await drawnName(page, PERSONAL)).text, `at ${s}`).toBe('PERSONAL');
+    }
   });
 
-  test('a strip shorter than the text doesn\'t hide it: it runs up onto the desk, and an app draws over it', async ({ page, request }) => {
-    // An app right where the name goes, straight above the strip.
+  test('the name stays in the strip at every zoom, so an app right above it never covers it, and under 50 % it hides', async ({ page, request }) => {
+    // An app right where the name goes, straight above the strip. The strip and the name scale together (ADR 0064, Nov 9
+    // note): the capitals, 17 to 27 up, are always under the strip's top edge, 44 up, where apps stop.
     const covered: Seed = { id: PERSONAL, x: 0, y: 0, w: 584, h: 300, items: [tile(PERSONAL, 'chat', 292 - 85, 300 - 44 - 170, 170, 170)] };
     await seed(page, request, [covered]);
-    await aim(page, 1, 292, 150);
-    let r = await rectOf(page, PERSONAL);
-    const full = await inkIn(page, nameBox(r));
-    expect(full.count).toBeGreaterThan(50);
-    await aim(page, 0.32, 292, 150); // the strip is 14 px tall, so the capitals (17 to 27 up) are all above it
-    r = await rectOf(page, PERSONAL);
-    expect(r.h).toBeGreaterThan(72);
-    expect((await drawnName(page, PERSONAL)).text).toBe('PERSONAL');
-    await page.screenshot({ path: 'test-results/shots/strip-name-under-app.png', clip: { x: r.left - 10, y: r.top - 10, width: r.w + 20, height: r.h + 20 } });
-    // The tile covers the letters over it: the middle of the name is the tile's own flat fill, and its ends are still ink.
-    const middle = await inkIn(page, { x: r.cx - 6, y: r.bottom - 28, w: 12, h: 10 });
-    const end = await inkIn(page, { x: r.cx + 18, y: r.bottom - 28, w: 30, h: 12 });
-    expect(middle.count).toBe(0);
-    expect(end.count).toBeGreaterThan(5);
+    for (const s of [1, 0.6, 0.5]) {
+      await aim(page, s, 292, 150);
+      const r = await rectOf(page, PERSONAL);
+      expect((await drawnName(page, PERSONAL)).text, `at ${s}`).toBe('PERSONAL');
+      if (s === 0.5) await page.screenshot({ path: 'test-results/shots/strip-name-under-app.png', clip: { x: r.left - 10, y: r.top - 10, width: r.w + 20, height: r.h + 20 } });
+      // Nothing covers it: the middle of the name and its ends are ink.
+      const middle = await inkIn(page, { x: r.cx - 6 * s, y: r.bottom - 30 * s, w: 12 * s, h: 14 * s });
+      const end = await inkIn(page, { x: r.cx + 18 * s, y: r.bottom - 30 * s, w: 30 * s, h: 14 * s });
+      expect(middle.count, `at ${s}`).toBeGreaterThan(0);
+      expect(end.count, `at ${s}`).toBeGreaterThan(5 * s);
+    }
+    // At 0.32 it would be under 7 px: it hides, and nothing of it is left in the strip.
+    await aim(page, 0.32, 292, 150);
+    const r = await rectOf(page, PERSONAL);
+    expect((await drawnName(page, PERSONAL)).text).toBe('');
+    expect((await inkIn(page, { x: r.left + 8, y: r.bottom - 40 * r.s, w: r.w - 16, h: 38 * r.s })).count).toBe(0);
   });
 
-  test('the name keeps 12 px from the status line, in screen pixels, while the status line scales and the name doesn\'t', async ({ page, request }) => {
+  test('the name keeps 12 from the status line, in desk units, as both scale with the desk', async ({ page, request }) => {
     const long = 'A rather long name for this one desk';
     const seeds = [{ id: PERSONAL, x: 0, y: 0, w: 584, h: 300, items: [] }];
     await page.addInitScript((d) => {
@@ -1844,7 +1962,7 @@ test.describe('the etched strip', () => {
       }, PERSONAL);
       const at = await drawnName(page, PERSONAL);
       expect(at.text.length, `at ${s}`).toBeGreaterThan(0);
-      expect(at.x, `at ${s}`).toBeGreaterThanOrEqual(statusEnd + 12 - 1);
+      expect(at.x, `at ${s}`).toBeGreaterThanOrEqual(statusEnd + 12 * s - 1); // 12 at 100 %, times the zoom
     }
   });
 

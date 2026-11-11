@@ -170,6 +170,19 @@ test.describe('apps on a Guild Desk', () => {
     expect(errors).toEqual([]);
   });
 
+  test('Notebook: notebooks and tabs need the Founder or an Officer with manage_spaces; pages stay open to every member', async ({ page, request }) => {
+    const officerSpaces = { ...TWO, role: 'officer', grants: ['manage_spaces'] };
+    const errors = await arrive(page, request, { list: [ONE, TWO, { ...officerSpaces, guildId: 'gu-officer', name: 'Studio' }], desks: { [ONE.guildId]: { deskId: 'd-gplatform', state: 'running' }, [TWO.guildId]: { deskId: 'd-gdesign', state: 'running' }, 'gu-officer': { deskId: 'd-gstudio', state: 'running' } } });
+    for (const [desk, may] of [['Platform team', true], ['Studio', true], ['Design review', false]] as const) {
+      await openApp(page, desk, 'Notebook');
+      const nb = page.getByTestId('notebook-app').last();
+      await expect(nb.getByTestId('new-page')).toBeVisible({ timeout: 15_000 });
+      await expect(nb.getByRole('button', { name: 'New notebook' })).toHaveCount(may ? 1 : 0);
+      await expect(nb.getByTestId('new-tab')).toHaveCount(may ? 1 : 0);
+    }
+    expect(errors).toEqual([]);
+  });
+
   test('Commons is the room itself: channels, chat and a message sent through the Guild Desk', async ({ page, request }) => {
     const errors = await arrive(page, request, { list: [ONE], desks: { [ONE.guildId]: { deskId: 'd-gplatform', state: 'running' } } });
     await openApp(page, 'Platform team', 'Commons');

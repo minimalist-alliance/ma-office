@@ -1,0 +1,5 @@
+<g data-part="patka" data-hides="back-hair front-hair">
+  <path fill="{{hw}}" d="M78,108 C76,82 90,63 106,57.5 C106,44 116,36 128,36 C140,36 150,44 150,57.5 C166,63 180,82 178,108 C168,100 150,94.5 128,94.5 C106,94.5 88,100 78,108 Z"/>
+  <path fill="{{hwShade}}" d="M80,103.5 C90,96.5 108,91.5 128,91.5 C148,91.5 166,96.5 176,103.5 L177.5,108 C167,100.5 149,95.5 128,95.5 C107,95.5 89,100.5 78.5,108 Z"/>
+  <g data-min-size="40" fill="none" stroke="{{hwShade}}" stroke-width="2.4" stroke-linecap="round" stroke-linejoin="round"><path d="M88,92 C95,78 104,67 114,61"/><path d="M168,92 C161,78 152,67 142,61"/><path d="M108,56 C120,61 136,61 148,56"/></g>
+</g>

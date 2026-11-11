@@ -1,5 +1,5 @@
 {
-  "_about": "Desk styles from the Product Designer (design-drafts/desk-textures/spec.md, final 2026-11-08). Texture is the owner's Grok grain; colour is the MA palette. Dusk desks sit below the live Dusk ground #585E68 (main 001ef256).",
+  "_about": "Desk styles from the Product Designer (design-drafts/desk-textures/spec.md, final 2026-11-08). Texture is the owner's Grok grain; in Light and Dark the colour is the MA palette's. In Zen (the dusk entries; ADR 0093 and its addendum, build_zen.py, 2026-11-10) a tile is wood at low chroma, the one slightly warm thing in a cool slate office (the owner: \"I hate brown\"): a greyed light oak, a pale greyed ash, a dark greyed walnut, a cool grey linoleum. Zen desks sit on the Zen ground #4D5463.",
   "default": "oak",
   "order": [
     "oak",
@@ -15,10 +15,10 @@
   },
   "etchNotes": {
     "light": "light letters: fill lighter than the desk; wall is a 1 px darker line above each stroke; no highlight",
-    "dusk": "medium letters: fill lighter than the desk; wall darker line above; no highlight",
+    "dusk": "Zen: medium letters in the wood's own hue, lighter than the desk inside 1.8 to 3:1 of the tile's mean; wall darker line above; no highlight",
     "dark": "dark letters: fill darker than the desk; the wall merges with the fill; the highlight (1 px lighter line below each stroke) is the line that reads, so fillVsGrooveLine is measured against highlight in Dark and against wall elsewhere"
   },
-  "deskTextNotes": "deskText replaces text.secondary for text drawn on the desk (the strip status line). text.secondary fails 4.5:1 on mid-tone desks, and mid-tone desks are what the owner's etch rule needs (light letters must be lighter than the desk). moreContrast is for prefers-contrast: more.",
+  "deskTextNotes": "deskText replaces text.secondary for text drawn on the desk (the strip status line). text.secondary fails 4.5:1 on mid-tone desks, and mid-tone desks are what the owner's etch rule needs (light letters must be lighter than the desk). In Zen only walnut holds text.secondary; linoleum takes text.primary, and oak and ash a cool near-black. moreContrast is for prefers-contrast: more.",
   "darkTiles": "In Dark, resting app tiles on a textured desk wear a 1 px rgba(255,255,255,0.12) edge (elevation.tileStacked).",
   "styles": {
     "oak": {
@@ -42,21 +42,21 @@
         }
       },
       "dusk": {
-        "base": "#444B58",
+        "base": "#8B8578",
         "etch": {
-          "fill": "#777C86",
-          "wall": "#2A2D34",
+          "fill": "#C8C4BA",
+          "wall": "#57544D",
           "highlight": null
         },
-        "deskText": "#E2E2E2",
-        "moreContrast": "#FAFAF7",
-        "kb": 47.0,
+        "deskText": "#1B1D20",
+        "moreContrast": "#1B1D20",
+        "kb": 96.8,
         "checks": {
-          "fillVsBase": 2.09,
-          "fillVsGrooveLine": 3.29,
-          "deskTextVsBase": 6.77,
-          "deskTextWorstSpot": 6.5,
-          "moreContrastVsBase": 8.39
+          "fillVsBase": 2.11,
+          "fillVsGrooveLine": 4.34,
+          "deskTextVsBase": 4.6,
+          "deskTextWorstSpot": 3.97,
+          "moreContrastVsBase": 4.6
         }
       },
       "dark": {
@@ -99,21 +99,21 @@
         }
       },
       "dusk": {
-        "base": "#4A5059",
+        "base": "#A9A69E",
         "etch": {
-          "fill": "#7E8289",
-          "wall": "#2E3136",
+          "fill": "#E0DDD8",
+          "wall": "#6C6A66",
           "highlight": null
         },
-        "deskText": "#E2E2E2",
-        "moreContrast": "#FAFAF7",
-        "kb": 34.2,
+        "deskText": "#1B1D20",
+        "moreContrast": "#1B1D20",
+        "kb": 100.0,
         "checks": {
-          "fillVsBase": 2.11,
-          "fillVsGrooveLine": 3.38,
-          "deskTextVsBase": 6.28,
-          "deskTextWorstSpot": 6.06,
-          "moreContrastVsBase": 7.78
+          "fillVsBase": 1.8,
+          "fillVsGrooveLine": 3.98,
+          "deskTextVsBase": 6.95,
+          "deskTextWorstSpot": 6.24,
+          "moreContrastVsBase": 6.95
         }
       },
       "dark": {
@@ -156,21 +156,21 @@
         }
       },
       "dusk": {
-        "base": "#2A2E35",
+        "base": "#4A4541",
         "etch": {
-          "fill": "#5B5E64",
-          "wall": "#181A1E",
+          "fill": "#7A7672",
+          "wall": "#2C2A27",
           "highlight": null
         },
-        "deskText": "#E2E2E2",
-        "moreContrast": "#FAFAF7",
-        "kb": 41.1,
+        "deskText": "#DFE3EA",
+        "moreContrast": "#F1F3F7",
+        "kb": 86.0,
         "checks": {
           "fillVsBase": 2.1,
-          "fillVsGrooveLine": 2.68,
-          "deskTextVsBase": 10.52,
-          "deskTextWorstSpot": 10.19,
-          "moreContrastVsBase": 13.03
+          "fillVsGrooveLine": 3.18,
+          "deskTextVsBase": 7.35,
+          "deskTextWorstSpot": 6.77,
+          "moreContrastVsBase": 8.52
         }
       },
       "dark": {
@@ -213,21 +213,21 @@
         }
       },
       "dusk": {
-        "base": "#404D5F",
+        "base": "#666D6F",
         "etch": {
-          "fill": "#757E8D",
-          "wall": "#282F39",
+          "fill": "#9FA4A6",
+          "wall": "#404445",
           "highlight": null
         },
-        "deskText": "#E2E2E2",
-        "moreContrast": "#FAFAF7",
-        "kb": 10.8,
+        "deskText": "#F1F3F7",
+        "moreContrast": "#F1F3F7",
+        "kb": 51.2,
         "checks": {
-          "fillVsBase": 2.1,
-          "fillVsGrooveLine": 3.29,
-          "deskTextVsBase": 6.63,
-          "deskTextWorstSpot": 6.55,
-          "moreContrastVsBase": 8.21
+          "fillVsBase": 2.09,
+          "fillVsGrooveLine": 3.91,
+          "deskTextVsBase": 4.75,
+          "deskTextWorstSpot": 4.6,
+          "moreContrastVsBase": 4.75
         }
       },
       "dark": {

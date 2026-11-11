@@ -13,8 +13,11 @@ import { BLOCK_MIN, judge, Owners, PageOwners, REMOVAL_BUDGET, REMOVAL_WINDOW_MS
 
 const ALL_GRANTS = ['moderate', 'invite', 'remove_member', 'manage_spaces', 'manage_agents'];
 const member = (memberId: string, name: string, grants: string[] = [], role = 'member') => ({ kind: 'guild_member', memberId, role, grants, name, badge: null, teen: false });
-const ANA = member('gm-ana1', 'Ana');
-const BO = member('gm-bo2', 'Bo');
+// Ana and Bo make notebooks and tabs in most tests here, so they hold manage_spaces (which gates only the space structure,
+// not pages); `CAL` has no grant at all, for the tests of what a plain member may not do.
+const ANA = member('gm-ana1', 'Ana', ['manage_spaces']);
+const BO = member('gm-bo2', 'Bo', ['manage_spaces']);
+const CAL = member('gm-cal5', 'Cal');
 const MO = member('gm-mo3', 'Mo', ['moderate'], 'officer');
 const LEE = member('gm-lee4', 'Lee', ALL_GRANTS, 'lead');
 const hello = (caller: unknown) => ({ t: 'hello', sessionId: 'cs-1', sub: (caller as { memberId: string }).memberId, caller });
@@ -117,7 +120,7 @@ describe('the caller', () => {
     const bo = as(BO);
     // Sent together: the trash goes as Bo was, without moderate, and the trash after the frame goes with it.
     const before = bo.rpc('notebook.page.trash', { pageId });
-    bo.sendJson({ t: 'caller', caller: { ...BO, role: 'officer', grants: ['moderate'], name: 'Bo B' } });
+    bo.sendJson({ t: 'caller', caller: { ...BO, role: 'officer', grants: ['moderate', 'manage_spaces'], name: 'Bo B' } });
     const after = bo.rpc('notebook.page.trash', { pageId });
     await fails(before, 'forbidden', 'grant');
     expect(await after).toEqual({});
@@ -127,7 +130,7 @@ describe('the caller', () => {
     const tree: any = await bo.rpc('notebook.tree');
     expect(tree.pages.find((x: any) => x.id === mine.pageId)).toMatchObject({ createdBy: 'gm-bo2', createdByName: 'Bo B' });
     // A frame that changes nothing is harmless.
-    bo.sendJson({ t: 'caller', caller: { ...BO, role: 'officer', grants: ['moderate'], name: 'Bo B' } });
+    bo.sendJson({ t: 'caller', caller: { ...BO, role: 'officer', grants: ['moderate', 'manage_spaces'], name: 'Bo B' } });
     expect((await bo.rpc('notebook.tree')).rev).toBeGreaterThan(0);
   });
 
@@ -172,7 +175,7 @@ describe('Trash on a guild desk', () => {
     expect(h.service.notebook.page(pageId)?.deleted_at).toBeNull();
     const own = (await bo.rpc('notebook.page.create', { tabId })).page.id;
     expect(await bo.rpc('notebook.page.trash', { pageId: own })).toEqual({});
-    // Anyone may bring a page back, and editing, renaming and moving stay open to all.
+    // The one who trashed a page may bring it back, and editing, renaming and moving stay open to all.
     expect(await bo.rpc('notebook.page.restore', { pageId: own })).toEqual({});
     expect(await bo.rpc('notebook.page.move', { pageId, tabId, index: 1 })).toEqual({});
     expect(await bo.rpc('notebook.tab.rename', { id: tabId, title: 'Renamed by Bo' })).toEqual({});
@@ -200,10 +203,127 @@ describe('Trash on a guild desk', () => {
     expect(await as(MO).rpc('notebook.page.trash', { pageId })).toEqual({});
   });
 
+  it("authz-5: a moderator's trash holds against a plain member: no restore, no read, no collab open", async () => {
+    const ana = as(ANA);
+    const bo = as(BO);
+    const lee = as(LEE);
+    const { pageId } = await makeNotebook(ana);
+    const pa = clientAs(ANA).open(pageId);
+    await synced(pa);
+    setBody(pa.document, doc(p('Ana wrote something unsuitable')));
+    await until('ack', () => !pa.hasUnsyncedChanges);
+    clients.splice(0).forEach((c) => c.destroy());
+    await until('the page to unload', () => h.service.pages.open.size === 0);
+    expect(await lee.rpc('notebook.page.trash', { pageId })).toEqual({});
+    // Bo is told it's in Trash, as everyone is, and that is all Bo gets of it.
+    const tree: any = await bo.rpc('notebook.tree');
+    expect(tree.pages.find((x: any) => x.id === pageId).deletedAt).not.toBeNull();
+    await fails(bo.rpc('notebook.page.restore', { pageId }), 'forbidden', 'grant');
+    expect(h.service.notebook.page(pageId)?.deleted_at).not.toBeNull();
+    await fails(bo.rpc('notebook.page.content', { pageId }), 'forbidden', 'grant');
+    await fails(bo.rpc('notebook.version.list', { pageId }), 'forbidden', 'grant');
+    await fails(bo.rpc('notebook.version.save', { pageId }), 'forbidden', 'grant');
+    const denied: string[] = [];
+    clientAs(BO).open(pageId, new Y.Doc(), { onAuthenticationFailed: ({ reason }: { reason: string }) => denied.push(reason) });
+    await until('the refusal', () => denied.includes('forbidden'));
+    // Nor may Ana, who made the page but didn't trash it.
+    await fails(ana.rpc('notebook.page.restore', { pageId }), 'forbidden', 'grant');
+    // A moderator still reads it and brings it back.
+    const mo = as(MO);
+    expect((await mo.rpc('notebook.page.content', { pageId })).part).toContain('Ana wrote something unsuitable');
+    expect(await mo.rpc('notebook.page.restore', { pageId })).toEqual({});
+    expect(h.service.notebook.page(pageId)?.deleted_at).toBeNull();
+    expect(await deskText(bo, pageId)).toContain('Ana wrote something unsuitable');
+  });
+
+  it('authz-5: a member brings back a page they trashed themselves, and the owner restores anything on their own desk', async () => {
+    const bo = as(BO);
+    const { tabId, pageId } = await makeNotebook(bo);
+    expect(await bo.rpc('notebook.page.trash', { pageId })).toEqual({});
+    expect(h.service.notebook.page(pageId)).toMatchObject({ deleted_by: 'gm-bo2' });
+    await fails(as(ANA).rpc('notebook.page.restore', { pageId }), 'forbidden', 'grant');
+    expect(await bo.rpc('notebook.page.restore', { pageId })).toEqual({});
+    expect(h.service.notebook.page(pageId)).toMatchObject({ deleted_at: null, deleted_by: null });
+    // A page trashed before the desk kept who did it is a moderator's to bring back.
+    const second = (await bo.rpc('notebook.page.create', { tabId })).page.id;
+    expect(await bo.rpc('notebook.page.trash', { pageId: second })).toEqual({});
+    h.service.db.run('UPDATE pages SET deleted_by = NULL WHERE id = ?', second);
+    await fails(bo.rpc('notebook.page.restore', { pageId: second }), 'forbidden', 'grant');
+    expect(await as(MO).rpc('notebook.page.restore', { pageId: second })).toEqual({});
+    // The owner's own desk: exactly as before.
+    const owner = h.session();
+    const mine = await makeNotebook(owner);
+    expect(await owner.rpc('notebook.page.trash', { pageId: mine.pageId })).toEqual({});
+    expect(await owner.rpc('notebook.page.restore', { pageId: mine.pageId })).toEqual({});
+  });
+
   it('settings need lead or manage_spaces, here as in deskd', async () => {
-    await fails(as(BO).rpc('notebook.settings.set', { timeZone: 'Europe/Paris' }), 'forbidden', 'grant');
+    await fails(as(CAL).rpc('notebook.settings.set', { timeZone: 'Europe/Paris' }), 'forbidden', 'grant');
     expect(await as(LEE).rpc('notebook.settings.set', { timeZone: 'Europe/Paris' })).toEqual({});
     expect(await as(member('gm-sp5', 'Sam', ['manage_spaces'], 'officer')).rpc('notebook.settings.set', { timeZone: 'UTC' })).toEqual({});
+  });
+});
+
+describe('the space structure on a guild desk (notebooks and tabs need manage_spaces; pages stay open)', () => {
+  const OFFICER_SPACES = member('gm-sp6', 'Sam', ['manage_spaces'], 'officer');
+  const OFFICER_MOD = member('gm-md7', 'Max', ['moderate'], 'officer');
+
+  it('a member without the grant is refused on every notebook and tab call, and the desk is unchanged', async () => {
+    const { notebookId, tabId, pageId } = await makeNotebook(as(LEE));
+    const cal = as(CAL);
+    const before = JSON.stringify(await cal.rpc('notebook.tree'));
+    const calls: [string, Record<string, unknown>][] = [
+      ['notebook.notebook.create', { title: 'Mine' }],
+      ['notebook.notebook.rename', { id: notebookId, title: 'Renamed' }],
+      ['notebook.tab.create', { notebookId, title: 'Tab' }],
+      ['notebook.tab.rename', { id: tabId, title: 'Renamed' }],
+      ['notebook.tab.recolor', { id: tabId, color: 'blue' }],
+      ['notebook.tab.addAtPage', { pageId }],
+    ];
+    for (const [method, params] of calls) await fails(cal.rpc(method, params), 'forbidden', 'grant');
+    // An officer with only moderate has no more say over spaces than a member.
+    await fails(as(OFFICER_MOD).rpc('notebook.tab.rename', { id: tabId, title: 'No' }), 'forbidden', 'grant');
+    expect(JSON.stringify(await cal.rpc('notebook.tree'))).toBe(before);
+  });
+
+  it('the Founder and an Officer with manage_spaces are allowed', async () => {
+    const { notebookId, tabId, pageId } = await makeNotebook(as(LEE));
+    for (const who of [LEE, OFFICER_SPACES]) {
+      const s = as(who);
+      const made: any = await s.rpc('notebook.notebook.create', { title: 'Another' });
+      expect(made.notebook.id).toBeTruthy();
+      expect(await s.rpc('notebook.notebook.rename', { id: notebookId, title: 'Work 2' })).toEqual({});
+      expect((await s.rpc('notebook.tab.create', { notebookId, title: 'Tab' })).tab.id).toBeTruthy();
+      expect(await s.rpc('notebook.tab.rename', { id: tabId, title: 'First' })).toEqual({});
+      expect(await s.rpc('notebook.tab.recolor', { id: tabId, color: 'blue' })).toEqual({});
+      expect((await s.rpc('notebook.tab.addAtPage', { pageId })).tab.id).toBeTruthy();
+    }
+  });
+
+  it('pages stay open to a member without the grant: create, edit, move and trash their own', async () => {
+    const { notebookId, tabId, pageId } = await makeNotebook(as(LEE));
+    const other: any = await as(LEE).rpc('notebook.tab.create', { notebookId, title: 'Second' });
+    const cal = as(CAL);
+    const mine = (await cal.rpc('notebook.page.create', { tabId })).page.id;
+    expect(await cal.rpc('notebook.page.move', { pageId: mine, tabId: other.tab.id })).toEqual({});
+    expect(await cal.rpc('notebook.page.move', { pageId, tabId: other.tab.id, index: 0 })).toEqual({});
+    expect(await cal.rpc('notebook.page.trash', { pageId: mine })).toEqual({});
+    expect(await cal.rpc('notebook.page.restore', { pageId: mine })).toEqual({});
+    const c = clientAs(CAL).open(pageId);
+    await synced(c);
+    setBody(c.document, doc(p('Cal was here')));
+    await until('ack', () => !c.hasUnsyncedChanges);
+    expect(await deskText(cal, pageId)).toContain('Cal was here');
+  });
+
+  it("a member's own desk (the owner, no guild caller) is unchanged", async () => {
+    const legacy = h.session();
+    const { notebookId, tabId, pageId } = await makeNotebook(legacy);
+    expect(await legacy.rpc('notebook.notebook.rename', { id: notebookId, title: 'Mine' })).toEqual({});
+    expect(await legacy.rpc('notebook.tab.rename', { id: tabId, title: 'Tab' })).toEqual({});
+    expect(await legacy.rpc('notebook.tab.recolor', { id: tabId, color: 'blue' })).toEqual({});
+    expect((await legacy.rpc('notebook.tab.create', { notebookId })).tab.id).toBeTruthy();
+    expect((await legacy.rpc('notebook.tab.addAtPage', { pageId })).tab.id).toBeTruthy();
   });
 });
 

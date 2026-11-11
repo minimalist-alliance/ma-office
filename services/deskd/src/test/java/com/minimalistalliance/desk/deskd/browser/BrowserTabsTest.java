@@ -119,6 +119,17 @@ class BrowserTabsTest {
         return tabs(client).stream().filter(tab -> Boolean.TRUE.equals(tab.get("active"))).map(tab -> (String) tab.get("tabId")).findFirst().orElse(null);
     }
 
+    /**
+     * The questions deskd asks a tab: every script it runs with Runtime.evaluate but {@link ProtectedMedia}'s listener,
+     * which an attach and each commit put in the same isolated world, and which names the binding deskd added there.
+     */
+    private List<FakeCdp.Command> questions() {
+        List<String> bindings = cdp.commands("Runtime.addBinding").stream().map(c -> (String) c.params().get("name")).toList();
+        return cdp.commands("Runtime.evaluate").stream()
+                .filter(c -> bindings.stream().noneMatch(String.valueOf(c.params().get("expression"))::contains))
+                .toList();
+    }
+
     private static void assertErr(Map<String, Object> reply, String code) {
         assertThat(reply).containsEntry("_kind", "ERR").containsEntry("code", code);
     }
@@ -177,6 +188,41 @@ class BrowserTabsTest {
         await().until(() -> ids(tabs(client)).equals(List.of("a")));
         cdp.navigateInPage("b", "https://example.com/back", "Back");
         await().until(() -> ids(tabs(client)).equals(List.of("a", "b")));
+    }
+
+    private static final String HOME_URL = "file:///usr/local/share/ma/home.html";
+
+    @Test
+    void theDesksHomePageHasNoAddressAndAPlainTitle() throws Exception {
+        TestClient client = start("a");
+        cdp.addPage("home", HOME_URL, "Desk Browser");
+        Map<String, Object> home = tab(client, "home");
+        assertThat(home).containsEntry("url", "").containsEntry("title", "New tab");
+        assertThat(home.toString()).doesNotContain("file:").doesNotContain("home.html");
+        // A normal page is untouched.
+        assertThat(tab(client, "a")).containsEntry("url", "https://example.com/a").containsEntry("title", "Title a");
+    }
+
+    @Test
+    void aPageThatLeavesTheHomePageShowsItsOwnAddressAndTitle() throws Exception {
+        TestClient client = start("a");
+        cdp.addPage("home", HOME_URL, "Desk Browser");
+        assertThat(tab(client, "home")).containsEntry("url", "");
+        cdp.navigateInPage("home", "https://example.com/away", "Away");
+        await().until(() -> "https://example.com/away".equals(tab(client, "home").get("url")));
+        assertThat(tab(client, "home")).containsEntry("title", "Away");
+        cdp.navigateInPage("home", HOME_URL + "#x", "Desk Browser");
+        await().until(() -> "".equals(tab(client, "home").get("url")));
+    }
+
+    @Test
+    void onlyTheHomePageItselfIsHidden() {
+        assertThat(BrowserTabs.isHomePage(HOME_URL)).isTrue();
+        assertThat(BrowserTabs.isHomePage(HOME_URL + "?q=1")).isTrue();
+        assertThat(BrowserTabs.isHomePage(HOME_URL + "x")).isFalse();
+        assertThat(BrowserTabs.isHomePage("file:///etc/hostname")).isFalse();
+        assertThat(BrowserTabs.isHomePage(null)).isFalse();
+        assertThat(BrowserTabs.shownUrl("file:///etc/hostname")).isEqualTo("file:///etc/hostname");
     }
 
     @Test
@@ -304,7 +350,7 @@ class BrowserTabsTest {
         TestClient client = start("a");
         cdp.addBackgroundPage("behind", "https://example.com/behind", "Behind");
         await().until(() -> ids(tabs(client)).contains("behind"));
-        assertThat(cdp.commands("Runtime.evaluate")).isNotEmpty().allSatisfy(command -> {
+        assertThat(questions()).isNotEmpty().allSatisfy(command -> {
             assertThat(command.params()).containsEntry("expression", "document.visibilityState").containsKey("contextId");
         });
     }
@@ -316,7 +362,7 @@ class BrowserTabsTest {
         cdp.clearCommands();
         tabs(client);
         tabs(client);
-        assertThat(cdp.commands("Runtime.evaluate")).isEmpty();
+        assertThat(questions()).isEmpty();
     }
 
     @Test
@@ -331,7 +377,7 @@ class BrowserTabsTest {
         tabs(client);
         tabs(client);
         assertThat(activeOf(client)).isEqualTo("a");
-        assertThat(cdp.commands("Runtime.evaluate")).isNotEmpty().allSatisfy(command -> {
+        assertThat(questions()).isNotEmpty().allSatisfy(command -> {
             assertThat(command.sessionId()).isEqualTo(FakeCdp.sessionOf("behind-3"));
         });
     }
@@ -1031,13 +1077,17 @@ class BrowserTabsTest {
             assertErr(rig.call(client, method, Map.of("expression", "1")), "not_found");
         }
         rig.call(client, "browser.tab.navigate", Map.of("url", "https://example.com/x", "method", "Runtime.evaluate", "expression", "1"));
-        // deskd's own question, which no client can change, is the one script that ever runs.
-        assertThat(cdp.commands("Runtime.evaluate")).allSatisfy(command ->
+        // deskd's own question, which no client can change, is the one script that ever runs but ProtectedMedia's two
+        // constants, which no client can change either.
+        assertThat(questions()).allSatisfy(command ->
                 assertThat(command.params()).containsEntry("expression", "document.visibilityState"));
+        assertThat(cdp.commands("Page.addScriptToEvaluateOnNewDocument")).isNotEmpty().allSatisfy(command ->
+                assertThat((String) command.params().get("source")).contains("requestMediaKeySystemAccess").doesNotContain("Runtime.evaluate"));
         assertThat(cdp.commands().stream().map(FakeCdp.Command::method)).allMatch(method -> List.of(
                 "Target.setDiscoverTargets", "Target.getTargets", "Target.attachToTarget", "Page.enable",
                 "Page.getNavigationHistory", "Page.navigate", "Browser.getVersion",
-                "Page.createIsolatedWorld", "Runtime.evaluate").contains(method));
+                "Page.createIsolatedWorld", "Runtime.evaluate", "Browser.setDownloadBehavior",
+                "Page.addScriptToEvaluateOnNewDocument", "Runtime.addBinding").contains(method));
     }
 
     @Test
@@ -2165,7 +2215,8 @@ class BrowserTabsTest {
         assertThat(rig.units.requests()).doesNotContain("start desk-browser");
         assertThat(cdp.upgrades()).isEqualTo(1);
         assertThat(cdp.isConnected()).isTrue();
-        assertThat(rig.module.health().get("browser")).isEqualTo(Map.of("cdp", "connected", "tabs", 1, "freeze", "running"));
+        assertThat(rig.module.health().get("browser"))
+                .isEqualTo(Map.of("cdp", "connected", "tabs", 1, "downloads", 0, "freeze", "running", "view", "desktop"));
 
         cdp.answerHeld("Target.getTargets");
         assertThat(tab(client, "a")).containsEntry("title", "Not seen yet");
@@ -2580,7 +2631,7 @@ class BrowserTabsTest {
     void healthStaysUpWhateverChromiumDoes() throws Exception {
         TestClient client = start("a");
         Map<String, Object> idle = rig.module.health();
-        assertThat(idle.get("browser")).isEqualTo(Map.of("cdp", "idle", "tabs", 0, "freeze", "running"));
+        assertThat(idle.get("browser")).isEqualTo(Map.of("cdp", "idle", "tabs", 0, "downloads", 0, "freeze", "running", "view", "desktop"));
         tabs(client);
         rig.call(client, "browser.stream.set", Map.of("state", "warm"), null);
         Map<String, Object> up = rig.module.health();

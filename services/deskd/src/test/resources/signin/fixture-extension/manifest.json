@@ -1,0 +1,9 @@
+{
+  "manifest_version": 3,
+  "name": "Fixture Vault",
+  "description": "A test fixture for deskd's sign-ins: a toolbar page and nothing else. Its key is a throwaway public key, so its id is fixed.",
+  "version": "1.0",
+  "key": "MIIBIjANBgkqhkiG9w0BAQEFAAOCAQ8AMIIBCgKCAQEA7NjBMcD3+nTFUf1mTI1G+NTKVTrwU9YLJDgd3mDXpMsq7zoezN0DegZExh7F9oZOw0/Gcc1HoExo7bOBNqxjI4FfaVX4hkDQoawCEv5PhqnW2eBVegCbKt583tH+PHl4jSJxoOv3tYfPDSNxrnyyDlGBofcxeuBA5CRw2WGJ89iEdnV8BT8WJDVFaSiprKh4X6I4BtA9Ak9ICWHSnpRiM419eCenPCetIwZ1UlL6JkHBP53cTyMSui51E8bZjehcuar8caLHzpzk2r2zCoOwPp1RJDQH5DF2Mb4XdcCbtj6DcRs++4TkT3bH5WiDR7wTiqPb21PsDZDeAmySorzZ3wIDAQAB",
+  "action": {"default_popup": "popup/index.html"},
+  "background": {"service_worker": "sw.js"}
+}

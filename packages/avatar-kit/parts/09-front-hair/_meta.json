@@ -1,0 +1,220 @@
+{
+  "_about": "Hair, one category drawn in two layers. This file (09-front-hair) is the listing of record: every hair id, in builder order. 02-back-hair/_meta.json lists the same ids for the ones that also draw behind the neck. \"layers\" says where each id draws; bald draws nothing.",
+  "crown": "Each part also carries data-crown on its SVG root: the y, in the 256 viewBox, of the top of the hair at the centre line. Headwear with data-anchor=\"crown\" (the kippah) is moved down by (crown - 60). With no hair part drawn, crown is 62.",
+  "colorFrom": "The hijab takes a clothing color, not a hair color: its {{hair}} and {{hairShade}} slots are filled from palette.clothing[hairColor] (as source/lib/compose-core.mjs does for hairColorFrom \"clothing\"). Brows under a hijab still take a hair color (dark brown by default).",
+  "buzz": "buzz, top-knot (sides) and shaved-side (one side) draw hair at opacity 0.62 so the skin shows through, as a clipped cut does.",
+  "category": "hair",
+  "layer": "09-front-hair",
+  "colorSlot": "hairColor",
+  "default": "short",
+  "parts": [
+    {
+      "id": "short",
+      "name": "Short",
+      "layers": [
+        "front-hair"
+      ],
+      "crown": 51
+    },
+    {
+      "id": "crop",
+      "name": "Crop",
+      "layers": [
+        "front-hair"
+      ],
+      "crown": 60
+    },
+    {
+      "id": "buzz",
+      "name": "Buzz cut",
+      "layers": [
+        "front-hair"
+      ],
+      "crown": 62
+    },
+    {
+      "id": "bald",
+      "name": "Bald",
+      "layers": [],
+      "crown": 62
+    },
+    {
+      "id": "side-part",
+      "name": "Side part",
+      "layers": [
+        "front-hair"
+      ],
+      "crown": 50
+    },
+    {
+      "id": "waves",
+      "name": "Waves",
+      "layers": [
+        "front-hair"
+      ],
+      "crown": 60
+    },
+    {
+      "id": "curly-short",
+      "name": "Curly, short",
+      "layers": [
+        "back-hair",
+        "front-hair"
+      ],
+      "crown": 44
+    },
+    {
+      "id": "curly-long",
+      "name": "Curly, long",
+      "layers": [
+        "back-hair",
+        "front-hair"
+      ],
+      "crown": 44
+    },
+    {
+      "id": "coils",
+      "name": "Coils",
+      "layers": [
+        "back-hair",
+        "front-hair"
+      ],
+      "crown": 39
+    },
+    {
+      "id": "afro",
+      "name": "Afro",
+      "layers": [
+        "back-hair",
+        "front-hair"
+      ],
+      "crown": 30
+    },
+    {
+      "id": "twists",
+      "name": "Twists",
+      "layers": [
+        "back-hair",
+        "front-hair"
+      ],
+      "crown": 50
+    },
+    {
+      "id": "locs",
+      "name": "Locs",
+      "layers": [
+        "back-hair",
+        "front-hair"
+      ],
+      "crown": 48
+    },
+    {
+      "id": "braids",
+      "name": "Braids",
+      "layers": [
+        "back-hair",
+        "front-hair"
+      ],
+      "crown": 50
+    },
+    {
+      "id": "cornrows",
+      "name": "Cornrows",
+      "layers": [
+        "front-hair"
+      ],
+      "crown": 60
+    },
+    {
+      "id": "bun",
+      "name": "Bun",
+      "layers": [
+        "back-hair",
+        "front-hair"
+      ],
+      "crown": 55
+    },
+    {
+      "id": "top-knot",
+      "name": "Top knot",
+      "layers": [
+        "back-hair",
+        "front-hair"
+      ],
+      "crown": 60
+    },
+    {
+      "id": "ponytail",
+      "name": "Ponytail",
+      "layers": [
+        "back-hair",
+        "front-hair"
+      ],
+      "crown": 55
+    },
+    {
+      "id": "bob",
+      "name": "Bob",
+      "layers": [
+        "back-hair",
+        "front-hair"
+      ],
+      "crown": 50
+    },
+    {
+      "id": "long-straight",
+      "name": "Long, straight",
+      "layers": [
+        "back-hair",
+        "front-hair"
+      ],
+      "crown": 50
+    },
+    {
+      "id": "long-wavy",
+      "name": "Long, wavy",
+      "layers": [
+        "back-hair",
+        "front-hair"
+      ],
+      "crown": 46
+    },
+    {
+      "id": "pixie",
+      "name": "Pixie",
+      "layers": [
+        "front-hair"
+      ],
+      "crown": 52
+    },
+    {
+      "id": "mullet",
+      "name": "Mullet",
+      "layers": [
+        "back-hair",
+        "front-hair"
+      ],
+      "crown": 52
+    },
+    {
+      "id": "shaved-side",
+      "name": "Shaved side",
+      "layers": [
+        "front-hair"
+      ],
+      "crown": 54
+    },
+    {
+      "id": "hijab",
+      "name": "Hijab",
+      "hides": [
+        "ears"
+      ],
+      "layers": [
+        "front-hair"
+      ],
+      "crown": 42,
+      "colorFrom": "clothing"
+    }
+  ]
+}

@@ -60,6 +60,7 @@ type SettingEngine struct {
 		UsernameFragment         string
 		Password                 string //nolint:gosec // not a secret.
 		IncludeLoopbackCandidate bool
+		ufragPrefix              string // desk-rtc's patch (desk-rtc/third_party/README.md)
 	}
 	replayProtection struct {
 		DTLS  *uint
@@ -447,6 +448,15 @@ func (e *SettingEngine) SetMulticastDNSHostName(hostName string) {
 func (e *SettingEngine) SetICECredentials(usernameFragment, password string) {
 	e.candidates.UsernameFragment = usernameFragment
 	e.candidates.Password = password
+}
+
+// SetICEUfragPrefix makes every local ICE ufrag start with prefix: the first one and the new one at each ICE restart, each
+// with fresh random characters after the prefix and a fresh password, as Pion makes them with no prefix. It is ignored when
+// SetICECredentials sets static credentials, and an empty prefix is Pion's own behaviour. desk-rtc's patch to Pion
+// (desk-rtc/third_party/README.md): on a shared desk host one TCP 443 serves every slot, and the host's demux routes a
+// connection by the prefix of the ufrag its first STUN request names.
+func (e *SettingEngine) SetICEUfragPrefix(prefix string) {
+	e.candidates.ufragPrefix = prefix
 }
 
 // DisableCertificateFingerprintVerification disables fingerprint verification after DTLS Handshake has finished.

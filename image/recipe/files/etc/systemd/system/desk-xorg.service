@@ -2,6 +2,7 @@
 Description=Xorg dummy display :99 (1920x1080)
 Requires=desk-datadirs.service
 After=desk-datadirs.service
+StartLimitIntervalSec=0
 
 [Service]
 User=kiosk
@@ -18,5 +19,7 @@ ExecStart=/usr/lib/xorg/Xorg :99 -config /etc/ma/xorg-dummy.conf -noreset -nolis
 ExecStartPost=/usr/local/lib/ma/desk-xorg-ready
 Restart=on-failure
 RestartSec=2
+RestartSteps=4
+RestartMaxDelaySec=30
 
 # Not enabled: started on first Browser use (design 10.3)

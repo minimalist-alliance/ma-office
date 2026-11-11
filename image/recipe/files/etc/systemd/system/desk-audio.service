@@ -1,6 +1,7 @@
 [Unit]
 Description=PulseAudio null sink for the desk
 After=desk-datadirs.service
+StartLimitIntervalSec=0
 
 [Service]
 User=kiosk
@@ -16,3 +17,5 @@ ExecStart=/usr/bin/pulseaudio --daemonize=no --exit-idle-time=-1 --log-target=jo
 ExecStartPost=/bin/sh -c 'export PULSE_SERVER=unix:/run/desk-audio/native; for i in $(seq 1 40); do pactl info >/dev/null 2>&1 && exec pactl set-default-sink desk; sleep 0.5; done; exit 1'
 Restart=on-failure
 RestartSec=2
+RestartSteps=4
+RestartMaxDelaySec=30

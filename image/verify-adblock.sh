@@ -19,7 +19,7 @@
 #   hostile   a symlink, a FIFO, a directory, an oversized list and bad lines: blocking stays on, no hang, the Browser
 #             starts, no site in the log; uids 1100 and 1102 can't change the template or the policy; the policy is
 #             root:kiosk 0640, which uids 1100 and 1103 can't read (T47S-3)
-#   keys      no key in two managed files; the policy is the template with the list and the kill switch
+#   keys      no key in two managed files (four from 0.3.5); the policy is the template with the list and the kill switch
 #   leave-off one site off, for "swap"
 #   swap      after a real root replacement: the list kept on /data, the policy rendered again at the Browser's start, the
 #             blocker still installed and running, the site still off and another blocked; then the list goes
@@ -281,7 +281,7 @@ def want(ok, what):
 for k in ('ExtensionSettings', 'DeveloperToolsAvailability'):
     r = rows.get(k); want(r is not None and r[0] == t[k] and r[1] == 'OK' and r[2:] == ['mandatory', 'machine', 'platform'], '%s applied: %s' % (k, json.dumps(r)[:200]))
 r = rows.get('off'); want(r is not None and r[0] is False and r[1] == 'OK', "the blocker's off applied: %s" % json.dumps(r))
-if 'ExtensionInstallBlocklist' in rows: print('teen lock in place too: ExtensionInstallBlocklist %s' % json.dumps(rows['ExtensionInstallBlocklist'][0]))
+if 'ExtensionInstallBlocklist' in rows: print('ExtensionInstallBlocklist (every desk from 0.3.5, the teen lock before) in place too: %s' % json.dumps(rows['ExtensionInstallBlocklist'][0]))
 sys.exit(1 if bad else 0)
 P
   # Installed from the image at the pinned version, and able to do nothing but block (T47S-2): two permissions, no host
@@ -422,10 +422,12 @@ hostile)
   if systemctl is-active --quiet verify-pages; then python3 -I /var/tmp/tl.py cookie || bad "3b2's cookies didn't come through"; else echo "3b2's page server isn't running here, so its cookies aren't read"; fi
   rm -f /var/tmp/ab-off; restore ;;
 keys)
-  python3 -I - /etc/chromium/policies/managed/ma.json /etc/ma/chromium-teen.json "$TEMPLATE" "$POLICY" "$LIST" "$KILL" <<'P' || bad "the policy files"
-import json, os, sys
+  python3 -I - /etc/chromium/policies/managed/ma.json /etc/ma/chromium-teen.json "$TEMPLATE" "$POLICY" "$LIST" "$KILL" /etc/ma/chromium-adult.json <<'P' || bad "the policy files"
+import itertools, json, os, sys
 a, b, c, p = (json.load(open(f)) for f in sys.argv[1:5]); bad = 0
-for (n1, x), (n2, y) in (((1, a), (2, b)), ((1, a), (3, c)), ((2, b), (3, c))):
+# From 0.3.5 a fourth: the password managers' allowlist, an adult's (image/README.md, "Sign-in extensions")
+files = [(1, a), (2, b), (3, c)] + ([(7, json.load(open(sys.argv[7])))] if os.path.exists(sys.argv[7]) else [])
+for (n1, x), (n2, y) in itertools.combinations(files, 2):
     s = sorted(set(x) & set(y)); print('%s and %s share %s' % (sys.argv[n1], sys.argv[n2], s or 'nothing')); bad += bool(s)
 try: lst = [l for l in open(sys.argv[5]).read().split('\n') if l]
 except OSError: lst = []

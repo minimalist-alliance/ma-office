@@ -2,6 +2,7 @@
 // does, and the member's actions on the real page. React reads `getView`; nothing here runs per frame.
 import type { BrowserTab, DeskLink } from '../desk/deskLink';
 import type { BrowserDriver } from '../browser/driver';
+import { isPhoneScreen } from '../browser/phoneView';
 import { decideView, pageLine, type LineEvent, type PageStatus, type SiteChoice, type ViewDecision } from './decide';
 import { applyMDoc, applyPatch, pageKey, PageHistory, type SimpleDoc } from './docStore';
 import type { Block, PageMeta, SecretKind } from './mdoc';
@@ -229,8 +230,19 @@ export class SimpleController {
     void ask.then((r) => done(r === 'yes' ? true : r === 'no' ? false : null));
   }
 
+  /**
+   * On a phone whose member chose the real page, nothing is watched: while any `browser.minified` subscription stands the
+   * desk keeps its own view, and the phone's view (`browser/phoneView.ts`) never comes (deskd API.md section 10, "On a
+   * phone"). Choosing Simplified again watches again. A page that fell back is still watched, for its next page.
+   */
+  private realPageOnPhone(): boolean {
+    const d = this.view.decision;
+    return d.view === 'full' && (d.why === 'choice' || d.why === 'remembered') && isPhoneScreen();
+  }
+
   /** Watch the tab on screen, and only it (section 14: one subscription per tab shown). */
   private watch(tabId: string | null): void {
+    if (tabId && this.realPageOnPhone()) tabId = null;
     if (tabId === this.watched || this.supported === false || this.stopped || !this.probed) return;
     this.offWatch?.();
     this.offWatch = null;
@@ -398,7 +410,10 @@ export class SimpleController {
     const decision = sameDecision(next, this.view.decision) ? this.view.decision : next;
     const was = this.view.decision;
     this.patch({ decision, status: page?.status ?? { kind: 'waiting' } });
-    if (decision.view !== was.view) this.onViewChanged(decision.view);
+    if (decision.view !== was.view) {
+      this.onViewChanged(decision.view);
+      this.watch(this.tabs.find((t) => t.active)?.tabId ?? null);
+    }
     const line = pageLine(decision, this.lineEvent);
     const had = this.ui.get().line;
     const sameLine = line === had || (line !== null && had !== null && line.text === had.text && line.icon === had.icon && line.action === had.action);

@@ -8,12 +8,14 @@ import (
 	"encoding/json"
 	"errors"
 	"flag"
+	"fmt"
 	"log"
 	"net"
 	"net/http"
 	"os"
 	"os/signal"
 	"path/filepath"
+	"regexp"
 	"runtime"
 	"runtime/debug"
 	"runtime/pprof"
@@ -29,7 +31,23 @@ import (
 )
 
 // CSP is the Desk harness's default policy (web/harness/serve.mjs), as the Notebook demo uses.
-const CSP = "default-src 'self'; connect-src 'self'; img-src 'self' data: blob:; media-src 'self' blob:; worker-src 'self' blob:; frame-ancestors 'none'"
+//
+// img-src also names Platform's API origin (COMMONS_AVATAR_ORIGIN, such as https://api.example.test) when set, for the
+// members' checked profile pictures (acct-picture), and nothing else.
+const cspFmt = "default-src 'self'; connect-src 'self'; img-src 'self' data: blob:%s; media-src 'self' blob:; worker-src 'self' blob:; frame-ancestors 'none'"
+
+var avatarOrigin = regexp.MustCompile(`^https://[a-z0-9.-]{1,253}$`)
+
+// csp is the policy with the avatar origin if it is a bare https origin.
+func csp() string {
+	o := os.Getenv("COMMONS_AVATAR_ORIGIN")
+	if !avatarOrigin.MatchString(o) {
+		o = ""
+	} else {
+		o = " " + o
+	}
+	return fmt.Sprintf(cspFmt, o)
+}
 
 func main() {
 	dev := flag.Bool("dev", false, "development: the WebSocket room link with names from the URL (?name=), the page (-web) and a stand-in for deskd's relay (/dev/channel). Never on a guild desk")
@@ -206,7 +224,7 @@ func envInt(k string, d int) int {
 func page(dir string) http.Handler {
 	files := http.FileServer(http.Dir(dir))
 	return http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
-		w.Header().Set("Content-Security-Policy", CSP)
+		w.Header().Set("Content-Security-Policy", csp())
 		w.Header().Set("X-Content-Type-Options", "nosniff")
 		w.Header().Set("Referrer-Policy", "no-referrer")
 		p := filepath.Clean(r.URL.Path)

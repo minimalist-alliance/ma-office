@@ -1,0 +1,79 @@
+/* The free tier in the office (S-119). Every color is a token from tokens.ts, so Light, Dusk and Dark need nothing here.
+   It's in the one stylesheet like everything else (`cssCodeSplit: false`), and nothing here matches unless the free
+   tier's chunk has drawn it. No red, no badges: links and lines in the app's own quiet colors. */
+
+/* Its panel open: over Maia's bubble and her open panel, as the bandwidth circle's is (`.bw:has(.bw-panel)`, bandwidth.css). */
+
+/* The meter's ring fills back up over the upgrade's one beat. */
+.free-meter .bw-fill.free-fill {
+  transition: stroke-dasharray 600ms ease;
+}
+
+/* A link that opens the membership page in its own tab: text.link, and underlined, so color isn't the only cue. */
+.free-link {
+  justify-self: start;
+  font-size: 13px;
+  line-height: 18px;
+  color: var(--ma-text-link);
+  text-decoration: underline;
+  text-underline-offset: 3px;
+}
+.free-link:focus-visible {
+  outline: 2px solid var(--ma-focus-ring);
+  outline-offset: 2px;
+  border-radius: 4px;
+}
+/* The paused Browser's one quiet link, under its two lines. */
+.free-pause-link {
+  display: inline-block;
+  margin-top: 12px;
+  font-size: 14px;
+  line-height: 20px;
+}
+
+/* The heads-up and the upgrade's notice: one line, no word left alone on the last line. */
+.notice.free-notice {
+  text-wrap: pretty;
+}
+
+/* A busy time, in the Browser's bar: the bar's own note style. */
+.br-note.free-busy {
+  white-space: nowrap;
+  overflow: hidden;
+  text-overflow: ellipsis;
+}
+
+@media (max-width: 599px) {
+  .free-pause-link {
+    min-height: 44px;
+  }
+}
+
+@media (prefers-reduced-motion: reduce) {
+  .free-meter .bw-fill.free-fill {
+    transition: none;
+  }
+}
+
+/* Maia's trial (rows 3 and 9), in her panel in place of her opening lines: a card in her panel's own look. */
+.maia-trial {
+  padding: 14px 16px;
+  border: 1px solid var(--ma-border);
+  border-radius: 12px;
+  background: var(--ma-surface-overlay);
+  color: var(--ma-text-primary);
+  font-size: 14px;
+  line-height: 20px;
+  text-wrap: pretty;
+}
+.maia-trial .maia-card-actions,
+.maia-trial .maia-trial-link {
+  margin-top: 12px;
+}
+.maia-trial .maia-btn {
+  height: 36px;
+}
+.maia-trial .maia-btn:focus-visible {
+  outline: 2px solid var(--ma-focus-ring);
+  outline-offset: 2px;
+}

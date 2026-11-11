@@ -7,6 +7,7 @@ import com.minimalistalliance.desk.deskd.rpc.Caller;
 import com.minimalistalliance.desk.deskd.session.SessionAuthorizer;
 import java.io.IOException;
 import java.nio.file.Path;
+import java.time.Clock;
 import java.time.Duration;
 import java.util.ArrayList;
 import java.util.Collection;
@@ -15,6 +16,8 @@ import java.util.LinkedHashMap;
 import java.util.List;
 import java.util.Map;
 import java.util.Objects;
+import java.util.Set;
+import java.util.TreeSet;
 import java.util.function.Supplier;
 import java.util.regex.Pattern;
 import java.util.concurrent.locks.Condition;
@@ -35,7 +38,11 @@ import org.slf4j.LoggerFactory;
  *
  * <p>A version no newer than the last applied is ignored. The last roster is kept in {@code /data/desk/guild-roster.json},
  * written whole, so a restart holds members to it before the first read. A read that fails is tried again, 1 s up to
- * 30 s, while a newer version is wanted; a {@code 503} keeps the last roster, as the contract says.
+ * 30 s, while a newer version is wanted; a {@code 503} keeps the last roster, as the contract says. Until a roster has
+ * been read or loaded, no member gets in: {@code desk_not_ready} (audit Z30).
+ *
+ * <p><b>Leaving deletes the member's agent conversations</b> (ADR 0080 decision 12). Each roster applied is compared
+ * with the last one, and {@link GuildPurges} decides whose purge that owes or holds, before this roster is kept.
  *
  * <p>Nothing here logs a member's id or name.
  */
@@ -73,9 +80,14 @@ public final class GuildRoster implements DeskTokenVerifier.MemberCheck {
         void closeMember(String memberId);
     }
 
-    /** Timings, short in tests. */
-    public record Timing(Duration minBackoff, Duration maxBackoff) {
-        public static final Timing DEFAULT = new Timing(Duration.ofSeconds(1), Duration.ofSeconds(30));
+    /** Timings, short in tests. {@code purgeGrace}: how long an owed purge waits ({@link GuildPurges}). */
+    public record Timing(Duration minBackoff, Duration maxBackoff, Duration purgeGrace) {
+        public static final Duration PURGE_GRACE = Duration.ofMinutes(10);
+        public static final Timing DEFAULT = new Timing(Duration.ofSeconds(1), Duration.ofSeconds(30), PURGE_GRACE);
+
+        public Timing(Duration minBackoff, Duration maxBackoff) {
+            this(minBackoff, maxBackoff, PURGE_GRACE);
+        }
     }
 
     private final Path file;
@@ -83,10 +95,13 @@ public final class GuildRoster implements DeskTokenVerifier.MemberCheck {
     private final Supplier<String> guildId;
     private final Sessions sessions;
     private final Timing timing;
+    private final GuildPurges purges;
     private final ReentrantLock lock = new ReentrantLock();
     private final Condition wake = lock.newCondition();
     /** Null until a roster has been read or loaded. Replaced whole. */
     private volatile Map<String, Member> members;
+    /** Every member id the applied roster lists, a malformed entry's too: what the next one is compared with. */
+    private volatile Set<String> listed = Set.of();
     private volatile long version = -1;
     private volatile boolean closed;
     private long wanted = -1;
@@ -96,11 +111,23 @@ public final class GuildRoster implements DeskTokenVerifier.MemberCheck {
     private long lastMismatchRead;
 
     public GuildRoster(Path directory, Source source, Supplier<String> guildId, Sessions sessions, Timing timing) {
+        this(directory, source, guildId, sessions, timing, Clock.systemUTC());
+    }
+
+    public GuildRoster(Path directory, Source source, Supplier<String> guildId, Sessions sessions, Timing timing,
+            Clock clock) {
         this.file = directory.resolve(FILE);
         this.source = source;
         this.guildId = guildId;
         this.sessions = sessions;
         this.timing = timing;
+        this.purges = new GuildPurges(directory, clock, guildId, timing.purgeGrace());
+        purges.listedBy(id -> listed.contains(id));
+    }
+
+    /** Whose agent conversations this desk owes a purge: desk-agent is sent them ({@code AgentModule#memberPurges}). */
+    public GuildPurges purges() {
+        return purges;
     }
 
     /** The roster kept on disk, if it's this guild's. Call once config says which guild that is. */
@@ -109,12 +136,13 @@ public final class GuildRoster implements DeskTokenVerifier.MemberCheck {
         if (guild == null || members != null) {
             return;
         }
+        purges.load();
         try {
             byte[] bytes = AtomicFile.read(file);
             if (bytes == null) {
                 return;
             }
-            Parsed kept = parse(Json.parseObject(bytes), guild);
+            Parsed kept = parse(Json.parseObject(bytes), guild, true);
             if (kept != null) {
                 install(kept);
             }
@@ -174,13 +202,15 @@ public final class GuildRoster implements DeskTokenVerifier.MemberCheck {
     }
 
     /**
-     * On {@code session.open} and every refresh, after the token's own checks. Before any roster, the token stands alone.
+     * On {@code session.open} and every refresh, after the token's own checks. Before any roster has been read or kept,
+     * no member gets in: {@code desk_not_ready}, and the client tries again (audit Z30), so a removed member's unexpired
+     * token can't stand alone on a fresh desk, or after a restart with no kept roster and a failed read.
      */
     @Override
     public void check(Caller caller) throws SessionAuthorizer.RefusedException {
         Map<String, Member> now = members;
         if (now == null) {
-            return;
+            throw new SessionAuthorizer.RefusedException("desk_not_ready");
         }
         Member member = closed ? null : now.get(caller.memberId());
         if (member == null) {
@@ -267,7 +297,7 @@ public final class GuildRoster implements DeskTokenVerifier.MemberCheck {
             return false;
         }
         try {
-            Parsed parsed = parse(source.read(), guild);
+            Parsed parsed = parse(source.read(), guild, false);
             if (parsed == null) {
                 log.warn("guild roster: a roster that isn't this guild's, or isn't well formed, was ignored");
                 return false;
@@ -283,23 +313,39 @@ public final class GuildRoster implements DeskTokenVerifier.MemberCheck {
         }
     }
 
-    /** Applies a roster read now: newer only, kept on disk, then every session it changes closed. */
+    /**
+     * Applies a roster read now: newer only; the purges it owes, holds or cancels kept first, then the roster, then it's
+     * in force, then every session it changes closed. A purge list that couldn't be kept leaves the last roster on disk,
+     * so a restart compares again from it. Only the roster's own thread applies one.
+     */
     void apply(Parsed parsed) {
+        Set<String> before;
         lock.lock();
         try {
             if (members != null && parsed.version() <= version) {
                 return;
             }
+            before = members == null ? null : listed;
+        } finally {
+            lock.unlock();
+        }
+        if (purges.rosterApplied(before, parsed)) {
+            save(parsed);
+        } else {
+            log.warn("guild roster {}: not kept, as the purges it changed couldn't be", parsed.version());
+        }
+        lock.lock();
+        try {
             install(parsed);
         } finally {
             lock.unlock();
         }
-        save(parsed);
         enforce();
     }
 
     private void install(Parsed parsed) {
         members = parsed.members();
+        listed = parsed.listed();
         closed = parsed.closed();
         version = parsed.version();
     }
@@ -335,10 +381,24 @@ public final class GuildRoster implements DeskTokenVerifier.MemberCheck {
 
     // ---- the shape
 
-    record Parsed(long version, boolean closed, Map<String, Member> members, Map<String, Object> raw) {}
+    /**
+     * A roster as read. {@code listed}: every member id it names, a malformed entry's too, so a member whose entry is
+     * malformed is refused but never taken as gone. {@code unidentified}: entries with no member id that can be read.
+     */
+    record Parsed(long version, boolean closed, Map<String, Member> members, Set<String> listed, int unidentified,
+            Map<String, Object> raw) {
 
-    /** @return null if it isn't this guild's, or isn't a roster. A malformed member is left out, so they're refused. */
-    static Parsed parse(Map<String, Object> body, String guildId) {
+        /** Whether a Founder is on it, as on every sound roster of an open guild. */
+        boolean hasLead() {
+            return members.values().stream().anyMatch(member -> Caller.LEAD.equals(member.role()));
+        }
+    }
+
+    /**
+     * @param kept whether it's the copy deskd kept, whose {@code listed} it wrote itself
+     * @return null if it isn't this guild's, or isn't a roster. A malformed member is left out, so they're refused.
+     */
+    static Parsed parse(Map<String, Object> body, String guildId, boolean kept) {
         if (body == null || !Objects.equals(guildId, Json.string(body, "guildId"))) {
             return null;
         }
@@ -348,23 +408,40 @@ public final class GuildRoster implements DeskTokenVerifier.MemberCheck {
         }
         boolean closed = Boolean.TRUE.equals(body.get("closed"));
         Map<String, Member> members = new HashMap<>();
-        List<Map<String, Object>> kept = new ArrayList<>();
+        Set<String> listed = new TreeSet<>();
+        int unidentified = 0;
+        List<Map<String, Object>> keep = new ArrayList<>();
         for (Object item : list) {
+            String id = item instanceof Map<?, ?> map && map.get("memberId") instanceof String text
+                    && MEMBER_ID.matcher(text).matches() ? text : null;
+            if (id == null) {
+                unidentified++;
+            } else {
+                listed.add(id);
+            }
             Member member = member(item);
             if (member != null && !closed) {
                 members.put(member.memberId(), member);
-                kept.add(json(member));
+                keep.add(json(member));
+            }
+        }
+        if (kept && body.get("listed") instanceof List<?> more && more.size() <= MAX_MEMBERS) {
+            for (Object id : more) {
+                if (id instanceof String text && MEMBER_ID.matcher(text).matches()) {
+                    listed.add(text);
+                }
             }
         }
         Map<String, Object> raw = new LinkedHashMap<>();
         raw.put("guildId", guildId);
         raw.put("version", number.longValue());
         raw.put("closed", closed);
-        raw.put("members", kept);
+        raw.put("members", keep);
+        raw.put("listed", List.copyOf(listed));
         if (body.get("settings") instanceof Map<?, ?> settings) {
             raw.put("settings", settings);
         }
-        return new Parsed(number.longValue(), closed, Map.copyOf(members), raw);
+        return new Parsed(number.longValue(), closed, Map.copyOf(members), Set.copyOf(listed), unidentified, raw);
     }
 
     private static Member member(Object item) {

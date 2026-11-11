@@ -23,6 +23,7 @@ body {
   overflow: hidden;
 }
 html {
+  -webkit-tap-highlight-color: transparent; /* the office draws its own pressed states */
   background-color: var(--ma-surface-world-base);
   color: var(--ma-text-primary); /* else the root keeps the color scheme's own pure black or white */
 }
@@ -93,13 +94,83 @@ p {
 .flat-ground .ma-shell::before {
   display: none;
 }
+/* The office background (ADR 0094): the member's scene under the desks, on its own compositor layer like the gradient, with
+   the theme's scrim (surface.backdrop) over it so text and the rings keep their contrast on any picture. Shown only while
+   <html> has data-backdrop: theme/boot.ts paints the last scene's colour and tiny placeholder from the mirror, and
+   theme/backdrop.ts (after the first paint) adds the <picture>, which fades in over 300 ms when it has loaded. "Plain
+   background" hides it with the gradient. The picture is blurred a little, so the desks read over any detail; it's one
+   rasterized layer, so a camera move costs nothing more (tests/perf). */
+.ma-backdrop {
+  display: none;
+  position: absolute;
+  inset: 0;
+  overflow: hidden;
+  background-color: var(--ma-backdrop-color, transparent);
+  background-image: var(--ma-backdrop-image, none);
+  background-size: cover;
+  background-position: center;
+  will-change: transform;
+  pointer-events: none;
+}
+:root[data-backdrop] .ma-backdrop {
+  display: block;
+}
+/* Over the rule above, so "Plain background" wins. */
+:root.flat-ground .ma-backdrop {
+  display: none;
+}
+.ma-backdrop-img {
+  position: absolute;
+  /* Past the edges, so the blur's soft edge is off screen. */
+  inset: -6px;
+  width: calc(100% + 12px);
+  height: calc(100% + 12px);
+  object-fit: cover;
+  filter: blur(2px);
+  opacity: 0;
+  transition: opacity 300ms ease;
+}
+.ma-backdrop-img.on {
+  opacity: 1;
+}
+/* Zen shows the picture as the owner approved it, the graded photo under the navy band only: no blur, nothing else on it. */
+:root[data-theme="dusk"] .ma-backdrop-img {
+  inset: 0;
+  width: 100%;
+  height: 100%;
+  filter: none;
+}
+/* The scrim: in Zen and Dark a navy that multiplies the picture (the owner, Nov 10: keep the deep dark blues, never fog
+   them; the picture is toned down in the art pipeline instead), in Light a light wash, as surface.backdropBlend says
+   (--ma-surface-backdrop-blend), the flat layer over the edge bands (top and bottom, fading out at 14 % of the
+   height, in surface.backdropBand; the sides only when the manifest's grade.edge_band asks, through the custom properties,
+   a 0 % stop drawing nothing), all one background of the one pseudo-element, so the layer stays one and the whole of it
+   multiplies, bands included (they're dark, so a multiply only deepens them). `.ma-backdrop`'s will-change makes the
+   stacking context the blend stays inside: it meets the picture and the placeholder, never the page. The art pipeline
+   measures text contrast under exactly these bands. */
+.ma-backdrop::after {
+  content: "";
+  position: absolute;
+  inset: 0;
+  mix-blend-mode: var(--ma-surface-backdrop-blend);
+  background:
+    linear-gradient(var(--ma-surface-backdrop), var(--ma-surface-backdrop)),
+    linear-gradient(to bottom, var(--ma-backdrop-band, var(--ma-surface-backdrop-band)), transparent var(--ma-backdrop-band-tb, 14%)),
+    linear-gradient(to top, var(--ma-backdrop-band, var(--ma-surface-backdrop-band)), transparent var(--ma-backdrop-band-tb, 14%)),
+    linear-gradient(to right, var(--ma-backdrop-band, var(--ma-surface-backdrop-band)), transparent var(--ma-backdrop-band-side, 0%)),
+    linear-gradient(to left, var(--ma-backdrop-band, var(--ma-surface-backdrop-band)), transparent var(--ma-backdrop-band-side, 0%));
+}
+@media (prefers-reduced-motion: reduce) {
+  .ma-backdrop-img {
+    transition: none;
+  }
+}
 .canvas-wrap {
   position: absolute;
   inset: 0;
   touch-action: none;
   -webkit-user-select: none;
   user-select: none;
-  -webkit-tap-highlight-color: transparent;
 }
 /* A press focuses it, so its single keys work (useKeyboard). The canvas draws its own rings, so this one draws none. */
 .canvas-wrap:focus {
@@ -157,6 +228,17 @@ p {
   --ma-ring-w: 3px;
   border-style: dashed;
 }
+/* While an office background shows (ADR 0094), a focus ring over the ground gets a 1 px halo in `ring.halo` outside it, so
+   the ring or the halo reads on any picture. The proxies' ring is a bordered box, so its shadow is exactly that pixel. The
+   bars' controls keep the global outline, 2 px off their edge, and the shadow under it fills the gap and one pixel beyond
+   (the gap can't be left clear with one shadow), so there the ring sits between two dark lines. Menus and windows are
+   surfaces of their own and need none. */
+:root[data-backdrop] .proxy:focus-visible::after {
+  box-shadow: 0 0 0 1px var(--ma-ring-halo);
+}
+:root[data-backdrop] :is(.topbar :focus-visible, .bottombar :focus-visible, .bw:focus-visible, .setup-circle:focus-visible):not(.menu *, .ma-window *) {
+  box-shadow: 0 0 0 5px var(--ma-ring-halo);
+}
 
 /* ------------------------------------------------------------ top bar */
 .topbar {
@@ -201,11 +283,13 @@ p {
   display: block;
 }
 .home-mark-img.on-dark,
+.home-mark-img.on-zen,
 :root[data-theme='dusk'] .home-mark-img.on-light,
 :root[data-theme='dark'] .home-mark-img.on-light {
   display: none;
 }
-:root[data-theme='dusk'] .home-mark-img.on-dark,
+/* Zen's mark is the on-dark shape, left ribbon white and the right a softer brand blue (the owner, Nov 11, ADR 0093); Dark keeps the on-dark mark. */
+:root[data-theme='dusk'] .home-mark-img.on-zen,
 :root[data-theme='dark'] .home-mark-img.on-dark {
   display: block;
 }
@@ -320,6 +404,12 @@ p {
 }
 .bottombar > * {
   pointer-events: auto;
+}
+/* While one of its controls has the keyboard, the bar and the bandwidth circle draw over the windows (their layer is 20),
+   so the focus ring is never under one. The mouse sees no change. */
+.bottombar:focus-within,
+.bw:focus-within {
+  z-index: 21;
 }
 .hints {
   justify-self: start;
@@ -552,6 +642,16 @@ p {
   line-height: 18px;
   color: var(--ma-text-tertiary);
 }
+/* A desk a step down ends at renewal (still 14): "Stops on December 1", under its kind, not focusable. */
+.desk-menu-stops {
+  padding: 0 10px 6px;
+  font-size: 13px;
+  line-height: 18px;
+  color: var(--ma-text-secondary);
+}
+.desk-menu-stops:first-child {
+  padding-top: 6px;
+}
 /* "Desk style" (the owner's desk textures): a row of swatches under the menu's items, each the style as a desk at 100 %
    has it. The checked one has a ring in the accent, a shape as well as a color. The row is DeskMenu's STYLE_H tall. */
 .desk-style {
@@ -604,6 +704,62 @@ p {
     border: 1px solid CanvasText;
   }
   .desk-style-swatch[aria-checked='true'] {
+    outline: 3px solid Highlight;
+    outline-offset: 2px;
+  }
+}
+
+/* "Background" in the account menu (ADR 0094, `chrome/BackgroundPicker.tsx`): None, then each scene as a 16:9 swatch from
+   its placeholder, the chosen one ringed in the active desk's ring (a shape as well as a colour); the chosen one's name on a
+   line under the row. 56 x 32 under a coarse pointer. The row's padding leaves room for the ring inside the menu's clip. */
+.bg-picker {
+  padding: 4px 6px 2px;
+}
+.bg-picker-row {
+  display: flex;
+  flex-wrap: wrap;
+  gap: 10px;
+  padding: 4px;
+}
+.bg-swatch {
+  width: 44px;
+  height: 25px;
+  padding: 0;
+  border: 0;
+  border-radius: 6px;
+  background-color: var(--ma-surface-world-base);
+  background-size: cover;
+  background-position: center;
+  box-shadow: inset 0 0 0 1px var(--ma-border);
+  cursor: pointer;
+}
+.bg-swatch[aria-checked='true'] {
+  box-shadow: inset 0 0 0 1px var(--ma-border), 0 0 0 2px var(--ma-surface-overlay), 0 0 0 4px var(--ma-ring-active-desk);
+}
+.bg-swatch:focus {
+  outline: none;
+}
+.bg-swatch:focus-visible {
+  outline: 2px solid var(--ma-focus-ring);
+  outline-offset: 5px;
+}
+.bg-picker-name {
+  padding: 2px 4px 0;
+  font-size: 13px;
+  line-height: 18px;
+  color: var(--ma-text-secondary);
+}
+@media (pointer: coarse) {
+  .bg-swatch {
+    width: 56px;
+    height: 32px;
+  }
+}
+@media (forced-colors: active) {
+  .bg-swatch {
+    border: 1px solid CanvasText;
+  }
+  .bg-swatch[aria-checked='true'] {
     outline: 3px solid Highlight;
     outline-offset: 2px;
   }
@@ -748,6 +904,23 @@ p {
   line-height: 18px;
   color: var(--ma-text-secondary);
 }
+/* The billing launch features (still 32): the card that expires before the next charge, under the tier. Quiet; red only
+   once a payment has failed. Its link is the panel's first Tab stop while shown. */
+.menu-note {
+  margin-top: 6px;
+  font-size: 13px;
+  line-height: 18px;
+  color: var(--ma-text-secondary);
+}
+.menu-note a {
+  color: var(--ma-text-link);
+  font-weight: 600;
+  text-decoration: underline;
+  text-underline-offset: 2px;
+}
+.menu-note.menu-note-failed {
+  color: var(--ma-text-danger);
+}
 
 /* ------------------------------------------------------------ the member's avatar (task 45) */
 /* The Product Designer's spec (design-drafts/badges, spec.json): a circle of D px with up to two initials on one of six
@@ -791,6 +964,14 @@ p {
   letter-spacing: 0.01em;
   white-space: nowrap;
   user-select: none;
+}
+/* A checked profile picture fills the circle; the seal's cut-out and the hairline stay. */
+.avatar-picture {
+  display: block;
+  width: 100%;
+  height: 100%;
+  border-radius: 50%;
+  object-fit: cover;
 }
 /* The initials are a picture, not text: see Avatar.tsx. */
 .avatar-face::before {
@@ -901,7 +1082,7 @@ a.menu-item {
 }
 .about-row {
   display: grid;
-  grid-template-columns: 76px 1fr;
+  grid-template-columns: 84px 1fr;
   gap: 12px;
 }
 .shortcuts kbd {
@@ -913,6 +1094,195 @@ a.menu-item {
   height: 1px;
   margin: 8px 0;
   background: var(--ma-border);
+}
+
+/* ------------------------------------------------------------ the bell (chrome/Bell.tsx, ADR 0125 §9) */
+/* The count sits on the button's top right corner, in the accent tint, never red. */
+.icon-btn.bell-btn {
+  position: relative;
+  overflow: visible;
+}
+.bell-count {
+  position: absolute;
+  top: -3px;
+  right: -3px;
+  min-width: 16px;
+  height: 16px;
+  padding: 0 4px;
+  border-radius: 999px;
+  background: var(--ma-accent);
+  color: var(--ma-text-on-accent);
+  font-size: 11px;
+  font-weight: 600;
+  line-height: 16px;
+  text-align: center;
+  pointer-events: none;
+}
+/* The panel is the one every bell renders (`packages/bell-kit` SPEC.md, vendored from ma-platform): the account menu's
+   surface at min(360px, 100vw - 32px), 8 px padding; the numbers below are the spec's and don't move. */
+.menu.bell-panel {
+  width: min(360px, calc(100vw - 32px));
+  padding: 8px;
+}
+/* The header, only while something is unread: "Notifications" left, "Mark all read" right. */
+.bell-head {
+  display: flex;
+  align-items: center;
+  justify-content: space-between;
+  gap: 8px;
+  padding: 4px 8px 6px;
+}
+.bell-head-title {
+  margin: 0;
+  font-size: 14px;
+  line-height: 20px;
+  font-weight: 600;
+  color: var(--ma-text-primary);
+}
+/* The header's and the footer's text links. */
+.bell-text-link {
+  display: inline-flex;
+  align-items: center;
+  padding: 0;
+  border: 0;
+  background: none;
+  font: inherit;
+  font-size: 13px;
+  line-height: 18px;
+  color: var(--ma-text-link);
+  text-decoration: underline;
+  text-underline-offset: 2px;
+  cursor: pointer;
+}
+.bell-text-link:hover {
+  color: var(--ma-text-primary);
+}
+.bell-text-link:focus-visible {
+  outline: 2px solid var(--ma-focus-ring);
+  outline-offset: 2px;
+  border-radius: 4px;
+}
+.bell-empty {
+  margin: 0;
+  padding: 12px 8px 14px;
+  font-size: 13px;
+  line-height: 18px;
+  color: var(--ma-text-secondary);
+}
+.bell-list {
+  list-style: none;
+  margin: 0;
+  padding: 0;
+}
+/* A row: the chip, the words, the time; 10 px radius, 10 px 8 px padding, the sunken surface on hover. */
+.bell-link {
+  display: flex;
+  align-items: flex-start;
+  gap: 10px;
+  padding: 10px 8px;
+  border-radius: 10px;
+  color: inherit;
+  text-decoration: none;
+}
+.bell-link:hover {
+  background: var(--ma-surface-sunken);
+}
+/* The 28 px round chip holding the 16 px kind icon. */
+.bell-chip {
+  flex: none;
+  display: inline-grid;
+  place-items: center;
+  width: 28px;
+  height: 28px;
+  border-radius: 999px;
+  background: var(--ma-surface-sunken);
+  color: var(--ma-text-secondary);
+}
+.bell-text {
+  flex: 1 1 auto;
+  min-width: 0;
+  display: flex;
+  flex-direction: column;
+  gap: 1px;
+}
+/* The title: who first, 14/20 at 500, two lines at most. */
+.bell-title {
+  display: -webkit-box;
+  -webkit-box-orient: vertical;
+  -webkit-line-clamp: 2;
+  overflow: hidden;
+  font-size: 14px;
+  line-height: 20px;
+  font-weight: 500;
+  color: var(--ma-text-primary);
+  overflow-wrap: anywhere;
+}
+/* The second line: the thing, 13/18, one line, cut. */
+.bell-second {
+  overflow: hidden;
+  white-space: nowrap;
+  text-overflow: ellipsis;
+  font-size: 13px;
+  line-height: 18px;
+  color: var(--ma-text-secondary);
+}
+/* The right column: the time, and the 8 px accent dot under it while unread. Never red. */
+.bell-side {
+  flex: none;
+  display: flex;
+  flex-direction: column;
+  align-items: flex-end;
+  gap: 6px;
+  padding-top: 2px;
+}
+.bell-time {
+  font-size: 12px;
+  line-height: 16px;
+  color: var(--ma-text-tertiary);
+  white-space: nowrap;
+}
+.bell-dot {
+  width: 8px;
+  height: 8px;
+  margin-right: 2px;
+  border-radius: 999px;
+  background: var(--ma-accent);
+}
+/* The footer: "All notifications" alone, left-aligned. */
+.bell-foot {
+  display: flex;
+  padding: 6px 8px 4px;
+}
+/* A finger: the header's and the footer's links are 44 px tall. */
+@media (pointer: coarse) {
+  .bell-text-link {
+    min-height: 44px;
+  }
+  .bell-head {
+    padding-block: 0;
+  }
+  .bell-foot {
+    padding-block: 0;
+  }
+}
+/* On a phone the bell sits left of the avatar, so a panel on its right edge would run off the left of the screen:
+   it lines up with the avatar's right edge instead (the avatar's 38 px and the 8 px gap). */
+@media (max-width: 599px) {
+  .menu.bell-panel {
+    right: -46px;
+  }
+}
+/* At 400 % zoom on a 1024 px screen the viewport is 256 px, and a menu hung from the avatar's right edge (224 px wide) ran off
+   the left (WCAG 1.4.10): below 360 px the account menu and the bell's panel take the screen's width, 16 px in from both
+   sides, under the top bar. A desk's own context menu is placed by script. */
+@media (max-width: 359px) {
+  .menu:not(.desk-menu) {
+    position: fixed;
+    left: 16px;
+    right: 16px;
+    top: calc(90px + env(safe-area-inset-top, 0px));
+    width: auto;
+  }
 }
 .about-line {
   padding: 0 6px;
@@ -1125,6 +1495,261 @@ a.menu-item {
   display: flex;
   overflow: auto;
 }
+
+/* ------------------------------------------------------------ carousel (carousel/CarouselLayer.tsx)
+   A desk's stage for one app: laid out in screen pixels for the camera at rest, and moved by one transform on the layer
+   while the camera moves, as the proxy layer is. Above the canvas, under the bars, the notices and the windows. */
+.carousel-layer {
+  position: absolute;
+  top: 0;
+  left: 0;
+  width: 0;
+  height: 0;
+  transform-origin: 0 0;
+  pointer-events: none;
+}
+.carousel-stage {
+  position: absolute;
+  display: flex;
+  flex-direction: column;
+  overflow: hidden;
+  border-radius: 16px;
+  background: var(--ma-surface-window);
+  box-shadow: var(--ma-elevation-menu);
+  pointer-events: auto;
+}
+.carousel-stage:focus {
+  outline: none;
+}
+.carousel-stage:focus-visible {
+  outline: 2px solid var(--ma-focus-ring);
+  outline-offset: 2px;
+}
+/* One ring with the Browser on stage: typing's ring is around the picture only (`.br-surface:focus-within`), and the desk's own
+   ring is already showing, so the stage draws none around its head. */
+.carousel-stage:has(.br-surface):focus-visible {
+  outline: none;
+}
+.carousel-layer.shielded .carousel-stage {
+  filter: blur(14px);
+}
+.carousel-layer.shielded .br-video {
+  visibility: hidden;
+}
+.carousel-head {
+  flex: none;
+  display: flex;
+  align-items: center;
+  gap: 8px;
+  height: 40px;
+  padding: 0 6px;
+  border-bottom: 1px solid var(--ma-border);
+  -webkit-user-select: none;
+  user-select: none;
+  touch-action: pan-y;
+}
+.carousel-title {
+  flex: 1;
+  min-width: 0;
+  margin: 0;
+  overflow: hidden;
+  font-size: 14px;
+  line-height: 20px;
+  font-weight: 600;
+  color: var(--ma-text-primary);
+  white-space: nowrap;
+  text-overflow: ellipsis;
+}
+.carousel-dots {
+  display: flex;
+  gap: 6px;
+  padding: 0 4px;
+}
+.carousel-dot {
+  width: 6px;
+  height: 6px;
+  border-radius: 50%;
+  background: var(--ma-glyph-soft);
+}
+.carousel-dot.on {
+  background: var(--ma-text-secondary);
+}
+.carousel-head .icon-btn[aria-disabled="true"] {
+  opacity: 0.35;
+  cursor: default;
+}
+.carousel-track {
+  position: relative;
+  flex: 1;
+  min-height: 0;
+  overflow: hidden;
+}
+.ma-window.carousel-slide {
+  inset: 0;
+  border-radius: 0;
+  box-shadow: none;
+}
+.carousel-slide.leaving {
+  pointer-events: none;
+}
+/* A phone's carousel (the Product Designer's option 3, "Thumb row"): the stage fills the screen as a window does there,
+   over the bars, each slide with the app's own head, and a 56 px row of the desk's app glyphs at the bottom, clear of the
+   home indicator. Outside the camera's layer, so nothing moves it. */
+.carousel-stage.phone {
+  inset: 0;
+  z-index: 20;
+  border-radius: 0;
+  box-shadow: none;
+  padding-top: env(safe-area-inset-top, 0px);
+  padding-left: env(safe-area-inset-left, 0px);
+  padding-right: env(safe-area-inset-right, 0px);
+}
+.carousel-stage.phone:focus-visible {
+  outline: none;
+}
+.carousel-phone.shielded .carousel-stage {
+  filter: blur(14px);
+}
+.carousel-phone.shielded .br-video {
+  visibility: hidden;
+}
+.carousel-stage.phone .window-head {
+  gap: 8px;
+  padding: 0 8px 0 0;
+}
+.carousel-stage.phone .window-back {
+  width: 44px;
+  height: 44px;
+  margin-right: -6px;
+  padding: 0;
+  color: var(--ma-text-primary);
+  cursor: pointer;
+}
+.carousel-stage.phone .window-title {
+  align-items: baseline;
+  overflow: hidden;
+  font-size: 17px;
+  line-height: 22px;
+  font-weight: 700;
+  color: var(--ma-text-primary);
+}
+.carousel-stage.phone .window-desk {
+  overflow: hidden;
+  text-overflow: ellipsis;
+  font-size: 14px;
+  color: var(--ma-text-secondary);
+}
+.carousel-thumbs {
+  flex: none;
+  display: flex;
+  align-items: center;
+  height: calc(56px + env(safe-area-inset-bottom, 0px));
+  padding: 0 10px 0 8px;
+  padding-bottom: env(safe-area-inset-bottom, 0px);
+  border-top: 1px solid var(--ma-border);
+  background: var(--ma-surface-window);
+  touch-action: none;
+  -webkit-user-select: none;
+  user-select: none;
+}
+/* The on-screen keyboard is up for something in the app: the row steps aside so it never sits over the field. */
+.carousel-stage.keyboard-up .carousel-thumbs {
+  display: none;
+}
+.thumb-tabs {
+  position: relative;
+  display: flex;
+  flex: 0 1 auto;
+  min-width: 0;
+  height: 56px;
+  margin-right: auto;
+  overflow-x: auto;
+  scrollbar-width: none;
+}
+.thumb-tabs::-webkit-scrollbar {
+  display: none;
+}
+/* The marker: the shown app's tint and an accent bar over its glyph, one element that slides with the app (220 ms, as
+   the slide), instant under reduced motion. Each tab is one n-th of the list, so it moves by its own width per app. */
+.thumb-mark {
+  position: absolute;
+  top: 0;
+  left: 0;
+  width: max(44px, calc(100% / var(--n)));
+  height: 56px;
+  transform: translateX(calc(var(--i) * 100%));
+  transition: transform var(--slide-ms, 220ms) cubic-bezier(.2, 0, 0, 1);
+  pointer-events: none;
+}
+.thumb-mark::before {
+  content: "";
+  position: absolute;
+  top: 6px;
+  left: 50%;
+  width: min(46px, 100%);
+  height: 44px;
+  transform: translateX(-50%);
+  border-radius: 12px;
+  background: var(--ma-accent-subtle);
+}
+.thumb-mark::after {
+  content: "";
+  position: absolute;
+  top: 0;
+  left: 50%;
+  width: 28px;
+  height: 3px;
+  margin-left: -14px;
+  border-radius: 0 0 3px 3px;
+  background: var(--ma-accent);
+}
+@media (prefers-reduced-motion: reduce) {
+  .thumb-mark {
+    transition: none;
+  }
+}
+.thumb {
+  position: relative;
+  flex: 0 1 auto;
+  width: 52px;
+  min-width: 44px;
+  height: 56px;
+  display: grid;
+  place-items: center;
+  padding: 0;
+  border: 0;
+  border-radius: 12px;
+  background: none;
+  cursor: pointer;
+}
+.thumb:focus-visible {
+  outline: 2px solid var(--ma-focus-ring);
+  outline-offset: -4px;
+}
+.thumb-sep {
+  flex: none;
+  width: 1px;
+  height: 28px;
+  margin: 0 10px 0 12px;
+  background: var(--ma-border);
+}
+.thumb-desk {
+  flex: none;
+  display: grid;
+  place-items: center;
+  width: 44px;
+  height: 44px;
+  padding: 0;
+  border: 1px solid var(--ma-border);
+  border-radius: 50%;
+  background: var(--ma-surface-window);
+  color: var(--ma-text-primary);
+  cursor: pointer;
+}
+.thumb-desk:focus-visible {
+  outline: 2px solid var(--ma-focus-ring);
+  outline-offset: 2px;
+}
 .window-edge {
   position: absolute;
   touch-action: none;
@@ -1217,7 +1842,7 @@ a.menu-item {
   align-items: center;
   min-width: 96px;
   height: 30px;
-  padding-right: 4px;
+  padding-right: 2px;
   border: 1px solid transparent; /* every tab the same size, so the selected one's edge moves nothing */
   border-radius: 8px;
   color: var(--ma-text-secondary);
@@ -1254,12 +1879,13 @@ a.menu-item {
     opacity: 0.55;
   }
 }
+/* 24 px: WCAG 2.5.8's least target, since it sits right against the tab's own button (the accessibility pass, Nov 10). */
 .br-tab-close {
   flex: none;
   display: grid;
   place-items: center;
-  width: 20px;
-  height: 20px;
+  width: 24px;
+  height: 24px;
   padding: 0;
   border: 0;
   border-radius: 6px;
@@ -1272,6 +1898,15 @@ a.menu-item {
 }
 .br-tab-new {
   flex: none;
+  /* Many tabs scroll the strip, and New tab stays at its end where a finger or the keyboard finds it (reflow at 400 %). */
+  position: sticky;
+  right: 0;
+  background: var(--ma-surface-window);
+}
+@media (max-width: 639px) {
+  .br-tab {
+    min-width: 56px;
+  }
 }
 .br-bar {
   display: flex;
@@ -1370,6 +2005,12 @@ a.menu-item {
   overflow: hidden;
   text-overflow: ellipsis;
 }
+/* The dot before the action is part of the sentence, so it hides and ellipsizes with it. An inline block drops its
+   spaces (they stay in the text), so it sits the line's 6 px gap from either side, as it did as its own item. */
+.br-line-sep {
+  display: inline-block;
+  margin-inline-start: 6px;
+}
 .br-line-action {
   flex: none;
   padding: 0;
@@ -1433,6 +2074,7 @@ a.menu-item {
 .br-surface {
   position: absolute;
   inset: 0;
+  overflow: hidden; /* a zoomed picture fills the surface, and no more */
 }
 /* The way to tell where typing goes. */
 .br-surface:focus-within {
@@ -1451,6 +2093,7 @@ a.menu-item {
   opacity: 0;
   resize: none;
   pointer-events: none;
+  font-size: 16px; /* so iOS doesn't zoom the office as it takes the focus */
 }
 .br-video {
   display: block;
@@ -1460,12 +2103,435 @@ a.menu-item {
   cursor: default;
   touch-action: manipulation;
 }
+/* Touch control is on (`browser/touchInput.ts`): a finger on the picture is the page's, so the member's own browser
+   neither scrolls nor zooms the office, nor offers its own menu or a text selection, under it, nor anywhere on the
+   surface round it. The zoom is a transform about the top left, on the picture and the held still alike. */
+.br-surface.touch-on,
+.br-video.touch-on {
+  touch-action: none;
+  -webkit-touch-callout: none;
+  -webkit-user-select: none;
+  user-select: none;
+}
+.br-video,
+.br-held {
+  transform-origin: 0 0;
+}
 .br-held {
   position: absolute;
   inset: 0;
   width: 100%;
   height: 100%;
   object-fit: contain;
+}
+/* ------------------------------------------------------------ touch control (spec (f), `browser/TouchRow.tsx`) */
+/* The finger's mark (`touchFeedback.ts`): a dot the instant it lands, and a ring filling from 200 to 500 ms while it
+   holds. The media set's white with a dark halo, so it reads on any page in any theme. */
+.br-touch-layer {
+  position: absolute;
+  inset: 0;
+  overflow: hidden;
+  pointer-events: none;
+}
+.br-press {
+  position: absolute;
+  top: 0;
+  left: 0;
+  width: 0;
+  height: 0;
+}
+.br-dot {
+  position: absolute;
+  top: -18px;
+  left: -18px;
+  box-sizing: border-box;
+  width: 36px;
+  height: 36px;
+  border: 2px solid var(--ma-view-media-fg);
+  border-radius: 50%;
+  background: color-mix(in srgb, var(--ma-view-media-fg) 28%, transparent);
+  box-shadow: 0 0 0 1px var(--ma-view-media-shade);
+  transition:
+    transform 240ms ease-out,
+    opacity 240ms ease-out;
+}
+.br-press.held .br-dot {
+  background: color-mix(in srgb, var(--ma-view-media-fg) 45%, transparent);
+}
+.br-press.lifted .br-dot {
+  transform: scale(0.6667);
+  opacity: 0;
+}
+.br-ring {
+  position: absolute;
+  top: -30px;
+  left: -30px;
+  width: 60px;
+  height: 60px;
+  overflow: visible;
+  transform: rotate(-90deg); /* from 12 o'clock */
+  transition: opacity 240ms ease-out;
+}
+.br-press.lifted .br-ring {
+  opacity: 0;
+}
+.br-ring circle {
+  fill: none;
+  stroke-dasharray: 100;
+  stroke-dashoffset: 100;
+  animation: br-ring 300ms linear 200ms both;
+}
+.br-ring-arc {
+  stroke: var(--ma-view-media-fg);
+  stroke-width: 3;
+}
+.br-ring-shade {
+  stroke: var(--ma-view-media-shade);
+  stroke-width: 5;
+}
+@keyframes br-ring {
+  to {
+    stroke-dashoffset: 0;
+  }
+}
+@keyframes br-late {
+  from {
+    visibility: hidden;
+  }
+  to {
+    visibility: visible;
+  }
+}
+/* The page row: hidden but on a finger's screen. */
+.br-row {
+  display: none;
+}
+/* While typing in the page on a phone, the page gets the screen: the head, the tabs and the bar step aside, as the thumb
+   row already does. A tablet keeps them. */
+@media (pointer: coarse) and (max-width: 599px), (pointer: coarse) and (max-height: 480px) {
+  .br.typing .br-tabs,
+  .br.typing .br-bar,
+  .carousel-stage.phone:has(.br.typing) .window-head,
+  .ma-window:has(.br.typing) > .window-head {
+    display: none;
+  }
+}
+/* The first-use hint, a card at the foot of the surface, over the page row's top. */
+.br-touch-hint {
+  position: absolute;
+  right: 12px;
+  bottom: 12px;
+  left: 12px;
+  z-index: 1;
+  max-width: 366px;
+  margin: 0 auto;
+  padding: 12px 14px 4px;
+  border-radius: 14px;
+  background: var(--ma-surface-overlay);
+  box-shadow:
+    var(--ma-elevation-menu),
+    0 0 0 1px var(--ma-border);
+  animation: br-appear 160ms linear both;
+}
+.br-touch-hint-title {
+  margin: 0;
+  color: var(--ma-text-primary);
+  font-size: 15px;
+  font-weight: 600;
+  line-height: 20px;
+}
+.br-touch-hint-more {
+  margin: 4px 0 0;
+  color: var(--ma-text-secondary);
+  font-size: 14px;
+  line-height: 19px;
+}
+.br-touch-hint-ok {
+  display: block;
+  min-height: 44px;
+  margin: 0 -6px 0 auto;
+  padding: 0 6px;
+  border: 0;
+  background: none;
+  color: var(--ma-accent);
+  font: inherit;
+  font-size: 15px;
+  font-weight: 600;
+  cursor: pointer;
+}
+@media (pointer: coarse) {
+  .br-row {
+    position: absolute;
+    right: 0;
+    bottom: 0;
+    left: 0;
+    display: flex;
+    align-items: center;
+    gap: 8px;
+    height: 52px;
+    box-sizing: border-box;
+    padding: 4px calc(8px + env(safe-area-inset-right, 0px)) 4px calc(8px + env(safe-area-inset-left, 0px));
+    border-top: 1px solid var(--ma-border);
+    background: var(--ma-surface-window);
+  }
+  .br-view.with-row .br-surface {
+    bottom: 52px;
+  }
+  .br-view.with-row .br-touch-hint {
+    bottom: 64px;
+  }
+  .br-row-zoom {
+    display: flex;
+    border-radius: 22px;
+    background: var(--ma-surface-fill);
+  }
+  .br-row-btn {
+    display: grid;
+    place-items: center;
+    width: 44px;
+    height: 44px;
+    padding: 0;
+    border: 0;
+    border-radius: 22px;
+    background: none;
+    color: var(--ma-text-primary);
+    cursor: pointer;
+  }
+  .br-row-btn:active:not([aria-disabled='true']) {
+    background: var(--ma-surface-fill-strong);
+  }
+  .br-row-btn[aria-disabled='true'] {
+    color: var(--ma-text-disabled);
+    cursor: default;
+  }
+  .br-row-btn:focus-visible,
+  .br-row-keyboard:focus-visible,
+  .br-row-desktop:focus-visible,
+  .br-key:focus-visible {
+    outline: 2px solid var(--ma-focus-ring);
+    outline-offset: -2px;
+  }
+  .br-row-keyboard {
+    display: flex;
+    flex: none;
+    align-items: center;
+    gap: 8px;
+    height: 44px;
+    padding: 0 14px 0 12px;
+    border: 0;
+    border-radius: 22px;
+    background: var(--ma-surface-fill);
+    color: var(--ma-text-primary);
+    font: inherit;
+    font-size: 15px;
+    font-weight: 600;
+    cursor: pointer;
+  }
+  .br-row-keyboard:active {
+    background: var(--ma-surface-fill-strong);
+  }
+  /* Desktop site: pushed right, a 44 px target round a 36 px chip. */
+  .br-row-desktop {
+    display: grid;
+    flex: none;
+    place-items: center;
+    height: 44px;
+    margin-left: auto;
+    padding: 0;
+    border: 0;
+    background: none;
+    font: inherit;
+    cursor: pointer;
+  }
+  .br-row-chip {
+    display: flex;
+    align-items: center;
+    gap: 6px;
+    height: 36px;
+    box-sizing: border-box;
+    padding: 0 12px;
+    border: 1px solid var(--ma-border);
+    border-radius: 18px;
+    color: var(--ma-text-secondary);
+    font-size: 14px;
+    font-weight: 600;
+  }
+  .br-row-desktop[aria-pressed='true'] .br-row-chip {
+    border-color: var(--ma-accent);
+    background: var(--ma-accent-subtle);
+    color: var(--ma-text-primary);
+  }
+  /* The key row: the page row's place while typing, riding on the phone's keyboard (`TouchRow.tsx` moves it). */
+  .br-keyrow {
+    z-index: 2;
+    gap: 0;
+    padding-right: calc(4px + env(safe-area-inset-right, 0px));
+  }
+  .br-keyrow-keys {
+    display: flex;
+    flex: 1;
+    min-width: 0;
+    overflow-x: auto;
+    scrollbar-width: none;
+    overscroll-behavior-x: contain;
+    mask-image: linear-gradient(to left, transparent, black 24px);
+  }
+  .br-keyrow-keys::-webkit-scrollbar {
+    display: none;
+  }
+  .br-key {
+    position: relative;
+    display: grid;
+    flex: none;
+    place-items: center;
+    width: 44px;
+    height: 44px;
+    padding: 0;
+    border: 0;
+    background: none;
+    color: var(--ma-text-primary);
+    font: inherit;
+    font-size: 14px;
+    font-weight: 600;
+    cursor: pointer;
+    touch-action: manipulation;
+  }
+  .br-key::before {
+    content: '';
+    position: absolute;
+    inset: 3px 2px;
+    z-index: -1;
+    border-radius: 8px;
+    background: var(--ma-surface-fill);
+  }
+  .br-key {
+    isolation: isolate;
+  }
+  .br-key:active::before {
+    background: var(--ma-surface-fill-strong);
+  }
+  .br-key.on {
+    color: var(--ma-text-on-accent);
+  }
+  .br-key.on::before {
+    background: var(--ma-accent);
+  }
+  .br-key.locked::after {
+    content: '';
+    position: absolute;
+    right: 10px;
+    bottom: 7px;
+    left: 10px;
+    height: 2px;
+    border-radius: 1px;
+    background: var(--ma-text-on-accent);
+  }
+  .br-keyrow-pill {
+    position: absolute;
+    right: 12px;
+    bottom: calc(100% + 8px);
+    left: 12px;
+    width: fit-content;
+    max-width: calc(100% - 24px);
+    margin: 0 auto;
+    padding: 8px 14px;
+    border-radius: 18px;
+    background: var(--ma-surface-overlay);
+    box-shadow:
+      var(--ma-elevation-menu),
+      0 0 0 1px var(--ma-border);
+    color: var(--ma-text-primary);
+    font-size: 14px;
+    text-align: center;
+    pointer-events: none;
+  }
+  .br-keyrow-rule {
+    flex: none;
+    width: 1px;
+    height: 28px;
+    margin: 0 4px;
+    background: var(--ma-border);
+  }
+}
+/* On its side: a column at the surface's right, in the letterbox, inside the safe area; the picture keeps the height. */
+@media (pointer: coarse) and (orientation: landscape) {
+  .br-row {
+    top: 8px;
+    right: calc(8px + env(safe-area-inset-right, 0px));
+    bottom: auto;
+    left: auto;
+    flex-direction: column;
+    width: 52px;
+    height: auto;
+    padding: 4px;
+    border: 0;
+    border-radius: 14px;
+    background: var(--ma-surface-chrome);
+    box-shadow:
+      var(--ma-elevation-menu),
+      0 0 0 1px var(--ma-border);
+  }
+  .br-row-zoom {
+    flex-direction: column;
+  }
+  .br-row-keyboard {
+    justify-content: center;
+    width: 44px;
+    padding: 0;
+  }
+  .br-row-keyboard span,
+  .br-row-chip span {
+    position: absolute;
+    width: 1px;
+    height: 1px;
+    overflow: hidden;
+    clip-path: inset(50%);
+  }
+  .br-row-desktop {
+    margin-left: 0;
+    margin-top: auto;
+  }
+  .br-row-chip {
+    width: 36px;
+    padding: 0;
+    justify-content: center;
+  }
+  /* While typing, the key row sits on the keyboard across the whole width, as upright. */
+  .br-keyrow {
+    top: auto;
+    right: 0;
+    bottom: 0;
+    left: 0;
+    flex-direction: row;
+    width: auto;
+    height: 52px;
+    padding: 4px calc(4px + env(safe-area-inset-right, 0px)) 4px calc(8px + env(safe-area-inset-left, 0px));
+    border-top: 1px solid var(--ma-border);
+    border-radius: 0;
+    background: var(--ma-surface-window);
+    box-shadow: none;
+  }
+  .br-view.with-row .br-surface {
+    bottom: 0;
+  }
+  .br-view.with-row .br-touch-hint {
+    bottom: 12px;
+  }
+}
+/* On a phone in portrait the picture sits at the top of the surface, not floating mid-screen: the element is the picture's
+   box (16:9), so the pointer mapping (`contentBox`) stays right. */
+@media (max-width: 599px) and (orientation: portrait) {
+  .br-video,
+  .br-held {
+    height: auto;
+    aspect-ratio: 16 / 9;
+    max-height: 100%;
+  }
+  .br-held {
+    inset: auto;
+    top: 0;
+    left: 0;
+  }
 }
 /* A blur over moving video is a blur per frame, so under the shield the picture simply isn't drawn. */
 .window-layer.shielded .br-video {
@@ -1496,7 +2562,8 @@ a.menu-item {
   display: grid;
   justify-items: center;
   gap: 10px;
-  max-width: 400px;
+  max-width: min(400px, 100%);
+  box-sizing: border-box;
   padding: 24px;
   border-radius: 14px;
   background: var(--ma-surface-window);
@@ -1516,7 +2583,9 @@ a.menu-item {
 }
 .br-steps {
   display: grid;
-  grid-template-columns: repeat(4, 56px);
+  grid-template-columns: repeat(4, minmax(0, 56px));
+  width: 100%;
+  max-width: 236px; /* four 56 px steps; narrower where the window is (reflow at 400 %) */
   gap: 4px;
 }
 .br-steps span {
@@ -1541,8 +2610,21 @@ a.menu-item {
 }
 @media (prefers-reduced-motion: reduce) {
   .br-panel.delayed,
-  .br-tab.loading .br-tab-title {
+  .br-tab.loading .br-tab-title,
+  .br-touch-hint {
     animation: none;
+  }
+  /* The dot shows a moment and goes, unscaled; the ring comes whole at 500 ms. */
+  .br-dot,
+  .br-ring {
+    transition: none;
+  }
+  .br-ring circle {
+    animation: none;
+    stroke-dashoffset: 0;
+  }
+  .br-ring {
+    animation: br-late 0s linear 500ms both;
   }
   /* A thaw is about a tenth of a second: still no fade, but no flash of "Resuming…" either. */
   .br-panel.delayed[data-panel='resuming'] {
@@ -1587,6 +2669,61 @@ a.menu-item {
   gap: 8px;
   margin-top: 20px;
 }
+/* `/connect/openrouter` (agent/connectCallback.tsx): OpenRouter's window, back for a moment on the world background. */
+.or-cb {
+  display: grid;
+  gap: 8px;
+  width: min(300px, 100%);
+  padding: 22px;
+  border-radius: 14px;
+  background: var(--ma-surface-window);
+  box-shadow: var(--ma-elevation-window);
+}
+.or-cb-brand {
+  font-size: 12px;
+  line-height: 16px;
+  font-weight: 600;
+  color: var(--ma-text-tertiary);
+}
+.or-cb h1 {
+  font-size: 16px;
+  line-height: 22px;
+  font-weight: 600;
+  color: var(--ma-text-primary);
+}
+.or-cb p:not(.or-cb-brand) {
+  font-size: 14px;
+  line-height: 20px;
+  color: var(--ma-text-secondary);
+}
+/* A link sent to the office (#9, `chrome/CalmScreen.tsx` LinkBox): its host, then the whole address, untrusted text.
+   Here for the sign-in card; Send to my desk's sheet (`open/open.css`) uses the same box. */
+.op-link {
+  margin-top: 12px;
+  padding: 10px 12px;
+  border-radius: 10px;
+  background: var(--ma-surface-sunken);
+  direction: ltr;
+  unicode-bidi: isolate;
+}
+.op-host {
+  font-size: 15px;
+  line-height: 22px;
+  font-weight: 600;
+  color: var(--ma-text-primary);
+  overflow-wrap: anywhere;
+}
+.op-addr {
+  margin-top: 2px;
+  font-size: 13px;
+  line-height: 18px;
+  color: var(--ma-text-secondary);
+  overflow-wrap: anywhere;
+  display: -webkit-box;
+  -webkit-box-orient: vertical;
+  -webkit-line-clamp: 3;
+  overflow: hidden;
+}
 /* ------------------------------------------------------------ the office's notice */
 /* chrome/CalmScreen.tsx DeskNotice: the membership cards, no desk yet, and can't reach. The Look in the membership card
    proposal: today's panel, centered over the empty canvas with the top bar still there, no scrim, nothing blocked.
@@ -1613,6 +2750,11 @@ a.menu-item {
   text-align: center;
   z-index: 5;
   animation: desk-notice-in 160ms ease-out;
+}
+/* Nothing on the card gives way when it's too short: it scrolls instead. A flex item shrinks by default, and on a phone
+   on its side "See membership" went down to 22 px with the Alliance line pushed out under the card's edge (LS-27). */
+.desk-notice > * {
+  flex-shrink: 0;
 }
 @keyframes desk-notice-in {
   from {
@@ -1755,6 +2897,48 @@ a.menu-item {
     max-height: calc(100% - 80px);
   }
 }
+/* A phone on its side (about 340 px under the browser's bars) can't hold card A at its full height, so the words and
+   the button get the room (LS-27): wider, so the body and the Alliance line take fewer lines, the phone's padding and
+   title, and no picture tiles, which are only a picture (they're hidden from screen readers). Only where it's short and
+   wide: a 400% zoom is narrow too, and keeps its own rules above. */
+@media (max-height: 480px) and (min-width: 600px) {
+  .desk-notice {
+    width: min(680px, calc(100% - 32px));
+    padding: 20px 28px;
+  }
+  .desk-notice-pics {
+    display: none;
+  }
+  .desk-notice h2 {
+    font-size: 18px;
+    line-height: 26px;
+  }
+  .desk-notice .btn {
+    margin-top: 16px;
+  }
+  .desk-notice .desk-notice-soon,
+  .desk-notice .desk-notice-alliance {
+    margin-top: 16px;
+  }
+  .desk-notice .desk-notice-alliance {
+    padding-top: 12px;
+  }
+  /* The wider card left the body's last line one word ("home."): even the lines out. Where a browser doesn't know
+     `balance` (before Chromium 114 and Safari 17.5) the line breaks as they were. */
+  .desk-notice p {
+    text-wrap: balance;
+  }
+}
+/* A finger: the button and the link are 44 px at any width, as they are on a phone held upright (LS-41). */
+@media (pointer: coarse) {
+  .desk-notice .btn {
+    height: 44px;
+  }
+  .desk-notice-link {
+    min-height: 44px;
+    margin-top: 0;
+  }
+}
 
 /* ------------------------------------------------------------ small screens */
 /* The scope switch's four segments are about 305 px, more than a 320 px screen leaves them (288), so it reached the edge. */
@@ -1836,6 +3020,158 @@ a.menu-item {
   }
   .hide-phone {
     display: none;
+  }
+  /* The Browser's bar on a phone (LS-40): the address has the first row to itself beside back, forward and reload
+     (148 px with a finger's 44 px buttons), and the simplified view's switch, its line, the bar's notes and the picture
+     quality menu go to a second row (below). Side by side, the address was left about 80 px. */
+  .address {
+    flex-basis: calc(100% - 148px);
+  }
+}
+/* A phone or a tablet held upright: rather than squeeze the address under 280 px, the Browser's bar takes a second
+   row, at its end. A phone on its side keeps one row, for the page's height. */
+@media (max-width: 1023px) and (min-height: 481px) {
+  .br-bar {
+    flex-wrap: wrap;
+    justify-content: flex-end;
+    row-gap: 4px;
+  }
+  .address {
+    min-width: min(280px, calc(100% - 148px)); /* on a phone, the whole first row */
+  }
+}
+
+/* ------------------------------------------------------------ a finger (LS-41) */
+/* With a finger (phones and tablets) every control in the office's chrome and the Browser's is a target of 44 px or
+   more, as the quality menu's rows already are. Round buttons with a look of their own (the top bar's) keep it: their
+   target grows round them, invisibly. Plain ones (the window's, the Browser's) are simply 44, which only spaces them. */
+@media (pointer: coarse) {
+  .icon-btn {
+    position: relative;
+  }
+  .icon-btn::after {
+    content: '';
+    position: absolute;
+    inset: min(0px, (100% - 44px) / 2);
+  }
+  .window-controls .icon-btn.sm,
+  .br-chrome .icon-btn.sm {
+    width: 44px;
+    height: 44px;
+  }
+  .window-head {
+    height: 45px; /* 44 inside its 1 px rule */
+  }
+  .desk-nav .icon-btn,
+  .zoom-ctl .icon-btn {
+    width: 44px;
+  }
+  /* The scope switch and the menu's theme switch: the target takes in the track and a little past it. */
+  .segmented button {
+    position: relative;
+  }
+  .segmented button::after {
+    content: '';
+    position: absolute;
+    z-index: 1; /* over the menu's switch row just below, which is positioned */
+    inset: min(0px, (100% - 44px) / 2) -1px;
+  }
+  .segmented.theme-switch button {
+    min-height: 34px;
+  }
+  .menu-item {
+    min-height: 44px;
+  }
+  .window-back {
+    width: 44px;
+    height: 44px;
+    padding: 0;
+  }
+  .br-tabs {
+    min-height: 48px;
+  }
+  .br-tab {
+    height: 44px;
+  }
+  /* Over the tab's 1 px edge too, so the whole 44 is the tab's button. */
+  .br-tab-title {
+    height: calc(100% + 2px);
+    margin-block: -1px;
+  }
+  .br-tab-close {
+    width: 44px;
+    height: 44px;
+  }
+  .address {
+    height: 44px;
+  }
+  .address input {
+    align-self: stretch;
+  }
+  .br-note-action,
+  .br-line-action {
+    min-width: 44px;
+    min-height: 44px;
+  }
+  /* The switch keeps its 2 px track round the chosen word: 40 px words, and a target that takes in the track. */
+  .br-mode button {
+    position: relative;
+    height: 40px;
+  }
+  .br-mode button::after {
+    content: '';
+    position: absolute;
+    inset: -3px -1px;
+  }
+}
+
+/* ------------------------------------------------------------ a short screen (LS-40) */
+/* A phone on its side: a window (always full under 1024 px) takes the whole screen, as it does on a phone held
+   upright, and the Browser's tabs and bar sit close, so the page gets most of the height. The top bar was 72 px of
+   about 340, and the tabs and bar took half of what was left. */
+@media (max-width: 1023px) and (max-height: 480px) {
+  .ma-window.full {
+    top: 0;
+    left: 0;
+    right: 0;
+    bottom: 0;
+    border-radius: 0;
+    padding-left: env(safe-area-inset-left, 0px);
+    padding-right: env(safe-area-inset-right, 0px);
+    padding-bottom: env(safe-area-inset-bottom, 0px);
+  }
+  .br-tabs {
+    min-height: 0;
+    padding-top: 2px;
+  }
+  .br-bar {
+    padding-block: 2px;
+  }
+  /* One row, so the address keeps at least 160 px, and the switch's line ("Real page here from now on · Undo") gives
+     way before it does: its sentence shortens with an ellipsis, and the icon and Undo stay. It was left 85 px. */
+  .address {
+    min-width: 160px;
+  }
+  .br-bar > .icon-btn {
+    flex: none; /* back, forward and reload stay 44 wide */
+  }
+  .br-bar .br-line {
+    flex: 0 1 auto;
+    min-width: 0;
+  }
+  .br-bar .br-line-text {
+    white-space: nowrap; /* one line to cut with the ellipsis, or it wraps to its longest word */
+  }
+}
+/* Under 700 px on its side the sentence would be a sliver or a letter or two (2 px at 641, "Re…" at 667), so it goes as it
+   does on a phone held upright: the icon and the action show, and the words stay for screen readers. */
+@media (max-width: 699px) and (max-height: 480px) {
+  .br-bar .br-line-text {
+    position: absolute;
+    width: 1px;
+    height: 1px;
+    overflow: hidden;
+    clip-path: inset(50%);
   }
 }
 
@@ -2305,4 +3641,78 @@ a.menu-item {
 }
 .office-notice .data-guard {
   max-width: none;
+}
+
+/* A Work desk a step down stopped (chrome/EndedDeskPanel.tsx, billing spec still 15): over the desk, on the closed-desk pattern. */
+.ended-desk {
+  position: fixed;
+  left: 0;
+  top: 0;
+  z-index: 40;
+  box-sizing: border-box;
+  padding: 20px 22px;
+  border-radius: 16px;
+  background: var(--ma-surface-overlay);
+  border: 1px solid var(--ma-border);
+  box-shadow: var(--ma-elevation-menu);
+  color: var(--ma-text-primary);
+}
+.ended-desk p {
+  margin: 0;
+}
+.ended-desk-title {
+  font-size: 15px;
+  font-weight: 600;
+}
+.ended-desk-body {
+  margin-top: 8px !important;
+  font-size: 14px;
+  line-height: 1.5;
+  color: var(--ma-text-secondary);
+}
+.ended-desk-links {
+  margin-top: 12px !important;
+  display: flex;
+  flex-wrap: wrap;
+  gap: 6px 18px;
+  font-size: 14px;
+  font-weight: 600;
+}
+.ended-desk-link {
+  background: none;
+  border: 0;
+  padding: 0;
+  font: inherit;
+  cursor: pointer;
+}
+
+/* Reflow at 400 % (WCAG 1.4.10): under 360 px the Browser's bar lets its right group fall to a second row rather than leave
+   the window, and the address takes what the first row has left, whatever the screen's height. */
+@media (max-width: 359px) {
+  .br-bar {
+    flex-wrap: wrap;
+    justify-content: flex-end;
+    row-gap: 4px;
+  }
+  .br-bar .address {
+    min-width: 0;
+    flex: 1 1 100px;
+  }
+}
+/* A press shows on its own: the browser's square tap highlight is off at the root, so these mirror their hover tints. */
+.icon-btn:active:not(:disabled),
+.segmented button:active,
+.br-tab:active,
+.br-tab-close:active:not(:disabled) {
+  background: var(--ma-surface-fill-strong);
+}
+.btn:active:not(:disabled),
+.menu-item:active:not(:disabled):not([aria-disabled='true']),
+.xm-item:active,
+.address-out:active {
+  background: var(--ma-surface-sunken);
+}
+.btn.primary:active:not(:disabled) {
+  background: var(--ma-accent-hover);
+  border-color: var(--ma-accent-hover);
 }

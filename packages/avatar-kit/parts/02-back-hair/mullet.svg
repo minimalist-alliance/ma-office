@@ -1,0 +1,4 @@
+<g data-part="mullet">
+  <path fill="{{hair}}" d="M84,118 C84,142 79,166 68,193 C76,199 88,199 96,194 C102,198 108,197 113,193 L143,193 C148,197 154,198 160,194 C168,199 180,199 188,193 C177,166 172,142 172,118 Z"/>
+  <g data-min-size="40" fill="none" stroke="{{hairStep}}" stroke-width="2.4" stroke-linecap="round" stroke-linejoin="round"><path d="M84,146 C82,164 78,178 74,189"/><path d="M172,146 C174,164 178,178 182,189"/><path d="M94,160 C93,172 91,182 89,191"/><path d="M162,160 C163,172 165,182 167,191"/></g>
+</g>

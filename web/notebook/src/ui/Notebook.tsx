@@ -1,12 +1,14 @@
 // The Notebook app: Tab view and Temporal view (design 5), on any NotebookBackend. It fills its
 // container. The host draws the window around it and may put things at either end of its header.
-import { useCallback, useEffect, useState, type ReactNode } from 'react';
+import { useCallback, useEffect, useRef, useState, type ReactNode } from 'react';
 import { createPortal } from 'react-dom';
 import type { NotebookBackend } from '../model/backend.ts';
+import { DEFAULT_HIGHLIGHT } from '../model/colors.ts';
 import type { PMNode } from '../model/schema.ts';
 import { Segmented } from './controls.tsx';
 import { ReadOnlyDoc } from './Editor.tsx';
 import { Icon } from './icons.tsx';
+import { PALETTE, toPaletteId, type PaletteId } from './palette.ts';
 import { SearchOverlay } from './Search.tsx';
 import { resolve, useTree, useUiState, type Selection, type View } from './state.ts';
 import { TabView } from './TabView.tsx';
@@ -23,6 +25,18 @@ export interface NotebookProps {
   headerStart?: ReactNode;
   /** After the search button: a close button, say. */
   headerEnd?: ReactNode;
+  /**
+   * The color this member last used in a color menu, kept by the host (the Desk app keeps it in the member's `prefs`, so it
+   * follows them). Turn into callout uses it, and the color rows start on it. Without it the Notebook keeps one for as long as
+   * it's open, starting at the default highlight.
+   */
+  lastColor?: string | null;
+  onLastColorChange?: (id: string) => void;
+  /**
+   * Whether this member may create, rename, recolor and move notebooks and tabs. False for a Guild Desk member without the
+   * grant (pages stay theirs): those controls are left out. Default true, as on a member's own desk.
+   */
+  manageSpaces?: boolean;
 }
 
 const isMac = typeof navigator !== 'undefined' && /Mac|iPhone|iPad/.test(navigator.platform);
@@ -59,7 +73,7 @@ function PrintHost({ doc, onDone }: { doc: PMNode; onDone: () => void }) {
   );
 }
 
-export function Notebook({ backend, stateKey = 'ma.notebook.ui', initialView = 'tabs', onOpenLink, headerStart, headerEnd }: NotebookProps) {
+export function Notebook({ backend, stateKey = 'ma.notebook.ui', initialView = 'tabs', onOpenLink, headerStart, headerEnd, lastColor, onLastColorChange, manageSpaces = true }: NotebookProps) {
   const tree = useTree(backend);
   const [ready, setReady] = useState(false);
   const [ui, setUi] = useUiState(stateKey, initialView);
@@ -67,6 +81,17 @@ export function Notebook({ backend, stateKey = 'ma.notebook.ui', initialView = '
   const [printing, setPrinting] = useState<PMNode | null>(null);
   // A page opened from search or the Temporal view takes the cursor; one picked in a list doesn't.
   const [focusPage, setFocusPage] = useState<string | null>(null);
+  const [ownColor, setOwnColor] = useState<string | null>(null);
+  // In a narrow window or tile (under 640 px, `notebook.css`), the notebooks and pages column steps aside for the page, behind
+  // a toggle in the head, and comes over the page while it's open. Choosing a page, Esc or a press on the page closes it.
+  const [sideOpen, setSideOpen] = useState(false);
+  const last: PaletteId = toPaletteId(lastColor ?? ownColor) ?? toPaletteId(DEFAULT_HIGHLIGHT) ?? (PALETTE[0]?.id as PaletteId);
+  const rememberRef = useRef(onLastColorChange);
+  rememberRef.current = onLastColorChange;
+  const remember = useCallback((id: PaletteId) => {
+    setOwnColor(id);
+    rememberRef.current?.(id);
+  }, []);
 
   useEffect(() => {
     let live = true;
@@ -74,7 +99,7 @@ export function Notebook({ backend, stateKey = 'ma.notebook.ui', initialView = '
       .ready()
       .then(async () => {
         // A first visit gets one notebook to write in, rather than an empty screen.
-        await ensureNotebook(backend);
+        if (manageSpaces) await ensureNotebook(backend);
         if (live) setReady(true);
       })
       .catch(() => {}); // the host says why
@@ -84,6 +109,7 @@ export function Notebook({ backend, stateKey = 'ma.notebook.ui', initialView = '
   }, [backend]);
 
   const resolved = resolve(tree, ui.sel);
+  useEffect(() => setSideOpen(false), [ui.sel.pageId, ui.view]);
   const select = useCallback((sel: Selection) => setUi({ sel }), [setUi]);
   const openPage = useCallback(
     (pageId: string) => {
@@ -99,14 +125,33 @@ export function Notebook({ backend, stateKey = 'ma.notebook.ui', initialView = '
     <div
       className="ma-nb"
       data-testid="notebook"
+      data-side={sideOpen ? 'open' : undefined}
       onKeyDown={(e) => {
         if ((isMac ? e.metaKey : e.ctrlKey) && !e.shiftKey && !e.altKey && e.key.toLowerCase() === 'k') {
           e.preventDefault();
           setSearching(true);
         }
+        if (sideOpen && e.key === 'Escape' && !e.defaultPrevented) {
+          e.preventDefault();
+          setSideOpen(false);
+          (e.currentTarget.querySelector('.nb-side-toggle') as HTMLElement | null)?.focus();
+        }
+      }}
+      onPointerDown={(e) => {
+        if (sideOpen && !(e.target as Element).closest('.nb-side, .nb-side-toggle')) setSideOpen(false);
       }}
     >
       <div className="nb-head">
+        <button
+          type="button"
+          className="nb-side-toggle"
+          aria-expanded={sideOpen}
+          aria-label={ui.view === 'tabs' ? 'Notebooks and pages' : 'Days'}
+          title={ui.view === 'tabs' ? 'Notebooks and pages' : 'Days'}
+          onClick={() => setSideOpen((o) => !o)}
+        >
+          <Icon name="panel" size={18} />
+        </button>
         {headerStart}
         <div className="nb-head-controls">
           <Segmented<View>
@@ -114,8 +159,8 @@ export function Notebook({ backend, stateKey = 'ma.notebook.ui', initialView = '
             value={ui.view}
             onChange={(view) => setUi({ view })}
             options={[
-              { value: 'tabs', label: 'Tab view', icon: <Icon name="tabs" size={15} /> },
-              { value: 'temporal', label: 'Temporal view', icon: <Icon name="calendar" size={15} /> },
+              { value: 'tabs', label: 'By tab', icon: <Icon name="tabs" size={15} /> },
+              { value: 'temporal', label: 'By day', icon: <Icon name="calendar" size={15} /> },
             ]}
           />
           <button type="button" className="nb-search-btn" onClick={() => setSearching(true)} aria-label="Search notes" aria-keyshortcuts={isMac ? 'Meta+K' : 'Control+K'}>
@@ -128,7 +173,19 @@ export function Notebook({ backend, stateKey = 'ma.notebook.ui', initialView = '
       </div>
       <div className="nb-body">
         {!ready ? null : ui.view === 'tabs' ? (
-          <TabView backend={backend} tree={tree} resolved={resolved} select={select} onOpenLink={onOpenLink} onPrint={print} focusPageId={focusPage} />
+          <TabView
+            backend={backend}
+            tree={tree}
+            resolved={resolved}
+            select={select}
+            onOpenLink={onOpenLink}
+            onPrint={print}
+            focusPageId={focusPage}
+            stateKey={stateKey}
+            lastColor={last}
+            onLastColor={remember}
+            manageSpaces={manageSpaces}
+          />
         ) : (
           <TemporalView backend={backend} tree={tree} onOpen={openPage} />
         )}

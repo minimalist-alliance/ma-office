@@ -5,11 +5,19 @@ import { Extension, type Editor as TipTapEditor, type JSONContent } from '@tipta
 import Collaboration from '@tiptap/extension-collaboration';
 import { Plugin, PluginKey } from '@tiptap/pm/state';
 import { Decoration, DecorationSet } from '@tiptap/pm/view';
+import type { EditorView } from '@tiptap/pm/view';
 import { EditorContent, useEditor, useEditorState } from '@tiptap/react';
-import { useEffect, useRef, type MouseEvent as ReactMouseEvent } from 'react';
+import { useEffect, useRef, useState, type MouseEvent as ReactMouseEvent } from 'react';
 import type { PageSession } from '../model/backend.ts';
-import { DOC_FIELD, schemaExtensions, type PMNode } from '../model/schema.ts';
+import { nearestPaletteId } from '../model/colors.ts';
+import { DOC_FIELD, schemaExtensions, type PMNode, type SchemaOptions } from '../model/schema.ts';
+import { ColorPreview, setPreview, type Preview } from './colorPreview.ts';
+import { editorMenuItems, PASTE_KEYS_LINE } from './editorMenu.ts';
 import { Icon } from './icons.tsx';
+import { Menu, type MenuAnchor } from './menu/Menu.tsx';
+import type { Rect } from './menu/placement.ts';
+import { useMenuTrigger } from './menu/useMenuTrigger.ts';
+import { exportPalette, type PaletteId } from './palette.ts';
 import { handleLargePaste } from './pasteSplit.ts';
 import { remoteCarets } from './remoteCarets.ts';
 
@@ -27,7 +35,7 @@ const TitlePlaceholder = Extension.create({
           decorations: ({ doc }) => {
             const first = doc.firstChild;
             if (!first || !first.isTextblock || first.content.size > 0) return null;
-            return DecorationSet.create(doc, [Decoration.node(0, first.nodeSize, { class: 'nb-empty-title', 'data-placeholder': 'Title' })]);
+            return DecorationSet.create(doc, [Decoration.node(0, first.nodeSize, { class: 'nb-empty-title', 'data-placeholder': 'Title', 'aria-label': 'Title' })]);
           },
         },
       }),
@@ -95,6 +103,10 @@ function Tool({ on, label, wide, onPress, children, shortcut }: { on: boolean; l
   );
 }
 
+/** A color pasted from elsewhere becomes the nearest palette color, by the light values; one it can't read is dropped. */
+const LIGHT = exportPalette();
+const PASTED_COLORS: SchemaOptions = { nearestColor: (css, role) => nearestPaletteId(css, LIGHT, role) };
+
 const MOD = typeof navigator !== 'undefined' && /Mac|iPhone|iPad/.test(navigator.platform) ? '⌘' : 'Ctrl+';
 
 export function Toolbar({ editor }: { editor: TipTapEditor }) {
@@ -156,12 +168,43 @@ function watchTitle(editor: TipTapEditor, onTitle: (title: string) => void): () 
   };
 }
 
+/** The selection on screen, as one rectangle: what a phone's menu must never cover. A caret is its line. */
+function selectionRect(view: EditorView): Rect {
+  const { from, to } = view.state.selection;
+  const a = view.coordsAtPos(from);
+  const b = view.coordsAtPos(to);
+  const box = view.dom.getBoundingClientRect();
+  const oneLine = Math.abs(a.top - b.top) < 2;
+  return {
+    left: oneLine ? Math.min(a.left, b.left) : box.left,
+    right: oneLine ? Math.max(a.right, b.right) : box.right,
+    top: Math.min(a.top, b.top),
+    bottom: Math.max(a.bottom, b.bottom),
+  };
+}
+
+/** The first line with text, which is the page's title (liveTitleOf), selected; or the caret in an empty first line. */
+function selectTitleLine(editor: TipTapEditor): void {
+  let range: { from: number; to: number } | null = null;
+  editor.state.doc.descendants((node, pos) => {
+    if (range) return false;
+    if (!node.isTextblock) return true;
+    if (node.textContent.trim()) range = { from: pos + 1, to: pos + 1 + node.content.size };
+    return false;
+  });
+  editor.chain().focus().setTextSelection(range ?? 1).scrollIntoView().run();
+}
+
 export function PageEditor({
   session,
   onTitle,
   onOpenLink,
   autofocus,
   onEditor,
+  selectTitle,
+  onTitleSelected,
+  lastColor,
+  onLastColor,
 }: {
   session: PageSession;
   /** The live first line, for the page list while typing (the backend's title follows within seconds). */
@@ -170,15 +213,22 @@ export function PageEditor({
   onOpenLink?: (href: string) => void;
   autofocus?: boolean;
   onEditor?: (editor: TipTapEditor | null) => void;
+  /** Rename from the page list: a page is named by its first line, so that line is selected to type over. */
+  selectTitle?: boolean;
+  onTitleSelected?: () => void;
+  /** The color this member last used, and where to say a new one (`Notebook`'s `lastColor`). */
+  lastColor: PaletteId;
+  onLastColor: (id: PaletteId) => void;
 }) {
   const linkRef = useRef(onOpenLink);
   linkRef.current = onOpenLink;
   const editor = useEditor(
     {
       extensions: [
-        ...schemaExtensions(),
+        ...schemaExtensions(PASTED_COLORS),
         Collaboration.configure({ document: session.doc, field: DOC_FIELD }),
         remoteCarets(session.awareness),
+        ColorPreview,
         TitlePlaceholder,
         NotebookKeys,
       ],
@@ -233,11 +283,89 @@ export function PageEditor({
     [editor, session],
   );
 
+  useEffect(() => {
+    if (!editor || !selectTitle) return undefined;
+    const frame = requestAnimationFrame(() => {
+      if (editor.isDestroyed) return;
+      selectTitleLine(editor);
+      onTitleSelected?.();
+    });
+    return () => cancelAnimationFrame(frame);
+  }, [editor, selectTitle, onTitleSelected]);
+
+  // The context menu: right click, a long press, or Shift+F10 or the menu key in the text. Its items are built as it
+  // renders, and it renders again on every transaction while open, so a color applied from it shows checked at once.
+  const [menu, setMenu] = useState<{ anchor: MenuAnchor; avoid: Rect; touch: boolean; label: string } | null>(null);
+  const [, setRev] = useState(0);
+  useEffect(() => {
+    if (!menu || !editor) return undefined;
+    const bump = () => setRev((n) => n + 1);
+    editor.on('transaction', bump);
+    return () => {
+      editor.off('transaction', bump);
+    };
+  }, [menu, editor]);
+  const colorRef = useRef({ lastColor, onLastColor });
+  colorRef.current = { lastColor, onLastColor };
+  const [hint, setHint] = useState<string | null>(null);
+  useEffect(() => {
+    if (!hint) return undefined;
+    const t = setTimeout(() => setHint(null), 4000);
+    return () => clearTimeout(t);
+  }, [hint]);
+  const trigger = useMenuTrigger((req) => {
+    if (!editor || editor.isDestroyed || !req.target.closest('.nb-prose')) return false;
+    const view = editor.view;
+    // ProseMirror hears of a caret the browser just moved (Shift+arrows) on the next selectionchange: read it now, so the
+    // menu is about what's selected on screen.
+    (view as unknown as { domObserver?: { flush(): void } }).domObserver?.flush();
+    if (req.via !== 'keyboard') {
+      // A press outside the selection is about where it landed, as in any editor.
+      const hit = view.posAtCoords({ left: req.x, top: req.y });
+      const { from, to, empty } = view.state.selection;
+      if (hit && (empty || hit.pos < from || hit.pos > to)) editor.commands.setTextSelection(hit.pos);
+    }
+    const avoid = selectionRect(view);
+    const caret = view.coordsAtPos(view.state.selection.to);
+    setMenu({
+      anchor: req.via === 'keyboard' ? { left: caret.left, right: caret.left, top: caret.top, bottom: caret.bottom } : { x: req.x, y: req.y },
+      avoid,
+      touch: req.via === 'touch',
+      label: view.state.selection.empty ? 'Block' : 'Selected text',
+    });
+    return true;
+  });
+
   if (!editor) return null;
   return (
-    <div className="nb-editor">
+    <div className="nb-editor" {...trigger}>
       <Toolbar editor={editor} />
       <EditorContent editor={editor} className="nb-scroll" />
+      {hint && (
+        <p className="nb-quiet-hint" role="status">
+          {hint}
+        </p>
+      )}
+      {menu && (
+        <Menu
+          items={editorMenuItems(editor, {
+            last: colorRef.current.lastColor,
+            remember: (id) => {
+              if (id !== colorRef.current.lastColor) colorRef.current.onLastColor(id);
+            },
+            onPasteRefused: () => setHint(PASTE_KEYS_LINE),
+          })}
+          onActiveChange={(item) => {
+            if (!editor.isDestroyed) setPreview(editor.view, (item?.preview as Preview | undefined) ?? null);
+          }}
+          anchor={menu.anchor}
+          avoid={menu.avoid}
+          touch={menu.touch}
+          label={menu.label}
+          fallbackFocus={editor.view.dom as HTMLElement}
+          onClose={() => setMenu(null)}
+        />
+      )}
     </div>
   );
 }

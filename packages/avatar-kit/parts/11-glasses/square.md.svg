@@ -1,0 +1,5 @@
+<g data-part="glasses-square" fill="none" stroke="{{glasses}}" stroke-linecap="round" stroke-linejoin="round">
+  <rect x="96" y="107" width="28" height="24" rx="6" stroke-width="7" fill="#FFFFFF" fill-opacity="0.08"/>
+  <rect x="132" y="107" width="28" height="24" rx="6" stroke-width="7" fill="#FFFFFF" fill-opacity="0.08"/>
+  <path d="M124,114 H132" stroke-width="6"/>
+</g>

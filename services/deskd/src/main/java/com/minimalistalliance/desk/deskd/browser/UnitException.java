@@ -21,6 +21,8 @@ public final class UnitException extends Exception {
     public static final String PAUSED = "paused";
     /** No unit was asked: a start of Chromium has to wait for the owner's age band ({@link BrowserStream#ageGateFrom}). */
     public static final String AGE_BAND = "age_band";
+    /** No unit was asked: a free desk's Browser time for the day is used up (ADR 0090, {@link BrowserStream#timeUsedFrom}). */
+    public static final String BROWSER_TIME = "browser_time";
 
     private static final String FAILED = "failed";
     /** desk-units: a freeze refused because the desk is working: {@code sound} or {@code download} in the text (ADR 0045). */
@@ -77,6 +79,21 @@ public final class UnitException extends Exception {
     /** For {@link #paused}, when the pause ends, as the Platform's ISO time, or null. */
     String resumesAt() {
         return isPaused() ? text : null;
+    }
+
+    /** A {@code live} refused because today's Browser time is used up. {@link #text} carries when it resets. */
+    static UnitException timeUsed(java.time.Instant resetsAt) {
+        return new UnitException(UnitsClient.DESK_BROWSER, BROWSER_TIME, resetsAt.toString());
+    }
+
+    /** {@link #timeUsed}: nothing was asked of units.sock. desk-units never answers with this code. */
+    boolean isTimeUsed() {
+        return BROWSER_TIME.equals(code);
+    }
+
+    /** For {@link #timeUsed}, when the day resets, as an ISO time. */
+    String resetsAt() {
+        return isTimeUsed() ? text : null;
     }
 
     /** {@link #held}: nothing was asked of units.sock. */

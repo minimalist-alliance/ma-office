@@ -176,6 +176,9 @@ final class BrowserMethods {
         } catch (TimeoutException e) {
             throw new RpcException(RpcException.UNAVAILABLE, "The stream didn't settle", Map.of());
         } catch (ExecutionException e) {
+            if (e.getCause() instanceof UnitException failure && failure.isTimeUsed()) {
+                throw timeUsed(failure.resetsAt());
+            }
             if (e.getCause() instanceof UnitException failure && failure.isPaused()) {
                 Map<String, Object> details = new LinkedHashMap<>();
                 details.put("reason", BANDWIDTH_LIMIT);
@@ -205,6 +208,18 @@ final class BrowserMethods {
             }
             throw e;
         }
+    }
+
+    /**
+     * Today's Browser time is used up on this free desk (ADR 0090): the bandwidth pause's refusal, so every Desk app pauses
+     * as it does for that, with {@code limit} to tell the two apart and {@code resumesAt} the member's next midnight.
+     */
+    static RpcException timeUsed(String resetsAt) {
+        Map<String, Object> details = new LinkedHashMap<>();
+        details.put("reason", BANDWIDTH_LIMIT);
+        details.put("resumesAt", resetsAt);
+        details.put("limit", UnitException.BROWSER_TIME);
+        return new RpcException(RpcException.UNAVAILABLE, "Today's Browser time is used up", details);
     }
 
     static RpcException forbidden() {

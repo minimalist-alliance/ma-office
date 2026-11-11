@@ -689,6 +689,210 @@ class MDocBuilderTest {
         assertThat(doc.nodes).containsOnlyKeys("e.1", "e.2");
     }
 
+    /** A kicker set apart from its headline in one link reads apart: the distiller's spacing over deskd's half's run-together text. */
+    @Test
+    void aLinksTextKeepsTheLayoutsGapsWhenOnlyTheSpacingDiffers() {
+        seen("k.1", "fpk1");
+        nodes.get("k.1").put("t", "Politics sketchThe lamp makers win");
+        seen("k.2", "fpk2");
+        nodes.get("k.2").put("t", "Read more");
+        block("k", "p", "c", List.of(List.of("a", "k.1", "https://example.com/story", "Politics sketch The lamp makers win"), " ",
+                List.of("a", "k.2", "https://example.com/more", "Read more about the lamp makers")));
+        List<Object> runs = runs(build().doc(), 0);
+        assertThat(m(runs.get(0))).containsEntry("runs", List.of("Politics sketch The lamp makers win")).doesNotContainKey("name");
+        assertThat(m(runs.get(2))).containsEntry("runs", List.of("Read more")).containsEntry("name", "Read more about the lamp makers");
+    }
+
+    /** An issue list's own filters on an item (GitHub's "Filter by author ann") are its author, never its actions (P34). */
+    @Test
+    void aListingsFilterOnAnItemIsItsMetaNotItsAction() {
+        seen("t.1", "fpt1");
+        seen("b.1", "fpb1");
+        seen("b.2", "fpb2");
+        seen("b.3", "fpb3");
+        seen("b.4", "fpb4");
+        nodes.get("b.4").put("t", "Filter by author bob");
+        block("k", "card", "g", "i", "title", "Lamp flickers", "c", List.of(List.of("a", "t.1", "https://example.org/issues/1", "Lamp flickers"),
+                List.of("br"), "bug", List.of("btn", "b.1", "bug", Map.of()), List.of("btn", "b.2", "Filter by author ann", Map.of()),
+                List.of("btn", "b.4", "bob", Map.of()), List.of("btn", "b.3", "Subscribe", Map.of())), "meta", "#1 · opened today");
+        Map<String, Object> card = m(((List<?>) build().doc().blocks.get(0).get("items")).get(0));
+        assertThat(card.get("meta")).isEqualTo(List.of("#1", "opened today", "ann", "bob"));
+        assertThat(card.get("chips")).isEqualTo(List.of("bug"));
+        assertThat((List<?>) card.get("actions")).extracting(a -> m(a).get("label")).containsExactly("Subscribe");
+    }
+
+    /** A paused video deskd found plays in the view (TED, Commons): only a poster with nothing behind it, or a frame, waits for a click. */
+    @Test
+    void aPausedVideoDeskdFoundIsLiveAndAPosterOrAFrameIsAClick() {
+        media.add(map("island", "vabc.1", "fp", "f1", "m", "video", "w", 640, "h", 360, "x", 10, "y", 100, "paused", true));
+        media.add(map("island", "vabc.2", "fp", "f2", "m", "video", "w", 640, "h", 360, "x", 10, "y", 600, "paused", true, "drm", 1));
+        media.add(map("island", "vabc.3", "fp", "f3", "m", "iframe", "w", 640, "h", 360, "x", 10, "y", 1100, "video", 1));
+        block("k", "media", "m", "video", "w", 640, "h", 360, "island", "click", "main", 1);
+        block("k", "media", "m", "video", "w", 640, "h", 360, "island", "click");
+        block("k", "media", "m", "iframe", "w", 640, "h", 360, "island", "click");
+        block("k", "island", "x", 0, "y", 2000, "w", 640, "h", 360, "island", "click", "why", "click-to-play");
+        MDoc doc = build().doc();
+        assertThat(doc.blocks).extracting(b -> b.get("state")).containsExactly("live", "click", "click", "click");
+        assertThat(doc.blocks.get(0)).containsEntry("island", "vabc.1");
+        assertThat(doc.blocks.get(3)).doesNotContainKey("island");
+    }
+
+    /** An article has its head and read time; a thread (votes on its posts, or a QAPage) and a listing of results don't. */
+    @Test
+    void aReadTimeIsAnArticlesNeverAThreadsOrAListings() {
+        meta.put("mode", "article");
+        String words = "word ".repeat(400);
+        block("k", "h", "l", 1, "c", List.of("A question"));
+        block("k", "p", "c", List.of(words));
+        assertThat(Json.object(build().doc().facts, "article")).containsKey("readMinutes");
+
+        for (int i = 1; i <= 2; i++) {
+            seen("u." + i, "fpu" + i);
+            seen("d." + i, "fpd" + i);
+            block("k", "p", "c", List.of(List.of("btn", "u." + i, "\u25b2", Map.of()), " 12 ", List.of("btn", "d." + i, "\u25bc", Map.of())));
+            block("k", "p", "c", List.of("An answer " + i + ". " + words));
+        }
+        assertThat(build().doc().facts).doesNotContainKey("article");
+
+        raw.clear();
+        block("k", "h", "l", 1, "c", List.of("A question"));
+        block("k", "p", "c", List.of(words));
+        extras.put("ld", List.of(Map.of("@type", "QAPage")));
+        assertThat(build().doc().facts).doesNotContainKey("article");
+
+        extras.clear();
+        raw.clear();
+        block("k", "h", "l", 1, "c", List.of("lamps - Search"));
+        for (int i = 1; i <= 6; i++) {
+            seen("r." + i, "fpr" + i);
+            block("k", "card", "g", "r", "title", "Result " + i, "c", List.of(List.of("a", "r." + i, "https://example.org/" + i, "Result " + i)));
+        }
+        assertThat(build().doc().facts).doesNotContainKey("article");
+    }
+
+    /** Round 4: a card whose own link is an ad's click is an ad wherever it sits, and counts as sponsored. */
+    @Test
+    void aCardWhoseOwnLinkIsAnAdsClickIsSponsored() {
+        block("k", "h", "l", 1, "c", List.of("desk lamp reviews"));
+        String[] urls = {"https://shop.example.com/lamp?tag=x&hvadid=8012", "https://r.example.com/RU=https%3a%2f%2fshop.example.com%2f%3fmsclkid%3d1",
+            "https://example.org/review-1", "https://example.org/review-2", "https://example.org/review-3"};
+        for (int i = 0; i < urls.length; i++) {
+            seen("c." + i, "fpc" + i);
+            block("k", "card", "g", "r", "title", "Lamp " + i, "c", List.of(List.of("a", "c." + i, urls[i], "Lamp " + i)));
+        }
+        MDoc doc = build().doc();
+        Map<String, Object> cards = doc.blocks.stream().filter(b -> "cards".equals(b.get("t"))).findFirst().orElseThrow();
+        assertThat((List<?>) cards.get("items")).hasSize(3);
+        assertThat(json(doc)).doesNotContain("hvadid", "msclkid", "Lamp 0", "Lamp 1");
+        assertThat(Json.object(Json.object(doc.wire(), "hidden"), "counts")).containsEntry("sponsored", 2);
+        assertThat(MDocBuilder.AD_CLICK.matcher("https://example.org/?q=gclidx").find()).isFalse();
+    }
+
+    /** Round 4: a long page of which the view kept almost nothing (a store's grid still drawing placeholders) falls back. */
+    @Test
+    void aLongPageWhoseViewKeptAlmostNothingFallsBack() {
+        meta.put("doc_h", 8000);
+        block("k", "h", "l", 1, "c", List.of("desk lamp in Home, Furniture & Office (1452)"));
+        block("k", "p", "c", List.of("Deals for every list. Start early, save early."));
+        block("k", "meta", "c", List.of("18 of 1452 products"));
+        assertThat(build().fallback()).isEqualTo(Fallback.LOW_CONFIDENCE);
+        meta.put("doc_h", 1200);
+        assertThat(build().fallback()).isNull();
+        meta.put("doc_h", 8000);
+        block("k", "img", "s", "https://cdn.example.com/lamp.png", "a", "A lamp", "w", 300, "h", 200);
+        assertThat(build().fallback()).isNull();
+    }
+
+    /** Round 5 (R40): a lone vote arrow the distiller kept as a button (Hacker News' ▲, no score) is the vote control. */
+    @Test
+    void aLoneVoteArrowIsTheVoteControl() {
+        seen("a.1", "fpa1");
+        seen("v.1", "fpv1");
+        block("k", "p", "depth", 1, "c", List.of(List.of("a", "a.1", "https://example.com/user?id=ann", "ann"), " \u00b7 ",
+                List.of("btn", "v.1", "\u25b2", Map.of("aria", "Upvote", "v", 1))));
+        List<Object> runs = runs(build().doc(), 0);
+        Map<String, Object> vote = runs.stream().filter(r -> r instanceof Map<?, ?>).map(MDocBuilderTest::m).filter(r -> "vote".equals(r.get("r")))
+                .findFirst().orElseThrow();
+        assertThat(vote).containsEntry("score", "").containsKey("up").doesNotContainKey("down");
+        assertThat(runs).noneMatch(r -> r instanceof Map<?, ?> && "button".equals(m(r).get("r")));
+        // a Q&A's ▲ 27 ▼, both arrows and a score, stays as written, for the view to draw as one control
+        raw.clear();
+        seen("u.2", "fpu2");
+        seen("d.2", "fpd2");
+        block("k", "p", "vote", 1, "c", List.of(List.of("btn", "u.2", "\u25b2", Map.of("v", 1)), " 27 ", List.of("btn", "d.2", "\u25bc", Map.of("v", 1))));
+        assertThat(runs(build().doc(), 0)).filteredOn(r -> r instanceof Map<?, ?>).extracting(r -> m(r).get("r")).containsExactly("button", "button");
+    }
+
+    /** Round 5: a tile's own picture outside any link is its picture, and a line too long for a chip is its meta (a forecast's day). */
+    @Test
+    void aTilesPictureAndItsLineStay() {
+        block("k", "h", "l", 1, "c", List.of("Forecast"));
+        block("k", "card", "g", "t", "lay", "list", "title", "Thursday", "tile", 1, "c", List.of(List.of("img", "https://example.com/ra50.png", "", 86, 86),
+                List.of("b", "Thursday"), List.of("br"), "High: 66 \u00b0F \u00b7 Chance Rain"));
+        block("k", "card", "g", "t", "lay", "list", "title", "Friday", "tile", 1, "meta", "High: 52 \u00b0F \u00b7 Sunny", "c",
+                List.of(List.of("img", "https://example.com/sct.png", "", 86, 86), List.of("b", "Friday"), List.of("br"), "High: 52 \u00b0F \u00b7 Sunny"));
+        List<?> items = (List<?>) build().doc().blocks.stream().filter(b -> "cards".equals(b.get("t"))).findFirst().orElseThrow().get("items");
+        assertThat(m(items.get(0))).containsKey("image").containsEntry("meta", List.of("High: 66 \u00b0F \u00b7 Chance Rain")).doesNotContainKey("chips");
+        assertThat(m(items.get(1))).containsKey("image").containsEntry("meta", List.of("High: 52 \u00b0F", "Sunny")).doesNotContainKey("chips");
+    }
+
+    /**
+     * Round 6: a result's snippet whose query words the page set in bold is one snippet, as the distiller read it whole
+     * ({@code snip}), never its plain pieces: a snippet starting mid-sentence and the bold words' neighbours as chips.
+     */
+    @Test
+    void aSnippetWithBoldWordsIsOneSnippet() {
+        block("k", "h", "l", 1, "c", List.of("desk lamp reviews"));
+        for (int i = 1; i <= 3; i++) {
+            block("k", "card", "g", "r", "lay", "list", "title", "The best desk lamps, review " + i, "meta", "Lamp Review",
+                    "snip", "The best desk lamps come in various styles to brighten up any workspace, review " + i,
+                    "c", List.of(List.of("a", "c." + i, "https://example.com/r" + i, "The best desk lamps, review " + i), " · Lamp Review", List.of("br"),
+                            "The best ", List.of("b", "desk lamps"), " come in various styles to brighten up any workspace, review " + i,
+                            List.of("br"), " Editor's pick "));
+        }
+        List<?> items = (List<?>) build().doc().blocks.stream().filter(b -> "cards".equals(b.get("t"))).findFirst().orElseThrow().get("items");
+        assertThat(m(items.get(0))).containsEntry("snippet", "The best desk lamps come in various styles to brighten up any workspace, review 1")
+                .containsEntry("chips", List.of("Editor's pick")).containsEntry("meta", List.of("Lamp Review"));
+    }
+
+    /** Round 5: a link whose page text only repeats its name with a screen reader's copy ("Open 20 (20)") shows its name once. */
+    @Test
+    void aLinksScreenReaderCopyIsNotShownTwice() {
+        seen("l.1", "fpl1");
+        nodes.get("l.1").put("t", "Open 20 (20)");
+        block("k", "p", "c", List.of(List.of("a", "l.1", "https://example.com/issues?state=open", "Open 20")));
+        assertThat(m(runs(build().doc(), 0).get(0))).containsEntry("runs", List.of("Open 20")).doesNotContainKey("name");
+        assertThat(MDocBuilder.onlyRepeats("Close dialog", "\u00d7")).isFalse();
+        assertThat(MDocBuilder.onlyRepeats("Open 20", "Open 20 (20)")).isTrue();
+    }
+
+    /**
+     * Round 5: a product page has no read time; a swatch's drawn badge stays on its name ("Jet Black · SALE"); a rating's
+     * button shows its stars and count; and a picture's alt that is only a file's name ("ex-main-demo") is no label.
+     */
+    @Test
+    void aProductPagesControlsAndPicturesReadAsTheyShow() {
+        meta.put("mode", "article");
+        extras.put("ld", List.of(Map.of("@type", "Product")));
+        block("k", "h", "l", 1, "c", List.of("Tree Runner"));
+        block("k", "p", "c", List.of("word ".repeat(400)));
+        seen("s.1", "fps1");
+        nodes.get("s.1").put("t", "SALE");
+        seen("r.1", "fpr1");
+        nodes.get("r.1").put("t", "Review: 4.6 out of 5 stars. Total reviews: 2191 (2191)");
+        block("k", "p", "c", List.of(List.of("btn", "s.1", "Jet Black (Black Sole)", 0), " ", List.of("btn", "r.1", "(2191)", 0)));
+        block("k", "img", "s", "https://cdn.example.com/a.gif", "a", "ex-main-demo", "w", 600, "h", 300);
+        block("k", "img", "s", "https://cdn.example.com/b.png", "a", "A brass lamp on a desk", "w", 600, "h", 300);
+        MDoc doc = build().doc();
+        assertThat(doc.facts).doesNotContainKey("article");
+        @SuppressWarnings("unchecked")
+        List<Object> runs = (List<Object>) doc.blocks.stream().filter(b -> b.get("runs") instanceof List<?> r && r.size() == 3).findFirst().orElseThrow().get("runs");
+        assertThat(m(runs.get(0))).containsEntry("label", "Jet Black (Black Sole) \u00b7 SALE");
+        assertThat(m(runs.get(2))).containsEntry("label", "\u2605 4.6 (2191)");
+        List<Map<String, Object>> images = doc.blocks.stream().filter(b -> "image".equals(b.get("t"))).toList();
+        assertThat(images).extracting(b -> b.get("alt")).containsExactly("", "A brass lamp on a desk");
+    }
+
     /** Review 8: the distiller ships without the prototype's own click path or its rewrite of links' targets. */
     @Test
     void theShippedDistillerHasNoClickPathOfItsOwn() {

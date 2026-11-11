@@ -157,6 +157,8 @@ function memory(seed: Record<string, string> = {}): NonNullable<DeskBackendOptio
 beforeEach(() => {
   mockNotebookControl.zones.length = 0;
   mockNotebookControl.fullPages = [];
+  mockNotebookControl.outdatedPages = [];
+  mockNotebookControl.tokens.length = 0;
   mockNotebookControl.silent = false;
   mockNotebookControl.cutOff = {};
 });
@@ -170,8 +172,8 @@ describe('reading the tree', () => {
     const link = new FakeLink('d-1');
     link.answer = (m, p) => {
       if (m === 'notebook.settings.set') return {};
-      if (!p['cursor']) return { notebooks: [notebookRec('n')], tabs: [tabRec('t', 'n')], pages: [pageRec('p1', 't', 1)], rev: 7, next: 'c2' };
-      if (p['cursor'] === 'c2') return { notebooks: [notebookRec('n')], tabs: [tabRec('t', 'n')], pages: [pageRec('p2', 't', 2)], rev: 8, next: 'c3' };
+      if (!p['cursor']) return { notebooks: [notebookRec('n')], tabs: [tabRec('t', 'n')], pages: [pageRec('p1', 't', 1)], rev: 7, next: 'blue' };
+      if (p['cursor'] === 'blue') return { notebooks: [notebookRec('n')], tabs: [tabRec('t', 'n')], pages: [pageRec('p2', 't', 2)], rev: 8, next: 'green' };
       return { notebooks: [], tabs: [], pages: [pageRec('gone', 't', 3)], rev: 9, next: null };
     };
     const b = backend(link);
@@ -180,7 +182,7 @@ describe('reading the tree', () => {
     expect(tree.notebooks.map((n) => n.id)).toEqual(['n']);
     expect(tree.tabs['n']?.map((t) => t.id)).toEqual(['t']);
     expect(tree.pages['t']?.map((p) => p.id)).toEqual(['p1', 'p2', 'gone']);
-    expect(link.of('notebook.tree').map((c) => c.params)).toEqual([{}, { cursor: 'c2' }, { cursor: 'c3' }]);
+    expect(link.of('notebook.tree').map((c) => c.params)).toEqual([{}, { cursor: 'blue' }, { cursor: 'green' }]);
     expect(b.status().load).toBe('ready');
     // The first page said 7: a change during the rest says a newer one, and that reads it all again.
     b.subscribe(() => {});
@@ -413,6 +415,10 @@ describe('structure', () => {
         return { tab: tabRec('t3', 'n') };
       case 'notebook.page.create':
         return { page: pageRec('p3', 't') };
+      case 'notebook.page.duplicate':
+        return { page: { ...pageRec('p4', 't'), label: 'blue' } };
+      case 'notebook.page.import':
+        return { page: pageRec('p5', 't') };
       case 'notebook.version.save':
         return { version: null };
       case 'notebook.tree':
@@ -437,6 +443,10 @@ describe('structure', () => {
     ['saveVersion', ['p'], 'notebook.version.save', { pageId: 'p' }],
     ['saveVersion', ['p', 'manual'], 'notebook.version.save', { pageId: 'p', reason: 'manual' }],
     ['restoreVersion', ['p', 'v'], 'notebook.version.restore', { pageId: 'p', versionId: 'v' }],
+    ['setPageLabel', ['p', 'green'], 'notebook.page.label', { pageId: 'p', label: 'green' }],
+    ['setPageLabel', ['p', null], 'notebook.page.label', { pageId: 'p', label: null }],
+    ['duplicatePage', ['p'], 'notebook.page.duplicate', { pageId: 'p' }],
+    ['importPage', ['t', { doc: { type: 'doc', content: [] }, label: 'amber', title: 'x' }, { after: 'p' }], 'notebook.page.import', { tabId: 't', doc: { type: 'doc', content: [] }, label: 'amber', after: 'p' }],
   ] as [keyof DeskBackend, unknown[], string, Record<string, unknown>][])('%s goes out as %s, with idem and with no rowVersion', async (name, args, method, params) => {
     const link = new FakeLink('d-1');
     link.answer = ok;
@@ -459,6 +469,36 @@ describe('structure', () => {
     const b = backend(link);
     const page = await b.createPage('t');
     expect(b.tree().byId[page.id]?.id).toBe('p3');
+  });
+
+  it('a duplicate or an imported page is in the tree by the time the caller can select it, its label with it', async () => {
+    const link = new FakeLink('d-1');
+    link.answer = (m) => (m === 'notebook.tree' ? emptyTree() : ok(m));
+    const b = backend(link);
+    const copy = await b.duplicatePage('p');
+    expect(b.tree().byId[copy.id]).toMatchObject({ id: 'p4', label: 'blue' });
+    const made = await b.importPage('t', { doc: { type: 'doc', content: [] }, label: null, title: '' });
+    expect(b.tree().byId[made.id]?.id).toBe('p5');
+  });
+
+  it('labels, a duplicate and an import on the mock desk, end to end through the contract', async () => {
+    const link = new FakeLink('d-colors', true);
+    const b = backend(link);
+    await b.ready();
+    const { tab, page } = await b.createNotebook('Colors');
+    await b.setPageLabel(page.id, 'violet');
+    await until(() => b.tree().byId[page.id]?.label === 'violet');
+    const copy = await b.duplicatePage(page.id);
+    expect(copy.label).toBe('violet');
+    const body = { type: 'doc', content: [{ type: 'paragraph', attrs: { color: 'blue' }, content: [{ type: 'text', text: 'brought in', marks: [{ type: 'textColor', attrs: { color: 'blue' } }] }] }] };
+    const made = await b.importPage(tab.id, { doc: body, label: 'green', title: '' }, { after: copy.id });
+    await until(() => b.tree().pages[tab.id]?.length === 3);
+    expect(b.tree().pages[tab.id]?.map((x) => x.id)).toEqual([page.id, copy.id, made.id]);
+    expect(made).toMatchObject({ title: 'brought in', label: 'green' });
+    expect(JSON.stringify(await b.pageContent(made.id))).toContain('"textColor","attrs":{"color":"blue"}');
+    expect((await b.search('', { labels: ['green'] })).map((h) => h.pageId)).toEqual([made.id]);
+    await b.setPageLabel(page.id, null);
+    await until(() => b.tree().byId[page.id]?.label == null);
   });
 
   it("a read begun before a change can't take the change back", async () => {
@@ -628,6 +668,9 @@ describe('reads', () => {
     expect(link.of('notebook.activity')[0]?.params).toEqual({ fromDay: 'a', toDay: 'b' });
     expect(await b.search('  ')).toEqual([]);
     expect(link.of('notebook.search')).toHaveLength(1);
+    // Labels alone are a search: the desk lists those pages.
+    await b.search('', { labels: ['green'] });
+    expect(link.of('notebook.search')[1]?.params).toEqual({ query: '', labels: ['green'] });
   });
 
   it('a read that fails says so, unless the link already does', async () => {
@@ -723,7 +766,31 @@ describe('page text', () => {
     const session = backend(link).openPage(pageId);
     await session.ready;
     expect(link.channel.sizes.length).toBeGreaterThan(0);
+    // The token says this build's page schema, and nothing else (ADR 0091's guard).
+    expect(mockNotebookControl.tokens).toEqual(['schema=2']);
     session.close();
+  });
+
+  it("an older app's change refused by the desk (reload): read-only, the line says reload, and the text stays to copy", async () => {
+    const id = newDesk();
+    const { pageId, desk } = await deskWithPage(id);
+    const link = new FakeLink(id, true);
+    const b = backend(link);
+    const session = b.openPage(pageId);
+    await session.ready;
+    const readOnly: boolean[] = [];
+    session.onReadOnly?.((r) => readOnly.push(r));
+    mockNotebookControl.outdatedPages = [pageId];
+    session.doc.getText('typed').insert(0, 'typed before the reload');
+    await until(() => b.status().outdated);
+    expect(readOnly).toEqual([false, true]);
+    expect(b.status().full).toBe(false);
+    expect(textOf(session.doc)).toBe('typed before the reload');
+    expect(textOf((await desk.page(pageId)).doc)).toBe('');
+    expect(b.hasUnsavedText()).toBe(true);
+    const late: boolean[] = [];
+    session.onReadOnly?.((r) => late.push(r));
+    expect(late).toEqual([true]);
   });
 
   it("a quiet page keeps its socket: the desk sends no pings, so the provider's 30 s check for silence is pushed out of the way", async () => {

@@ -32,6 +32,10 @@ export interface Member {
   name: string;
   /** The tier's seal: 'officer', or 'lead' (shown as Founder). Never anything about age. */
   badge?: 'officer' | 'lead';
+  /** The member's checked profile picture (Platform's public avatar route); absent means initials. */
+  avatarUrl?: string;
+  /** The member's built avatar (the avatar kit's recipe, checked by the server); read through `builtRecipeOf` in `ui/names.ts`. */
+  avatarRecipe?: unknown;
   role: 'lead' | 'officer' | 'member';
   color: number;
   /** The channel they're in or looking at. */

@@ -7,9 +7,12 @@ import java.io.IOException;
 import java.net.StandardProtocolFamily;
 import java.net.UnixDomainSocketAddress;
 import java.nio.channels.SocketChannel;
+import java.nio.charset.StandardCharsets;
 import java.nio.file.Files;
 import java.nio.file.Path;
 import java.time.Duration;
+import java.util.ArrayList;
+import java.util.List;
 
 /**
  * The real desk-notebook, run by {@code DESK_NOTEBOOK_CMD}, a shell command that runs it in the foreground. It gets
@@ -74,6 +77,24 @@ final class RealNotebookService implements NotebookService {
     @Override
     public void close() throws Exception {
         stop();
+    }
+
+    /**
+     * Stops it (SIGTERM), runs {@code command}, a shell command, with the data directory and {@code args} after it, starts it
+     * again, and returns what the command printed. For writing to its database what a desk takes years to.
+     */
+    String whileStopped(String command, String... args) throws Exception {
+        stop();
+        Files.deleteIfExists(socket);
+        List<String> argv = new ArrayList<>(List.of("sh", "-c", command + " \"$@\"", "seed", data.toString()));
+        argv.addAll(List.of(args));
+        Process run = new ProcessBuilder(argv).redirectError(ProcessBuilder.Redirect.INHERIT).start();
+        String out = new String(run.getInputStream().readAllBytes(), StandardCharsets.UTF_8);
+        if (run.waitFor() != 0) {
+            throw new IllegalStateException("the command failed: " + command);
+        }
+        begin();
+        return out;
     }
 
     /** SIGTERM, which stores everything: the contract's "Nothing lost across a restart". */

@@ -138,6 +138,9 @@ class DeskdApplicationTests {
                         .doesNotContain("REFUSING", "157.0.0.0");
                 // Beside units.sock, which is where the configuration puts it.
                 await().until(() -> Files.exists(dir.resolve("chromium-refused")));
+                String version = context.getEnvironment().getProperty("deskd.version");
+                assertThat(version).isNotBlank();
+                assertThat(health(dir)).contains("\"version\":\"" + version + "\"");
 
                 context.close();
                 Map<String, Object> last = platform.apiRequests.stream()
@@ -148,6 +151,8 @@ class DeskdApplicationTests {
                         .orElseThrow();
                 assertThat(Json.object(last, "health")).containsEntry("status", "degraded");
                 assertThat(Json.object(Json.object(last, "health"), "checks")).containsEntry("chromium", "older_than_profile");
+                // ADR 0078, DE-2: /health's own version and answer, which a refused Chromium doesn't change.
+                assertThat(Json.object(last, "deskd")).isEqualTo(Map.of("version", version, "status", "ok"));
                 assertThat(Json.object(last, "dataVolume"))
                         .containsOnlyKeys("totalBytes", "usedBytes", "volumeId", "formattedAt")
                         .containsEntry("volumeId", "vol-0abc123")

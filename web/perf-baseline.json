@@ -1,0 +1,22 @@
+{
+  "note": "perf-pr.mjs: headless Chromium, software compositing, 1440x900, Light, harness office ?fixture=one; interaction from the e2e bundle, sizes from the release build. A ratio against the same machine, not a verdict on 60 fps.",
+  "commit": "ddcc7fdc",
+  "jsGzKb": 243.9,
+  "cssGzKb": 33.3,
+  "pan": {
+    "median": 59.9,
+    "p5": 59.9,
+    "frames": 181
+  },
+  "zoom": {
+    "median": 59.9,
+    "p5": 59.5,
+    "frames": 179
+  },
+  "openMs": 8,
+  "opensMs": [
+    6.9,
+    8,
+    9.4
+  ]
+}

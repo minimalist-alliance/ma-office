@@ -1,12 +1,28 @@
 // Reading the client into React. Streams batch to one render per display frame, so a fast reply costs at most
 // 60 renders a second, each touching only the message that changed (model/conversation.ts).
-import { useCallback, useEffect, useRef, useState } from 'react';
+import { createContext, useCallback, useContext, useEffect, useId, useRef, useState } from 'react';
 import type { AgentClient } from '../client/agentClient';
 import type { Agent, AgentCaps, ConversationEvent, KeyMeta, LimitsView } from '../client/types';
 import type { LookTheme } from '../look/tones';
 import { fromBase64 } from '../model/png';
 import { retryDelayMs } from '../model/agents';
 import { applyEvents, EMPTY_THREAD, type Thread } from '../model/conversation';
+
+/**
+ * What a draft or a form holds that closing the page would lose, told to the app (`AgentAppProps.onUnsaved`), which tells its
+ * host. Outside the app it goes nowhere.
+ */
+export const UnsavedContext = createContext<(key: string, on: boolean) => void>(() => undefined);
+
+/** Says this holds something unsaved while `on`, and lets go when it unmounts. */
+export function useUnsaved(on: boolean): void {
+  const report = useContext(UnsavedContext);
+  const id = useId();
+  useEffect(() => {
+    report(id, on);
+  }, [report, id, on]);
+  useEffect(() => () => report(id, false), [report, id]);
+}
 
 /**
  * The desk's agents: the topic for every change, and one read for the start. The read is what says desk-agent isn't running,

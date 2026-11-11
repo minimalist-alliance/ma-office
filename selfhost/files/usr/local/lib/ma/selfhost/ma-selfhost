@@ -13,19 +13,37 @@ Both on the data disk, like the desk's DTLS identity, so a reinstall of the syst
 What it asks the platform (signed with the key; the private half never leaves the file):
   POST /v1/self-hosted/pair     a code for the member to type, valid 15 minutes
   POST /v1/self-hosted/session  still pending, or 15-minute credentials for the agent API. Each one also signs desk-rtc's
-                                DTLS fingerprints (from /run/ma-selfhost/dtls.json, which ma-selfhost-dtls writes as
-                                root), and the platform takes a hello only with fingerprints this key signed.
+                                DTLS fingerprints (from /run/ma-selfhost-dtls/dtls.json, which ma-selfhost-dtls writes as
+                                root, in a directory only root can write), and the platform takes a hello only with
+                                fingerprints this key signed.
 
 Commands:
   ma-selfhost serve             the service (ma-selfhost.service): metadata on 169.254.169.254:80, credentials kept fresh
   ma-selfhost pair [--wait] [--yes]  print the code and link; with --wait, until a member has typed it, then show whose
-                                office the desk joined (partly hidden) and ask y/N; --yes answers it
+                                office the desk joined (partly hidden) and ask y/N; --yes answers it. When the desk's
+                                Browser has a profile, it first says that office gets its sign-ins, and asks y/N
   ma-selfhost status            what this desk is, and whether it's online with the platform
   ma-selfhost rotate            move the desk to a new key (both keys sign; the old one stops working)
-  ma-selfhost forget            delete the key and the pairing (after the desk was removed from its office)
+  ma-selfhost forget [--yes]    delete the key and the pairing (after the desk was removed from its office). When the
+                                Browser has a profile, it says the next office gets its sign-ins, and asks y/N first
+With no terminal to ask at, a question without --yes is a refusal. `sudo ma-selfhost` tells this whether the Browser has
+a profile (MA_SELFHOST_BROWSER): only root can look.
 
 It never logs or prints the key or a credential. Python 3 standard library plus python3-cryptography (Debian).
 """
+import ctypes
+import sys
+
+# First, before it reads or shows anything: no other process of this user may trace this one, or read its memory or open
+# files through /proc (Security's ptrace note, Nov 11). `sudo ma-selfhost pair --wait` runs this as selfhost on the admin's
+# terminal, and the service, the one other process of this user, refuses @debug as well (ma-selfhost.service).
+PR_SET_DUMPABLE = 4
+try:
+    if ctypes.CDLL(None, use_errno=True).prctl(PR_SET_DUMPABLE, 0, 0, 0, 0) != 0:
+        raise OSError(ctypes.get_errno(), "prctl")
+except (OSError, AttributeError) as e:
+    print(f"ma-selfhost: couldn't make this process non-dumpable ({e})", file=sys.stderr)
+
 import base64
 import datetime
 import hashlib
@@ -33,7 +51,7 @@ import json
 import os
 import secrets
 import socket
-import sys
+import tempfile
 import threading
 import time
 import urllib.error
@@ -50,7 +68,10 @@ ROLE_NAME = "ma-selfhost-desk"  # what deskd sees under iam/security-credentials
 TOKEN_MAX_TTL = 21600
 REFRESH_WHEN_LEFT = 8 * 60  # deskd refreshes 5 minutes before expiry, so we must have new ones before that
 PREFIX = "ma-selfhost/v1"
-DTLS_FILE = os.path.join(RUN, "dtls.json")  # desk-rtc's fingerprints, written by ma-selfhost-dtls (root)
+# desk-rtc's fingerprints, written by ma-selfhost-dtls as root. Not in RUN, which is this user's: root never writes
+# into a directory another user controls (EXP-7).
+DTLS_FILE = os.environ.get("MA_SELFHOST_DTLS", "/run/ma-selfhost-dtls/dtls.json")
+STATUS_MODE = 0o640  # status.json holds the live pairing code: this user and root only (EXP-8, write_status)
 
 
 def log(msg):
@@ -182,13 +203,24 @@ def read_desk():
 
 
 def write_json(path, obj, mode=0o600):
-    tmp = path + ".new"
-    fd = os.open(tmp, os.O_WRONLY | os.O_CREAT | os.O_TRUNC, mode)
-    with os.fdopen(fd, "w") as f:
-        json.dump(obj, f)
-        f.flush()
-        os.fsync(f.fileno())
-    os.replace(tmp, path)
+    """Replace path with obj, whole, at `mode` from its first byte: a fresh temp file of this write's own (mkstemp: a new
+    name, 0600, never a leftover or a link), set to `mode` before anything goes in, then renamed over path. So the file
+    is never readable by more than `mode` allows, whatever the umask or an older file was (EXP-8)."""
+    d, name = os.path.split(path)
+    fd, tmp = tempfile.mkstemp(dir=d or ".", prefix=name + ".", suffix=".new")
+    try:
+        with os.fdopen(fd, "w") as f:
+            os.fchmod(f.fileno(), mode)
+            json.dump(obj, f)
+            f.flush()
+            os.fsync(f.fileno())
+        os.replace(tmp, path)
+    except BaseException:
+        try:
+            os.unlink(tmp)
+        except FileNotFoundError:
+            pass
+        raise
 
 
 def read_dtls():
@@ -281,6 +313,9 @@ class State:
 
 
 def write_status(st):
+    """/run/ma-selfhost/status.json, for `ma-selfhost status` and `pair` and install.sh (all as this user). It holds the
+    live pairing code, so it's 0640 selfhost:selfhost in a 0750 directory (EXP-8): nobody else on the machine can read the
+    code and pair the desk into an office of theirs."""
     try:
         os.makedirs(RUN, exist_ok=True)
         with st.lock:
@@ -288,7 +323,7 @@ def write_status(st):
                    "env": (st.desk or {}).get("env"), "code": st.code, "claimUrl": st.claim_url, "address": st.address,
                    "credentialsExpire": (st.creds or {}).get("expiration"), "lastOk": st.last_ok,
                    "identity": st.identity}
-        write_json(os.path.join(RUN, "status.json"), out, 0o644)
+        write_json(os.path.join(RUN, "status.json"), out, STATUS_MODE)
     except OSError as e:
         log(f"couldn't write the status file: {e.strerror}")
 
@@ -502,9 +537,57 @@ def show_code(code, url):
     print()
 
 
+def ask(question, yes):
+    """A y/N question at the terminal: True for y or yes, False for anything else (Enter included), None with no terminal
+    to ask at. --yes is True without asking."""
+    if yes:
+        return True
+    if not sys.stdin.isatty():
+        return None
+    try:
+        return input(f"  {question} [y/N] ").strip().lower() in ("y", "yes")
+    except EOFError:
+        return False
+
+
+# EXP-8: a desk's Browser profile (/data/browser/profile) stays with the desk wherever it's paired (ADR 0035), so the
+# office it joins gets the Browser as it is, signed in. `pair` and `forget` say so before going on.
+BROWSER_SAYS = ("  This desk's Browser has a profile on this computer, and keeps whatever it's signed in to.",
+                "  Whoever's office this desk joins gets that Browser, signed in.")
+BROWSER_STAYS = "  Forgetting the pairing doesn't clear it: the next office this desk joins gets it as it is."
+
+
+def browser_profile():
+    """Whether this desk's Browser has a profile, as the root wrapper found it (MA_SELFHOST_BROWSER, profile or none):
+    this user can't see /data/browser. Not told, as when this runs other than through `sudo ma-selfhost`: assume it has."""
+    return os.environ.get("MA_SELFHOST_BROWSER") != "none"
+
+
+def browser_ok(cmd, yes):
+    """EXP-8: before `pair` shows a code and before `forget`, when this desk's Browser has a profile, say plainly that
+    whoever's office the desk joins gets its sign-ins, and ask (No unless answered y). --yes still says it, then goes on.
+    No terminal and no --yes: refuses. True to go on."""
+    if not browser_profile():
+        return True
+    print()
+    for line in BROWSER_SAYS:
+        print(line)
+    if cmd == "forget":
+        print(BROWSER_STAYS)
+    print()
+    answer = ask("Pair this desk anyway?" if cmd == "pair" else "Forget this desk's key and pairing anyway?", yes)
+    if answer is None:
+        print(f"Nobody to ask here, so nothing was done. Run 'sudo ma-selfhost {cmd}' at a terminal to answer, or add --yes.",
+              file=sys.stderr)
+        return False
+    if not answer:
+        print("Not paired." if cmd == "pair" else "Kept this desk's key and pairing.")
+    return answer
+
+
 def confirm_pairing(conf, yes):
-    """EXP-8: show whose office this desk just joined, partly hidden, and ask. Returns True when confirmed (or nothing
-    needs confirming), False when declined, None when nobody could be asked."""
+    """EXP-8: show whose office this desk just joined, partly hidden, and what that office gets, and ask. Returns True when
+    confirmed (or nothing needs confirming), False when declined, None when nobody could be asked."""
     desk = read_desk()
     if not desk or not desk.get("pendingConfirm"):
         return True
@@ -512,18 +595,16 @@ def confirm_pairing(conf, yes):
     print(f"  This computer was just added to the office of:  {desk.get('accountHint') or 'an account'}")
     if desk.get("deskName"):
         print(f"  The desk is called:  {desk['deskName']}")
+    if browser_profile():
+        print()
+        for line in BROWSER_SAYS:
+            print(line)
     print()
-    if yes:
-        answer = "y"
-    elif sys.stdin.isatty():
-        try:
-            answer = input("  Is that your account? Keep this desk there? [y/N] ").strip().lower()
-        except EOFError:
-            answer = ""
-    else:
+    answer = ask("Is that your account? Keep this desk there?", yes)
+    if answer is None:
         print("Nobody to ask here. Run 'sudo ma-selfhost pair --wait' at a terminal to confirm, or add --yes.", file=sys.stderr)
         return None
-    if answer in ("y", "yes"):
+    if answer:
         desk = dict(desk)
         desk.pop("pendingConfirm", None)
         desk.pop("accountHint", None)
@@ -559,6 +640,8 @@ def cmd_pair(conf, wait, yes=False):
     if desk:
         print(f"This computer is already the desk \"{desk.get('deskName') or desk['deskId']}\" in an office ({desk['env']}).")
         return 0
+    if not browser_ok("pair", yes):
+        return 1  # no code shown
     if service_status() is not None:
         # The service is pairing already: show its code and wait on it, rather than asking the platform twice.
         shown = None
@@ -689,6 +772,8 @@ def main(argv):
     if cmd == "rotate":
         return cmd_rotate(conf)
     if cmd == "forget":
+        if not browser_ok("forget", "--yes" in argv[1:]):
+            return 1
         return cmd_forget()
     print(__doc__)
     return 2

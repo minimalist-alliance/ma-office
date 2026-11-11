@@ -244,6 +244,18 @@ final class FilesMethods {
         }
     }
 
+    /**
+     * The Agent's Files search: the same walk and order as {@code files.search}, with no session to cancel it.
+     *
+     * @param q the text to find in a name, already checked
+     * @param under the folder to look in
+     */
+    Map<String, Object> agentSearch(String q, String[] under, int limit) throws Exception {
+        @SuppressWarnings("unchecked")
+        Map<String, Object> found = (Map<String, Object>) runSearch(PathRules.fold(q), under, limit, new AtomicBoolean());
+        return found;
+    }
+
     /** A hit and where it sits in the order: folders first, then shallower, then by path as a listing sorts. */
     private record Hit(SafeTree.Entry entry, String path, int depth) {}
 

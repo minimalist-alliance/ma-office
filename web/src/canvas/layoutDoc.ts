@@ -5,7 +5,7 @@ import { GUILD_APPS, isGuildPanel } from '../guild/panel';
 import { adultOnly, type AgeBand } from '../platform/age';
 import { clearSpot, separateDesks } from './deskPush';
 import { isDeskStyleId } from '../theme/deskStyles';
-import { defaultDesk, deskFromGrid, G, isAgentApp, panelH, placeNewDesk, roundUnit, settleDesk, stackOrder, withStack, type AppId, type DetailLevel, type LayoutDesk, type LayoutItem } from './layout';
+import { defaultDesk, deskFromGrid, G, isAgentApp, panelH, placeNewDesk, roundUnit, settleDesk, stackOrder, withStack, type AppId, type DeskCarousel, type DetailLevel, type LayoutDesk, type LayoutItem } from './layout';
 
 export interface LayoutDoc {
   desks: Record<string, LayoutDesk>;
@@ -119,10 +119,11 @@ const sameItems = (a: readonly LayoutItem[], b: readonly LayoutItem[]): boolean 
     return i.id === o.id && i.app === o.app && i.x === o.x && i.y === o.y && i.w === o.w && i.h === o.h;
   });
 
-/** Everything a desk saves, its stack and its style included: how its apps are stacked, and how it looks, are the member's. */
+/** Everything a desk saves, its stack, its style and its carousel included: how its apps are stacked and shown, and how it looks, are the member's. */
 export function sameDesk(a: LayoutDesk, b: LayoutDesk): boolean {
   if (a === b) return true;
   if (a.x !== b.x || a.y !== b.y || a.w !== b.w || a.h !== b.h || a.style !== b.style) return false;
+  if (a.carousel?.on !== b.carousel?.on || a.carousel?.app !== b.carousel?.app) return false;
   return sameItems(a.items, b.items) && sameList(stackOrder(a), stackOrder(b));
 }
 
@@ -253,7 +254,8 @@ export function isUntouched(doc: LayoutDoc, ids: readonly string[]): boolean {
     // An agent's own tile comes from the desk's word, not the member's hand (task 49), so it doesn't make a desk arranged. Nor does Files' tile (`apps/files/tiles.ts`). One
     // that made the desk grow does: there's no telling that from a member's resize, and either way it's something to send.
     const own = mine.items.filter((i) => !isAgentApp(i.app) && i.app !== 'files');
-    return !mine.style && inRow && mine.x === fresh.x && mine.w === fresh.w && (mine.h === fresh.h || mine.h === OLD_DESK_H) && (sameItems(own, fresh.items) || sameItems(own, fitDeskToBand(fresh, 'teen').items));
+    // The carousel is only ever the member's own choice, so a desk that has one has been touched.
+    return !mine.style && !mine.carousel && inRow && mine.x === fresh.x && mine.w === fresh.w && (mine.h === fresh.h || mine.h === OLD_DESK_H) && (sameItems(own, fresh.items) || sameItems(own, fitDeskToBand(fresh, 'teen').items));
   });
 }
 
@@ -274,9 +276,14 @@ export function writeServerLayout(doc: LayoutDoc, extra: ServerExtra = {}, maxBy
   for (const id of order) {
     const d = doc.desks[id];
     if (!d || id in desks) continue;
-    // `stack` only if the desk has one (ADR 0064), and `style` only once the member has picked one, so a desk that has
-    // neither saves as it always did.
-    const entry = { x: d.x, y: d.y, w: d.w, h: d.h, items: d.items.map(({ id: itemId, app, x, y, w, h }) => ({ id: itemId, app, x, y, w, h })), ...(d.stack ? { stack: d.stack } : {}), ...(d.style ? { style: d.style } : {}) };
+    // `stack` only if the desk has one (ADR 0064), `style` only once the member has picked one, and `carousel` only once
+    // they've used it, so a desk that has none of them saves as it always did.
+    const entry = {
+      x: d.x, y: d.y, w: d.w, h: d.h, items: d.items.map(({ id: itemId, app, x, y, w, h }) => ({ id: itemId, app, x, y, w, h })),
+      ...(d.stack ? { stack: d.stack } : {}),
+      ...(d.style ? { style: d.style } : {}),
+      ...(d.carousel ? { carousel: { on: d.carousel.on, app: d.carousel.app } } : {}),
+    };
     // Its entry in `desks` and in `z`, each with a comma, and the key's colon.
     const cost = bytesOf(JSON.stringify(id)) * 2 + bytesOf(JSON.stringify(entry)) + 3;
     if (used + cost > maxBytes) continue;
@@ -285,6 +292,12 @@ export function writeServerLayout(doc: LayoutDoc, extra: ServerExtra = {}, maxBy
     z.unshift(id);
   }
   return wrap({ ...keptExtra, schemaVersion: SCHEMA_VERSION, desks, z });
+}
+
+/** A stored `carousel`, if it's one: `on` a boolean and `app` an app's id. Anything else is no carousel, which is off. */
+function storedCarousel(d: Json): DeskCarousel | null {
+  const c = d['carousel'];
+  return isObject(c) && typeof c['on'] === 'boolean' && isApp(c['app']) ? { on: c['on'], app: c['app'] } : null;
 }
 
 /** The ids in a stored `stack`, if it's a list at all. `stackOrder` deals with any that are missing, repeated or not on the desk. */
@@ -316,7 +329,9 @@ export function readLayoutDoc(raw: unknown): LayoutDoc | null {
     }, new Set(read.filter((r) => r.bad).map((r) => r.item.id)));
     const stacked = withStack(desk, stackOrder({ items: desk.items, stack: storedStack(d) }));
     // A style is kept by its id, known here or not: one a newer build added draws as the default, and goes back as it came.
-    desks[id] = isDeskStyleId(d['style']) ? { ...stacked, style: d['style'] } : stacked;
+    const styled = isDeskStyleId(d['style']) ? { ...stacked, style: d['style'] } : stacked;
+    const carousel = storedCarousel(d);
+    desks[id] = carousel ? { ...styled, carousel } : styled;
   }
   return { desks, z: zOf(raw, desks) };
 }

@@ -4,8 +4,14 @@
 //
 // Keys go to a hidden textarea, because only an editable element gets composition and paste events. Focus on it
 // is what "the stream has focus" means, so the address bar and the shell's own shortcuts can't leak in.
+//
+// A finger is `touchInput.ts`'s: every `pointerType: 'touch'` event goes there, and none of it comes through here. A phone's
+// own keyboard is `softKeyboard.ts`'s while a finger's screen types: text then goes only by `input` events, as a run.
 import type { BrowserInput } from '../desk/deskLink';
 import { buttonChanges, contentBox, HeldKeys, isCopyChord, keyAction, normalized, pasteKeys, wheelPixels, WheelSum, type Box } from '../desk/rtc/input';
+import { keysToDesk } from '../shell/keyLock';
+import { bindSoftKeyboard, type SoftKeyboard, type SoftState } from './softKeyboard';
+import { bindTouchControl, type TouchControl, type ZoomState } from './touchInput';
 
 /** The X number for the primary button, which is how a click reaches a page's Copy button or a menu's Copy. */
 const PRIMARY_BUTTON = 1;
@@ -18,8 +24,8 @@ export interface StreamInputOptions {
   isMac: boolean;
   /** Ctrl+L or Alt+D: leave the stream for the address bar. */
   onAddress(): void;
-  /** Composed text, for `browser.text.insert`. */
-  onText(text: string): void;
+  /** Composed text, for `browser.text.insert`. Settles once the desk has answered, either way. */
+  onText(text: string): void | Promise<unknown>;
   /** A real paste. `pressKey` sends the paste key, for once the text is on the desk. `repeat`: the paste key is being held. */
   onPaste(text: string, pressKey: () => void, repeat: boolean): void;
   /** A copy or cut chord (`chord`), or a click, has just gone to the stream. Called in the event, so the member's browser sees their gesture. */
@@ -27,8 +33,19 @@ export interface StreamInputOptions {
   onFocusChange(focused: boolean): void;
   /** Real input on this desk. Called on every event, so it has to be cheap. */
   onInput(): void;
-  /** A finger: a phone can watch but not control, in this milestone. */
+  /** The first finger on the picture since it was bound: the touch hint's moment. */
   onTouch(): void;
+  /** Every finger is up after a gesture on the picture. */
+  onTouchGesture?(): void;
+  /** The picture's zoom, for the page row, told only when what it shows changes. */
+  onZoom?(state: ZoomState): void;
+  /** Touch control's handle for the page row's zoom buttons, and null as it goes. */
+  onTouchControl?(control: TouchControl | null): void;
+  /** The phone view's region of the picture while it's this phone's (`phoneView.ts`), or null. */
+  region?(): { x: number; y: number; width: number; height: number; screenWidth: number; screenHeight: number } | null;
+  /** The phone keyboard's handle for the page row, and null as it goes. */
+  onSoftKeyboard?(keyboard: SoftKeyboard | null): void;
+  onSoftState?(state: SoftState): void;
 }
 
 export function isMacPlatform(): boolean {
@@ -47,6 +64,22 @@ export function bindStreamInput(o: StreamInputOptions): () => void {
   let composing = false;
   /** The keydown that led to the coming `paste` was the key held down. */
   let pasteRepeat = false;
+  const soft = bindSoftKeyboard({ keys, input: o.input, insertText: o.onText, onInput: o.onInput, onCopyGesture: o.onCopyGesture, onChange: (st) => o.onSoftState?.(st) });
+  const touch = bindTouchControl({
+    video,
+    input: o.input,
+    onInput: o.onInput,
+    onCopyGesture: o.onCopyGesture,
+    onTouch: o.onTouch,
+    onGesture: o.onTouchGesture,
+    onZoom: o.onZoom,
+    onFinger: soft.newRun,
+    ...(o.region ? { region: o.region } : {}),
+  });
+  o.onTouchControl?.(touch);
+  o.onSoftKeyboard?.(soft);
+  /** When a pointer last went down here: a click with none just before it is a screen reader's. */
+  let pointerAt = -Infinity;
 
   // Read when it's needed, so a window drag or a new remote size is never stale.
   const picture = (): Box => contentBox(video.getBoundingClientRect(), video.videoWidth, video.videoHeight);
@@ -104,7 +137,10 @@ export function bindStreamInput(o: StreamInputOptions): () => void {
   };
 
   const onPointerMove = (e: PointerEvent): void => {
-    if (e.pointerType === 'touch') return;
+    if (e.pointerType === 'touch') {
+      touch.move(e);
+      return;
+    }
     lastX = e.clientX;
     lastY = e.clientY;
     // A chord shows only here. With nothing of ours pressed, a held button is a drag from outside, and it's not ours.
@@ -115,8 +151,9 @@ export function bindStreamInput(o: StreamInputOptions): () => void {
   };
 
   const onPointerDown = (e: PointerEvent): void => {
+    pointerAt = e.timeStamp;
     if (e.pointerType === 'touch') {
-      o.onTouch();
+      touch.down(e);
       return;
     }
     video.setPointerCapture(e.pointerId); // an up outside still arrives
@@ -130,17 +167,33 @@ export function bindStreamInput(o: StreamInputOptions): () => void {
   };
 
   const onPointerUp = (e: PointerEvent): void => {
-    if (e.pointerType !== 'touch') syncButtons(e);
+    if (e.pointerType === 'touch') touch.up(e);
+    else syncButtons(e);
   };
 
-  const onPointerGone = (): void => {
-    if (!pressed) return;
+  /** A finger's capture goes as it lifts, every time: that's `pointerup`'s, so it's nothing here. */
+  const onPointerGone = (e: PointerEvent): void => {
+    if (!pressed || e.pointerType === 'touch') return;
     const sink = o.input();
     const b = picture();
     const x = normalized(lastX, b.left, b.width);
     const y = normalized(lastY, b.top, b.height);
     for (const c of buttonChanges(pressed, 0)) sink?.button(c.down, c.button, x, y);
     pressed = 0;
+  };
+
+  const onPointerCancel = (e: PointerEvent): void => {
+    if (e.pointerType === 'touch') touch.cancel(e);
+    else onPointerGone(e);
+  };
+
+  /**
+   * VoiceOver's or TalkBack's double tap is a `click` with no pointer before it (`detail` 0). It never reaches the page (it
+   * would press the middle of it); it gives the keys focus, so a keyboard paired to the phone drives the page.
+   */
+  const onClick = (e: MouseEvent): void => {
+    if (e.detail !== 0 || e.timeStamp - pointerAt < 1_000) return;
+    keys.focus({ preventScroll: true });
   };
 
   // The defaults that would act on this page, not the remote one: focus moving off the keys, text selection,
@@ -166,8 +219,9 @@ export function bindStreamInput(o: StreamInputOptions): () => void {
   };
 
   const onKeyDown = (e: KeyboardEvent): void => {
+    if (soft.textKey(e)) return; // the phone's keyboard: its text comes as `input`, in the run
     if (e.isComposing) return; // its text comes at compositionend
-    const action = keyAction(e, isMac);
+    const action = keyAction(e, isMac, keysToDesk());
     if (action === 'leave') return;
     if (action === 'paste') {
       pasteRepeat = e.repeat;
@@ -185,6 +239,7 @@ export function bindStreamInput(o: StreamInputOptions): () => void {
     const sink = o.input();
     sink?.key(true, sym);
     if (sink && !e.repeat && isCopyChord(e, isMac)) o.onCopyGesture(true);
+    soft.sentKey(e.key);
     o.onInput();
   };
 
@@ -201,6 +256,7 @@ export function bindStreamInput(o: StreamInputOptions): () => void {
   };
 
   const releaseEverything = (): void => {
+    touch.stop();
     held.clear();
     pressed = 0;
     wheel.reset();
@@ -208,9 +264,13 @@ export function bindStreamInput(o: StreamInputOptions): () => void {
     o.input()?.releaseAll();
   };
 
-  const onKeysFocus = (): void => o.onFocusChange(true);
+  const onKeysFocus = (): void => {
+    soft.focus();
+    o.onFocusChange(true);
+  };
 
   const onKeysBlur = (): void => {
+    soft.blur();
     o.onFocusChange(false);
     releaseEverything(); // their keyups go elsewhere now
   };
@@ -225,16 +285,25 @@ export function bindStreamInput(o: StreamInputOptions): () => void {
 
   const onCompositionEnd = (e: CompositionEvent): void => {
     composing = false;
+    if (soft.active()) return; // the run has had it as it was typed
     keys.value = '';
-    if (e.data) o.onText(e.data);
+    if (e.data) void o.onText(e.data);
+  };
+
+  const onBeforeInput = (e: InputEvent): void => {
+    soft.beforeInput(e);
   };
 
   /** Text that came with no key: an emoji picker, dictation, a virtual keyboard's `Unidentified`. */
-  const onTextInput = (): void => {
+  const onTextInput = (e: Event): void => {
+    if (soft.active()) {
+      soft.inputEvent(e);
+      return;
+    }
     if (composing || !keys.value) return;
     const text = keys.value;
     keys.value = '';
-    o.onText(text);
+    void o.onText(text);
   };
 
   /** What a real paste does on the desk, once `browser.clipboard.write` has answered. Read now: the member may have let go. */
@@ -263,12 +332,13 @@ export function bindStreamInput(o: StreamInputOptions): () => void {
     add(video, 'pointermove', onPointerMove),
     add(video, 'pointerdown', onPointerDown),
     add(video, 'pointerup', onPointerUp),
-    add(video, 'pointercancel', onPointerGone),
+    add(video, 'pointercancel', onPointerCancel),
     add(video, 'lostpointercapture', onPointerGone),
     add(video, 'mousedown', preventDefault),
     add(video, 'mouseup', onMouseUp),
     add(video, 'auxclick', preventDefault),
     add(video, 'contextmenu', preventDefault),
+    add(video, 'click', onClick),
     add(video, 'wheel', onWheel, { passive: false }),
     add(keys, 'keydown', onKeyDown),
     add(keys, 'keyup', onKeyUp),
@@ -276,6 +346,7 @@ export function bindStreamInput(o: StreamInputOptions): () => void {
     add(keys, 'blur', onKeysBlur),
     add(keys, 'compositionstart', onCompositionStart),
     add(keys, 'compositionend', onCompositionEnd),
+    add(keys, 'beforeinput', onBeforeInput),
     add(keys, 'input', onTextInput),
     add(keys, 'paste', onPaste),
   ];
@@ -284,6 +355,10 @@ export function bindStreamInput(o: StreamInputOptions): () => void {
 
   return () => {
     for (const fn of off) fn();
+    o.onTouchControl?.(null);
+    o.onSoftKeyboard?.(null);
+    touch.dispose();
+    soft.dispose();
     window.removeEventListener('blur', releaseEverything);
     document.removeEventListener('visibilitychange', onVisibility);
     cancelAnimationFrame(frame);

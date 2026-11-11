@@ -42,3 +42,56 @@ describe('initialsOf', () => {
     expect(initialsOf(null, null)).toBe('');
   });
 });
+
+describe('the profile picture (acct-picture)', () => {
+  const ok = 'https://api.example.test/v1/public/avatars/im_abcdefghijklmnopqrstuvwxyz'.replace('abcdefghijklmnopqrstuvwxyz', 'abcdefghijklmnopqrstuvwxyz'.slice(0, 26));
+  it('takes only the Platform public avatar route over https', async () => {
+    const { pictureUrlOf } = await import('./avatar');
+    expect(pictureUrlOf(ok)).toBe(ok);
+    for (const bad of [null, undefined, 3, '', 'http://api.example.test/v1/public/avatars/im_abcdefghijklmnopqrstuvwxyz', 'data:image/png;base64,AAAA', 'blob:https://x/1', 'https://api.example.test/other.png', `${ok}?x=1`, `${ok}#x`, 'https://u:p@api.example.test/v1/public/avatars/im_abcdefghijklmnopqrstuvwxyz', 'https://api.example.test/v1/public/avatars/im_short'])
+      expect(pictureUrlOf(bad)).toBeNull();
+  });
+  it('reads avatarUrl, else an upload avatar, and ignores unknown kinds', async () => {
+    const { pictureOf } = await import('./avatar');
+    expect(pictureOf({ avatarUrl: ok })).toBe(ok);
+    expect(pictureOf({ avatarUrl: null, avatar: { kind: 'upload', url: ok } })).toBe(ok);
+    expect(pictureOf({ avatar: { kind: 'built', config: { kind: 'built', kit: 1 }, url: ok } })).toBeNull();
+    expect(pictureOf(null)).toBeNull();
+  });
+});
+
+describe('the built avatar (acct-avatar)', () => {
+  const recipe = { kind: 'built', kit: 1, skin: 4, face: 'smile', hair: 'wavy', extras: ['freckles'] };
+  const built = (config: unknown) => ({ avatar: { kind: 'built', config, setAt: '2026-11-09T10:00:00Z' } });
+  it('takes a plain built kit-1 recipe', async () => {
+    const { builtRecipeOf } = await import('./avatar');
+    expect(builtRecipeOf(built(recipe))).toEqual(recipe);
+    expect(builtRecipeOf(built({ kind: 'built', kit: 1 }))).toEqual({ kind: 'built', kit: 1 });
+  });
+  it('is null for anything else, so the initials show', async () => {
+    const { builtRecipeOf } = await import('./avatar');
+    const big = { ...recipe, extras: Array.from({ length: 100 }, () => 'freckles') };
+    for (const bad of [null, undefined, 'x', 3, [], [recipe], { ...recipe, kind: 'upload' }, { ...recipe, kind: undefined }, { ...recipe, kit: 2 }, { ...recipe, kit: '1' }, { skin: 4 }, big, Object.create({ kind: 'built', kit: 1 })])
+      expect(builtRecipeOf(built(bad))).toBeNull();
+    expect(builtRecipeOf(null)).toBeNull();
+    expect(builtRecipeOf({})).toBeNull();
+    expect(builtRecipeOf({ avatar: null })).toBeNull();
+    expect(builtRecipeOf({ avatar: { kind: 'upload', url: 'https://x', config: recipe } })).toBeNull();
+    expect(builtRecipeOf({ avatar: 'built' })).toBeNull();
+  });
+  it('allows 600 bytes and not 601', async () => {
+    const { builtRecipeOf, BUILT_MAX_BYTES } = await import('./avatar');
+    const base = { kind: 'built', kit: 1, face: '' };
+    const pad = BUILT_MAX_BYTES - JSON.stringify(base).length;
+    expect(builtRecipeOf(built({ ...base, face: 'x'.repeat(pad) }))).not.toBeNull();
+    expect(builtRecipeOf(built({ ...base, face: 'x'.repeat(pad + 1) }))).toBeNull();
+  });
+  it('renders through the lazy kit as a data: image, cached, at each size', async () => {
+    const { builtAvatarSrc } = await import('./avatarKit');
+    const a = await builtAvatarSrc(recipe, 32);
+    expect(a).toMatch(/^data:image\/svg\+xml;charset=utf-8,/);
+    expect(decodeURIComponent(a!.split(',')[1]!)).toMatch(/^<svg[^>]*width="32"/);
+    expect(await builtAvatarSrc(recipe, 32)).toBe(a);
+    expect(await builtAvatarSrc(recipe, 40)).not.toBe(a);
+  });
+});

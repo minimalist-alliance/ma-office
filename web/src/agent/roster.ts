@@ -5,7 +5,6 @@
 // leaves the page. Until a desk has said, its agent tiles draw the default mark and read "Agent".
 import { create } from 'zustand';
 import type { Agent } from '../../agent/src/client/types';
-import { fromBase64 } from '../../agent/src/model/png';
 import { agentIdOf, isAgentApp, type AppId, type CoreAppId } from '../canvas/layout';
 
 export interface RosterAgent {
@@ -16,8 +15,10 @@ export interface RosterAgent {
   tone: string;
   /** The upload's version, or null. */
   png: number | null;
-  /** Its finished replies the member hasn't seen: its tile's badge. */
+  /** Its finished replies the member hasn't seen, and its requests waiting for the member (S-14): its tile's badge. */
   unseen: number;
+  /** Its requests waiting for the member (API.md section 18's `approvalsPending`). */
+  waiting: number;
 }
 
 interface RosterState {
@@ -55,7 +56,7 @@ export function lookChunk(): LookChunk | null {
   return chunk;
 }
 
-const DEFAULT_LOOK = { icon: 'spark', tone: 'graphite' } as const;
+const DEFAULT_LOOK = { icon: 'nodes', tone: 'graphite' } as const;
 const isLead = (a: Pick<Agent, 'lead' | 'role'>): boolean => a.lead === true || a.role === 'manager';
 
 export const maskKey = (deskId: string, agentId: string, version: number): string => `${deskId}|${agentId}|${version}`;
@@ -63,7 +64,7 @@ export const maskKey = (deskId: string, agentId: string, version: number): strin
 const same = (a: readonly RosterAgent[] | undefined, b: readonly RosterAgent[]): boolean =>
   !!a && a.length === b.length && a.every((x, i) => {
     const y = b[i]!;
-    return x.id === y.id && x.name === y.name && x.lead === y.lead && x.icon === y.icon && x.tone === y.tone && x.png === y.png && x.unseen === y.unseen;
+    return x.id === y.id && x.name === y.name && x.lead === y.lead && x.icon === y.icon && x.tone === y.tone && x.png === y.png && x.unseen === y.unseen && x.waiting === y.waiting;
   });
 
 /** What a desk's `agent.state` says. `fetchIcon` reads an upload over that desk's link, once per version. */
@@ -75,7 +76,9 @@ export function noteAgents(deskId: string, agents: readonly Agent[], fetchIcon?:
     icon: a.look?.icon ?? DEFAULT_LOOK.icon,
     tone: a.look?.tone ?? DEFAULT_LOOK.tone,
     png: a.look?.icon === 'png' ? (a.look.png ?? null) : null,
-    unseen: a.unseen ?? 0,
+    // A request waiting (API.md section 18's `approvalsPending`) counts on the tile with the unseen replies (the S-14 spec, section 6).
+    unseen: (a.unseen ?? 0) + (a.approvalsPending ?? 0),
+    waiting: a.approvalsPending ?? 0,
   }));
   const cur = useRosterStore.getState();
   if (next.some((a) => !a.lead)) lookChunk();
@@ -91,7 +94,8 @@ async function loadMask(deskId: string, agentId: string, version: number, fetchI
   if (loading.has(key) || useRosterStore.getState().masks[key]) return;
   loading.add(key);
   try {
-    const icon = await fetchIcon(agentId);
+    // The PNG helpers load beside the icon's own fetch, not in the first load: only an agent with an uploaded mark needs them.
+    const [icon, { fromBase64 }] = await Promise.all([fetchIcon(agentId), import('../../agent/src/model/png')]);
     const blob = new Blob([fromBase64(icon.png).slice()], { type: 'image/png' });
     const bitmap = typeof createImageBitmap === 'function' ? await createImageBitmap(blob).catch(() => null) : null;
     const url = URL.createObjectURL(blob);
@@ -138,6 +142,15 @@ export function rosterAgent(app: AppId, deskId?: string, state: RosterState = us
     if (a) return a;
   }
   return null;
+}
+
+/** The desk team's requests waiting for the member: the lead's `agent` tile's count (the S-14 spec, section 6). */
+export function teamWaiting(deskId: string, state: RosterState = useRosterStore.getState()): number {
+  return (state.desks[deskId] ?? []).reduce((n, a) => n + a.waiting, 0);
+}
+
+export function useTeamWaiting(deskId: string): number {
+  return useRosterStore((s) => teamWaiting(deskId, s));
 }
 
 export function useRosterAgent(deskId: string, app: AppId): RosterAgent | null {

@@ -616,7 +616,7 @@ func TestReleaseRunScript(t *testing.T) {
 	}
 	got := strings.Join(strings.Fields(string(out)), " ")
 	// No --port: 443 is desk-rtc's default, and /etc/ma/desk-rtc.conf may set another (a self-hosted desk's 4443).
-	want := "--socket /run/desk/rtc.sock --socket-group desk --data-dir /data/rtc --bind auto --config /etc/ma/desk-rtc.conf --stream-socket /run/desk-media/stream.sock --stream-user stream --display :99"
+	want := "--socket /run/desk/rtc.sock --socket-group desk --data-dir /data/rtc --bind auto --config /etc/ma/desk-rtc.conf --stream-socket /run/desk-media/stream.sock --stream-user stream --profile-file /run/desk-egress/profile --display :99"
 	if got != want {
 		t.Fatalf("flags %q, want %q", got, want)
 	}

@@ -5,6 +5,7 @@
 // session for an active member, or an export-only one for a closed account whose data is still kept. The archive is
 // written in place in the browser's private storage with a journal beside it, so a reload or a closed tab can carry
 // on, and then copied into the file the member chose, or offered from there.
+import { closedLine, closedMembership } from './closed';
 import { useEffect, useRef, useState } from 'react';
 import { createDeskLink, type DeskLink } from '../desk/deskLink';
 import { keepOpen, linkOf, wakeDesk } from '../desk/liveStore';
@@ -13,6 +14,7 @@ import { currentMember } from '../platform/auth';
 import { siblingUrl } from '../platform/hosts';
 import { accountUrl, SUPPORT_ADDRESS, type ClientConfig } from '../platform/clientConfig';
 import { useSession } from '../platform/session';
+import { useCloseHold } from '../shell/closeGuard';
 import { useDeskStore } from '../state/deskStore';
 import { deskFolders, exportFileName } from './archive';
 import { encryptedName } from './passphrase';
@@ -243,12 +245,7 @@ export function ExportPanel({ inOffice = false, onHolding }: { inOffice?: boolea
     onHolding?.(holding);
   }, [holding, onHolding]);
   useEffect(() => () => onHolding?.(false), [onHolding]);
-  useEffect(() => {
-    if (!busy) return undefined;
-    const hold = (e: BeforeUnloadEvent): void => e.preventDefault();
-    window.addEventListener('beforeunload', hold);
-    return () => window.removeEventListener('beforeunload', hold);
-  }, [busy]);
+  useCloseHold(busy);
 
   // And keeps the screen on while it runs, where the browser allows it: a sleeping computer drops the desks.
   useEffect(() => {
@@ -286,7 +283,10 @@ export function ExportPanel({ inOffice = false, onHolding }: { inOffice?: boolea
 
   const list = desks.status === 'ready' ? desks.data.desks : [];
   const status = me?.membership?.status ?? (desks.status === 'ready' ? desks.data.status : null);
-  const ended = status === 'ended';
+  // An ended membership and a suspended one get the same: the export-only session and the move. A safety suspension
+  // looks like any other here (the client isn't told why); the server refuses its export `connect`, and that shows as
+  // the desk's calm "can't be opened" line, with nothing asked again.
+  const ended = closedMembership(status);
   const offered = list.filter((d) => deskNote(d).can);
   const chosen = offered.filter((d) => !off[d.deskId]);
   const saveWay = canResume() ? 'browser' : canPickFile() ? 'file' : null;
@@ -494,9 +494,11 @@ export function ExportPanel({ inOffice = false, onHolding }: { inOffice?: boolea
   const guide = config ? selfHostingGuide(config) : null;
   const running = view.kind === 'running' ? view.state : null;
 
+  const Head = inOffice ? 'div' : 'header';
   const body = (
     <>
-        <header className="xp-head">
+        {/* In the office it's a section of Account settings, under the office's own banner, so not a second one. */}
+        <Head className="xp-head">
           {!inOffice && (
             <>
               <a className="xp-back" href="/">
@@ -514,10 +516,10 @@ export function ExportPanel({ inOffice = false, onHolding }: { inOffice?: boolea
           </p>
           {ended && (
             <p className="xp-lede" data-testid="export-ended">
-              {deleteAt ? `Your membership has ended. Your desks are kept until ${deleteAt}, so you can take everything with you.` : 'Your membership has ended. Your desks are kept for 30 days after it ends, so you can take everything with you.'}
+              {closedLine(deleteAt)}
             </p>
           )}
-        </header>
+        </Head>
 
         <section className="xp-card" aria-labelledby="xp-download-title">
           <h2 id="xp-download-title">Download your data</h2>
@@ -704,7 +706,7 @@ export function ExportPanel({ inOffice = false, onHolding }: { inOffice?: boolea
           )}
         </section>
 
-        {config?.export?.moves === true && desks.status === 'ready' && !ended && <MovePanel desks={list} guideUrl={guide} />}
+        {config?.export?.moves === true && desks.status === 'ready' && <MovePanel desks={list} guideUrl={guide} />}
     </>
   );
   if (inOffice) {

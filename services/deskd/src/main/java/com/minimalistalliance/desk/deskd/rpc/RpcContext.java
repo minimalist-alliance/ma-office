@@ -17,6 +17,7 @@ public final class RpcContext {
     private final long arrival;
     private final BooleanSupplier beginEffect;
     private final List<Consumer<Boolean>> afterReply = new ArrayList<>(0);
+    private volatile String idem;
 
     RpcContext(Supplier<RpcPrincipal> principal, long requestId, long arrival, BooleanSupplier beginEffect) {
         this.principal = principal;
@@ -32,6 +33,15 @@ public final class RpcContext {
 
     public long requestId() {
         return requestId;
+    }
+
+    /** A mutation's {@code idem}, as the client sent it; null for a read. A relay passes it on, so its service can dedupe too. */
+    public String idem() {
+        return idem;
+    }
+
+    void idem(String value) {
+        idem = value;
     }
 
     /**

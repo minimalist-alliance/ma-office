@@ -1,6 +1,7 @@
 # 0015. Notebook editor: TipTap 3 with Yjs (Hocuspocus) sync and versioned history
 
-**Status:** Proposed (pending the owner's approval of design v1)
+**Status:** Proposed, amended: the server half (where sync runs, and in what language) is decided by [0044](0044-notebook-service-hocuspocus-on-node.md) under the addendum to [0040](0040-desk-services-spring-boot-docker.md): Hocuspocus on Node 24 in its own container, not in `deskd`. The editor half (TipTap 3 with Yjs, versioned history) stands. Pending the 
+owner's approval of design v1
 **Date:** 2026-11-04
 **Amended:** 2026-11-04 by [0023](0023-desk-data-channel-protocol.md) (collab transport); 2026-11-07 by [0044](0044-notebook-service-hocuspocus-on-node.md) (where sync runs; noted 2026-11-09)
 

@@ -305,6 +305,7 @@ function fetchServer(): Promise<void> {
       fetching = null;
       if (asked !== epoch && running) void fetchServer(); // the one that found out, or one the last member's call was in the way of
       else schedulePoll();
+      if (layoutDocRead()) for (const fn of readListeners) fn();
     }
   })();
   return fetching;
@@ -468,6 +469,20 @@ function onLayoutChange(next: LayoutDoc, prev: LayoutDoc): void {
   if (!changed) return;
   writeMeta();
   saveSoon();
+}
+
+const readListeners = new Set<() => void>();
+
+/**
+ * Platform's document has answered on this page, or can't (no route, or no sync at all, as under the fixtures). A pref
+ * the office sets by itself waits for this, so it can't write over one the document already had (`setup/prefs.ts`).
+ */
+export const layoutDocRead = (): boolean => !running || version !== null || routeMissing;
+
+/** Each time a read of the document ends while it's been read: the setup circle's done steps go up then. */
+export function onLayoutDocRead(fn: () => void): () => void {
+  readListeners.add(fn);
+  return () => readListeners.delete(fn);
 }
 
 /** A preference the member just changed, kept in the document (design 9.4). It goes like any other change. */

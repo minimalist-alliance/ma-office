@@ -1,6 +1,6 @@
 import { describe, expect, it } from 'vitest';
 import { backoffMs } from './backoff';
-import { closeCodeAction, notReadyRetryMs, PongWatch, RECHECK_FIRST_ATTEMPT, membershipBack, refusalOf, sessionClosedAction } from './policy';
+import { CallWindow, closeCodeAction, CONNECT_CALLS_PER_MINUTE, notReadyRetryMs, PongWatch, RECHECK_FIRST_ATTEMPT, membershipBack, refusalOf, sessionClosedAction, WAKE_FAST_FOR_MS, wakePollMs } from './policy';
 
 describe('close codes (design 3.9, 4.2.7)', () => {
   it.each([
@@ -46,8 +46,64 @@ describe('waiting for a desk that is not ready', () => {
     expect([0, 1, 2, 3, 4, 50].map((checks) => notReadyRetryMs(checks, false))).toEqual([3_000, 4_500, 6_750, 10_000, 10_000, 10_000]);
   });
 
-  it('stays at 3 s through a wake', () => {
+  it('stays at 3 s through a wake nobody here asked for', () => {
     expect([0, 1, 2, 3, 50].map((checks) => notReadyRetryMs(checks, true))).toEqual([3_000, 3_000, 3_000, 3_000, 3_000]);
+  });
+});
+
+describe('the poll through a wake the member asked for (TD-227 part 3)', () => {
+  it("is once a second, whatever connect's usual 3 s says, at every step of the wake", () => {
+    for (const phase of ['starting', 'booting', 'connecting', null]) {
+      expect(wakePollMs({ phase, paceMs: 3_000, wakeAgeMs: 0 })).toBe(1_000);
+      expect(wakePollMs({ phase, paceMs: 0, wakeAgeMs: 30_000 })).toBe(1_000);
+    }
+  });
+
+  it('keeps a queue for capacity, and any pace above the usual, as connect gives them', () => {
+    expect(wakePollMs({ phase: 'queued', paceMs: 3_000, wakeAgeMs: 0 })).toBe(3_000);
+    expect(wakePollMs({ phase: 'queued', paceMs: 0, wakeAgeMs: 0 })).toBe(3_000);
+    expect(wakePollMs({ phase: 'starting', paceMs: 7_000, wakeAgeMs: 0 })).toBe(7_000);
+  });
+
+  it("goes back to connect's pace once the wake has run long", () => {
+    expect(wakePollMs({ phase: 'starting', paceMs: 3_000, wakeAgeMs: WAKE_FAST_FOR_MS })).toBe(1_000);
+    expect(wakePollMs({ phase: 'starting', paceMs: 3_000, wakeAgeMs: WAKE_FAST_FOR_MS + 1 })).toBe(3_000);
+    expect(wakePollMs({ phase: 'starting', paceMs: 0, wakeAgeMs: WAKE_FAST_FOR_MS + 1 })).toBe(3_000);
+  });
+});
+
+describe('the connect budget: inside the API limit of 30 a minute for a member', () => {
+  it('has room for 24 in any minute, and the next waits until the oldest is a minute old', () => {
+    expect(CONNECT_CALLS_PER_MINUTE).toBeLessThan(30);
+    const w = new CallWindow(24, 60_000);
+    for (let t = 0; t < 24_000; t += 1_000) {
+      expect(w.waitMs(t)).toBe(0);
+      w.note(t);
+    }
+    expect(w.waitMs(24_000)).toBe(36_000); // the first, at 0, leaves at 60 s
+    expect(w.waitMs(59_999)).toBe(1);
+    expect(w.waitMs(60_000)).toBe(0);
+  });
+
+  it('a poll that always waits for room never puts more than 24 in any minute', () => {
+    const w = new CallWindow(24, 60_000);
+    const at: number[] = [];
+    let t = 0;
+    while (t < 10 * 60_000) {
+      t += 1_000;
+      t += w.waitMs(t);
+      w.note(t);
+      at.push(t);
+    }
+    for (const start of at) expect(at.filter((x) => x >= start && x < start + 60_000).length).toBeLessThanOrEqual(24);
+  });
+
+  it('forgets what it counted when the clock goes back', () => {
+    const w = new CallWindow(2, 60_000);
+    w.note(100_000);
+    w.note(100_500);
+    expect(w.waitMs(100_600)).toBeGreaterThan(0);
+    expect(w.waitMs(1_000)).toBe(0);
   });
 });
 

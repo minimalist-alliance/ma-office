@@ -516,6 +516,52 @@ test.describe('with export on', () => {
     expect(errors).toEqual([]);
   });
 
+  test('a suspended member (not for safety) downloads like an ended one, with an export-only session', async ({ page, request }) => {
+    test.setTimeout(60_000);
+    const errors = watchConsole(page);
+    await harness(request, { membership: { status: 'suspended', tier: 'officer' }, refuseConnect: { code: 'account_suspended', details: {} }, fleet: [{ deskId: DESK, name: 'Personal', kind: 'personal', state: 'stopped' }] });
+    await standInPicker(page, 'suspended.zip');
+    await arrive(page, '/export?refuse=account_suspended');
+    await expect(page.getByTestId('export-ended')).toContainText("Your membership isn't active.");
+    await expect(page.getByTestId('export-ended')).not.toContainText(/ended|suspend/i);
+    for (const theme of THEMES) {
+      await setTheme(page, theme);
+      await arrive(page, '/export?refuse=account_suspended');
+      await expect(page.getByTestId('export-start')).toBeEnabled();
+      await page.screenshot({ path: `test-results/shots/suspended-export-${theme}.png`, fullPage: true });
+    }
+    await expect(page.getByTestId(`choose-${DESK}`)).toContainText('Asleep. It wakes for the download.');
+    await page.evaluate(() => {
+      (window as unknown as Mock).__maDeskMock.exportWakeMs = 1500;
+    });
+    await page.getByTestId('export-start').click();
+    await expect(page.getByTestId(`progress-${DESK}`)).toContainText('Waking Personal…');
+    await expect(page.getByTestId('export-done')).toBeVisible({ timeout: 30_000 });
+    const h = await read(request);
+    expect(h.connects.filter((c) => c.purpose === 'export')).toEqual([{ deskId: DESK, start: true, purpose: 'export' }]);
+    const z = inspect(await pickedFile(page, 'suspended.zip'));
+    expect(z.names).toContain('desks/Personal/files/Photos/harbor.jpg');
+    expect(errors).toEqual([]);
+  });
+
+  test('a safety-suspended member is refused calmly, once, with no reason shown', async ({ page, request }) => {
+    test.setTimeout(60_000);
+    await harness(request, {
+      membership: { status: 'suspended', tier: 'officer' },
+      refuseConnect: { code: 'account_suspended', details: {} },
+      refuseExport: { code: 'account_suspended', details: {} },
+      fleet: [{ deskId: DESK, name: 'Personal', kind: 'personal', state: 'stopped' }],
+    });
+    await standInPicker(page, 'refused.zip');
+    await arrive(page, '/export?refuse=account_suspended');
+    await page.getByTestId('export-start').click();
+    await expect(page.getByTestId(`progress-${DESK}`)).toHaveAttribute('data-phase', 'refused', { timeout: 30_000 });
+    await expect(page.getByTestId(`progress-${DESK}`)).toContainText("This desk can't be opened for a download right now.");
+    await expect(page.locator('body')).not.toContainText(/safety|report/i);
+    await page.waitForTimeout(8_000);
+    expect(await exportConnects(request)).toBe(1);
+  });
+
   test("a closed account's desk that's stopping is asked again at the pace it gives, not in a burst", async ({ page, request }) => {
     test.setTimeout(60_000);
     await harness(request, {
@@ -606,7 +652,7 @@ test.describe('with export on', () => {
     await harness(request, { membership: { status: 'ended', tier: 'officer' }, refuseConnect: { code: 'account_inactive', details: {} }, fleet: [{ deskId: DESK, name: 'Personal', kind: 'personal', state: 'stopped' }] });
     await standInPicker(page, 'ended.zip');
     await arrive(page, '/export?refuse=account_inactive');
-    await expect(page.getByTestId('export-ended')).toContainText('Your membership has ended.');
+    await expect(page.getByTestId('export-ended')).toContainText("Your membership isn't active.");
     await expect(page.getByTestId(`choose-${DESK}`)).toContainText('Asleep. It wakes for the download.');
     await page.evaluate(() => {
       (window as unknown as Mock).__maDeskMock.exportWakeMs = 1500;
@@ -652,6 +698,21 @@ test.describe('the move', () => {
     { deskId: DESK, name: 'Personal', kind: 'personal', state: 'running' },
     ...(home ? [{ deskId: HOME, name: 'Home', kind: 'personal', state: 'running', hosting: 'self' }] : []),
   ];
+
+  for (const status of ['suspended', 'ended']) {
+    test(`a ${status} member gets the move, with the same words`, async ({ page, request }) => {
+      await harness(request, { export: { enabled: true, moves: true }, membership: { status, tier: 'officer' }, refuseConnect: { code: status === 'ended' ? 'account_inactive' : 'account_suspended', details: {} }, fleet: fleet(true) });
+      await arrive(page);
+      await expect(page.getByTestId('export-ended')).toContainText("Your membership isn't active.");
+      await expect(page.getByTestId('move-panel')).toBeVisible();
+      for (const theme of THEMES) {
+        await setTheme(page, theme);
+        await arrive(page);
+        await expect(page.getByTestId('move-panel')).toBeVisible();
+        if (status === 'suspended') await page.screenshot({ path: `test-results/shots/suspended-move-${theme}.png`, fullPage: true });
+      }
+    });
+  }
 
   test('is hidden while export.moves is off', async ({ page, request }) => {
     await harness(request, { export: { enabled: true, moves: false }, fleet: fleet(true) });

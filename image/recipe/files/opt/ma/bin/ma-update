@@ -6,7 +6,9 @@
 # ma-update <component> --unprepare               drop the prepared release, unless it's current or previous
 # Exit: 0 healthy (or prepared) | 1 smoke test failed (old release put back) or rollback unhealthy | 2 error before any change
 # The release that's already current, from the same artifact (artifact.sha256 in its directory), changes nothing: it
-# only runs the smoke test. That's a rollout of the version an image bakes in.
+# only runs the smoke test. A release the desk holds as previous or prepared, from the same artifact, is switched to with no
+# download, found by hash as --prepare does: a rollout of the version an image bakes in, or of the one just left. The same
+# version from a different artifact is refused, exit 2, nothing changed.
 # Refused, exit 2 with nothing changed: desk-rtc 0.2.0, by install, prepare, activate or rollback, on any image but 0.1.x, 0.2.0
 # and 0.2.1 (/etc/ma-release). From image 0.2.2 on, characters go missing and one reloads the page. build.sh refuses to bake it too.
 #
@@ -273,19 +275,37 @@ fi
 [ $# -eq 3 ] || die "$USAGE"
 url=$2; sha=${3,,}
 [[ $sha =~ ^[0-9a-f]{64}$ ]] || die "bad sha256"
-fetch "$url" "$sha"
+old_cur=$(target current); old_prev=$(target previous); old_prep=$(target prepared)
 
-old_cur=$(target current); old_prev=$(target previous)
-rel=$cdir/releases/$ver
-# The release that's already current, from the same artifact: nothing to change, such as a rollout of the version an image
-# bakes in. Its health still decides the exit. The same version from a different artifact is still refused below.
-if [ "$rel" = "$old_cur" ] && [ "$(cat "$rel/artifact.sha256" 2>/dev/null)" = "$sha" ]; then
-  log "$comp $ver is already current, from this artifact: nothing changed"
+# By the artifact's hash first, as --prepare does, so a release the desk already holds (current, previous or prepared) is
+# switched to with no download: the baked release, or the one a rollout just left as previous. The same version from a
+# different artifact isn't found here, is downloaded, and is refused below.
+if [ -n "$old_cur" ] && [ "$(art_sha "$old_cur")" = "$sha" ]; then
+  log "$comp $(basename "$old_cur") is already current, from this artifact: nothing changed"
   if [ "$INSTALL_ONLY" = 1 ] || smoke_wait; then log "healthy"; exit 0; fi
   log "smoke test FAILED (nothing was changed)"; exit 1
 fi
+held=""
+if [ -n "$old_prev" ] && [ -d "$old_prev" ] && [ "$(art_sha "$old_prev")" = "$sha" ]; then held=$old_prev
+elif [ -n "$old_prep" ] && [ -d "$old_prep" ] && [ "$(art_sha "$old_prep")" = "$sha" ]; then held=$old_prep; fi
+if [ -n "$held" ]; then
+  rel=$held; ver=$(basename "$rel")
+  [ -x "$rel/run" ] && [ -x "$rel/health" ] || die "the held $comp $ver has no executable run and health"
+  never_here "$comp" "$ver"
+  keep_rel=0; [ "$rel" != "$old_prev" ] || keep_rel=1
+  log "$comp $ver is on this desk already, from this artifact: switching to it, nothing downloaded"
+  [ "$rel" != "$old_prep" ] || rm_link prepared
+  [ -n "$old_cur" ] && set_link previous "$old_cur"
+  set_link current "$rel"
+  log "$comp: current -> $ver (previous: ${old_cur:-none})"
+  if [ "$INSTALL_ONLY" = 1 ]; then log "installed only: nothing restarted, smoke-tested or pruned"; exit 0; fi
+  switch_and_check
+fi
+
+fetch "$url" "$sha"
+rel=$cdir/releases/$ver
 if [ -e "$rel" ]; then
-  case "$rel" in "$old_cur"|"$old_prev") die "version $ver is already installed as current or previous" ;; esac
+  case "$rel" in "$old_cur"|"$old_prev") die "version $ver is already installed as current or previous, from another artifact" ;; esac
   [ "$rel" != "$(target prepared)" ] || rm_link prepared   # an install of the version a batch prepared replaces it
   rm -rf "$rel"
 fi

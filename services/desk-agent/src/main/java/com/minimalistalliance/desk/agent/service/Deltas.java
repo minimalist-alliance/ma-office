@@ -106,6 +106,11 @@ final class Deltas {
         send(true);
     }
 
+    /** Sends what's pending now, as before a reply's whole view goes out: the view's text then has nothing still to come. */
+    void flush() {
+        send(false);
+    }
+
     String text() {
         lock.lock();
         try {

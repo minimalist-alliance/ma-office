@@ -10,6 +10,11 @@
 .ma-shell:has(.bw) .bottombar {
   padding-right: calc(max(32px, env(safe-area-inset-right, 0px)) + 52px);
 }
+/* Its panel open, over Maia's open panel (25), which shares the corner: the member just asked for it, and its See membership
+   must take the click (the free walk's finding 10). Still under the top bar's open menu (30). */
+.bw:has(.bw-panel) {
+  z-index: 26;
+}
 
 .bw-btn {
   display: grid;
@@ -17,11 +22,11 @@
   width: 44px;
   height: 44px;
   padding: 0;
-  border: 1px solid var(--ma-border);
+  /* The disc has no outline of its own: the ring inside is the one ring. In Zen and Dark a visible border read as a second ring. */
+  border: 0;
   border-radius: 999px;
   background: var(--ma-surface-chrome);
   color: var(--ma-text-primary);
-  -webkit-tap-highlight-color: transparent;
 }
 @media (hover: hover) {
   .bw-btn:hover {
@@ -159,4 +164,21 @@
   background: var(--ma-surface-fill);
   color: var(--ma-text-primary);
   text-wrap: pretty;
+}
+/* The quiet link to the next tier (upgrade.ts): the panel's note and the paused window's last line. Calm, never loud. */
+.bw-offer a,
+.bw-offer-link a {
+  color: var(--ma-text-secondary);
+  text-decoration: underline;
+  text-underline-offset: 2px;
+}
+.bw-offer a:hover,
+.bw-offer-link a:hover {
+  color: var(--ma-text-primary);
+}
+.bw-offer-link {
+  font-size: 13px;
+}
+.bw-offer a {
+  white-space: nowrap;
 }

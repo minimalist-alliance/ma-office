@@ -1,0 +1,36 @@
+[Unit]
+Description=ma-selfhost-net (the firewall's list of this desk's own networks, kept current: EXP-9)
+Documentation=file:///usr/local/share/doc/ma-selfhost/README.md
+# nftables.conf's include loads the latest list with the rules; this keeps the list current between loads. A restart of
+# the firewall restarts this too (PartOf), and a reload sends it a HUP, so the sets are filled again straight after.
+After=nftables.service
+PartOf=nftables.service
+ReloadPropagatedFrom=nftables.service
+# It keeps trying for as long as it takes. While it's down, ipv6_ok lapses within 3 minutes, and the Browser and
+# desk-agent-filter get no IPv6 beyond loopback (fails closed, nftables.conf); IPv4 keeps the last list.
+StartLimitIntervalSec=0
+
+[Service]
+# Ready once the sets are filled the first time, so the Browser's drop-in (desk-browser.service.d/selfhost.conf) waits.
+Type=notify
+NotifyAccess=main
+ExecStart=/usr/local/lib/ma/selfhost/ma-selfhost-net watch
+ExecReload=/bin/kill -HUP $MAINPID
+RuntimeDirectory=ma-selfhost-net
+RuntimeDirectoryMode=0755
+# Kept across its own restarts, so the firewall's include always has the last list.
+RuntimeDirectoryPreserve=yes
+Restart=always
+RestartSec=2
+RestartSteps=5
+RestartMaxDelaySec=60
+CapabilityBoundingSet=CAP_NET_ADMIN
+NoNewPrivileges=yes
+ProtectSystem=strict
+ProtectHome=yes
+PrivateTmp=yes
+PrivateDevices=yes
+MemoryMax=64M
+
+[Install]
+WantedBy=multi-user.target

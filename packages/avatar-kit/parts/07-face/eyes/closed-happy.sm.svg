@@ -1,0 +1,4 @@
+<g data-part="eyes-closed-happy">
+  <g data-eye="left"><path d="M97.5,122 Q109,109.5 120.5,122" fill="none" stroke="{{sclera}}" stroke-width="12.4" stroke-linecap="round"/><path d="M97.5,122 Q109,109.5 120.5,122" fill="none" stroke="{{eye}}" stroke-width="7.2" stroke-linecap="round"/></g>
+  <g data-eye="right"><path d="M135.5,122 Q147,109.5 158.5,122" fill="none" stroke="{{sclera}}" stroke-width="12.4" stroke-linecap="round"/><path d="M135.5,122 Q147,109.5 158.5,122" fill="none" stroke="{{eye}}" stroke-width="7.2" stroke-linecap="round"/></g>
+</g>

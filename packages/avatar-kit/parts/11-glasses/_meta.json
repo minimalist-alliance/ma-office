@@ -1,0 +1,36 @@
+{
+  "category": "glasses",
+  "layer": "11-glasses",
+  "colorSlot": "glassesColor",
+  "default": "none",
+  "parts": [
+    {
+      "id": "none",
+      "name": "None"
+    },
+    {
+      "id": "round",
+      "name": "Round"
+    },
+    {
+      "id": "square",
+      "name": "Square"
+    },
+    {
+      "id": "cat-eye",
+      "name": "Cat-eye"
+    },
+    {
+      "id": "thin-metal",
+      "name": "Thin metal"
+    },
+    {
+      "id": "sunglasses",
+      "name": "Sunglasses"
+    },
+    {
+      "id": "half-rim",
+      "name": "Half-rim"
+    }
+  ]
+}

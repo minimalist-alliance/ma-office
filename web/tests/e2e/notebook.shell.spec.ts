@@ -375,7 +375,7 @@ for (const theme of THEMES) {
       await openToType(page);
       await typeInto(page, 'Today in the log');
       await flush(page, await deskOf(page));
-      await page.getByRole('radio', { name: 'Temporal view' }).click();
+      await page.getByRole('radio', { name: 'By day' }).click();
       await expect(page.getByText('Today in the log').first()).toBeVisible();
       await shot(page, 'temporal', theme);
       expect(await axe(page)).toEqual([]);
@@ -489,7 +489,7 @@ for (const theme of THEMES) {
       expect(await axe(page)).toEqual([]);
       await harness(request, { refuseWake: null });
       const before = await wakes(request);
-      await panel(page).getByRole('button', { name: 'Wake', exact: true }).click();
+      await panel(page).getByRole('button', { name: 'Wake this desk', exact: true }).click();
       await expect(panel(page)).toHaveAttribute('data-panel', 'waking');
       await expect.poll(() => wakes(request)).toBe(before + 1);
       await shot(page, 'waking', theme);
@@ -716,6 +716,8 @@ test('a page whose Title line is empty is named in the list by its first line wi
   await page.keyboard.press('Shift+End');
   await page.keyboard.press('Backspace');
   await expect(page.locator('.nb-prose .nb-empty-title')).toHaveCount(1);
+  // An empty heading says what it is (a11y pass O6).
+  await expect(page.locator('.nb-prose .nb-empty-title')).toHaveAttribute('aria-label', 'Title');
   await expect(currentPage(page).locator('.nb-page-title')).toHaveText('RGN sweep note');
   const deskId = await deskOf(page);
   const first = await pageIdNow(page);

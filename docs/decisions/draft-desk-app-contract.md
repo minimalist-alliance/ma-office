@@ -1,6 +1,6 @@
 # Draft. The desk app contract: what any app must meet to run on a desk
 
-**Status:** Draft, for review by the System Engineer and the Desk Engineer, then the owner's decisions (section 11). Not numbered yet: the System Engineer gives it a number and an index row.
+**Status:** Draft, for review by the System Engineer and the Desk Engineer, then the owner's decisions (section 11). Not numbered yet: the System Engineer gives it a number and an index row. Decisions 1 to 15 took their defaults (Nov 7). Reviewed by the Desk Engineer on 2026-11-11, with deskd's half built: see "Desk Engineer review" at the end, which wins where it differs.
 **Date:** 2026-11-06
 **Author:** subcontractor, task 18 (`sub/desk-app-contract`)
 **Sample:** [`spikes/app-contract-sample/`](../../spikes/app-contract-sample/README.md), an app in Go that meets this contract, with the tools that check it
@@ -488,7 +488,8 @@ Section 1.3 says how: once a day from the catalog, beside the old version, used 
 | Step | Who | Must pass | Hold (*assumed*) |
 |---|---|---|---|
 | Test | `DeskKind=test`, by the pull path, same artifacts and hashes | All of `e2e/`, `SESSION_CHECK=root-swap` on a root batch, 13.3's and 13.4's gates. `PASSED-TEST` only means it came up | Until it passes |
-| The owner | The owner's desk, on exactly the batch, the owner told in one line in their own time zone, snapshot first. A root batch waits for the owner's answer if the desk is in use | The desk's own checks | 48 h and one real session, at most 7 days |
+| The owner | The owner's desk, on exactly the batch, the owner told in one line in their own
+ time zone, snapshot first. A root batch waits for the owner's answer if the desk is in use | The desk's own checks | 48 h and one real session, at most 7 days |
 | First group | 10% of member desks, at least 5, every desk size present, picked per batch by hash so nobody is always first | The same | 48 h |
 | Everyone | The rest, in three waves, self-hosted desks in the last | The same | 24 h a wave |
 
@@ -538,4 +539,147 @@ An urgent fix takes the same steps with 1-hour holds. New desks are born on the 
 - Putting a kept root back: the runbook says no tested procedure exists. A stop, a volume swap and a start are *assumed*.
 - A member arriving mid-batch, a batch timed whole on an Alliance desk, and a wake after a swap and a stop.
 - What share of desks reach idle during a batch. A tab left visible holds a session, so that desk waits. Unknown until there are members.
-- **Shared machines: not designed, and the plan depends on them.** The owner has decided desks will share machines (task 28, S-56). All of this assumes one desk per instance, which is true today, Alliance included. On a shared machine a service batch stays per desk, but a host change needs all its desks idle or moved first (`ma-platform` `docs/research/shared-desk-hosts.md`), so a root swap as written here can't apply. This has to be designed before S-56 places a member on a shared host. Guild hosts aren't designed either, and aren't built.
+- **Shared machines: not designed, and the plan depends on them.** The owner has decided desks will share machines (task 28, S-56). All of this assumes one desk per instance, which is true today, Alliance included. On a shared machine a service batch stays per desk, but a host change needs all its desks idle or moved first (`ma-platform` `docs/research/shared-desk-hosts.md`), so a root swap as written here can't apply. This has to be designed before S-56 places a member on a shared host. Guild hosts aren't designed either, and aren't built. **Since designed (2026-11-11):** a shared host's template generations are ADR 0077, and its service batches ADR 0078: the same signed batch, unpacked once into each host's release store and switched in each slot at idle (built on `sub/host-batches`, `docs/sub-status/host-batches.md`; not baked yet).
+
+## Desk Engineer review (2026-11-11)
+
+Launch row S-97 pulled the base into launch. This review covers decisions 1 to 17 and sections 1 to 13 from deskd's side, and deskd's half is built to it: `services/deskd/src/main/java/com/minimalistalliance/desk/deskd/apps/`, wire in `services/deskd/docs/API.md` §19. Where this section and the draft differ, this section is what deskd does. The ADR stays Proposed.
+
+### The decisions
+
+| # | Verdict | Note |
+|---|---|---|
+| 1, 5, 6, 9, 11, 12, 14 | Accepted | As written |
+| 2 | Accepted | Units, not Docker. deskd never runs an app: the helper does |
+| 3, 4 | Accepted | deskd checks the ceilings at install and refuses one that leaves under 2 GiB free on `/data` |
+| 7 | Accepted | The same key-service key signs the catalog index (C1): no second key |
+| 8, 13 | Accepted | deskd refuses `display` (`not_supported`) until a second display exists (C10) |
+| 10 | Accepted | The app's uid stays reserved with its kept data, so a reinstall gets both back |
+| 15 | Accepted | deskd refuses `net` until the egress proxy has per-app ports (C10) |
+| 16, 17 | Accepted | Not on deskd's install path: apps update apart from batches (§13.3) |
+
+### Changes, each with its reason
+
+- **C1. deskd fetches, checks and serves the catalog** (changes 5.6 and 6.5). `apps.catalog.get` returns deskd's verified copy; the Desk app never fetches or checks it. The trust check then runs once, in Java, where installs happen; the Desk app needs no new origin in its policy; and the Platform sees a desk fetch a public file, not which member browsed the picker. The envelope is `{index: base64, signatures: [{keyId, sig}]}`, signed by a review key. A `seq` lower than the newest taken is refused, so the Platform can't replay an old index to undo a revocation. Only that `seq` is kept on the volume (in `registry.json`); the index stays in memory, so none of it reaches the member's export.
+- **C2. `ma-app.json` and `ma-app.sig` are the first two tar entries,** and deskd streams the rest (changes 1.1). deskd verifies both signatures and the manifest before it writes a byte, then hashes each file as it writes it into staging. The sample reads the whole package into memory, which a desk with about 110 MB for deskd can't do for packages up to 4 GiB. Format: gzip, POSIX ustar, pax `x` headers for long names (only `path` and `size` are used). No GNU or global headers, links, devices, sparse files. The whole package's size and hash must equal the catalog's. Caps: 4096 files, paths of 255 bytes, a 256 KiB manifest, a 16 KiB `ma-app.sig`, and 16 MiB of headers and padding.
+- **C3. A key's id is the first 8 bytes of SHA-256 over its SubjectPublicKeyInfo,** as 16 hex digits, for Ed25519 and P-256 alike (changes 6.2). The sample hashes the raw Ed25519 key; `ma-app` changes that one line when it becomes `tools/ma-app`. P-256 signatures are DER over SHA-256, as the key service gives them. Two review signatures of different tiers give the lower tier.
+- **C4. Releases are written by deskd, owned by `desk`, not root** (changes 1.4): directories `0755`, files `0644` or `0755`. The app's uid can only read them, and the helper binds them read-only. The root helper then never parses or copies package bytes, which keeps root's surface small, and deskd already holds more than this. Staging is `releases/.staging-*`, inside the app's project quota, because ext4 refuses a rename across project ids (`EXDEV`), and inside `releases`, which the export already leaves out.
+- **C5. Every install and upgrade ends with a trial start,** and a failed one rolls back (changes 1.3). The new version must answer HELLO within its `startTimeoutSec`. If it doesn't, the old record, links and run come back, the new release is deleted, and a first install's directories go too. The registry marks the entry `trial`, with the entry it replaced beside it, until the HELLO comes, so a deskd that stops mid-trial is rolled back at its next start the same way. The member hears at once, and a version that can't start never stays current. The draft's "three failed starts switch back" is kept for the automatic updates, not built yet.
+- **C6. No step-up to install** (changes 6.1). The house rule is no sign-in-age gates. The consent is the owner's session, or the Founder's on a Guild Desk, plus the tap. `grants` must be exactly the version's permissions, so the Desk app can't grant what the sheet didn't show.
+- **C7. `apps.call` is split, and `apps.sub` becomes a SUB** (changes 5.6). `apps.call` reaches declared reads and `apps.mutate` declared mutations, never the other way round, because deskd's dispatcher decides per method name whether a key is needed and kept. Subscriptions are SUB `app:<id>:<topic>`, so they get deskd's flow control, resume and slow-consumer rules. App topics are coalescible: a patch carries values, never increments, since one can repeat what a snapshot had.
+- **C8. `from` gains the caller, as pseudonyms** (changes 5.3). `from` is `{kind, session, caller}`.
+  - `session` is an HMAC of the desk session under a per-app key held only in memory.
+  - `caller` is `{kind: "owner"}`. On a Guild Desk it is `{kind: "guild_member", member, role, grants, teen}`, where `member` is an HMAC under the app's own key in the registry: stable for that app on that desk, and unlinkable across apps.
+  - Never a name, email, account or guild member id.
+  - The mutation's `idem` goes on to the app too.
+- **C9. The manifest is strict and the catalog lenient.** A key deskd doesn't know in `ma-app.json` refuses the package, so a field deskd can't honour, a permission above all, is never ignored in silence. A desk too old for a new field can't install that version, which the `appApi` range already says. The index is MA's own, so unknown fields there are ignored.
+- **C10. Only permissions deskd can honour today install.** That is `background`. `net` waits for the proxy's per-app ports, `files.pick` for the picker, `browser.open` for the click rule and `display` for a second display. A version asking for one shows `installable: false, reason: not_supported` and is refused, never installed half-working. Each one turns on when its part ships, with no new `appApi` minor, because the permission list is already 1.0's.
+- **C11. Downgrades are refused.** An app may have moved its data forward. Rollback goes to `previous` only when the new version never answered HELLO (C5), before it could touch its data.
+- **C12. Reserved namespaces add `guild.`, `data.` and `commons.`,** which are deskd's own families too.
+
+### Gaps, and how they close
+
+- **Upgrade and rollback:** C5 and C11. The daily automatic update (1.3, 13.3) isn't built. When it is, it updates only a stopped app whose new permissions are within its grants and whose resources are within the current ones (`Resources.within`), with three failed starts switching back.
+- **Data migration:** deskd never touches an app's data. The contract gains a rule for apps:
+  - change the data's format only after answering HELLO;
+  - keep a format number in the data;
+  - an older version that finds a newer format closes with 4426 (`needs_update`) and doesn't read it.
+- **An app that crashes** (built): it starts again after 1 s, 5 s and 30 s while anyone is subscribed or it's `background`. After 3 in 10 minutes it stays `failed`, with `crashed`, or `memory` when the helper reports an OOM kill, until the member starts it. An on-demand app stops after 10 idle minutes.
+- **Size and CPU caps:** deskd holds the manifest to the tier's ceilings, the files to `diskMaxMiB`, frames to 1 MiB and 64 KiB, and calls to 32 in flight and a 30 s deadline. The kernel's enforcement is the unit's (System). The pressure guard (2.3), the apps' memory budget (stop the least recently used) and emptying caches below 2 GiB free (2.4) aren't built: each needs a helper verb (`cap`, `freeze`, `cache.clear`).
+- **Export (S-86):** each app's `data/` and its widget's `summary.json` are in the export's "Apps" part already. `tools/desk-data` leaves out `registry.json` and every `releases`, `current`, `previous` and `cache`, and that matches this layout, so the helper needs no change. A move carries the data but not the registry, so a reinstall on the new desk takes the data back at `prepare` (which re-owns it). A Guild Desk member's pseudonym changes on a move, but Guild Desks don't move today. **New rule for review (6.3):** an app keeps its data in a form readable without it (plain files, JSON, SQLite), because the export promises members their data, not an app's private blob.
+- **Guild Desks** (§12 had them open; decided here for 1.0): installing, upgrading, removing and stopping an app are the Founder's (`role: lead`), because a new app on a shared desk sees every member's calls. Every member may list, open, call, mutate and subscribe, and each member's subscription is their own. **Gap:** leaving a guild sends apps nothing, unlike ADR 0080's agent purge. A later minor adds an event, `desk.member.left {member}`. Until then, review refuses a Guild Desk app that keeps a member's private data.
+- **deskd's own cost:** with no app, one directory check at start, no thread and no timer. Each running app adds one socket and three virtual threads, a writer queue capped at 4 MiB, and a 5 s ticker. A 30 s ticker runs while any app runs. The daily catalog check runs only while an app is installed.
+
+### ADR 0035 and the export
+
+- **No permission reaches the Browser's session,** and nothing in deskd's apps package touches `/data/browser`. No conflict there.
+- **A full `/data` is the real risk.** An app with no disk cap could fill the volume, and Chromium would evict site storage. Binding from here:
+  - the helper's `prepare` refuses on a `/data` without project quotas, so no app starts on such a desk;
+  - deskd refuses an install that leaves under 2 GiB free.
+- **The unit must hide `/data/browser`** (`TemporaryFileSystem=/data:ro`, then only the app's own directories bound back), as 2.1 says. That is the System Engineer's template, and Security should read it.
+- **The export:** no conflict. The layout above keeps package bytes, the registry's per-app keys and the catalog out of it.
+
+### For the System Engineer: what deskd needs
+
+- **The helper `desk-apps`** on `/run/desk/apps.sock`: root, socket-activated, `0600` owner `desk`, peer uid 1100 only, one JSON line each way of at most 4 KiB (`HelperAppHost`). It refuses a uid outside 2000 to 2999 and any id that isn't a manifest id.
+  - `prepare {id, uid, diskMaxBytes}`: make `/data/apps/<id>/` (owner `desk`, `0700`) with project id = uid, the inherit flag and a hard quota of `diskMaxBytes`; make `data/` and `cache/` (`0700`, the uid), re-owning ones that exist; make `/run/ma-apps/<id>/` (`2750`, uid:`desk`). Idempotent. Refuse with `no_quota` if `/data` has no project quota.
+  - `start {id, uid}`: build the transient unit from `/data/apps/<id>/current/ma-app.json` as 2.1 says, holding it to the first-party ceilings and refusing `display` and `net` for now, whatever it says. Start it in `apps.slice` with §1.5's environment (`MA_DESKD_UID=1100`). Answer once systemd has; a running unit answers `ok` as it is.
+  - `stop {id}`: SIGTERM, then SIGKILL after `stopTimeoutSec`; answer when it's gone.
+  - `status {id}`: `{state: running|stopped|failed, result}`, with `result` `oom-kill` for a kill at `MemoryMax`.
+  - `remove {id, uid, deleteData}`: stop it; drop its quota, firewall rule and socket directory; with `deleteData`, delete `data/`, `cache/`, then `/data/apps/<id>/` once it's empty. deskd has already deleted its releases.
+- **The image:**
+  - `/data/apps` (`desk`, `0700`) from `desk-datadirs`, made together with the helper;
+  - `/run/ma-apps` (root, `0755`) from tmpfiles;
+  - review keys as `/opt/ma/etc/app-keys/<tier>.<name>.pem` (Platform's public halves), with `/etc/ma/app-keys.d/` for a test desk's drop-in;
+  - `project,quota` on `/data`;
+  - `apps.slice`, and `MemoryLow` on the core units.
+  
+  deskd's `run` already mounts `/data/apps`, `/run/ma-apps` and both key directories, each only if it exists.
+- **Docs:** `desk-runtime.md` §1 (`desk-apps`, the uid range), §2 (`/data/apps`, `/run/ma-apps`, the key directories, `apps.sock`) and §5 (deskd's new mounts).
+- **The ADR index:** no row change asked. It stays a draft until the owner's decisions are recorded; number it then.
+
+### For the Platform Engineer
+
+- `GET /v1/public/apps/catalog`: the envelope above, at most 4 MiB, or 404 while there's none. No auth, and the CDN keeps no access log.
+- The index is `{catalog: 1, seq, issuedAt, developers: [{keyId, publisher, publicKey}], revoked: {keys, packages}, apps: [{id, name, publisher, description, versions: [{version, arch, packageSha256, manifestSha256, bytes, appApi, permissions, net, resources: {diskMaxMiB, …}, notes}]}]}`. `publicKey` is base64 SPKI and `keyId` follows C3. `revoked.packages` holds manifests' SHA-256.
+- `GET /v1/public/apps/packages/<packageSha256>`: the bytes, or a 302, 303 or 307 to an `https` URL; deskd follows one.
+- The review key in the key service (Ed25519, or P-256 if it has no Ed25519; decision 7) signs both the index and each package's manifest. There are always two valid public halves, for the image.
+- Developer key registration per publisher.
+
+### For the UI/UX Engineer
+
+- **The picker** reads `apps.catalog.get`, never the CDN, and shows `installable: false` with its reason.
+- **The install sheet** sends `grants` equal to the version's `permissions`, with no step-up.
+- **The tiles** come from `apps.list` and the `apps` topic, using `state`, `problem` (2.6's words) and `summary` (the widget, drawn in Konva with house components).
+- **The window** comes from `apps.view.get`: check the review signature over `manifest` with MA's public keys and every file's SHA-256, then build the sandboxed `srcdoc` frame (3.2). The bridge calls `apps.call` and `apps.mutate`, and SUBs `app:<id>:<topic>`.
+- **On a Guild Desk,** install, remove and stop are the Founder's.
+
+### For Security: read before any desk runs it
+
+The house rule is config review and normal use only, with no probing.
+- **Trusted:**
+  - the review public keys, which only the image places (root-owned, mounted read-only);
+  - deskd, the only parser of packages and the catalog;
+  - the root helper, which trusts deskd's verification but holds every unit to the ceilings and the uid range itself;
+  - the kernel's uids, mount namespaces, cgroups and project quotas.
+- **Not trusted:**
+  - the Platform's API and CDN, which can withhold a catalog or a package but can't forge either, and can't replay an older index;
+  - package bytes until verified;
+  - the app process;
+  - everything an app sends;
+  - the Desk app's requests beyond the owner's or Founder's session.
+- **deskd checks** (`apps/`):
+  - the envelope's signature and `seq` floor;
+  - the package's size and hash against the catalog, and the manifest's hash against the catalog;
+  - both signatures over the manifest, with the developer key registered to the publisher and revoked keys and packages refused;
+  - the manifest strictly, against the tier's ceilings;
+  - the tar layout (C2), and each file's hash as it's written;
+  - grants equal to permissions;
+  - the 2 GiB floor;
+  - the peer's `SO_PEERCRED` uid at the app's socket, before it says a word;
+  - frame sizes, 32 calls in flight, 50 requests a second from an app, and only reads through `apps.call` and only declared names.
+- **Threats to read for:**
+  - a hostile package: path traversal, links, a decompression bomb, a manifest swapped after signing;
+  - a tier raised by a second signature;
+  - a publisher impersonated through another's developer key;
+  - catalog rollback;
+  - a compromised Platform withholding a revocation. deskd keeps serving its last catalog and checks daily, so a revocation lands only when a fetch succeeds. Accepted, and worth a read;
+  - an app reaching the Browser's session or another app's data, which are the unit's mount namespace and uids;
+  - an app impersonated at its socket (`2750` directory, peer uid);
+  - an app flooding or stalling deskd (bounded queues, a stalled write ends only that app's link);
+  - linking a member across apps, or a guild member learning another's id (C8 pseudonyms);
+  - a kept registry leaking per-app keys. It's `0600`, deskd's, and left out of the export.
+
+### What deskd's part is, and isn't
+
+- **Built and tested, inert on every desk today:** no image has the helper, `/data/apps` or a review key, so `apps.list` says `available: false` and nothing installs. 65 tests and one integration with the sample's real Go Tally are in `services/deskd/src/test/java/…/apps/`.
+  - verification (C1 to C3, C9);
+  - install, upgrade and remove with rollback (C4, C5, C11);
+  - the catalog RPC;
+  - the relay to each app's socket with the caller (C7, C8);
+  - topics, the widget summary, the crash and idle rules;
+  - the Guild Desk rules;
+  - `/health`'s `apps`;
+  - the kill switch `/data/desk/apps-switch`.
+- **Stand-in:** the helper is an interface (`AppHost`) with a client for the wire above (`HelperAppHost`) and a test double that runs a fake app in the test's JVM. Nothing has run against a real helper or unit.
+- **Not built:** the daily automatic update, the pressure guard and memory budget, cache emptying, developer mode (6.4), `browser.open` and `files.*` for apps, per-app egress, `display`, the `docs/app-api/1.x` schemas with their `FROZEN` test, and the conformance suite in Java (5.5).

@@ -1,7 +1,7 @@
 // An agent's timers, in its settings (multi-agent.md section 6): listed with the next run in the member's zone, the last
 // result and what they've spent; added, changed, switched on and off, and deleted. A timer starts a run of its agent with its
 // prompt, and its runs count toward every limit.
-import { useId, useState, type FormEvent } from 'react';
+import { useId, useMemo, useState, type FormEvent } from 'react';
 import { AgentError, newIdem, type AgentClient } from '../client/agentClient';
 import type { Agent, AgentCaps, Timer, TimerInput, TimerList } from '../client/types';
 import { usd } from '../model/format';
@@ -9,7 +9,7 @@ import { charCount } from '../model/links';
 import { browserZone } from '../model/limits';
 import { DAYS, isFinished, lastStateText, parseTime, scheduleText, timerProblem, timerProblemText, wallAt, wallToEpoch, whenText, zoneName } from '../model/timers';
 import { Switch } from './bits';
-import { useRead } from './hooks';
+import { useRead, useUnsaved } from './hooks';
 import { Icon } from './icons';
 
 const CAPS_FALLBACK = { promptMax: 2000, timerMinMinutes: 5, timersPerAgent: 10 };
@@ -83,6 +83,8 @@ function inputFrom(d: Draft, id: string | undefined, zone: string | null): Timer
 function TimerForm({ client, agentId, timer, zone, caps, onDone, onCancel }: { client: AgentClient; agentId: string; timer: Timer | null; zone: string | null; caps: typeof CAPS_FALLBACK; onDone: () => void; onCancel: () => void }) {
   const ids = useId();
   const [d, setD] = useState<Draft>(() => draftOf(timer, zone, Date.now()));
+  const [opened] = useState(d);
+  useUnsaved(useMemo(() => JSON.stringify(d) !== JSON.stringify(opened), [d, opened]));
   const [problem, setProblem] = useState<string | null>(null);
   const [busy, setBusy] = useState(false);
   const set = (patch: Partial<Draft>): void => {

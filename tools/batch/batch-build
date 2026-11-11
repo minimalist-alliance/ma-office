@@ -5,10 +5,13 @@
 # component, as bake.sh takes) is refused. Nothing is signed here: batch-sign does that.
 #
 #   tools/batch/batch-build --seq <n> --id <id> [--urgent] [--image <version>] [--note <text> | --note-file <file>]
-#                           [--created <UTC time>] -o <manifest.json> <component>@<version> ...
+#                           [--created <UTC time>] [--bundle <dir>] -o <manifest.json> <component>@<version> ...
 #
 # The components are activated in the order given. --seq must be above every batch the desks have seen; a rollback batch
 # is a higher seq naming older versions. The manifest must stay within 4096 bytes, AWS KMS's limit for a RAW message.
+# --bundle <dir>: a batch for self-hosted desks ("arch": "amd64"), from a bundle selfhost/build-bundle.sh made. Each sha256
+# is the bundle's amd64 artifact's (bundle.pin, checked against the file), and the same version's arm64 release must still
+# be published and passed, as above: the amd64 build is that release's commit. No --image: a self-hosted desk has none.
 # Needs: aws, jq. Exit 0 written, 1 refused, 2 usage.
 set -euo pipefail
 HERE=$(cd "$(dirname "$0")" && pwd)
@@ -16,7 +19,7 @@ HERE=$(cd "$(dirname "$0")" && pwd)
 BUCKET=${RELEASE_BUCKET:-ma-lambda-artifacts-$(aws sts get-caller-identity --query Account --output text)}
 usage() { sed -n '2,13p' "$0" | sed 's/^# \{0,1\}//' >&2; exit 2; }
 fail() { echo "batch-build: $*" >&2; exit 1; }
-seq= id= urgent=false image= note= created= out= pairs=()
+seq= id= urgent=false image= note= created= out= bundle= pairs=()
 while [ $# -gt 0 ]; do
   case "$1" in
     --seq) seq=${2:-}; shift 2 ;;
@@ -27,6 +30,7 @@ while [ $# -gt 0 ]; do
     --note-file) note=$(cat "${2:-/dev/null}"); shift 2 ;;
     --created) created=${2:-}; shift 2 ;;
     -o) out=${2:-}; shift 2 ;;
+    --bundle) bundle=${2:-}; shift 2 ;;
     -h|--help) usage ;;
     -*) usage ;;
     *) pairs+=("$1"); shift ;;
@@ -39,6 +43,12 @@ done
 created=${created:-$(date -u +%FT%TZ)}
 [[ $created =~ ^[0-9]{4}-[0-9]{2}-[0-9]{2}T[0-9]{2}:[0-9]{2}:[0-9]{2}Z$ ]] || fail "--created must be like 2026-11-09T18:00:00Z"
 command -v aws >/dev/null && command -v jq >/dev/null || fail "needs aws and jq"
+arch=arm64
+if [ -n "$bundle" ]; then
+  [ -f "$bundle/bundle.pin" ] || fail "--bundle: no $bundle/bundle.pin"
+  [ -z "$image" ] || fail "--bundle with --image: a self-hosted desk has no image to swap"
+  arch=amd64
+fi
 
 comps='[]' seen=" "
 for pair in "${pairs[@]}"; do
@@ -61,15 +71,27 @@ for pair in "${pairs[@]}"; do
     aws s3api head-object --bucket "$BUCKET" --key "desk/$comp/$ver/$rec" >/dev/null 2>&1 && { passed=$rec; break; }
   done
   [ -n "$passed" ] || fail "$comp $ver hasn't passed ($(pass_records "$comp" | paste -sd' ')): roll it to a test desk first"
+  if [ -n "$bundle" ]; then
+    # The bundle's amd64 artifact of the same version, hashed as bundle.pin says (install.sh's own check).
+    line=$(awk -v c="$comp" -v v="$ver" '$1 == c && $2 == v' "$bundle/bundle.pin")
+    [ -n "$line" ] || fail "$comp $ver isn't in $bundle/bundle.pin"
+    sha=$(awk '{print $3}' <<<"$line")
+    [[ $sha =~ ^[0-9a-f]{64}$ ]] || fail "$comp $ver: bad sha256 in bundle.pin"
+    f=$(ls "$bundle/$comp-$ver"*.tgz 2>/dev/null | head -1 || true)
+    [ -n "$f" ] && [ "$(sha256sum "$f" | cut -c1-64)" = "$sha" ] || fail "$comp $ver: the bundle's file doesn't hash to bundle.pin's sha256"
+    passed="$passed; amd64 $(basename "$f")"
+  fi
   echo "batch-build: $comp $ver sha256 ${sha:0:12} ($passed)" >&2
   comps=$(jq -c --arg n "$comp" --arg v "$ver" --arg s "$sha" '. + [{name: $n, version: $v, sha256: $s}]' <<<"$comps")
 done
 
+# arch only when it isn't arm64, so a cloud desk's manifest is byte for byte what it was before the field.
 jq -n --argjson seq "$seq" --arg id "$id" --arg created "$created" --argjson urgent "$urgent" --arg image "$image" \
-  --arg note "$note" --argjson components "$comps" \
+  --arg arch "$arch" --arg note "$note" --argjson components "$comps" \
   '{format: "ma-desk-batch/1", seq: $seq, id: $id, created: $created, urgent: $urgent}
+   + (if $arch == "arm64" then {} else {arch: $arch} end)
    + (if $image == "" then {} else {image: $image} end) + {components: $components, note: $note}' > "$out.tmp"
 size=$(stat -c %s "$out.tmp")
 [ "$size" -le 4096 ] || { rm -f "$out.tmp"; fail "the manifest is $size bytes, over KMS's 4096 for a RAW message: shorten the note"; }
 mv "$out.tmp" "$out"
-echo "batch-build: wrote $out ($size bytes, seq $seq, ${#pairs[@]} components)" >&2
+echo "batch-build: wrote $out ($size bytes, seq $seq, $arch, ${#pairs[@]} components)" >&2

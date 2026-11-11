@@ -787,6 +787,9 @@ test.describe('phones', () => {
     const ctx = await browser.newContext({ viewport: { width: 390, height: 844 }, hasTouch: true, baseURL: test.info().project.use.baseURL });
     const page = await ctx.newPage();
     await open(page, request, { [A]: { x: 0, y: 0, w: 584, h: 236 }, [B]: { x: 656, y: 0, w: 584, h: 236 } });
+    // A phone arrives at its desk; the drag is about both desks, so start from the overview.
+    await page.getByRole('button', { name: 'Your office, show all desks' }).tap();
+    await page.waitForTimeout(800);
     const hand = await grab(page, 200, 100);
     await walk(hand, [0, 0], [300, 0], 14);
     await hand.release();

@@ -1,0 +1,137 @@
+#!/usr/bin/env python3
+"""template-sign: signs a shared-host template generation's header.json (ADR 0077 1.2 step 8), on the workstation, after
+the builder has uploaded the artifact. From tools/batch/batch-sign, for the template's own key.
+
+  template-sign s3://<bucket>/desk/host-template/<host image>/<gen>/ --kms-key-id alias/ma-host-template
+  template-sign s3://<bucket>/<test prefix>/<host image>/<gen>/ --key <private.pem>     a dev P-256 key, never in git
+
+Before it signs, it checks, and refuses on any failure:
+  - header.json passes every header rule (tools/template/tmpl.py: format, fields, at most 4096 bytes);
+  - S3's own stored SHA-256 and size of template.tar.zst, manifest.json and plan.txt equal the header's, read with
+    head-object (the archive is never downloaded; each was uploaded with x-amz-checksum-sha256, so S3 refused other bytes);
+  - passed-build.json passes: every check passed or was skipped, and it names this header's exact bytes.
+Then it signs header.json's exact bytes (KMS: ECC_NIST_P256, ECDSA_SHA_256, MessageType RAW; or openssl with --key), checks
+the signature with the key's public half through template-verify's own code, and uploads header.sig beside the header.
+  --header <file>   sign this local header.json instead of the uploaded one (the mutation pass: an edited header must be
+                    refused, since S3's checksums no longer match it). It's uploaded with the signature only when it
+                    matches the one in S3 byte for byte.
+  --out <dir>       also keep header.json and header.sig there.
+Exit 0 signed, checked and uploaded; 1 refused; 2 usage. Needs aws, openssl, python3.
+"""
+import base64
+import json
+import os
+import shutil
+import subprocess
+import sys
+import tempfile
+
+HERE = os.path.dirname(os.path.realpath(__file__))
+sys.path.insert(0, HERE)
+import tmpl  # noqa: E402
+
+KEY_SPEC = "ECC_NIST_P256"
+
+
+def _write(path, mode, data):
+    with open(path, mode) as f:
+        f.write(data)
+
+
+def _read(path):
+    with open(path, "rb") as f:
+        return f.read()
+
+
+def usage():
+    sys.stderr.write(__doc__)
+    sys.exit(2)
+
+
+def aws(*args, binary=False, stdin=None):
+    r = subprocess.run(["aws", *args], capture_output=True, timeout=600, input=stdin)
+    if r.returncode != 0:
+        raise tmpl.Refused(f"aws {' '.join(args[:2])}: {r.stderr.decode(errors='replace').strip()[:300]}")
+    return r.stdout if binary else r.stdout.decode()
+
+
+def main(argv):
+    if len(argv) < 3 or not argv[0].startswith("s3://"):
+        usage()
+    url, mode, key = argv[0], argv[1], argv[2]
+    rest = argv[3:]
+    local_header = out = None
+    while rest:
+        if rest[0] == "--header" and len(rest) > 1:
+            local_header, rest = rest[1], rest[2:]
+        elif rest[0] == "--out" and len(rest) > 1:
+            out, rest = rest[1], rest[2:]
+        else:
+            usage()
+    if mode not in ("--kms-key-id", "--key"):
+        usage()
+    bucket, _, prefix = url[len("s3://"):].partition("/")
+    prefix = prefix.rstrip("/") + "/"
+    if not bucket or prefix == "/":
+        usage()
+    t = tempfile.mkdtemp(prefix="template-sign-")
+    try:
+        aws("s3api", "get-object", "--bucket", bucket, "--key", prefix + tmpl.HEADER, os.path.join(t, "uploaded.json"))
+        uploaded = _read(os.path.join(t, "uploaded.json"))
+        header = _read(local_header) if local_header else uploaded
+        h = tmpl.parse_header(header)
+        if not prefix.rstrip("/").endswith(f"/{h['hostImage']}/{h['gen']}"):
+            raise tmpl.Refused(f"the prefix {prefix} isn't .../{h['hostImage']}/{h['gen']}/, the header's")
+        for n in tmpl.FILES:
+            meta = json.loads(aws("s3api", "head-object", "--bucket", bucket, "--key", prefix + n, "--checksum-mode", "ENABLED", "--output", "json"))
+            c = meta.get("ChecksumSHA256")
+            if not c or "-" in c:
+                raise tmpl.Refused(f"{n}: S3 holds no whole-object SHA-256 (not uploaded through the builder's checksummed URL)")
+            got = (int(meta["ContentLength"]), base64.b64decode(c).hex())
+            want = (h["files"][n]["size"], h["files"][n]["sha256"])
+            if got != want:
+                raise tmpl.Refused(f"{n}: S3 stored {got[0]} bytes, sha256 {got[1][:16]}..., the header says {want[0]} bytes, {want[1][:16]}...")
+            print(f"template-sign: {n} {got[0]} bytes, S3's stored SHA-256 {got[1][:12]} as the header says", file=sys.stderr)
+        aws("s3api", "get-object", "--bucket", bucket, "--key", prefix + tmpl.PASSED, os.path.join(t, "passed.json"))
+        p = tmpl.check_pass(_read(os.path.join(t, "passed.json")), header)
+        print(f"template-sign: passed-build.json passes ({len(p['checks'])} checks)", file=sys.stderr)
+        hp = os.path.join(t, tmpl.HEADER)
+        _write(hp, "wb", header)
+        sp = os.path.join(t, tmpl.SIG)
+        if mode == "--kms-key-id":
+            meta = json.loads(aws("kms", "describe-key", "--key-id", key, "--output", "json"))["KeyMetadata"]
+            if meta.get("KeySpec") != KEY_SPEC or meta.get("KeyUsage") != "SIGN_VERIFY":
+                raise tmpl.Refused(f"{key} is {meta.get('KeySpec')} {meta.get('KeyUsage')}, not {KEY_SPEC} SIGN_VERIFY")
+            sig = base64.b64decode(aws("kms", "sign", "--key-id", key, "--message", f"fileb://{hp}", "--message-type", "RAW",
+                                       "--signing-algorithm", "ECDSA_SHA_256", "--query", "Signature", "--output", "text").strip())
+            der = base64.b64decode(aws("kms", "get-public-key", "--key-id", key, "--query", "PublicKey", "--output", "text").strip())
+            _write(os.path.join(t, "pub.der"), "wb", der)
+            subprocess.run([tmpl.OPENSSL, "pkey", "-pubin", "-inform", "DER", "-in", os.path.join(t, "pub.der"), "-out", os.path.join(t, "pub.pem")], check=True)
+        else:
+            if not os.path.isfile(key):
+                raise tmpl.Refused(f"no {key}")
+            sig = tmpl.sign_with_key(header, key)
+            tmpl.public_pem(key, os.path.join(t, "pub.pem"))
+        tmpl.verify_sig(header, sig, [os.path.join(t, "pub.pem")])
+        _write(sp, "wb", sig)
+        if header != uploaded:
+            raise tmpl.Refused("the header to sign isn't the uploaded one byte for byte (and yet its checksums matched?)")
+        aws("s3api", "put-object", "--bucket", bucket, "--key", prefix + tmpl.SIG, "--body", sp, "--checksum-algorithm", "SHA256",
+            "--content-type", "application/octet-stream")
+        if out:
+            os.makedirs(out, exist_ok=True)
+            shutil.copy(hp, os.path.join(out, tmpl.HEADER))
+            shutil.copy(sp, os.path.join(out, tmpl.SIG))
+        print(f"template-sign: signed {h['hostImage']} {h['gen']} (header sha256 {tmpl.sha256_bytes(header)[:12]}), {len(sig)} bytes DER, "
+              f"checked with the key's public half; uploaded {prefix}{tmpl.SIG}", file=sys.stderr)
+        print(tmpl.sha256_bytes(header))
+        return 0
+    except tmpl.Refused as e:
+        print(f"template-sign: REFUSED: {e}", file=sys.stderr)
+        return 1
+    finally:
+        shutil.rmtree(t, ignore_errors=True)
+
+
+if __name__ == "__main__":
+    sys.exit(main(sys.argv[1:]))

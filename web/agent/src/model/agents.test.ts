@@ -1,6 +1,6 @@
 import { describe, expect, it } from 'vitest';
 import type { Agent, KeyMeta, Message } from '../client/types';
-import { badgeDismissable, badgeShown, errorText, KEY_RESTART_LINE, keyLost, keysLast, monogram, retryDelayMs, STATUS_DOT, STATUS_LABEL, statusWord } from './agents';
+import { badgeDismissable, badgeShown, errorText, isFreeLimit, KEY_RESTART_LINE, keyLost, keysLast, limitBannerText, monogram, offersOtherModel, retryDelayMs, STATUS_DOT, STATUS_LABEL, statusWord } from './agents';
 import { applyEvent, applyEvents, EMPTY_THREAD, streaming } from './conversation';
 
 const bound = { keyId: 'k', provider: 'anthropic', providerName: 'Anthropic', model: 'm' };
@@ -24,6 +24,36 @@ describe('provider badges (design 9.4)', () => {
     expect(monogram('Anthropic')).toBe('A');
     expect(monogram(' openai')).toBe('O');
     expect(monogram('')).toBe('?');
+  });
+  it('OpenRouter’s is two letters, so it never reads as OpenAI’s', () => {
+    expect(monogram('OpenRouter', 'openrouter')).toBe('OR');
+    expect(monogram('OpenAI', 'openai')).toBe('O');
+  });
+});
+
+describe('free models through OpenRouter (agent-free-key spec §4)', () => {
+  it('OpenRouter’s failures have words of their own; other providers keep theirs', () => {
+    expect(errorText('provider_error', 'free_limit', 'openrouter')).toBe('Stopped: today’s free requests are used.');
+    expect(errorText('provider_error', 'rate_limited', 'openrouter')).toBe('OpenRouter’s free models are busy right now. Try again in a minute, or pick another free model.');
+    expect(errorText('provider_error', 'timeout', 'openrouter')).toBe('The free model took too long to answer. Try again, or pick another free model.');
+    expect(errorText('provider_error', 'data_policy', 'openrouter')).toBe('Your privacy settings at OpenRouter don’t allow any host for this free model. Pick another model, or change those settings at openrouter.ai.');
+    // `auth` keeps today's words, and a revoked key goes back to the key screen.
+    expect(errorText('provider_error', 'auth', 'openrouter')).toBe(errorText('provider_error', 'auth'));
+    expect(errorText('provider_error', 'rate_limited', 'anthropic')).toMatch(/rate limit or quota/);
+  });
+  it('a used-up free allowance is a limit, not a failure', () => {
+    expect(isFreeLimit({ state: 'failed', error: 'provider_error', errorDetail: 'free_limit' })).toBe(true);
+    expect(isFreeLimit({ state: 'failed', error: 'provider_error', errorDetail: 'rate_limited' })).toBe(false);
+    expect(isFreeLimit({ state: 'done' })).toBe(false);
+  });
+  it('the banner says when more come back where OpenRouter said, and never a number of its own', () => {
+    expect(limitBannerText(Date.UTC(2026, 10, 11, 17), () => '17:00')).toBe('Today’s free requests at OpenRouter are used. More come back at 17:00.');
+    expect(limitBannerText(null, () => 'x')).toBe('Today’s free requests at OpenRouter are used. OpenRouter gives more each day.');
+  });
+  it('"Pick another model" only under OpenRouter’s busy, slow and privacy-settings failures', () => {
+    for (const d of ['rate_limited', 'timeout', 'data_policy']) expect(offersOtherModel(d, 'openrouter')).toBe(true);
+    expect(offersOtherModel('free_limit', 'openrouter')).toBe(false);
+    expect(offersOtherModel('rate_limited', 'anthropic')).toBe(false);
   });
 });
 
@@ -128,5 +158,26 @@ describe('a key that went', () => {
 describe('reading again while desk-agent is down', () => {
   it('grows and stays calm', () => {
     expect([0, 1, 2, 3, 4, 50].map(retryDelayMs)).toEqual([5_000, 10_000, 20_000, 30_000, 30_000, 30_000]);
+  });
+});
+
+describe('a thread’s approvals (API.md section 18)', () => {
+  const ap = (id: string, createdAt: number, over: Record<string, unknown> = {}) => ({ id, createdAt, messageId: 'm', state: 'pending', sha256: 'x', ...over }) as never;
+  it('a snapshot brings them, an event adds or replaces one by id, and a waiting reply is still live', () => {
+    let t = applyEvent(EMPTY_THREAD, { type: 'snapshot', seq: 1, messages: [{ id: 'm', role: 'assistant', text: 'x', at: 1, state: 'awaiting_approval' }], approvals: [ap('b', 2), ap('a', 1)] });
+    expect(t.approvals.map((a) => a.id)).toEqual(['a', 'b']);
+    expect(streaming(t)?.id).toBe('m');
+    t = applyEvent(t, { type: 'approval', seq: 2, approval: ap('a', 1, { state: 'approved' }) });
+    expect(t.approvals.find((a) => a.id === 'a')?.state).toBe('approved');
+    t = applyEvent(t, { type: 'approval', seq: 2, approval: ap('a', 1, { state: 'declined' }) });
+    expect(t.approvals.find((a) => a.id === 'a')?.state).toBe('approved'); // a repeat seq is already applied
+    t = applyEvent(t, { type: 'approval', seq: 3, approval: ap('c', 3) });
+    expect(t.approvals).toHaveLength(3);
+  });
+
+  it('keeps a fetched payload when an event leaves a large one out', () => {
+    let t = applyEvent(EMPTY_THREAD, { type: 'snapshot', seq: 1, messages: [], approvals: [ap('a', 1, { payload: { text: 'big' } })] });
+    t = applyEvent(t, { type: 'approval', seq: 2, approval: ap('a', 1, { payload: null, payloadOmitted: true }) });
+    expect((t.approvals[0] as unknown as { payload: unknown }).payload).toEqual({ text: 'big' });
   });
 });

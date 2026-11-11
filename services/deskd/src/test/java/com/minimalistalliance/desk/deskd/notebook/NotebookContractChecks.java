@@ -93,6 +93,15 @@ abstract class NotebookContractChecks {
     }
 
     @Test
+    void colorsMethodsGoThroughWithTheServicesOwnAnswers() throws Exception {
+        // ADR 0091: deskd relays them as they are, and the service's refusals come back unchanged.
+        assertThat(rig.call(client, "notebook.page.label", Map.of("pageId", "no-such-page", "label", "green"))).containsEntry("code", "not_found");
+        assertThat(rig.call(client, "notebook.page.label", Map.of("pageId", "no-such-page", "label", "#ff0000")))
+                .containsEntry("code", "bad_request").containsEntry("details", Map.of("reason", "label"));
+        assertThat(rig.call(client, "notebook.page.duplicate", Map.of("pageId", "no-such-page"))).containsEntry("code", "not_found");
+    }
+
+    @Test
     void aRestartLeavesTheNotebooksAndTheSubscription() throws Exception {
         assertThat(rig.call(client, "notebook.notebook.create", Map.of("title", "Kept"))).containsEntry("_kind", "RES");
         client.subscribe("notebook.tree", null);

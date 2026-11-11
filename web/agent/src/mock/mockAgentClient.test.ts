@@ -746,3 +746,93 @@ describe('mock: files on a message (ADR 0049)', () => {
     await expect(c.setAttachCaps({ maxFiles: 99 }, m())).rejects.toMatchObject({ code: 'bad_request' });
   });
 });
+
+describe('mock: S-14 approvals as API.md section 18 says', () => {
+  const tools = () => new MockAgentClient({ fixture: 'tools', latencyMs: 0, streamMs: 0 });
+  const pending = async (c: MockAgentClient) => {
+    for (let i = 0; i < 50; i += 1) {
+      const { approvals } = await c.listApprovals({ agentId: 'scout' });
+      if (approvals.length) return approvals[0]!;
+      await new Promise((r) => setTimeout(r, 5));
+    }
+    throw new Error('no approval');
+  };
+
+  it('asks with a hash of {v, agentId, runId, tool, context, payload}, and the agent waits on the member', async () => {
+    const c = tools();
+    const a = await pending(c);
+    expect(a).toMatchObject({ tool: 'browser_open', risk: 'egress', untrusted: true, state: 'pending', context: 'agent', origin: { kind: 'member' } });
+    expect(a.expiresAt - a.createdAt).toBe(3_600_000);
+    const scout = (await c.listAgents()).find((x) => x.id === 'scout');
+    expect(scout).toMatchObject({ status: 'working', statusDetail: 'awaiting_approval', approvalsPending: 1 });
+    await expect(c.sendMessage('scout', 'hello?', m())).rejects.toMatchObject({ code: 'conflict', reason: 'awaiting_approval' });
+  });
+
+  it('refuses a wrong hash, a note with a yes, and a second answer', async () => {
+    const c = tools();
+    const a = await pending(c);
+    await expect(c.decideApproval(a.id, { approve: true, sha256: '00' }, m())).rejects.toMatchObject({ code: 'bad_request', detail: 'sha256' });
+    await expect(c.decideApproval(a.id, { approve: true, sha256: a.sha256, note: 'x' }, m())).rejects.toMatchObject({ code: 'bad_request', detail: 'note' });
+    const idem = m();
+    const first = await c.decideApproval(a.id, { approve: false, sha256: a.sha256, note: 'No' }, idem);
+    expect(first).toMatchObject({ state: 'declined', note: 'No', decidedBy: 'owner' });
+    // The same key gets the first answer back; a new one is a second answer.
+    expect((await c.decideApproval(a.id, { approve: false, sha256: a.sha256 }, idem)).state).toBe('declined');
+    await expect(c.decideApproval(a.id, { approve: true, sha256: a.sha256 }, m())).rejects.toMatchObject({ code: 'conflict', reason: 'answered' });
+  });
+
+  it('a yes runs the call, a chip lands, and the run goes on', async () => {
+    const c = new MockAgentClient({ fixture: 'tools', latencyMs: 0, streamMs: 0 });
+    const a = await pending(c);
+    const ends: string[] = [];
+    c.watchTools((e) => e.type === 'end' && ends.push(e.result ?? ''));
+    expect((await c.decideApproval(a.id, { approve: true, sha256: a.sha256 }, m())).state).toBe('approved');
+    await new Promise((r) => setTimeout(r, 2100));
+    const done = await c.getApproval(a.id);
+    expect(done.state).toBe('done');
+    expect(done.result?.ok).toBe(true);
+    expect(ends).toEqual(['done']);
+    const reply = (await c.getThread('scout')).messages.find((x) => x.id === 'ts2');
+    expect(reply?.state).toBe('done');
+    expect(reply?.tools?.at(-1)).toMatchObject({ name: 'browser_open', ok: true, approval: { id: a.id, decision: 'approved' } });
+  });
+
+  it('a stop expires waiting cards as stopped; time running out as timeout', async () => {
+    const c = tools();
+    const a = await pending(c);
+    await c.stopRun(a.runId, m());
+    expect((await c.getApproval(a.id)).state).toBe('expired');
+    expect((await c.getApproval(a.id)).detail).toBe('stopped');
+    const d = tools();
+    const b = await pending(d);
+    d.expireApprovals();
+    expect((await d.getApproval(b.id)).detail).toBe('timeout');
+    await expect(d.decideApproval(b.id, { approve: true, sha256: b.sha256 }, m())).rejects.toMatchObject({ code: 'conflict', reason: 'expired' });
+  });
+
+  it('stops one running call, and refuses one that has ended', async () => {
+    const c = tools();
+    const id = c.runTool('scout', { tool: 'browser_read', doing: 'Reading a web page', target: 'example.org' });
+    await c.stopTool(id, m());
+    await new Promise((r) => setTimeout(r, 80));
+    await expect(c.stopTool(id, m())).rejects.toMatchObject({ code: 'not_found' });
+    const fixed = c.runTool('scout', { tool: 'browser_type', doing: 'Typing', target: 'x', stoppable: false });
+    await expect(c.stopTool(fixed, m())).rejects.toMatchObject({ code: 'precondition_failed', reason: 'not_stoppable' });
+  });
+
+  it('memory: the real shape, delete one for good, clear all, audited by id only', async () => {
+    const c = tools();
+    const list = await c.listMemories('scout');
+    expect(list.limits).toEqual({ items: 50, chars: 300 });
+    expect(list.memories[0]?.text).toBe('Alex’s desk is 120 cm wide and faces a window.');
+    await c.deleteMemory('scout', 'mem-1', m());
+    await expect(c.deleteMemory('scout', 'mem-1', m())).rejects.toMatchObject({ code: 'not_found', detail: 'memory' });
+    expect((await c.clearMemories('scout', m())).deleted).toBe(5);
+    const audit = (await c.listAudit({ limit: 100 })).entries.filter((e) => e.action.startsWith('memory.'));
+    expect(audit.map((e) => [e.action, e.target, e.decision]).slice(0, 2)).toEqual([
+      ['memory.clear', 'agent:scout', 'deleted:5'],
+      ['memory.delete', 'agent:scout memory:mem-1', 'ok'],
+    ]);
+    expect(JSON.stringify(audit)).not.toContain('120 cm');
+  });
+});

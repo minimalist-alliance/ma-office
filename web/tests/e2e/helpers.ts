@@ -1,4 +1,4 @@
-import { expect, type APIRequestContext, type ConsoleMessage, type Page } from '@playwright/test';
+import { expect, type APIRequestContext, type ConsoleMessage, type Locator, type Page } from '@playwright/test';
 
 export type ThemeId = 'light' | 'dusk' | 'dark';
 
@@ -7,11 +7,18 @@ export async function harness(request: APIRequestContext, patch: Record<string, 
   await request.post('/__harness', { data: patch });
 }
 
-/** Fails a test on any console error, CSP violation included. */
+/**
+ * The harness's gateway when no gateway-shim runs (`gatewayUrl()` in `harness/serve.mjs`), which its CSP doesn't allow.
+ * A waking desk's link watches it on the gateway from the wake's first answer (TD-227 part 3), so a spec that wakes a
+ * desk with no shim sees the browser refuse that address. That line, for that address only, isn't the app's fault.
+ */
+const NO_GATEWAY = "Connecting to 'ws://localhost:1/v1' violates";
+
+/** Fails a test on any console error, CSP violation included (but `NO_GATEWAY`'s). */
 export function watchConsole(page: Page): string[] {
   const errors: string[] = [];
   page.on('console', (m: ConsoleMessage) => {
-    if (m.type() === 'error') errors.push(m.text());
+    if (m.type() === 'error' && !m.text().startsWith(NO_GATEWAY)) errors.push(m.text());
   });
   page.on('pageerror', (e) => errors.push(String(e)));
   return errors;
@@ -30,6 +37,12 @@ export async function watchCard(page: Page): Promise<{ seen: boolean }> {
   });
   return card;
 }
+
+/**
+ * A theme's radio in the account menu, by its label ("Light", "Zen", "Dark", "System"), scoped to the Theme control: the
+ * Background row under it is radios too, and "Mountain light" or "Dark lake" would match a bare `{ name: 'Light' }`.
+ */
+export const themeRadio = (page: Page, label: string): Locator => page.getByRole('radiogroup', { name: 'Theme' }).getByRole('radio', { name: label, exact: true });
 
 export async function setTheme(page: Page, theme: ThemeId): Promise<void> {
   await page.addInitScript((t) => {

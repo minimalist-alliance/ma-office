@@ -10,6 +10,7 @@ import com.minimalistalliance.desk.deskd.browser.BrowserModule;
 import com.minimalistalliance.desk.deskd.data.DataModule;
 import com.minimalistalliance.desk.deskd.gateway.GatewayLink;
 import com.minimalistalliance.desk.deskd.imds.ImdsClient;
+import com.minimalistalliance.desk.deskd.notebook.NotebookModule;
 import com.minimalistalliance.desk.deskd.platform.AgeBand;
 import com.minimalistalliance.desk.deskd.platform.AgentClient;
 import com.minimalistalliance.desk.deskd.platform.DataVolume;
@@ -19,6 +20,7 @@ import com.minimalistalliance.desk.deskd.platform.ModelPrices;
 import com.minimalistalliance.desk.deskd.platform.PlatformHttp;
 import com.minimalistalliance.desk.deskd.rtc.RtcClient;
 import com.minimalistalliance.desk.deskd.session.SessionManager;
+import com.minimalistalliance.desk.deskd.tier.BrowserTime;
 import java.nio.file.Path;
 import java.time.Clock;
 import org.springframework.context.annotation.Bean;
@@ -134,11 +136,15 @@ class ControlPlaneConfiguration {
             DataModule data,
             Revocations revocations,
             BootSequence boot,
+            BrowserTime browserTime,
+            NotebookModule notebook,
             Clock clock) {
         HeartbeatLoop heartbeat = new HeartbeatLoop(
                 agent, state, sessions, rtc, volume, browser::chromiumRefused, agentModule::heartbeatFields, data::freeBytesSent,
                 revocations, boot, clock, HeartbeatLoop.Timing.DEFAULT);
         heartbeat.browserFrozenFrom(browser::browserFrozen);
+        heartbeat.browserLiveSecondsFrom(browserTime::liveSecondsSinceBoot);
+        heartbeat.notebookStorageFrom(notebook::storage);
         return heartbeat;
     }
 

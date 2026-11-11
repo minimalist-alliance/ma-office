@@ -261,6 +261,7 @@ public final class RpcSession {
             if (idem == null || idem.isEmpty() || idem.length() > MAX_IDEM_CHARS) {
                 return Outcome.error(new RpcException(RpcException.BAD_REQUEST, "This method needs idem"));
             }
+            context.idem(idem);
             return runOnce(name, method, params, idem);
         }
 

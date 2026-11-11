@@ -219,10 +219,15 @@ func (t *ICETransport) restart() error {
 		return fmt.Errorf("%w: unable to restart ICETransport", errICEAgentNotExist)
 	}
 
-	if err := agent.Restart(
-		t.gatherer.api.settingEngine.candidates.UsernameFragment,
-		t.gatherer.api.settingEngine.candidates.Password,
-	); err != nil {
+	ufrag, pwd := t.gatherer.api.settingEngine.candidates.UsernameFragment, t.gatherer.api.settingEngine.candidates.Password
+	// desk-rtc's patch (desk-rtc/third_party/README.md): with a ufrag prefix and no static credentials, a restart gets fresh
+	// prefixed ones, as it gets fresh random ones without the prefix.
+	if ufrag == "" && pwd == "" {
+		if u, p, ok := t.gatherer.api.settingEngine.prefixedICECredentials(); ok {
+			ufrag, pwd = u, p
+		}
+	}
+	if err := agent.Restart(ufrag, pwd); err != nil {
 		return err
 	}
 

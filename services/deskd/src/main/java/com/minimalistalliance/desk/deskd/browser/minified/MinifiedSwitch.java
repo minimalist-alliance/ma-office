@@ -17,10 +17,10 @@ import java.util.concurrent.locks.ReentrantLock;
  * condition, and getting out of trouble mustn't wait for a release (API.md section 14).
  *
  * <p>The owner's rule (Nov 7): finished features ship on, and switches are only there to get out of trouble. So with
- * no {@value #FILE} on the data volume, the view is on, media verbs and the consent press with it. The file can only
- * turn things off: {@code off} turns off everything, and off is fully inert (nothing of the view reaches Chromium);
- * {@code media-actions-off} and {@code consent-reject-off} turn off one action each. One word per line or space; any
- * other word is ignored, so an empty file changes nothing. A file deskd can't read as a plain small file (a symlink,
+ * no {@value #FILE} on the data volume, the view is on, media verbs, the consent press and the pre-scroll with it. The
+ * file can only turn things off: {@code off} turns off everything, and off is fully inert (nothing of the view reaches
+ * Chromium); {@code media-actions-off}, {@code consent-reject-off} and {@code prescroll-off} turn off one action each.
+ * One word per line or space; any other word is ignored, so an empty file changes nothing. A file deskd can't read as a plain small file (a symlink,
  * one over 1 KiB, one it can't open) counts as {@code off}: whoever put it there meant to stop something. The desk's
  * operator writes it as root over SSM; deskd only reads it, and Chromium's user can't reach it.
  *
@@ -36,6 +36,11 @@ public interface MinifiedSwitch {
     boolean mediaActions();
 
     boolean consentReject();
+
+    /** The pre-scroll of a document the view is about to show ({@code prescroll-off} turns it off). */
+    default boolean prescroll() {
+        return on();
+    }
 
     /** For tests: as given, for good. */
     static MinifiedSwitch fixed(boolean on, boolean mediaActions, boolean consentReject) {
@@ -59,7 +64,15 @@ public interface MinifiedSwitch {
 
     /** {@value #FILE} in this directory, looked at again at most once a second. */
     static MinifiedSwitch file(Path directory) {
-        return new FileSwitch(directory.resolve(FILE));
+        return file(directory, FILE);
+    }
+
+    /**
+     * Another switch with the same rules, in the file of this name: only {@link #on} means anything for it. The
+     * Browser's protected-media switch is one.
+     */
+    static MinifiedSwitch file(Path directory, String name) {
+        return new FileSwitch(directory.resolve(name));
     }
 
     /** The file's words, as last read: missing means nothing is off. */
@@ -95,6 +108,12 @@ public interface MinifiedSwitch {
         public boolean consentReject() {
             Set<String> now = words();
             return !now.contains("off") && !now.contains("consent-reject-off");
+        }
+
+        @Override
+        public boolean prescroll() {
+            Set<String> now = words();
+            return !now.contains("off") && !now.contains("prescroll-off");
         }
 
         private Set<String> words() {

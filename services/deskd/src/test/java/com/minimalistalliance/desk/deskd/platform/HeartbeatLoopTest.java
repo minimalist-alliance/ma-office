@@ -314,6 +314,85 @@ class HeartbeatLoopTest {
         assertThat(Duration.ofNanos(System.nanoTime() - refused)).isGreaterThanOrEqualTo(Duration.ofMillis(900));
     }
 
+    /** Gaps between arrivals of the heartbeat at the Platform, in milliseconds. */
+    private List<Long> beatGapsMillis() {
+        List<Long> at = rig.platform.arrivals(BEAT);
+        List<Long> gaps = new ArrayList<>();
+        for (int i = 1; i < at.size(); i++) {
+            gaps.add(java.util.concurrent.TimeUnit.NANOSECONDS.toMillis(at.get(i) - at.get(i - 1)));
+        }
+        return gaps;
+    }
+
+    @Test
+    void a503IsRetriedAtTheSpacingNotAWholePeriodLater() throws Exception {
+        // Audit D3: after any failure but a 429 the next heartbeat waited a whole period. Here the period is an hour.
+        beats(Duration.ofMillis(200), Duration.ofSeconds(5));
+        rig.platform.heartbeatReplies.add(FakePlatform.Reply.of(503, "{\"message\":\"Service Unavailable\"}"));
+        rig.bootToReady();
+        rig.platform.awaitApi(BEAT);
+        rig.platform.awaitApi(BEAT);
+        // The spacing, plus up to a quarter more.
+        assertThat(beatGapsMillis().get(0)).isBetween(190L, 1500L);
+        // That one was accepted, so it's the period again.
+        Thread.sleep(600);
+        assertThat(rig.platform.countApi(BEAT)).isEqualTo(2);
+    }
+
+    @Test
+    void heartbeatsThatKeepFailingBackOffFromTheSpacingUpToThePeriod() throws Exception {
+        rig.close();
+        rig = new ControlPlaneRig(dir, ControlPlaneRig.FAST_LINK, new HeartbeatLoop.Timing(
+                Duration.ofMillis(1500), Duration.ofMillis(100), Duration.ofSeconds(5)));
+        rig.platform.nextHeartbeatSeconds = null;
+        for (int i = 0; i < 5; i++) {
+            rig.platform.heartbeatReplies.add(FakePlatform.Reply.of(503, "{}"));
+        }
+        rig.bootToReady();
+        await().atMost(Duration.ofSeconds(15)).until(() -> rig.platform.countApi(BEAT) >= 7);
+        List<Long> gaps = beatGapsMillis();
+        // 100, 200, 400, 800, then the period (1,500), each with up to a quarter more; then the period after a success.
+        assertThat(gaps.get(0)).isBetween(95L, 600L);
+        assertThat(gaps.get(1)).isBetween(195L, 700L);
+        assertThat(gaps.get(2)).isBetween(395L, 1000L);
+        assertThat(gaps.get(3)).isBetween(795L, 1500L);
+        assertThat(gaps.get(4)).isBetween(1495L, 2400L);
+        assertThat(gaps.get(5)).isBetween(1495L, 2400L);
+    }
+
+    @Test
+    void aNextHeartbeatSecondsPastTheMaximumIsHeldToIt() throws Exception {
+        // Audit D7: 3600 from the Platform silenced the desk for an hour. Here the maximum is 400 ms.
+        rig.close();
+        rig = new ControlPlaneRig(dir, ControlPlaneRig.FAST_LINK, new HeartbeatLoop.Timing(
+                Duration.ofMillis(100), Duration.ofMillis(50), Duration.ofSeconds(5), Duration.ofMillis(400)));
+        rig.platform.nextHeartbeatSeconds = 3600;
+        rig.bootToReady();
+        await().atMost(Duration.ofSeconds(10)).until(() -> rig.platform.countApi(BEAT) >= 3);
+        assertThat(beatGapsMillis().subList(0, 2)).allSatisfy(gap -> assertThat(gap).isBetween(390L, 1500L));
+    }
+
+    @Test
+    void theDefaultMaximumIsTwoMinutesAndAnOldTimingKeepsItsLongPeriod() {
+        assertThat(HeartbeatLoop.Timing.DEFAULT.maxPeriod()).isEqualTo(Duration.ofMinutes(2));
+        assertThat(new HeartbeatLoop.Timing(Duration.ofHours(1), Duration.ofSeconds(1), Duration.ofSeconds(1)).maxPeriod())
+                .isEqualTo(Duration.ofHours(1));
+    }
+
+    @Test
+    void aRetryAfterOfAnHourIsHeldToFiveMinutes() {
+        assertThat(PlatformHttp.retryAfter(headers("Retry-After", "3600"))).isEqualTo(Duration.ofMinutes(5));
+        assertThat(PlatformHttp.retryAfter(headers("Retry-After", "99999999999999999999999"))).isEqualTo(Duration.ofMinutes(5));
+        assertThat(PlatformHttp.retryAfter(headers("Retry-After", " 30 "))).isEqualTo(Duration.ofSeconds(30));
+        assertThat(PlatformHttp.retryAfter(headers("Retry-After", "-5"))).isNull();
+        assertThat(PlatformHttp.retryAfter(headers("Retry-After", "Wed, 21 Oct 2026 07:28:00 GMT"))).isNull();
+        assertThat(PlatformHttp.retryAfter(headers("X-Other", "1"))).isNull();
+    }
+
+    private static java.net.http.HttpHeaders headers(String name, String value) {
+        return java.net.http.HttpHeaders.of(Map.of(name, List.of(value)), (a, b) -> true);
+    }
+
     @Test
     void aRefusedHeartbeatIsSentAgainWhenRetryAfterAllowsNotAWholePeriodLater() throws Exception {
         rig.close();
@@ -517,9 +596,11 @@ class HeartbeatLoopTest {
         assertThat(checks(first)).containsEntry("chromium", "older_than_profile");
     }
 
-    /** A volume that's gone. The owner's age band is written there at boot, so that goes too. */
+    /** A volume that's gone. The owner's age band, the tier's limits (none) and desk-rtc's identity are written there at boot, so they go too. */
     private void removeDataDir() throws Exception {
         Files.deleteIfExists(rig.dataDir.resolve(AgeBand.FILE));
+        Files.deleteIfExists(rig.dataDir.resolve(TierLimits.FILE));
+        Files.deleteIfExists(rig.dataDir.resolve("rtc-identity.json"));
         Files.delete(rig.dataDir);
     }
 
@@ -536,7 +617,83 @@ class HeartbeatLoopTest {
         assertThat(checks(body)).containsEntry("dataVolume", "failing").containsEntry("chromium", "older_than_profile");
     }
 
-    // ---- the volume's record
+    @Test
+    void aFullVolumeIsFailingThoughItStillLooksWritable() throws Exception {
+        // Audit D5: the heartbeat looked only at the directory's mode, so a 100 % full volume said ok.
+        rig.bootToReady();
+        assertThat(checks(aLaterBeat())).containsEntry("dataVolume", "ok");
+
+        rig.usableBytes.set(0);
+        Map<String, Object> full = aLaterBeat();
+        assertThat(checks(full)).containsEntry("dataVolume", "failing");
+        assertThat(Json.object(full, "health")).containsEntry("status", "failing");
+
+        // Under the floor is failing too; at it, ok again.
+        rig.usableBytes.set(DataVolume.LOW_SPACE_BYTES - 1);
+        assertThat(checks(aLaterBeat())).containsEntry("dataVolume", "failing");
+        rig.usableBytes.set(DataVolume.LOW_SPACE_BYTES);
+        Map<String, Object> room = aLaterBeat();
+        assertThat(checks(room)).containsEntry("dataVolume", "ok");
+        assertThat(Json.object(room, "health")).containsEntry("status", "ok");
+    }
+
+    // ---- desk-notebook's storage
+
+    private static Map<String, Object> storage(String state, boolean refusing) {
+        Map<String, Object> storage = new LinkedHashMap<>();
+        storage.put("state", state);
+        storage.put("unsavedPages", "ok".equals(state) ? 0 : 2);
+        storage.put("unsavedBytes", "ok".equals(state) ? 0 : 4096);
+        storage.put("refusing", refusing);
+        storage.put("degradedSeconds", "ok".equals(state) ? 0 : 12);
+        return storage;
+    }
+
+    @Test
+    void notebookStorageThatFailsIsDegradedAndRefusingEditsIsFailing() throws Exception {
+        java.util.concurrent.atomic.AtomicReference<Map<String, Object>> storage =
+                new java.util.concurrent.atomic.AtomicReference<>(storage("ok", false));
+        rig.heartbeat.notebookStorageFrom(storage::get);
+        rig.bootToReady();
+        Map<String, Object> fine = aLaterBeat();
+        assertThat(checks(fine)).isEqualTo(Map.of("rtc", "ok", "dataVolume", "ok", "notebook", "ok"));
+        assertThat(Json.object(fine, "health")).containsEntry("status", "ok");
+
+        storage.set(storage("degraded", false));
+        Map<String, Object> degraded = aLaterBeat();
+        assertThat(checks(degraded)).containsEntry("notebook", "degraded");
+        assertThat(Json.object(degraded, "health")).containsEntry("status", "degraded");
+
+        storage.set(storage("degraded", true));
+        Map<String, Object> refusing = aLaterBeat();
+        assertThat(checks(refusing)).containsEntry("notebook", "failing");
+        assertThat(Json.object(refusing, "health")).containsEntry("status", "failing");
+
+        // desk-notebook not there, or a state this build doesn't know: no check, and nothing changes for it.
+        storage.set(null);
+        assertThat(checks(aLaterBeat())).isEqualTo(Map.of("rtc", "ok", "dataVolume", "ok"));
+        storage.set(Map.of("state", "something-new"));
+        assertThat(checks(aLaterBeat())).isEqualTo(Map.of("rtc", "ok", "dataVolume", "ok"));
+    }
+
+    @Test
+    void theHeartbeatReadsDeskNotebooksHealthFrameOverItsSocket() throws Exception {
+        try (com.minimalistalliance.desk.deskd.testing.FakeNotebookSocket notebook =
+                new com.minimalistalliance.desk.deskd.testing.FakeNotebookSocket(dir.resolve("notebook.sock"))) {
+            notebook.storage = storage("degraded", false);
+            com.minimalistalliance.desk.deskd.notebook.NotebookModule module = new com.minimalistalliance.desk.deskd.notebook.NotebookModule(
+                    notebook.socket(), rig.sessions, rig.dispatcher, rig.hub,
+                    com.minimalistalliance.desk.deskd.notebook.NotebookModule.Timing.DEFAULT);
+            rig.heartbeat.notebookStorageFrom(module::storage);
+            rig.bootToReady();
+            Map<String, Object> body = rig.platform.awaitApi(BEAT).json();
+            assertThat(checks(body)).containsEntry("notebook", "degraded");
+            assertThat(Json.object(body, "health")).containsEntry("status", "degraded");
+            module.close();
+        }
+    }
+
+    // ---- the volume's record    // ---- the volume's record
 
     private void record(String json) throws Exception {
         Files.writeString(rig.dataDir.resolve("volume.json"), json);
@@ -734,6 +891,106 @@ class HeartbeatLoopTest {
         rig.bootToReady();
         rig.platform.awaitApi(BEAT);
         rig.platform.awaitApi(BEAT);
+    }
+
+    // ---- ADR 0078, section 6: what a desk in a shared host's slot says (DE-1, DE-2)
+
+    private static final String BATCH = "/v1/agent/batch";
+
+    private Map<String, Object> theLastBeat() {
+        return rig.platform.apiRequests.stream()
+                .filter(request -> BEAT.equals(request.path()))
+                .reduce((a, b) -> b)
+                .orElseThrow()
+                .json();
+    }
+
+    /** DE-2: the Platform's promote reads deskd's own version and /health's answer from the heartbeat (section 3.3). */
+    @Test
+    void theDeskdBlockSaysThisDeskdsVersionAndWhatHealthSays() throws Exception {
+        java.util.concurrent.atomic.AtomicBoolean healthy = new java.util.concurrent.atomic.AtomicBoolean(true);
+        rig.heartbeat.deskdFrom("2026.11.11-abc1234", healthy::get);
+        rig.bootToReady();
+        Map<String, Object> fine = aLaterBeat();
+        assertThat(Json.object(fine, "deskd")).containsOnlyKeys("version", "status")
+                .containsEntry("version", "2026.11.11-abc1234")
+                .containsEntry("status", "ok");
+        assertThat(Json.object(fine, "health")).containsEntry("status", "ok");
+        assertThat(checks(fine)).isEqualTo(Map.of("rtc", "ok", "dataVolume", "ok"));
+
+        // /health would answer 503: the block says failing, and so does the heartbeat's own status.
+        healthy.set(false);
+        Map<String, Object> failing = aLaterBeat();
+        assertThat(Json.object(failing, "deskd")).containsEntry("status", "failing").containsEntry("version", "2026.11.11-abc1234");
+        assertThat(Json.object(failing, "health")).containsEntry("status", "failing");
+
+        healthy.set(true);
+        Map<String, Object> back = aLaterBeat();
+        assertThat(Json.object(back, "deskd")).containsEntry("status", "ok");
+        assertThat(Json.object(back, "health")).containsEntry("status", "ok");
+    }
+
+    @Test
+    void aHealthCheckThatThrowsIsFailingAndTheHeartbeatStillGoes() throws Exception {
+        rig.heartbeat.deskdFrom("2026.11.11-abc1234", () -> {
+            throw new IllegalStateException("no");
+        });
+        rig.bootToReady();
+        Map<String, Object> body = aLaterBeat();
+        assertThat(Json.object(body, "deskd")).containsEntry("status", "failing");
+        assertThat(Json.object(body, "health")).containsEntry("status", "failing");
+    }
+
+    /** Before it's wired, as in a rig with no admin socket, there's no block at all, never a made-up version. */
+    @Test
+    void withNothingToSayThereIsNoDeskdBlock() throws Exception {
+        rig.bootToReady();
+        assertThat(aLaterBeat()).doesNotContainKey("deskd");
+    }
+
+    /** /health writes a file, which the shutdown's budget hasn't time for: the final heartbeat says what the last one did. */
+    @Test
+    void theFinalHeartbeatSaysWhatTheLastOneDidWithoutAskingAgain() throws Exception {
+        java.util.concurrent.atomic.AtomicInteger askedByTheFinal = new java.util.concurrent.atomic.AtomicInteger();
+        rig.heartbeat.deskdFrom("2026.11.11-abc1234", () -> {
+            if (Thread.currentThread().getName().equals("heartbeat-final")) {
+                askedByTheFinal.incrementAndGet();
+            }
+            return false;
+        });
+        rig.bootToReady();
+        assertThat(Json.object(aLaterBeat(), "deskd")).containsEntry("status", "failing");
+        Thread last = rig.heartbeat.stopAndSendFinal(Duration.ofSeconds(5));
+        assertThat(last).isNotNull();
+        last.join(Duration.ofSeconds(5));
+        Map<String, Object> body = theLastBeat();
+        assertThat(body).containsEntry("final", true);
+        assertThat(Json.object(body, "deskd")).containsEntry("status", "failing").containsEntry("version", "2026.11.11-abc1234");
+        assertThat(askedByTheFinal).hasValue(0);
+    }
+
+    /**
+     * DE-1: a shared desk has no /run/desk/batch.sock (the host takes its releases, section 6, PB-6), and deskd doesn't
+     * relay batches at all yet. A reply that names one all the same fetches nothing, logs no batch error, and no heartbeat
+     * carries {@code update}. A relay added later keeps this for a desk with no batch.sock.
+     */
+    @Test
+    void aDeskWithNoBatchSocketMakesNoOfferAndItsHeartbeatHasNoUpdate(CapturedOutput output) throws Exception {
+        assertThat(dir.resolve("batch.sock")).doesNotExist();
+        String naming = rig.platform.heartbeatReply(List.of()).replaceFirst("\\{", "{\"batch\":{\"seq\":9004,\"id\":\"2026-12\"},");
+        for (int i = 0; i < 4; i++) {
+            rig.platform.heartbeatReplies.add(FakePlatform.Reply.of(200, naming));
+        }
+        rig.bootToReady();
+        Map<String, Object> first = rig.platform.awaitApi(BEAT).json();
+        Map<String, Object> later = aLaterBeat();
+        assertThat(first).doesNotContainKey("update");
+        assertThat(later).doesNotContainKey("update");
+        assertThat(rig.platform.countApi(BATCH)).isZero();
+        assertThat(output.getAll().lines()
+                        .filter(line -> line.contains("WARN") || line.contains("ERROR"))
+                        .filter(line -> line.toLowerCase(java.util.Locale.ROOT).contains("batch")))
+                .isEmpty();
     }
 
     @Test

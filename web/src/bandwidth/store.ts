@@ -11,6 +11,7 @@
 // whatever this browser's clock or the meter says (`deskSaysPaused`), until the desk's own time.
 import { create } from 'zustand';
 import { api, ApiError } from '../platform/api';
+import { rememberLastKnown } from '../platform/lastKnown';
 import { parseMeter, type BandwidthMeter } from './meter';
 
 export const METER_PATH = '/v1/desks/bandwidth';
@@ -93,6 +94,24 @@ let etag: string | null = null;
 let lastAsk = 0;
 let gone = false;
 let inFlight = false;
+/** Platform has answered this page: the meter is its word, not the last-known one (`showLastMeter`). */
+let fresh = false;
+
+/**
+ * The meter this member last saw (`platform/lastKnown.ts`), drawn at once on a returning visit while the first ask is
+ * out. Not one whose week or month has since reset: those numbers are over. Platform's answer replaces it.
+ */
+export function showLastMeter(raw: unknown, now = Date.now()): void {
+  if (fresh || useBandwidth.getState().meter) return;
+  const m = parseMeter(raw);
+  if (!m || Date.parse(m.week.resetsAt) <= now || Date.parse(m.month.resetsAt) <= now) return;
+  useBandwidth.setState({ meter: m });
+}
+
+/** The last-known meter was someone else's: it goes, unless Platform has already answered. */
+export function dropLastMeter(): void {
+  if (!fresh) useBandwidth.setState({ meter: null });
+}
 
 async function ask(): Promise<void> {
   if (gone || inFlight) return;
@@ -103,6 +122,8 @@ async function ask(): Promise<void> {
     const r = await api<unknown>(`${METER_PATH}${browserZoneQuery()}`, { etag });
     if (r.status !== 304) {
       const m = parseMeter(r.data);
+      fresh = true;
+      rememberLastKnown('usage', m);
       // The same answer renders nothing.
       if (JSON.stringify(m) !== JSON.stringify(useBandwidth.getState().meter)) useBandwidth.setState({ meter: m });
       etag = m ? r.etag : null;
@@ -113,6 +134,8 @@ async function ask(): Promise<void> {
   } catch (err) {
     if (err instanceof ApiError && err.status === 404) {
       gone = true;
+      fresh = true;
+      rememberLastKnown('usage', null);
       useBandwidth.setState({ meter: null });
     }
     // Anything else keeps the last answer: a blip mustn't hide the meter or lift a pause.
@@ -166,5 +189,6 @@ export function resetBandwidthForTests(): void {
   lastAsk = 0;
   gone = false;
   inFlight = false;
+  fresh = false;
   useBandwidth.setState({ meter: null, desks: {} });
 }

@@ -11,7 +11,9 @@ import { getMe } from '../platform/api';
 import { loadedConfig, supportAddress } from '../platform/clientConfig';
 import { applyDeskProgress, useDeskStore } from '../state/deskStore';
 import { getView, useViewStore } from '../state/viewStore';
+import { holdClose, letClose } from '../shell/closeGuard';
 import { dropRoster, noteAgents } from '../agent/roster';
+import { agentsSeen, watchUploads } from '../setup/used';
 import { activityOfAgents, deskSummary } from './agentStatus';
 import { lookedAtDesk, shownDesk } from './attention';
 import { LastSound } from './sound';
@@ -31,6 +33,8 @@ export interface LiveDesk {
   summary: string | null;
   /** `connect` refused this desk (contract 0.3.11). */
   refusal: DeskRefusal | null;
+  /** A free desk waits for room (`free_capacity_wait`). */
+  busy: boolean;
 }
 
 export interface DeskAbout {
@@ -42,7 +46,7 @@ export interface DeskAbout {
 }
 
 const NO_AGENT: AgentActivity = { state: 'none' };
-const EMPTY: LiveDesk = { link: 'idle', linkAvailable: false, seq: 0, agent: NO_AGENT, apps: {}, lostForSec: 0, summary: null, refusal: null };
+const EMPTY: LiveDesk = { link: 'idle', linkAvailable: false, seq: 0, agent: NO_AGENT, apps: {}, lostForSec: 0, summary: null, refusal: null, busy: false };
 const NO_ABOUT: DeskAbout = { status: null, fetchedAt: 0, path: null, rttMs: null };
 
 export const useLiveStore = create<{ desks: Record<string, LiveDesk> }>(() => ({ desks: {} }));
@@ -165,11 +169,15 @@ const wakeOnceLinked = new Set<string>();
 const keptOpen = new Set<string>();
 export const keepOpen = (deskId: string, on: boolean): unknown => (on ? keptOpen.add(deskId) : keptOpen.delete(deskId));
 
-/** Desks with a file transfer running (the Files app): the idle rule leaves them open, and counts the transfer as input. */
+/**
+ * Desks with a file transfer running (the Files app): the idle rule leaves them open, and counts the transfer as input, and
+ * closing the office asks first (`shell/closeGuard.ts`), as it would stop.
+ */
 const transferring = new Set<string>();
 export function setTransferBusy(deskId: string, on: boolean): void {
   if (on) transferring.add(deskId);
   else transferring.delete(deskId);
+  holdClose(`transfer:${deskId}`, on);
 }
 
 const idle = new IdleRule({
@@ -334,6 +342,7 @@ function applyDetails(link: DeskLink): void {
   const lostForSec = d.unreachable ? 30 : 0;
   if (lostForSec !== getLive(link.deskId).lostForSec) patch(link.deskId, { lostForSec });
   if (d.refusal !== getLive(link.deskId).refusal) patch(link.deskId, { refusal: d.refusal });
+  if ((d.busy === true) !== getLive(link.deskId).busy) patch(link.deskId, { busy: d.busy === true });
   if (d.desk) {
     const desk = d.desk;
     whenStill(() => applyDeskProgress(link.deskId, desk));
@@ -379,6 +388,7 @@ export async function syncLinks(deskIds: readonly string[]): Promise<void> {
     links.set(id, claim); // claim the slot across the await
     const link = await createDeskLink(id);
     if (links.get(id) !== claim) continue; // closed while it was on its way
+    watchUploads(link); // the setup circle's "Put a file in Files": that an upload finished, nothing about it
     const offStatus = link.onStatus((state) => {
       patch(id, { link: state });
       if (state === 'open') void refreshStatus(link);
@@ -399,6 +409,8 @@ export async function syncLinks(deskIds: readonly string[]): Promise<void> {
           if (!summaryAgent) enqueue(id, { seq: msg.seq, agent: activityOfAgents(msg.agents) });
           // Who's on this desk, for their own tiles (task 49). An uploaded icon comes over this same link, the owner's alone.
           if (currentBand() !== 'teen') noteAgents(id, msg.agents, (agentId) => link.call('agent.icon.get', { agentId }));
+          // The setup circle's "Give your Agent an AI key": only whether one has a working provider, never what it says.
+          agentsSeen(id, msg.agents);
         })
       : null;
     const dropAgents = (): void => {
@@ -431,7 +443,9 @@ export async function syncLinks(deskIds: readonly string[]): Promise<void> {
   }
 }
 
+/** The office is over for this member: signed out, refused, or gone to sign in. Nothing left can reach a desk, so nothing holds the page. */
 export function closeAllLinks(): void {
+  letClose();
   for (const entry of links.values()) {
     entry.unsub();
     entry.link?.close();

@@ -182,8 +182,12 @@ class AgentServiceConcurrencyTest {
             return null;
         });
 
-        Map<?, ?> reply = ended.get(30, TimeUnit.SECONDS);
-        streaming.set(false);
+        Map<?, ?> reply;
+        try {
+            reply = ended.get(30, TimeUnit.SECONDS);
+        } finally {
+            streaming.set(false);
+        }
         reader.get(10, TimeUnit.SECONDS);
         subscriber.get(10, TimeUnit.SECONDS);
 

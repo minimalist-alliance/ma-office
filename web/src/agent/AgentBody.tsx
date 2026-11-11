@@ -1,13 +1,15 @@
 // The Agent app itself: its own lazy chunk, so none of it costs a member who hasn't opened the window. `web/agent` is a package
 // of its own, imported here as source. The one client over this desk's link is made here, and it talks to that desk alone.
-import { lazy, memo, Suspense, useCallback, useEffect, useMemo } from 'react';
+import { lazy, memo, Suspense, useCallback, useEffect, useId, useMemo } from 'react';
 import { AgentApp, RpcAgentClient, type DeskTransport, type GuildMode } from '../../agent/src/index';
 import { agentApp, agentIdOf, type AppId } from '../canvas/layout';
 import type { DeskLink } from '../desk/deskLink';
 import { setGuildCaps, useGuildStore } from '../guild/guildStore';
 import { guildIdOfPanel, limitsOf, mayManageAgents } from '../guild/panel';
+import { currentBand } from '../platform/age';
 import { useTierNames } from '../platform/useTiers';
 import { useDeskStore } from '../state/deskStore';
+import { holdClose } from '../shell/closeGuard';
 import { setLayoutPref } from '../shell/layoutSync';
 import { useLayoutPrefs } from '../shell/layoutPrefs';
 import { useLayoutStore } from '../state/layoutStore';
@@ -114,6 +116,10 @@ export default memo(function AgentBody({ link, session, deskId, deskName, offlin
   const showBadges = useLayoutPrefs((s) => s.showProviderBadges);
   const guild = useGuildMode(deskId, link, session);
   const onOpenAgent = useCallback((agentId: string) => openAgentWindow(deskId, agentId), [deskId]);
+  // A draft with text or a settings form with changes holds the office's close guard, straight from the app's own report.
+  const holdId = `agent:${useId()}`;
+  const onUnsaved = useCallback((on: boolean) => holdClose(holdId, on), [holdId]);
+  useEffect(() => () => holdClose(holdId, false), [holdId]);
   // A Guild Desk's Agent is each member's own, on the guild's key (task 48): one agent, and no team to add to there.
   return (
     <AgentApp
@@ -127,6 +133,10 @@ export default memo(function AgentBody({ link, session, deskId, deskName, offlin
       guild={guild}
       focusAgentId={agentIdOf(app)}
       onOpenAgent={onOpenAgent}
+      onUnsaved={onUnsaved}
+      deskId={deskId}
+      // Free models through OpenRouter: never offered to a teen (Terms 2A), who has no Agent window anyway.
+      offerFree={currentBand() !== 'teen'}
     />
   );
 });

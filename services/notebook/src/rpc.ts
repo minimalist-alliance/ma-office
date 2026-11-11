@@ -1,15 +1,16 @@
 // The contract's method table: one function per `notebook.*`, each checking its own params.
 import { setImmediate as nextTick } from 'node:timers/promises';
-import { prosemirrorToYXmlFragment } from '@tiptap/y-tiptap';
+import { prosemirrorToYXmlFragment, yXmlFragmentToProsemirrorJSON } from '@tiptap/y-tiptap';
 import type { Hocuspocus } from '@hocuspocus/server';
 import * as Y from 'yjs';
+import { agentMethods } from './agent.ts';
 import { actorOf, isGuild, mayModerate, type Caller } from './caller.ts';
 import { type CollabContext } from './collab.ts';
 import { type Db } from './db.ts';
 import { badRequest, notFound, RpcError } from './errors.ts';
 import { log } from './log.ts';
 import { type Members } from './members.ts';
-import { DOC_FIELD, TAB_COLORS, type ActivityRow, type TabColor, type VersionMeta } from './model.ts';
+import { cleanDoc, copyState, docState, DOC_FIELD, isPaletteId, TAB_COLORS, type ActivityRow, type NewState, type PaletteId, type PMNode, type TabColor, type VersionMeta } from './model.ts';
 import { MAX_NAME, OWNER_ACTOR, type Notebook, type PageRow } from './notebook.ts';
 import { holdsOthersText, judge, type Owners, type Removals } from './owners.ts';
 import { type Pages } from './pages.ts';
@@ -40,6 +41,19 @@ const color = (p: Params, key: string): TabColor => {
   const v = p[key];
   if (typeof v !== 'string' || !(TAB_COLORS as readonly string[]).includes(v)) throw badRequest(key);
   return v as TabColor;
+};
+/** ADR 0091: a palette id, or null (or left out) for none. */
+const label = (p: Params, key: string): PaletteId | null => {
+  const v = p[key];
+  if (v === undefined || v === null) return null;
+  if (!isPaletteId(v)) throw badRequest(key);
+  return v;
+};
+const optLabels = (p: Params, key: string): PaletteId[] | undefined => {
+  const v = p[key];
+  if (v === undefined || v === null) return undefined;
+  if (!Array.isArray(v) || v.length > 8 || !v.every(isPaletteId)) throw badRequest(key);
+  return v as PaletteId[];
 };
 const day = (p: Params, key: string): string => {
   const v = p[key];
@@ -133,6 +147,8 @@ export interface RpcDeps {
   owners: Owners;
   members: Members;
   removals: Removals;
+  /** The desk's clock, for the agent methods' activity day (agent.ts). */
+  now?: () => number;
 }
 
 /** `caller` is who sent the request, as of that frame. */
@@ -143,6 +159,16 @@ const LOCAL_CONTEXT = { actor: 'user' };
 /** In the form deskd relays unchanged. */
 const forbidden = (): RpcError => new RpcError('forbidden', { reason: 'grant' });
 
+/**
+ * The space structure, notebooks and tabs (guild design call 3, `tiers.md` 7.5): on a Guild Desk the Founder, or an Officer
+ * with `manage_spaces`. Pages stay open to every member. A member's own desk has no guild caller, so it never refuses.
+ * `notebook.settings.set` has the same rule.
+ */
+const mayManageSpaces = (caller: Caller): boolean => !isGuild(caller) || caller.role === 'lead' || caller.grants.includes('manage_spaces');
+const needManageSpaces = (caller: Caller): void => {
+  if (!mayManageSpaces(caller)) throw forbidden();
+};
+
 export function methods(deps: RpcDeps): Map<string, RpcHandler> {
   const { db, notebook, pages, collab, owners, members, removals } = deps;
 
@@ -151,11 +177,25 @@ export function methods(deps: RpcDeps): Map<string, RpcHandler> {
   const nameOf = (actor: string): string | null => (actor === OWNER_ACTOR ? null : members.name(actor));
   /** On a guild desk, records say who: the member's id stays in `actor`, and their name comes with it. */
   const withName = <T extends VersionMeta | null>(caller: Caller, meta: T): T => (meta && isGuild(caller) ? { ...meta, actorName: nameOf(meta.actor) } : meta);
-  const withNames = (caller: Caller, rows: ActivityRow[]): ActivityRow[] => (isGuild(caller) ? rows.map((r) => ({ ...r, actorNames: r.actors.map(nameOf) })) : rows);
+  /** On a guild desk an activity row's actors come with their names, as `actorNames`. */
+  const namesFor = (caller: Caller): ((row: ActivityRow) => ActivityRow) | undefined => {
+    if (!isGuild(caller)) return undefined;
+    return (r) => {
+      const named: ActivityRow & { actorNames: (string | null)[] } = { ...r, actorNames: r.actors.map(nameOf) };
+      return named;
+    };
+  };
   const creator = (row: PageRow): Record<string, unknown> => {
     const by = row.created_by === OWNER_ACTOR ? null : row.created_by;
     return { createdBy: by, createdByName: by ? members.name(by) : null };
   };
+
+  /**
+   * On a guild's desk, the body of a page a member makes (a duplicate, an import) is theirs: its client id goes in
+   * `page_clients` in the transaction that makes the page, as a member's first update's does.
+   */
+  const ownedBy = (caller: Caller, client: number): ((page: { id: string }) => void) | undefined =>
+    isGuild(caller) ? (page) => db.run('INSERT OR IGNORE INTO page_clients (page_id, client, member_id) VALUES (?, ?, ?)', page.id, client, actorOf(caller)) : undefined;
 
   /**
    * Trash deletes, in 30 days. Without `moderate` a member may trash only a page they made, with no text in it that
@@ -180,12 +220,40 @@ export function methods(deps: RpcDeps): Map<string, RpcHandler> {
     }
   };
 
+  /**
+   * Trash holds (authz-5): without `moderate` a member may bring back only a page they trashed themselves, so a
+   * moderator's trash of spam, abuse or what's unsuitable for teens stays. A page trashed before `deleted_by` was kept
+   * is a moderator's to bring back.
+   */
+  const mayRestore = (pageId: string, caller: Caller): void => {
+    if (!isGuild(caller) || mayModerate(caller)) return;
+    const row = notebook.mustPage(pageId);
+    if (row.deleted_at == null) return;
+    if (row.deleted_by == null || row.deleted_by !== caller.memberId) throw forbidden();
+  };
+
+  /**
+   * And until the purge a trashed page's text and versions are a moderator's (authz-5): a member without `moderate`
+   * gets `forbidden` for them, as the collab open refuses them (collab.ts, `onAuthenticate`). Any other desk: as before.
+   */
+  const mayRead = (pageId: string, caller: Caller): void => {
+    if (!isGuild(caller) || mayModerate(caller)) return;
+    if (notebook.mustPage(pageId).deleted_at != null) throw forbidden();
+  };
+
   const table: [string, RpcHandler][] = [
     ['notebook.tree', (p, _parts, caller) => notebook.tree(optCursor(p), isGuild(caller) ? creator : undefined)],
-    ['notebook.notebook.create', (p, _parts, caller) => notebook.createNotebook(optName(p, 'title'), actorOf(caller))],
+    [
+      'notebook.notebook.create',
+      (p, _parts, caller) => {
+        needManageSpaces(caller);
+        return notebook.createNotebook(optName(p, 'title'), actorOf(caller));
+      },
+    ],
     [
       'notebook.notebook.rename',
-      (p) => {
+      (p, _parts, caller) => {
+        needManageSpaces(caller);
         notebook.renameNotebook(idOf(p, 'id'), name(p, 'title'));
         return {};
       },
@@ -193,6 +261,7 @@ export function methods(deps: RpcDeps): Map<string, RpcHandler> {
     [
       'notebook.tab.create',
       (p, _parts, caller) => {
+        needManageSpaces(caller);
         const notebookId = idOf(p, 'notebookId');
         const title = optName(p, 'title');
         const c = p['color'] === undefined || p['color'] === null ? undefined : color(p, 'color');
@@ -201,19 +270,27 @@ export function methods(deps: RpcDeps): Map<string, RpcHandler> {
     ],
     [
       'notebook.tab.rename',
-      (p) => {
+      (p, _parts, caller) => {
+        needManageSpaces(caller);
         notebook.renameTab(idOf(p, 'id'), name(p, 'title'));
         return {};
       },
     ],
     [
       'notebook.tab.recolor',
-      (p) => {
+      (p, _parts, caller) => {
+        needManageSpaces(caller);
         notebook.recolorTab(idOf(p, 'id'), color(p, 'color'));
         return {};
       },
     ],
-    ['notebook.tab.addAtPage', (p) => ({ tab: notebook.addTabAtPage(idOf(p, 'pageId'), optName(p, 'title')) })],
+    [
+      'notebook.tab.addAtPage',
+      (p, _parts, caller) => {
+        needManageSpaces(caller);
+        return { tab: notebook.addTabAtPage(idOf(p, 'pageId'), optName(p, 'title')) };
+      },
+    ],
     [
       'notebook.page.create',
       (p, _parts, caller) => {
@@ -233,25 +310,78 @@ export function methods(deps: RpcDeps): Map<string, RpcHandler> {
       (p, _parts, caller) => {
         const pageId = idOf(p, 'pageId');
         mayTrash(pageId, caller);
-        notebook.trashPage(pageId);
+        notebook.trashPage(pageId, actorOf(caller));
         return {};
       },
     ],
     [
       'notebook.page.restore',
-      (p) => {
-        notebook.restorePage(idOf(p, 'pageId'));
+      (p, _parts, caller) => {
+        const pageId = idOf(p, 'pageId');
+        mayRestore(pageId, caller);
+        notebook.restorePage(pageId);
         return {};
       },
     ],
     [
-      'notebook.page.content',
-      (p, parts) => {
+      'notebook.page.label',
+      (p) => {
+        notebook.setPageLabel(idOf(p, 'pageId'), label(p, 'label'));
+        return {};
+      },
+    ],
+    [
+      'notebook.page.duplicate',
+      (p, _parts, caller) => {
         const pageId = idOf(p, 'pageId');
+        const row = notebook.mustPage(pageId);
+        if (row.deleted_at != null) throw notFound();
+        // The page as it is now: an open one's live document, or a closed one's stored state and log, as a load makes it.
+        const open = pages.open.get(pageId);
+        const doc = open?.doc ?? new Y.Doc({ gc: true });
+        let copied: NewState;
+        let json: PMNode;
+        try {
+          if (!open) pages.readInto(pageId, doc);
+          copied = copyState(doc);
+          json = yXmlFragmentToProsemirrorJSON(doc.getXmlFragment(DOC_FIELD)) as PMNode;
+        } finally {
+          if (!open) doc.destroy();
+        }
+        if (!pages.fitsNewPage(copied.state.length)) throw badRequest('page_full');
+        const body = { state: copied.state, doc: json, label: isPaletteId(row.label) ? row.label : null };
+        return { page: notebook.addPage(row.tab_id, pageId, body, actorOf(caller), ownedBy(caller, copied.client)) };
+      },
+    ],
+    [
+      'notebook.page.import',
+      (p, _parts, caller) => {
+        const tabId = idOf(p, 'tabId');
+        const after = optId(p, 'after');
+        const cleaned = cleanDoc(p['doc']);
+        if (!cleaned) throw badRequest('doc');
+        const made = docState(cleaned.doc);
+        if (!pages.fitsNewPage(made.state.length)) throw badRequest('page_full');
+        const body = { state: made.state, doc: cleaned.doc, label: label(p, 'label') };
+        return { page: notebook.addPage(tabId, after ?? null, body, actorOf(caller), ownedBy(caller, made.client)) };
+      },
+    ],
+    [
+      'notebook.page.content',
+      (p, parts, caller) => {
+        const pageId = idOf(p, 'pageId');
+        mayRead(pageId, caller);
         return parts.read(`page:${pageId}`, optCursor(p), () => pages.contentText(pageId));
       },
     ],
-    ['notebook.version.list', (p, _parts, caller) => ({ versions: pages.versions(idOf(p, 'pageId')).map((v) => withName(caller, v)) })],
+    [
+      'notebook.version.list',
+      (p, _parts, caller) => {
+        const pageId = idOf(p, 'pageId');
+        mayRead(pageId, caller);
+        return { versions: pages.versions(pageId).map((v) => withName(caller, v)) };
+      },
+    ],
     [
       'notebook.version.get',
       (p, parts, caller) => {
@@ -262,6 +392,7 @@ export function methods(deps: RpcDeps): Map<string, RpcHandler> {
           if (cursor !== undefined) throw badRequest('cursor');
           return { meta: null, part: '', next: null };
         }
+        mayRead(meta.pageId, caller);
         const { part, next } = parts.read(`version:${versionId}`, cursor, () => pages.versionText(versionId)?.text ?? '');
         return { meta: withName(caller, meta), part, next };
       },
@@ -273,6 +404,7 @@ export function methods(deps: RpcDeps): Map<string, RpcHandler> {
         const reason = p['reason'] ?? 'manual';
         if (reason !== 'manual' && reason !== 'pre_agent') throw badRequest('reason');
         if (!notebook.page(pageId)) return { version: null };
+        mayRead(pageId, caller);
         const conn = await collab.openDirectConnection(pageId, contextOf(caller));
         try {
           pages.store(pageId, reason, actorOf(caller));
@@ -289,6 +421,7 @@ export function methods(deps: RpcDeps): Map<string, RpcHandler> {
         const versionId = idOf(p, 'versionId');
         const v = pages.versionText(versionId);
         if (!v || v.meta.pageId !== pageId || !notebook.page(pageId)) throw notFound();
+        mayRead(pageId, caller);
         if (isGuild(caller)) return restoreAsMember(pageId, v.text, caller, budget);
         const conn = await collab.openDirectConnection(pageId, LOCAL_CONTEXT);
         try {
@@ -308,8 +441,19 @@ export function methods(deps: RpcDeps): Map<string, RpcHandler> {
         }
       },
     ],
-    ['notebook.version.asOf', (p) => ({ versionId: pages.versionAsOf(idOf(p, 'pageId'), day(p, 'day')) })],
-    ['notebook.activity', (p, _parts, caller) => ({ rows: withNames(caller, notebook.activity(day(p, 'fromDay'), day(p, 'toDay'))) })],
+    [
+      'notebook.version.asOf',
+      (p, _parts, caller) => {
+        const pageId = idOf(p, 'pageId');
+        mayRead(pageId, caller);
+        return { versionId: pages.versionAsOf(pageId, day(p, 'day')) };
+      },
+    ],
+    [
+      'notebook.activity',
+      // Every member sees the same rows: live pages only, which every member may read (a trashed page's are nobody's).
+      (p, _parts, caller) => notebook.activity(day(p, 'fromDay'), day(p, 'toDay'), optCursor(p), namesFor(caller)),
+    ],
     ['notebook.activity.days', () => ({ days: notebook.activeDays() })],
     [
       'notebook.search',
@@ -322,8 +466,10 @@ export function methods(deps: RpcDeps): Map<string, RpcHandler> {
         const tabId = optId(p, 'tabId');
         const fromDay = optDay(p, 'fromDay');
         const toDay = optDay(p, 'toDay');
+        const labels = optLabels(p, 'labels');
         return {
           hits: search(db, query, {
+            ...(labels ? { labels } : {}),
             ...(notebookId ? { notebookId } : {}),
             ...(tabId ? { tabId } : {}),
             ...(fromDay ? { fromDay } : {}),
@@ -337,7 +483,7 @@ export function methods(deps: RpcDeps): Map<string, RpcHandler> {
       'notebook.settings.set',
       (p, _parts, caller) => {
         // deskd checks this too; the desk's own copy of the rule costs nothing.
-        if (isGuild(caller) && caller.role !== 'lead' && !caller.grants.includes('manage_spaces')) throw forbidden();
+        needManageSpaces(caller);
         const zone = p['timeZone'];
         if (!validZone(zone)) throw badRequest('time_zone');
         notebook.setTimeZone(zone);
@@ -389,7 +535,10 @@ export function methods(deps: RpcDeps): Map<string, RpcHandler> {
     }
   }
 
-  return new Map(table);
+  // The Agent's Notebook tools (agent.ts): deskd's own calls, which its relay never lists for a client.
+  const all = new Map(table);
+  for (const [name, handler] of agentMethods(deps, all)) all.set(name, handler);
+  return all;
 }
 
 export { RpcError };

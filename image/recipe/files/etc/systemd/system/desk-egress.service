@@ -19,6 +19,8 @@ ExecStart=/opt/ma/desk-egress/current/run
 ExecStopPost=-/opt/ma/desk-egress/current/desk-egress --unclamp
 Restart=always
 RestartSec=10
+RestartSteps=8
+RestartMaxDelaySec=300
 # desk-rtc and deskd wait for this unit, so a hang can only delay them this long.
 TimeoutStartSec=15
 TimeoutStopSec=15

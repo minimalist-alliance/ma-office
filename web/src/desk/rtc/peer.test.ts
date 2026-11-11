@@ -32,8 +32,20 @@ class FakePc {
   static last: FakePc;
   readonly channels = new Map<string, FakeChannel>();
   connectionState = 'new';
-  constructor() {
+  /** What `setConfiguration` was given, in order. */
+  readonly configured: RTCConfiguration[] = [];
+  /** Set to make `setConfiguration` throw, as a browser does for a server it won't take. */
+  refuse: Error | null = null;
+  constructor(private config: RTCConfiguration = {}) {
     FakePc.last = this;
+  }
+  getConfiguration(): RTCConfiguration {
+    return { ...this.config };
+  }
+  setConfiguration(c: RTCConfiguration): void {
+    if (this.refuse) throw this.refuse;
+    this.configured.push(c);
+    this.config = c;
   }
   addEventListener(): void {}
   addTransceiver(): void {}
@@ -434,5 +446,48 @@ describe('a provider key on its way (web/agent/README.md, "The key")', () => {
     expect(`${String(err)} ${JSON.stringify(err)}`).not.toContain(KEY);
     peer.close();
     expect(JSON.stringify(seen)).not.toContain(KEY);
+  });
+});
+
+describe('new TURN servers (ma-platform contract gateway.md 2.4)', () => {
+  const OLD = [{ urls: ['turn:turn.example.test:443?transport=udp'], username: '1700000000:cs-1', credential: 'old-credential-canary' }];
+  const NEW = [{ urls: ['turn:turn.example.test:443?transport=udp', 'turns:turn.example.test:443?transport=tcp'], username: '1700000300:cs-1', credential: 'new-credential-canary' }];
+  const cert = { canary: 'cert' } as unknown as RTCCertificate;
+
+  it('a refresh replaces the servers, once, and keeps the rest of the configuration', () => {
+    const peer = new PeerSession('d-1', cert, OLD, events);
+    expect(FakePc.last.getConfiguration().iceServers).toEqual(OLD);
+    peer.useIceServers(NEW);
+    expect(FakePc.last.configured).toHaveLength(1);
+    expect(FakePc.last.configured[0]).toEqual({ iceServers: NEW, bundlePolicy: 'max-bundle', rtcpMuxPolicy: 'require', certificates: [cert] });
+    expect(FakePc.last.getConfiguration().iceServers).toEqual(NEW);
+    peer.close();
+  });
+
+  it('none (the relay paused) is applied as given; anything else, or a closed session, changes nothing', () => {
+    const peer = new PeerSession('d-1', cert, OLD, events);
+    peer.useIceServers(undefined);
+    peer.useIceServers(null);
+    peer.useIceServers({ urls: 'turn:x' });
+    expect(FakePc.last.configured).toHaveLength(0);
+    peer.useIceServers([]);
+    expect(FakePc.last.configured.map((c) => c.iceServers)).toEqual([[]]);
+    peer.close();
+    peer.useIceServers(NEW);
+    expect(FakePc.last.configured).toHaveLength(1);
+  });
+
+  it('servers the browser refuses leave the old ones, throw nothing and reach no console', () => {
+    const seen: unknown[][] = [];
+    for (const level of ['log', 'info', 'warn', 'error', 'debug', 'trace'] as const) {
+      vi.spyOn(console, level).mockImplementation((...args: unknown[]) => void seen.push(args));
+    }
+    const peer = new PeerSession('d-1', cert, OLD, events);
+    FakePc.last.refuse = new Error(`Malformed ICE server ${JSON.stringify(NEW)}`);
+    expect(() => peer.useIceServers(NEW)).not.toThrow();
+    expect(FakePc.last.getConfiguration().iceServers).toEqual(OLD);
+    peer.close();
+    expect(JSON.stringify(seen)).not.toContain('credential-canary');
+    expect(JSON.stringify(seen)).not.toContain('1700000300:cs-1');
   });
 });

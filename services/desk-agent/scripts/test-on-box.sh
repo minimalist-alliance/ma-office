@@ -17,8 +17,11 @@
 # never printed here or on the box.
 set -euo pipefail
 
-INSTANCE=${BUILD_BOX_INSTANCE:?set BUILD_BOX_INSTANCE to the arm64 build box}
-BUCKET=${RELEASE_BUCKET:-ma-lambda-artifacts-$(aws sts get-caller-identity --query Account --output text)}
+
+# The build box and bucket come from the environment, or from a private env file outside the repo.
+[ -z "${BUILD_INSTANCE:-}" ] && [ -f "${DESK_BUILD_ENV:-$HOME/work/desk-build.env}" ] && . "${DESK_BUILD_ENV:-$HOME/work/desk-build.env}"
+INSTANCE=${BUILD_INSTANCE:?set BUILD_INSTANCE to the build box instance id}
+BUCKET=${ARTIFACT_BUCKET:?set ARTIFACT_BUCKET to the artifacts bucket}
 REGION=${AWS_REGION:-us-east-1}
 URL_TTL=3600
 RUN_TIMEOUT=2400       # A clean build with Maven's downloads, then the runs.

@@ -10,6 +10,7 @@ export interface DeskInput {
   link: LinkState;
   unreachable: boolean;
   refusal: DeskRefusal | null;
+  busy?: boolean;
 }
 
 /** The desk's and the link's state, as the Browser reads them. `playing` means a session is up and it's the Notebook's to say. */
@@ -25,6 +26,8 @@ export interface LineInput {
   unsaved: boolean;
   hasUnsavedText: boolean;
   full: boolean;
+  /** The desk refused this app's changes as older than the page (ADR 0091). Optional, so callers before it read as false. */
+  outdated?: boolean;
   tooLarge: boolean;
   problem: boolean;
 }
@@ -39,6 +42,8 @@ const NOT_SAVED = 'Not saved yet.';
 
 /** The quiet line under an open Notebook, or null when there's nothing to say. */
 export function notebookLine(i: LineInput): Line | null {
+  // The desk has a newer Notebook than this tab (ADR 0091's guard): the page is read-only here until a reload.
+  if (i.outdated) return { text: i.hasUnsavedText ? "Notebook was updated, so what you typed last isn't saved. Copy it, then reload to keep editing." : 'Notebook was updated. Reload to keep editing.', wake: false };
   if (i.full) return { text: i.hasUnsavedText ? "This page is full, so what you typed last isn't saved. Copy it to a new page." : 'This page is full. Start a new page to keep writing.', wake: false };
   if (i.tooLarge) return { text: "That's too much to save at once, so it isn't saved yet. Copy it to a new page in parts.", wake: false };
   const prefix = i.hasUnsavedText ? `${NOT_SAVED} ` : '';
@@ -54,6 +59,8 @@ export function notebookLine(i: LineInput): Line | null {
     case 'queued':
     case 'waking':
       return { text: `${prefix}Waking this desk…`, wake: false };
+    case 'busy':
+      return { text: `${prefix}Free desks are all busy right now. Yours is saved, and we'll keep trying.`, wake: false };
     case 'unreachable':
       return { text: `${prefix}Can't reach this desk. Still trying.`, wake: false };
     case 'resting':

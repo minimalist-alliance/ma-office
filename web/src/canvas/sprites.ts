@@ -9,6 +9,7 @@
 // being scaled (a zoom in progress) and off for a 1:1 pan.
 import type { DeskStyleLook } from '../theme/deskStyles';
 import type { DeskEtch, ShadowLayer, Tokens } from '../theme/tokens';
+import { backdropOn } from '../theme/backdropMirror';
 import { RING } from '../theme/tokens';
 import { textureLevel, texturePattern } from './textureHub';
 import { askForEtchFont, COUNT_GAP, countCell, countDigitInk, etchEpoch, etchWidth, setCountType, setEtchType, setStatusType, statusTextWidth } from './etch';
@@ -160,11 +161,23 @@ export const panelRasterCount = (): number => panelRasters;
  * in desk units, so it's part of the desk at every zoom. Until the texture arrives the panel is its style's base color,
  * and a new key makes the textured one once it has.
  */
+/**
+ * Whether the active ring wears its halo: `backdropOn()` as of the last time the camera was at rest. Latched, not read per
+ * draw, so a scene arriving mid-zoom can't change a sprite's key and raster a panel while the camera moves; `WorldStage`
+ * syncs it (`syncHalo`) when a scene comes or goes, at once at rest and otherwise when the camera settles.
+ */
+let haloShown = typeof document !== 'undefined' && backdropOn();
+export function syncHalo(): void {
+  haloShown = backdropOn();
+}
+
 export function panelSprite(spec: PanelSpec, t: Tokens, rev: number, radius: number): Sprite {
   const q = rasterScale;
   const tex = spec.textured !== false ? spec.look.texture : null;
   const lvl = tex ? textureLevel(tex, q) : null;
-  const key = `p|${rev}|${q}|${spec.w}|${spec.h}|${spec.active ? 1 : 0}|${radius}|${spec.look.key}|${lvl ? lvl.level : -1}`;
+  // While an office background shows, the active ring gets a 1 px halo outside it (ADR 0094), so it's part of the key.
+  const halo = spec.active && haloShown;
+  const key = `p|${rev}|${q}|${spec.w}|${spec.h}|${spec.active ? (halo ? 2 : 1) : 0}|${radius}|${spec.look.key}|${lvl ? lvl.level : -1}`;
   const hit = recall(key);
   if (hit) return hit;
   panelRasters += 1;
@@ -199,6 +212,16 @@ export function panelSprite(spec: PanelSpec, t: Tokens, rev: number, radius: num
       ctx.fillRect(0, 0, spec.w, spec.h);
       ctx.restore();
     }
+  }
+  if (halo) {
+    // Just outside the ring: from its outer edge out by one pixel, in `ring.halo`, so the pair reads on any picture.
+    ctx.strokeStyle = t.ring.halo;
+    ctx.lineWidth = 1;
+    ctx.beginPath();
+    ctx.roundRect(-RING.width / 2 - 0.5, -RING.width / 2 - 0.5, spec.w + RING.width + 1, spec.h + RING.width + 1, radius + RING.width / 2 + 0.5);
+    ctx.stroke();
+    ctx.beginPath();
+    ctx.roundRect(0, 0, spec.w, spec.h, radius);
   }
   if (spec.active) {
     ctx.strokeStyle = t.ring.activeDesk;
@@ -409,7 +432,7 @@ const iconHolds = new WeakMap<EtchInk, Record<EtchIcon, EtchHold>>();
 function iconHold(ink: EtchInk, icon: EtchIcon): EtchHold {
   let pair = iconHolds.get(ink);
   if (!pair) {
-    pair = { grip: newEtchHold(), sparkle: newEtchHold() };
+    pair = { grip: newEtchHold(), sparkle: newEtchHold(), carousel: newEtchHold(), desk: newEtchHold() };
     iconHolds.set(ink, pair);
   }
   return pair[icon];
@@ -481,6 +504,11 @@ export function undoSprite(t: Tokens, rev: number, q: number, color: string = t.
 /** A cut bitmap at a screen position, on a context pointed there by `camera.pinToScreen`. */
 export function blitPinned(ctx: CanvasRenderingContext2D, s: Sprite, x: number, y: number): void {
   ctx.drawImage(s.image, x + s.x, y + s.y, s.width, s.height);
+}
+
+/** A sprite drawn `k` times its size, from its origin at x, y: the name, which scales with its desk. */
+export function blitScaled(ctx: CanvasRenderingContext2D, s: Sprite, x: number, y: number, k: number): void {
+  ctx.drawImage(s.image, x + s.x * k, y + s.y * k, s.width * k, s.height * k);
 }
 
 /**

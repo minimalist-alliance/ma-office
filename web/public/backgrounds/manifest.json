@@ -1,0 +1,546 @@
+{
+ "version": 1,
+ "grade": {
+  "name": "v8",
+  "version": 8,
+  "variant": "v8",
+  "tone_s": 0.25,
+  "tone_d": 0.15,
+  "vignette": 0.25,
+  "vignette_start": 0.45,
+  "vignette_metric": "diagonal",
+  "green_fix": false,
+  "green_band": [
+   80,
+   200
+  ],
+  "edge": 20,
+  "target_hue": 253,
+  "rotate_strength": null,
+  "rotated_chroma_scale": 0.35,
+  "rotated_cap": 0.045,
+  "blue_band": [
+   200,
+   260
+  ],
+  "blue_chroma": 0.8,
+  "other_chroma": 0.6,
+  "neutral_chroma": 0.01,
+  "green_check": {
+   "min_chroma": 0.02,
+   "green_hue": [
+    80,
+    200
+   ],
+   "mean_hue": [
+    200,
+    260
+   ],
+   "max_green_share": 0.01
+  },
+  "darken_floor": 1.0,
+  "darken_min": 0.45,
+  "text_target_contrast": 4.5,
+  "cell": 64,
+  "percentile": 95,
+  "scrim": {
+   "mode": "none"
+  },
+  "text_colors": {
+   "white": "#FFFFFF",
+   "zen_text": "#F1F3F7"
+  },
+  "measure_under": "scrim",
+  "edge_band": {
+   "alpha": 0.4,
+   "top_bottom": 0.14,
+   "sides": 0.0,
+   "color": "rgba(12, 16, 26, 0.40)"
+  },
+  "text_region": {
+   "top": 0.08,
+   "bottom": 0.08,
+   "sides": 0.0
+  },
+  "centre_box": 0.4,
+  "set_median_L": 0.5284,
+  "set_median_p95_chroma": 0.0576
+ },
+ "scenes": [
+  {
+   "id": "ocean-cliff",
+   "name": "Ocean cliff",
+   "widths": [
+    960,
+    1920,
+    2560,
+    3840
+   ],
+   "formats": [
+    "avif",
+    "webp"
+   ],
+   "average": "#385f7d",
+   "luminance": 0.105,
+   "placeholder": "data:image/webp;base64,UklGRpAAAABXRUJQVlA4IIQAAADQBACdASogABIAPrVQn0qnJSKhsBgIAOAWiUAWnQHoZFKq4iApya3MXvH2Iq8UsAD+dq3PCtoDwMU+R7zyFyRc1YmvYquGKmEXNr+LHwXFclzhMfB8nqVU80NFldOGjy0DG9JLsDBZEB1OkcMUtehWI3MRnEGy2xnSFtrwHKAh04dhYAA=",
+   "source": "approved-lanczos",
+   "grade_check": {
+    "hue": 243.4,
+    "chroma": 0.0652,
+    "max_pixel_chroma": 0.1264,
+    "mean_L": 0.465,
+    "L_p5": 0.188,
+    "L_p95": 0.7,
+    "darken_f": 1.0,
+    "p95_before": 0.1044,
+    "measured_under": "scrim",
+    "region": "frame",
+    "centre_L": 0.472,
+    "band": "rgba(12, 16, 26, 0.40)",
+    "p95_bare": 0.2022,
+    "white_bare": 4.16,
+    "zen_text_bare": 3.75,
+    "p95_scrim": 0.1044,
+    "white_scrim": 6.8,
+    "zen_text_scrim": 6.12,
+    "passes": true,
+    "green": {
+     "mean_hue": 243.9,
+     "green_share": 0.041,
+     "coloured_share": 0.938,
+     "passes": false
+    }
+   },
+   "approved_file": "one/ocean-cliff-4-clean.png",
+   "notes": "Remove the tower on the far headland and the cloud wisps at the left edge"
+  },
+  {
+   "id": "mountain-lake",
+   "name": "Mountain lake",
+   "widths": [
+    960,
+    1920,
+    2560,
+    3840
+   ],
+   "formats": [
+    "avif",
+    "webp"
+   ],
+   "average": "#2e4761",
+   "luminance": 0.059,
+   "placeholder": "data:image/webp;base64,UklGRqAAAABXRUJQVlA4IJQAAAAwBQCdASogABIAPrVInEmnJCKhMAgA4BaJQBYj26+VCT4k4MZd3DHUtNLZqXu7nCVf+AD+0L3/cNqRkdf3C/9Xz7d5ufZdZkXnT9D4VPTdQIj+cHcuDRQEH4hOjoBMJb9ByMiiYHT1XUnnLIztkYu13RrpJA26jOl2oLZKE6XxXs6FRFqbJBUeAHlZqE/ZvPs/gAAA",
+   "source": "approved-lanczos",
+   "grade_check": {
+    "hue": 251.4,
+    "chroma": 0.0522,
+    "max_pixel_chroma": 0.1124,
+    "mean_L": 0.381,
+    "L_p5": 0.14,
+    "L_p95": 0.649,
+    "darken_f": 1.0,
+    "p95_before": 0.0739,
+    "measured_under": "scrim",
+    "region": "frame",
+    "centre_L": 0.409,
+    "band": "rgba(12, 16, 26, 0.40)",
+    "p95_bare": 0.1378,
+    "white_bare": 5.59,
+    "zen_text_bare": 5.03,
+    "p95_scrim": 0.0739,
+    "white_scrim": 8.47,
+    "zen_text_scrim": 7.63,
+    "passes": true,
+    "green": {
+     "mean_hue": 251.7,
+     "green_share": 0.0082,
+     "coloured_share": 0.874,
+     "passes": true
+    }
+   },
+   "approved_file": "one/mountain-lake-1.png",
+   "notes": "Small warm glow on the far left horizon; fine to keep"
+  },
+  {
+   "id": "misty-mountains",
+   "name": "Misty mountains",
+   "widths": [
+    960,
+    1920,
+    2560,
+    3840
+   ],
+   "formats": [
+    "avif",
+    "webp"
+   ],
+   "average": "#3b5d7c",
+   "luminance": 0.103,
+   "placeholder": "data:image/webp;base64,UklGRowAAABXRUJQVlA4IIAAAAAwBQCdASogABIAPrVMnkmnJCKhMAgA4BaJQBOmbqKB//gIzbY51GoH3Yc9qfSH2B9LwAD+3O+/DfQg/T5h0u1qlxjhhsY4yO2VPrdD+6vO80LL9L3Xzl9x4j73YjdGeZRaPPj83OywSZnlQTnB42NpP786mCkbUqRZdgN9qkAAAA==",
+   "source": "approved-lanczos",
+   "grade_check": {
+    "hue": 247.4,
+    "chroma": 0.0638,
+    "max_pixel_chroma": 0.1265,
+    "mean_L": 0.46,
+    "L_p5": 0.153,
+    "L_p95": 0.725,
+    "darken_f": 1.0,
+    "p95_before": 0.0991,
+    "measured_under": "scrim",
+    "region": "frame",
+    "centre_L": 0.577,
+    "band": "rgba(12, 16, 26, 0.40)",
+    "p95_bare": 0.1898,
+    "white_bare": 4.38,
+    "zen_text_bare": 3.94,
+    "p95_scrim": 0.0991,
+    "white_scrim": 7.04,
+    "zen_text_scrim": 6.34,
+    "passes": true,
+    "green": {
+     "mean_hue": 247.9,
+     "green_share": 0.0001,
+     "coloured_share": 0.891,
+     "passes": true
+    }
+   },
+   "grade_extra": "green-mute",
+   "approved_file": "one/misty-mountains-1.png",
+   "notes": "The nearest forest leans green; the grade's green rule should mute it to slate"
+  },
+  {
+   "id": "snow-ridge",
+   "name": "Snow ridge",
+   "widths": [
+    960,
+    1920,
+    2560,
+    3840
+   ],
+   "formats": [
+    "avif",
+    "webp"
+   ],
+   "average": "#395176",
+   "luminance": 0.081,
+   "placeholder": "data:image/webp;base64,UklGRo4AAABXRUJQVlA4IIIAAABwBACdASogABIAPq1GmUmmI6IhMAwAwBWJYwAAXE0HeRuQ/sLx9qAkDd6nwAD+2m+eq6XTxhc7vM4AtxqIWbD9C2pCq/3ezcEJyDGX8QqTAs9qsSxWpQ3iKx6b6RylTJe/fvGJWNYqDG56GB7DmW1qk+oftU2S4Bg3SB46l065+6AA",
+   "source": "approved-lanczos",
+   "grade_check": {
+    "hue": 258.2,
+    "chroma": 0.0684,
+    "max_pixel_chroma": 0.102,
+    "mean_L": 0.43,
+    "L_p5": 0.248,
+    "L_p95": 0.669,
+    "darken_f": 1.0,
+    "p95_before": 0.0525,
+    "measured_under": "scrim",
+    "region": "frame",
+    "centre_L": 0.507,
+    "band": "rgba(12, 16, 26, 0.40)",
+    "p95_bare": 0.0936,
+    "white_bare": 7.31,
+    "zen_text_bare": 6.58,
+    "p95_scrim": 0.0525,
+    "white_scrim": 10.25,
+    "zen_text_scrim": 9.22,
+    "passes": true,
+    "green": {
+     "mean_hue": 258.2,
+     "green_share": 0.0065,
+     "coloured_share": 0.959,
+     "passes": true
+    }
+   },
+   "approved_file": "one/snow-ridge-1.png",
+   "notes": "No green or brown; bar text 8.8:1 or better graded"
+  },
+  {
+   "id": "pebble-shore",
+   "name": "Pebble shore",
+   "widths": [
+    960,
+    1920,
+    2560,
+    3840
+   ],
+   "formats": [
+    "avif",
+    "webp"
+   ],
+   "average": "#4a6278",
+   "luminance": 0.115,
+   "placeholder": "data:image/webp;base64,UklGRpYAAABXRUJQVlA4IIoAAAAQBQCdASogABIAPrVMn0mnJKKhMAgA4BaJYwCdM47DKtSxOH4DV/feGblKzrjJ2gQAAP7AJEhLaqgKfdvl5BB2dELpEmV3rPe1V9WeeFSFa5NX9T/3iff0CZHt1wWNWblWB+kw+HYRbRbpAzFBHJfB35WeU9stfRnmUPlKOLE08rz4tmVQ2A0gAAA=",
+   "source": "approved-lanczos",
+   "grade_check": {
+    "hue": 247.3,
+    "chroma": 0.046,
+    "max_pixel_chroma": 0.1124,
+    "mean_L": 0.478,
+    "L_p5": 0.154,
+    "L_p95": 0.715,
+    "darken_f": 1.0,
+    "p95_before": 0.1334,
+    "measured_under": "scrim",
+    "region": "frame",
+    "centre_L": 0.582,
+    "band": "rgba(12, 16, 26, 0.40)",
+    "p95_bare": 0.2637,
+    "white_bare": 3.35,
+    "zen_text_bare": 3.01,
+    "p95_scrim": 0.1334,
+    "white_scrim": 5.73,
+    "zen_text_scrim": 5.15,
+    "passes": true,
+    "green": {
+     "mean_hue": 247.3,
+     "green_share": 0.0,
+     "coloured_share": 0.878,
+     "passes": true
+    }
+   },
+   "approved_file": "one/pebble-shore-1.png",
+   "notes": "Replaces sea stacks and stone shore (both rejected); the horizon glow leans pink, keep it soft"
+  },
+  {
+   "id": "glacier-lagoon",
+   "name": "Glacier lagoon",
+   "widths": [
+    960,
+    1920,
+    2560,
+    3840
+   ],
+   "formats": [
+    "avif",
+    "webp"
+   ],
+   "average": "#45577a",
+   "luminance": 0.095,
+   "placeholder": "data:image/webp;base64,UklGRogAAABXRUJQVlA4IHwAAACQBACdASogABIAPrVQnkqnJKKhsBgIAOAWiWMAtPn/4B5/fUTHx9t+SnCYBAAA/uXn7oXBwBbOPiFPMjKnSCLxqwB6rXRji5+8icaAM1/n5NW5iIddjDuGwcI4+EjUHpX7Fs5QZqPwd88ErCAcp90FW4y/CEWwwtqjQAAA",
+   "source": "approved-lanczos",
+   "grade_check": {
+    "hue": 262.7,
+    "chroma": 0.0626,
+    "max_pixel_chroma": 0.1156,
+    "mean_L": 0.456,
+    "L_p5": 0.228,
+    "L_p95": 0.655,
+    "darken_f": 1.0,
+    "p95_before": 0.0571,
+    "measured_under": "scrim",
+    "region": "frame",
+    "centre_L": 0.583,
+    "band": "rgba(12, 16, 26, 0.40)",
+    "p95_bare": 0.1029,
+    "white_bare": 6.87,
+    "zen_text_bare": 6.18,
+    "p95_scrim": 0.0571,
+    "white_scrim": 9.8,
+    "zen_text_scrim": 8.82,
+    "passes": true,
+    "green": {
+     "mean_hue": 262.3,
+     "green_share": 0.0,
+     "coloured_share": 0.952,
+     "passes": false
+    }
+   },
+   "approved_file": "one/glacier-lagoon-5.png",
+   "notes": "Takes 1-4 rejected; thin cloud streaks and a pink horizon band, both kept as approved"
+  },
+  {
+   "id": "snowy-forest",
+   "name": "Snowy forest",
+   "widths": [
+    960,
+    1920,
+    2560,
+    3840
+   ],
+   "formats": [
+    "avif",
+    "webp"
+   ],
+   "average": "#415574",
+   "luminance": 0.089,
+   "placeholder": "data:image/webp;base64,UklGRpAAAABXRUJQVlA4IIQAAADQBACdASogABIAPrVQoEsnJSMhsBgIAOAWiWMAuwAPPpOXsNYBoNWjPoN3vYuaQAD+9Jh7C6As1V+Cn757BhMR1QpzRfdAufxFAOjd+k7Al1bmpD8+D1sARQl9M+n1MIN4oXmh9Ke3Lch89432M4+CvN40vtt5sk513f7yJxe7UHBZgAA=",
+   "source": "approved-lanczos",
+   "grade_check": {
+    "hue": 258.6,
+    "chroma": 0.0562,
+    "max_pixel_chroma": 0.1092,
+    "mean_L": 0.439,
+    "L_p5": 0.118,
+    "L_p95": 0.634,
+    "darken_f": 1.0,
+    "p95_before": 0.1053,
+    "measured_under": "scrim",
+    "region": "frame",
+    "centre_L": 0.571,
+    "band": "rgba(12, 16, 26, 0.40)",
+    "p95_bare": 0.2035,
+    "white_bare": 4.14,
+    "zen_text_bare": 3.73,
+    "p95_scrim": 0.1053,
+    "white_scrim": 6.76,
+    "zen_text_scrim": 6.09,
+    "passes": true,
+    "green": {
+     "mean_hue": 258.3,
+     "green_share": 0.0,
+     "coloured_share": 0.908,
+     "passes": true
+    }
+   },
+   "approved_file": "one/snowy-forest-2.png",
+   "notes": "Take 1 rejected (small trees); open clearing, soft pink glow at the far end"
+  },
+  {
+   "id": "fjord",
+   "name": "Fjord",
+   "widths": [
+    960,
+    1920,
+    2560,
+    3840
+   ],
+   "formats": [
+    "avif",
+    "webp"
+   ],
+   "average": "#485371",
+   "luminance": 0.088,
+   "placeholder": "data:image/webp;base64,UklGRp4AAABXRUJQVlA4IJIAAABwBQCdASogABIAPrVKnkonJCKhsAgA4BaJYwCxHtP6AEI+SNqef3MTLT1Pnw1swhrFuH4AAP2XP3rvWrriOCZ3NUeiVHR6TlKZbtnlV6qIxo9Qkp8fuKR+IHHfK6rct0hP6NADBLtjqy8LNtuAAAWh7w/UfJJQZ35d68lvtQR4gBSjDplOP/z28CMog+mO9nLwAA==",
+   "source": "approved-lanczos",
+   "grade_check": {
+    "hue": 267.8,
+    "chroma": 0.0537,
+    "max_pixel_chroma": 0.1121,
+    "mean_L": 0.437,
+    "L_p5": 0.148,
+    "L_p95": 0.676,
+    "darken_f": 1.0,
+    "p95_before": 0.1293,
+    "measured_under": "scrim",
+    "region": "frame",
+    "centre_L": 0.527,
+    "band": "rgba(12, 16, 26, 0.40)",
+    "p95_bare": 0.2553,
+    "white_bare": 3.44,
+    "zen_text_bare": 3.1,
+    "p95_scrim": 0.1293,
+    "white_scrim": 5.86,
+    "zen_text_scrim": 5.27,
+    "passes": true,
+    "green": {
+     "mean_hue": 267.8,
+     "green_share": 0.0,
+     "coloured_share": 0.998,
+     "passes": false
+    }
+   },
+   "approved_file": "one/fjord-1.png",
+   "notes": "Peach-pink glow at the far gap is fairly strong; the tone-down softens it, keep it natural"
+  },
+  {
+   "id": "moonlit-sea",
+   "name": "Moonlit sea",
+   "widths": [
+    960,
+    1920,
+    2560,
+    3840
+   ],
+   "formats": [
+    "avif",
+    "webp"
+   ],
+   "average": "#0a1837",
+   "luminance": 0.01,
+   "placeholder": "data:image/webp;base64,UklGRlwAAABXRUJQVlA4IFAAAABQAwCdASogABIAPrVQoUwnJKMoKAqpABaJYwCdABWEmpQfiAD+8jttOygBU3iFz8wMw8vxviaj8oMqH0c/0u4OehLOYqpFm3BH5SK9UC6IAA==",
+   "source": "approved-lanczos",
+   "grade_check": {
+    "hue": 263.4,
+    "chroma": 0.0632,
+    "max_pixel_chroma": 0.116,
+    "mean_L": 0.215,
+    "L_p5": 0.137,
+    "L_p95": 0.308,
+    "darken_f": 1.0,
+    "p95_before": 0.0085,
+    "measured_under": "scrim",
+    "region": "frame",
+    "centre_L": 0.266,
+    "band": "rgba(12, 16, 26, 0.40)",
+    "p95_bare": 0.0106,
+    "white_bare": 17.33,
+    "zen_text_bare": 15.6,
+    "p95_scrim": 0.0085,
+    "white_scrim": 17.94,
+    "zen_text_scrim": 16.15,
+    "vignette": 0.0,
+    "passes": true,
+    "green": {
+     "mean_hue": 263.4,
+     "green_share": 0.0,
+     "coloured_share": 1.0,
+     "passes": false
+    }
+   },
+   "grade_extra": "tone-zero,vignette-settle,no-soften,sharp-encode",
+   "approved_file": "one/moonlit-sea-2.png",
+   "notes": "Night scene, already dark: skip the tone-down so the stars stay crisp; vignette and band only if bar text still passes; no tone-down; vignette as needed; no soften; sharp encode (AVIF kept 92% of the star peaks at q55)"
+  },
+  {
+   "id": "peaceful-city",
+   "name": "Peaceful city",
+   "widths": [
+    960,
+    1920,
+    2560,
+    3840
+   ],
+   "formats": [
+    "avif",
+    "webp"
+   ],
+   "average": "#123c69",
+   "luminance": 0.044,
+   "placeholder": "data:image/webp;base64,UklGRpwAAABXRUJQVlA4IJAAAAAwBQCdASogABIAPrVMoEsnJCMhsBgIAOAWiWIAsR7fAamFtL9qZq8KemZ9mdDcaDtroAD+8Q4C8MtoPBvKgIWpCBHbCE/oBtyc0erJ/2p86y4DYVfoqW5UwtKd9G6UAisuMvORm5BL/BlMGTL/Bpc25rZ1r+X76HyckT/6+OdOq9fem9Dz+uykIP3xzcJoAAA=",
+   "source": "approved-lanczos",
+   "grade_check": {
+    "hue": 253.7,
+    "chroma": 0.0883,
+    "max_pixel_chroma": 0.1486,
+    "mean_L": 0.349,
+    "L_p5": 0.122,
+    "L_p95": 0.559,
+    "darken_f": 1.0,
+    "p95_before": 0.0306,
+    "measured_under": "scrim",
+    "region": "frame",
+    "centre_L": 0.426,
+    "band": "rgba(12, 16, 26, 0.40)",
+    "p95_bare": 0.0512,
+    "white_bare": 10.38,
+    "zen_text_bare": 9.34,
+    "p95_scrim": 0.0306,
+    "white_scrim": 13.03,
+    "zen_text_scrim": 11.73,
+    "passes": true,
+    "green": {
+     "mean_hue": 253.9,
+     "green_share": 0.0,
+     "coloured_share": 0.918,
+     "passes": true
+    }
+   },
+   "grade_extra": "green-mute",
+   "approved_file": "one/peaceful-city-3.png",
+   "notes": "Takes 1-2 rejected (harbor; busy with orange lights); cool white lights, empty streets; the street trees lean green, green rule"
+  }
+ ],
+ "source_of_truth": "one/APPROVED.md"
+}

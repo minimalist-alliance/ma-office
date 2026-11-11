@@ -1,0 +1,10 @@
+[Unit]
+Description=Check every 30 s for services whose restart back-off can start over
+
+[Timer]
+OnBootSec=2min
+OnUnitInactiveSec=30s
+AccuracySec=5s
+
+[Install]
+WantedBy=timers.target

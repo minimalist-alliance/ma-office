@@ -1,6 +1,7 @@
 // A self-hosted desk, end to end on staging (README.md): pair it from a test account's Platform page, open it from that
 // account's office, stream the Browser and open Notebook, check the connection went straight to the desk on the home
-// network, then reboot the desk's machine and do it again. The real API, gateway and signaling; no mocks.
+// network, then reboot the desk's machine and do it again, with the Browser's cookie and localStorage from before the
+// restart still there. The real API, gateway and signaling; no mocks.
 //
 // Needs: SELFHOST_SSH, a command that runs its argument on the desk as a sudoer (an ssh wrapper); SELFHOST_REBOOT, a
 // command that reboots the desk's machine from outside it (e.g. the hypervisor's); SELFHOST_USER, the staging test
@@ -145,17 +146,38 @@ const BARS = (nonce: string) => `<!doctype html><meta charset="utf-8"><title>SH-
 <div style="left:0;top:0;background:#f00"></div><div style="left:50vw;top:0;background:#0c0"></div>
 <div style="left:0;top:50vh;background:#00f"></div><div style="left:50vw;top:50vh;background:#fff"></div>`;
 
+// The Browser's session through a restart (ADR 0035): a persistent cookie and a localStorage item, set on the desk's
+// loopback page before the machine restarts, read back after it. The title says what the page found: SESSION-<cookie>-<item>.
+const SESSION = randomBytes(4).toString('hex');
+const SESSION_PAGE = `<!doctype html><meta charset="utf-8"><title>SESSION</title><script>
+const want = location.hash.slice(1);
+if (/^[0-9a-f]{8}$/.test(want)) { document.cookie = 'ma_sh_e2e=' + want + '; max-age=86400; path=/; SameSite=Lax'; localStorage.setItem('ma_sh_e2e', want); }
+const c = (document.cookie.match(/(?:^|; )ma_sh_e2e=([0-9a-f]+)/) || [])[1] || 'none';
+document.title = 'SESSION-' + c + '-' + (localStorage.getItem('ma_sh_e2e') || 'none');
+</script>`;
+
 function deployPage(nonce: string): void {
   const b64 = Buffer.from(BARS(nonce)).toString('base64');
+  const s64 = Buffer.from(SESSION_PAGE).toString('base64');
   const out = onDesk(`set -e
 sudo systemctl stop ma-sh-e2e-pages 2>/dev/null || true; sudo systemctl reset-failed ma-sh-e2e-pages 2>/dev/null || true
 sudo rm -rf /run/ma-sh-e2e-pages; sudo install -d -m 755 /run/ma-sh-e2e-pages
 echo ${b64} | base64 -d | sudo tee /run/ma-sh-e2e-pages/bars.html >/dev/null; sudo chmod 644 /run/ma-sh-e2e-pages/bars.html
+echo ${s64} | base64 -d | sudo tee /run/ma-sh-e2e-pages/session.html >/dev/null; sudo chmod 644 /run/ma-sh-e2e-pages/session.html
 sudo systemd-run --quiet --collect --unit=ma-sh-e2e-pages --uid=65534 --gid=65534 /usr/bin/python3 -I -m http.server ${PAGES_PORT} --bind 127.0.0.1 --directory /run/ma-sh-e2e-pages
 sleep 1; curl -s -m 3 -o /dev/null -w 'HTTP=%{http_code}' http://127.0.0.1:${PAGES_PORT}/bars.html`);
   if (!out.includes('HTTP=200')) throw new Error('the page server on the desk did not answer');
 }
 const removePage = () => onDesk('sudo systemctl stop ma-sh-e2e-pages 2>/dev/null || true; sudo rm -rf /run/ma-sh-e2e-pages; echo removed');
+
+/** deskd's hello has been accepted in this boot: only then can the office open a session to the desk. */
+const helloed = (): boolean => {
+  try {
+    return onDesk('sudo journalctl -b -u deskd --no-pager -o cat | grep -c "hello accepted" || true').trim() !== '0';
+  } catch {
+    return false;
+  }
+};
 
 let context: BrowserContext;
 let page: Page;
@@ -178,6 +200,30 @@ test.beforeAll(async ({ browser }) => {
 test.afterAll(async () => {
   note('console errors', errors);
   try { removePage(); } catch { /* the desk may be rebooting */ }
+  // SELFHOST_REMOVE=1: take the desk out of the test account's office at the end, on the page it was added on, as a member
+  // does. Nothing on the desk's machine changes: it then waits, refused, until it's paired again (README.md, "Removing it").
+  if ((process.env.SELFHOST_REMOVE === '1' || process.env.SELFHOST_REMOVE_ONLY === '1') && deskId) {
+    try {
+      await page.goto(`${PLATFORM}/self-hosted`);
+      const list = page.getByTestId('self-hosted-list');
+      // The office's sign-in doesn't sign this origin in: the page either lists the desks or goes to sign in first.
+      const which = await Promise.race([
+        list.waitFor({ timeout: 45_000 }).then(() => 'list'),
+        page.waitForURL((u) => /\/(login|oauth2\/authorize|_signin\/)/.test(u.pathname), { timeout: 45_000 }).then(() => 'signin'),
+      ]);
+      if (which === 'signin') {
+        await signIn(page, user);
+        await page.waitForURL((u) => u.origin === PLATFORM, { timeout: 45_000 });
+        await list.waitFor({ timeout: 30_000 });
+      }
+      await list.getByRole('button', { name: `Remove ${DESK_NAME}`, exact: true }).click();
+      await page.getByRole('group', { name: `Remove ${DESK_NAME}` }).getByRole('button', { name: 'Remove', exact: true }).click();
+      await expect(page.getByTestId('self-hosted-removed')).toHaveText(`${DESK_NAME} removed`, { timeout: 30_000 });
+      note('removed from the office', deskId);
+    } catch (e) {
+      note('removing it failed', String(e).slice(0, 200));
+    }
+  }
   await context?.close();
 });
 
@@ -207,7 +253,7 @@ async function openDeskApp(name: RegExp, dialogName: RegExp) {
   return win;
 }
 
-async function browserStreams(label: string) {
+async function browserStreams(label: string, session?: 'set' | 'check') {
   const win = await openDeskApp(/^Browser/, /Browser/);
   const video = win.getByLabel("The page in this desk's browser", { exact: true });
   try {
@@ -216,11 +262,15 @@ async function browserStreams(label: string) {
     note(`${label} ICE at the failure`, await iceReport(page));
     throw e;
   }
-  const size = await video.evaluate((v: HTMLVideoElement) => [v.videoWidth, v.videoHeight]);
-  note(`${label} video size`, size);
+  // The picture arrives a moment after the panel goes: wait for its first frame's size, as e2e/tests/browser-window.spec.ts does.
+  const size = () => video.evaluate((v: HTMLVideoElement) => [v.videoWidth, v.videoHeight]);
+  await expect.poll(async () => (await size())[0], { timeout: 30_000 }).toBeGreaterThan(0);
+  note(`${label} video size`, await size());
   const nonce = randomBytes(3).toString('hex');
   deployPage(nonce);
   const tabs = win.getByTestId('browser-tab');
+  // The tab strip is buttons in a group, the one on screen aria-current (BrowserBar.tsx), as e2e/tests/browser-window.spec.ts reads it.
+  const activeTab = win.getByRole('group', { name: 'Tabs on this desk' }).locator('[aria-current="true"]');
   await expect.poll(() => tabs.count(), { timeout: 60_000 }).toBeGreaterThan(0);
   const before = await tabs.count();
   await win.getByRole('button', { name: 'New tab', exact: true }).click();
@@ -229,7 +279,7 @@ async function browserStreams(label: string) {
   await address.click();
   await address.fill(`http://127.0.0.1:${PAGES_PORT}/bars.html`);
   await address.press('Enter');
-  await expect(win.getByRole('tab', { selected: true }), `${label}: the page's title in the tab strip`).toHaveAttribute('title', new RegExp(`SH-${nonce}`), { timeout: 30_000 });
+  await expect(activeTab, `${label}: the page's title in the tab strip`).toHaveAttribute('title', new RegExp(`SH-${nonce}`), { timeout: 30_000 });
   const quality = () => video.evaluate((v: HTMLVideoElement) => ({ frames: v.getVideoPlaybackQuality().totalVideoFrames, paused: v.paused }));
   const q0 = await quality();
   await sleep(3000);
@@ -257,36 +307,64 @@ async function browserStreams(label: string) {
   note(`${label} connection`, { localType: path?.localType, remoteType: path?.remoteType, protocol: path?.protocol, remotePort: path?.remotePort, toTheDeskOnTheHomeNetwork: sameAddress });
   expect(path?.remoteType, 'a host candidate, not a relay').toBe('host');
   expect(sameAddress, "straight to the desk's home-network address").toBe(true);
+  if (session) {
+    // The same tab, on the session page: set before the restart, read back after it (the page itself writes nothing then).
+    await address.click();
+    await address.fill(`http://127.0.0.1:${PAGES_PORT}/session.html${session === 'set' ? `#${SESSION}` : ''}`);
+    await address.press('Enter');
+    await expect(activeTab, `${label}: the session page's title`).toHaveAttribute('title', /^SESSION-/, { timeout: 30_000 });
+    const title = (await activeTab.getAttribute('title')) ?? '';
+    note(`${label} browser session (${session})`, { cookie: title.split('-')[1] === SESSION, localStorage: title.split('-')[2] === SESSION });
+    await page.screenshot({ path: `screenshots/${label}-session.png` });
+    expect(title, `${label}: the Browser's cookie and localStorage ${session === 'set' ? 'set' : 'kept through the restart'}`).toBe(`SESSION-${SESSION}-${SESSION}`);
+  }
   // Close the tab we opened, then the window.
-  await win.getByRole('tab', { selected: true }).locator('..').getByRole('button', { name: /^Close/ }).click().catch(() => {});
-  await win.getByRole('button', { name: /^Close/ }).last().click().catch(() => {});
+  await tabs.filter({ has: page.locator('[aria-current="true"]') }).getByRole('button', { name: /^Close/ }).click().catch(() => {});
+  // The window's own close, by its name: the tab strip's close buttons come after it, so the last "Close" is a tab's.
+  await win.getByRole('button', { name: 'Close Browser', exact: true }).click().catch(() => {});
+  await expect(win, `${label}: the Browser window closed`).toBeHidden({ timeout: 10_000 });
 }
 
-test('a self-hosted desk: paired from the Platform, opened from the office, streams the Browser, opens Notebook, survives a reboot', async () => {
+test('a self-hosted desk: paired from the Platform, opened from the office, streams the Browser, opens Notebook, survives a reboot with its Browser session', async () => {
+  if (process.env.SELFHOST_REMOVE_ONLY === '1') {
+    // Only take the paired desk out of the account's office (afterAll, as SELFHOST_REMOVE=1 does): nothing else is run.
+    deskId = deskStatus().deskId ?? '';
+    note('remove only', { deskId });
+    expect(deskId, 'a paired desk to remove').not.toBe('');
+    return;
+  }
   await test.step('1 pair it with the test account, through the Platform page', async () => {
     let s = deskStatus();
     note('desk status before', { status: s.status, paired: !!s.deskId });
-    if (s.status !== 'online') {
+    if (s.status !== 'online' && s.status !== 'confirm') {
       await expect.poll(() => { s = deskStatus(); return !!s.code; }, { timeout: 60_000 }).toBe(true);
-      const code = s.code!.replace('-', '');
-      await page.goto(`${PLATFORM}/self-hosted?code=${code}`);
+      // The member types the code their computer shows: a link's code never fills the form (ma-platform's SelfHosted.tsx,
+      // Security's weekend review), so the test opens the page the link names and types it, as a member does.
+      await page.goto(`${PLATFORM}/self-hosted?code=${s.code!.replace('-', '')}`);
       await signIn(page, user);
       await page.waitForURL((u) => u.origin === PLATFORM, { timeout: 45_000 });
-      // Signing in comes back to the path alone. The page keeps the link's code through that from ma-platform 946637a on;
-      // before it (what staging ran first), the link is opened again, now signed in.
       const field = page.getByTestId('self-hosted-code');
-      await field.waitFor({ timeout: 30_000 }).catch(() => {});
-      if ((await field.inputValue().catch(() => '')) !== s.code) {
-        note('1 code kept through sign-in', false);
-        await page.goto(`${PLATFORM}/self-hosted?code=${code}`);
-      } else note('1 code kept through sign-in', true);
-      await expect(field).toHaveValue(s.code!, { timeout: 30_000 });
+      await field.waitFor({ timeout: 30_000 });
+      note('1 link filled the code', (await field.inputValue()) !== '');
+      await field.fill(s.code!);
+      await expect(field).toHaveValue(s.code!, { timeout: 10_000 });
       await page.getByTestId('self-hosted-name').fill(DESK_NAME);
       await page.getByTestId('self-hosted-submit').click();
       await expect(page.getByTestId('self-hosted-added')).toContainText(`${DESK_NAME} is in your office`, { timeout: 30_000 });
       await page.screenshot({ path: 'screenshots/1-paired.png' });
     }
-    await expect.poll(() => deskStatus().status, { timeout: 120_000 }).toBe('online');
+    // EXP-8: the desk holds its credentials until someone at the computer says the office shown is theirs. Here that's
+    // the test, answering yes over SSH as the member would at the installer's prompt.
+    let confirmed = false;
+    await expect.poll(() => {
+      s = deskStatus();
+      if (s.status === 'confirm' && !confirmed) {
+        onDesk('sudo /usr/local/sbin/ma-selfhost pair --yes');
+        confirmed = true;
+      }
+      return s.status;
+    }, { timeout: 120_000, intervals: [2000] }).toBe('online');
+    note('1 confirmed at the desk', confirmed);
     s = deskStatus();
     deskId = s.deskId!;
     deskAddress = s.address!;
@@ -296,6 +374,7 @@ test('a self-hosted desk: paired from the Platform, opened from the office, stre
   await test.step('2 deskd, desk-rtc and desk-notebook are healthy on the desk', async () => {
     await expect.poll(() => { try { onDesk('sudo /opt/ma/smoke-test'); return true; } catch { return false; } }, { timeout: 180_000, intervals: [5000] }).toBe(true);
     note('2 smoke test', onDesk('sudo /opt/ma/smoke-test 2>&1 | tail -1').trim());
+    await expect.poll(helloed, { timeout: 420_000, intervals: [5000] }).toBe(true);
     // What it runs, and its port as desk-rtc reads it (an older bundle's desk has only /etc/ma/desk-rtc-port).
     const versions: Record<string, string> = {};
     for (const c of ['desk-rtc', 'desk-stream', 'deskd']) versions[c] = onDesk(`cat /opt/ma/${c}/current/VERSION`).trim();
@@ -347,17 +426,17 @@ test('a self-hosted desk: paired from the Platform, opened from the office, stre
       await page.waitForURL((u) => u.origin === APP && !u.pathname.startsWith('/_signin'), { timeout: 45_000 });
     }
     await shell.waitFor({ timeout: 60_000 });
-    await browserStreams('3');
+    await browserStreams('3', 'set');
   });
 
   await test.step('4 Notebook opens on it', async () => {
     const win = await openDeskApp(/^Notebook/, /Notebook/);
     note('4 notebook window', (await win.innerText()).replace(/\s+/g, ' ').slice(0, 160));
     await page.screenshot({ path: 'screenshots/4-notebook.png' });
-    await win.getByRole('button', { name: /^Close/ }).last().click().catch(() => {});
+    await win.getByRole('button', { name: 'Close Notebook', exact: true }).click().catch(() => {});
   });
 
-  await test.step('5 its machine reboots, it comes back online by itself, and streams again', async () => {
+  await test.step('5 its machine reboots, it comes back online by itself, streams again, and its Browser session is kept', async () => {
     // A new boot ID proves the machine restarted: the desk can be back online before the first look.
     const bootId = () => { try { return onDesk('cat /proc/sys/kernel/random/boot_id').trim(); } catch { return 'unreachable'; } };
     const before = bootId();
@@ -370,8 +449,14 @@ test('a self-hosted desk: paired from the Platform, opened from the office, stre
     await expect.poll(() => { try { onDesk('sudo /opt/ma/smoke-test'); return true; } catch { return false; } }, { timeout: 300_000, intervals: [5000] }).toBe(true);
     note('5 back online after (s)', Math.round((Date.now() - t0) / 1000));
     expect(deskStatus().deskId, 'the same desk').toBe(deskId);
+    // The platform takes one live boot per desk (contract selfhost.md 0.3.43): a new boot's hello is refused (409
+    // boot_in_use) until the last one's heartbeat is 3 minutes old, and a restart is a new boot. So the office can reach
+    // the desk only once deskd's hello in this boot is accepted.
+    await expect.poll(helloed, { timeout: 420_000, intervals: [5000] }).toBe(true);
+    note('5 hello accepted after (s)', Math.round((Date.now() - t0) / 1000));
+    note('5 hellos refused first (boot_in_use)', Number(onDesk('sudo journalctl -b -u deskd --no-pager -o cat | grep -c "boot_in_use" || true').trim()));
     await page.reload();
     await page.locator('.ma-shell').waitFor({ timeout: 60_000 });
-    await browserStreams('5');
+    await browserStreams('5', 'check');
   });
 });

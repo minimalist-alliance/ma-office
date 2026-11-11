@@ -152,6 +152,38 @@ class PricingTest {
         assertThat(Pricing.of(java.util.Map.of("a/b", new Pricing.Price(0, 0, 0, 0))).isEmpty()).isTrue();
     }
 
+    /**
+     * The one way a model is $0: its provider serves it free, by its id (OpenRouter's {@code :free} variants and free
+     * router), whatever the table says, even a price for it.
+     */
+    @Test
+    void onlyAModelItsProviderServesFreeIsFree() {
+        String file = """
+                {"version": 1, "models": {
+                  "openrouter/acme/model:free": {"input": "3", "output": "15"},
+                  "openrouter/acme/model": {"input": "3", "output": "15"},
+                  "anthropic/dear": {"input": "5", "output": "50"}}}""";
+        Pricing pricing = Pricing.parse(file.getBytes(StandardCharsets.UTF_8));
+        for (String free : new String[] {"acme/model:free", "acme/unlisted:free", "openrouter/free"}) {
+            assertThat(pricing.price(ProviderId.OPENROUTER, free)).as(free).isEqualTo(Pricing.FREE);
+            assertThat(pricing.chargedPrice(ProviderId.OPENROUTER, free)).as(free).isEqualTo(Pricing.FREE);
+            assertThat(Pricing.estimateMicroUsd(pricing.chargedPrice(ProviderId.OPENROUTER, free), 100_000, 100_000))
+                    .isZero();
+        }
+        assertThat(pricing.price(ProviderId.OPENROUTER, "acme/model").output()).isEqualTo(15_000_000);
+        // Not free: another suffix, the word inside the id, the paid router, or another provider's ":free".
+        assertThat(pricing.price(ProviderId.OPENROUTER, "acme/model:freeze")).isNull();
+        assertThat(pricing.price(ProviderId.OPENROUTER, "acme/model:free:online")).isNull();
+        assertThat(pricing.price(ProviderId.OPENROUTER, "openrouter/auto")).isNull();
+        assertThat(pricing.chargedPrice(ProviderId.OPENROUTER, "openrouter/auto").output()).isEqualTo(15_000_000);
+        assertThat(pricing.price(ProviderId.OPENAI, "gpt:free")).isNull();
+        assertThat(pricing.price(new ProviderId("openrouter", "Elsewhere"), "acme/x:free")).isEqualTo(Pricing.FREE);
+        assertThat(ProviderId.OPENROUTER.servesFree(":free")).isFalse();
+        assertThat(ProviderId.OPENROUTER.servesFree(null)).isFalse();
+        // The table's highest is unchanged by the free models.
+        assertThat(pricing.chargedPrice(ProviderId.XAI, "grok").output()).isEqualTo(50_000_000);
+    }
+
     @Test
     void aTieComesOutTheSameEveryTime() {
         Pricing.Price a = new Pricing.Price(1, 1, 1, 5);

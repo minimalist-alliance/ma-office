@@ -6,14 +6,25 @@ import { lazy, memo, Suspense, useCallback, useEffect, useLayoutEffect, useRef, 
 import type { AppWindowProps } from '../apps/registry';
 import { Icon } from '../chrome/icons';
 import { noteDeskInput, useDeskLink, useFrozen, useLive, useResuming } from '../desk/liveStore';
+import { windowVm } from '../desk/windowVm';
 import { useDeskStore } from '../state/deskStore';
 import { deskSaysPaused } from '../bandwidth/store';
+import { useFree } from '../free/door';
 import { keyAction } from '../desk/rtc/input';
 import { BrowserBar } from './BrowserBar';
 import { CLOSED_PANELS, PanelBody } from './BrowserWindow';
 import { BrowserDriver } from './driver';
+import { DownloadNote } from './DownloadNote';
+import { noteStreamInput } from './handoff';
+import { HandoffNote } from './HandoffNote';
+import { SEEN_PREF } from './openOnDevice';
+import { ProtectedNote } from './ProtectedNote';
+import { useLayoutPrefs } from '../shell/layoutPrefs';
+import { setLayoutPref } from '../shell/layoutSync';
 import { browserPanel } from './panel';
 import { bindStreamInput, isMacPlatform } from './streamInput';
+import { isPhoneScreen } from './phoneView';
+import { TouchHint, TouchRow } from './TouchRow';
 import { useSession } from '../platform/session';
 import { simpleViewOn } from '../simple/flag';
 import { SimpleUi } from '../simple/ui';
@@ -38,8 +49,30 @@ function SimpleUnavailable({ ui }: SimpleLayerProps) {
 }
 const SimpleLayer = lazy(() => loadSimple().catch(() => ({ default: SimpleUnavailable })));
 
+/** Open on this device's first-use card stays this long, and the bar's note after it this long (#9). */
+const OPENED_CARD_MS = 8_000;
+const OPENED_NOTE_MS = 3_000;
+const OPENED_FIRST_WORDS = 'Opened on this device. Your desk’s sign-ins stay on your desk, so you may need to sign in there.';
+
+/** The first time for the account, a card in the picture says what happened; each later time, the bar's note does. */
+function useOpenedOnDevice(): { opened: 'card' | 'note' | null; onOpened: () => void; dismiss: () => void } {
+  const [opened, setOpened] = useState<{ kind: 'card' | 'note'; n: number } | null>(null);
+  const onOpened = useCallback(() => {
+    const first = useLayoutPrefs.getState()[SEEN_PREF] !== true;
+    if (first) setLayoutPref({ [SEEN_PREF]: true });
+    setOpened((was) => ({ kind: first ? 'card' : 'note', n: (was?.n ?? 0) + 1 }));
+  }, []);
+  useEffect(() => {
+    if (!opened) return undefined;
+    const timer = window.setTimeout(() => setOpened(null), opened.kind === 'card' ? OPENED_CARD_MS : OPENED_NOTE_MS);
+    return () => window.clearTimeout(timer);
+  }, [opened]);
+  const dismiss = useCallback(() => setOpened(null), []);
+  return { opened: opened?.kind ?? null, onOpened, dismiss };
+}
+
 /** The picture. It renders once: what changes after that goes straight to the element. */
-const StreamVideo = memo(function StreamVideo({ driver, deskId, keysRef, onAddress, covered }: { driver: BrowserDriver; deskId: string; keysRef: RefObject<HTMLTextAreaElement | null>; onAddress: () => void; covered: boolean }) {
+const StreamVideo = memo(function StreamVideo({ driver, deskId, keysRef, onAddress, covered, describedBy }: { driver: BrowserDriver; deskId: string; keysRef: RefObject<HTMLTextAreaElement | null>; onAddress: () => void; covered: boolean; describedBy: string }) {
   const ref = useRef<HTMLVideoElement>(null);
   const heldRef = useRef<HTMLCanvasElement>(null);
   // A layout effect, so it runs in the task of the click that opened the window (desk-runtime.md 8.5's `play()`).
@@ -61,16 +94,42 @@ const StreamVideo = memo(function StreamVideo({ driver, deskId, keysRef, onAddre
       onPaste: driver.paste,
       onCopyGesture: driver.copyGesture,
       onFocusChange: driver.setStreamFocused,
-      onInput: () => noteDeskInput(deskId, false),
-      onTouch: driver.noteTouch,
+      onInput: () => {
+        noteDeskInput(deskId, false);
+        noteStreamInput(deskId); // the device the member clicks from is the one a hand-off shows on (#9)
+      },
+      onTouch: () => driver.noteTouch(useSession.getState().me?.userId ?? null),
+      onTouchGesture: driver.noteTouchGesture,
+      onZoom: driver.setZoom,
+      onTouchControl: driver.setTouchControl,
+      region: driver.region,
+      onSoftKeyboard: driver.setSoftKeyboard,
+      onSoftState: driver.setSoftState,
     });
   }, [driver, deskId, keysRef, onAddress]);
+  // On a phone, the box the picture fills is what the desk lays the page out for (`phoneView.ts`).
+  useLayoutEffect(() => {
+    const surface = ref.current?.parentElement;
+    if (!surface || typeof ResizeObserver === 'undefined') return undefined;
+    const tell = (): void => {
+      const r = surface.getBoundingClientRect();
+      driver.setPhoneBox(isPhoneScreen() ? { width: r.width, height: r.height } : null);
+    };
+    const observer = new ResizeObserver(tell);
+    observer.observe(surface);
+    tell();
+    return () => {
+      observer.disconnect();
+      driver.setPhoneBox(null);
+    };
+  }, [driver]);
   // Under the simple view the surface is inert: nothing in it takes focus or a pointer (security review T47O-2).
   return (
     <div className="br-surface" inert={covered}>
-      <video ref={ref} className="br-video" playsInline disablePictureInPicture disableRemotePlayback tabIndex={-1} aria-label="The page in this desk's browser" data-testid="browser-video" />
+      <video ref={ref} className="br-video" playsInline disablePictureInPicture disableRemotePlayback tabIndex={-1} aria-label="The page in this desk's browser" aria-describedby={describedBy} data-testid="browser-video" />
       <canvas ref={heldRef} className="br-held" hidden data-testid="browser-held" />
       <textarea ref={keysRef} className="br-keys" aria-label="Keyboard for the page in this desk's browser" autoComplete="off" autoCapitalize="off" autoCorrect="off" spellCheck={false} data-testid="browser-keys" />
+      <div className="br-touch-layer" aria-hidden="true" />
     </div>
   );
 });
@@ -82,11 +141,15 @@ export default function BrowserApp({ deskId, parked = false }: AppWindowProps) {
   const frozen = useFrozen(deskId);
   const resuming = useResuming(deskId) && !parked;
   const desk = useDeskStore((s) => s.desks.find((d) => d.id === deskId));
+  const freeDesk = useFree((s) => s.free === true);
   const view = useSyncExternalStore(driver.subscribe, driver.getView);
   const rootRef = useRef<HTMLDivElement>(null);
   const keysRef = useRef<HTMLTextAreaElement>(null);
   const addressRef = useRef<HTMLInputElement>(null);
   const [isMac] = useState(isMacPlatform);
+  const { opened, onOpened, dismiss: dismissOpened } = useOpenedOnDevice();
+  // One card in the picture at a time: the desk's hand-off, then Open on this device's first use, then TD-225's note.
+  const [handoffShown, setHandoffShown] = useState(false);
 
   const focusAddress = useCallback(() => addressRef.current?.focus(), []);
   const coversRef = useRef(false);
@@ -164,11 +227,12 @@ export default function BrowserApp({ deskId, parked = false }: AppWindowProps) {
   useLayoutEffect(() => {
     if (view.bandwidthPaused) deskSaysPaused(deskId, view.bandwidthResumesAt);
   }, [deskId, view.bandwidthPaused, view.bandwidthResumesAt]);
-  const keepsScreen = desk?.startsWithOffice === true;
+  // A free desk keeps it too: it stops after 30 minutes idle, so it often wakes (`free/door.ts`).
+  const keepsScreen = desk?.startsWithOffice === true || freeDesk;
   useLayoutEffect(() => driver.setLastScreen(keepsScreen ? deskId : null), [driver, deskId, keepsScreen]);
 
   const panel = browserPanel({
-    vm: desk?.vm ?? 'unknown',
+    vm: windowVm(desk?.vm, link),
     phase: desk?.phase ?? null,
     queuePosition: desk?.queuePosition ?? null,
     link: live.link,
@@ -178,6 +242,7 @@ export default function BrowserApp({ deskId, parked = false }: AppWindowProps) {
     trying: view.trying,
     hasFrame: view.hasFrame,
     refusal: live.refusal,
+    busy: live.busy,
     simple: simpleCovers,
     resuming,
   });
@@ -190,12 +255,29 @@ export default function BrowserApp({ deskId, parked = false }: AppWindowProps) {
       (view.lastScreen && (panel.kind === 'asleep' || panel.kind === 'waking' || panel.kind === 'queued')));
   // A thaw takes about a tenth of a second, and the still covers it: "Resuming…" only past the same delay as starting.
   const delayed = panel.kind === 'starting' || panel.kind === 'opening' || panel.kind === 'resuming';
+  // Touch control's page row, on a finger's screen (`(pointer: coarse)`, in CSS) while the real page shows with a picture.
+  const touchRow = panel.kind === 'playing' && !simpleCovers;
+  // What a screen reader hears of the picture (spec (f) section 7): it can't read it, and the simplified view can, if it can.
+  const simplifies = simpleFlag && simpleState.decision.why !== 'fallback' && simpleState.decision.why !== 'unsupported';
 
   return (
-    <div ref={rootRef} className="br" data-testid="browser-app">
-      <BrowserBar driver={driver} view={view} connected={live.link === 'open'} closed={CLOSED_PANELS.has(panel.kind)} addressRef={addressRef} isMac={isMac} onLeaveAddress={focusStream} deskId={deskId} simple={simpleFlag ? simple : null} covered={simpleCovers} simpleShown={simpleFlag && simpleState.available === true && simpleState.decision.view === 'simple'} />
-      <div className="br-view">
-        {view.canPlayVideo && <StreamVideo driver={driver} deskId={deskId} keysRef={keysRef} onAddress={focusAddress} covered={simpleCovers} />}
+    <div ref={rootRef} className={`br${view.soft.typing ? ' typing' : ''}`} data-testid="browser-app">
+      <BrowserBar driver={driver} view={view} connected={live.link === 'open'} ready={panel.kind === 'playing'} closed={CLOSED_PANELS.has(panel.kind)} addressRef={addressRef} isMac={isMac} onLeaveAddress={focusStream} deskId={deskId} simple={simpleFlag ? simple : null} covered={simpleCovers} simpleShown={simpleFlag && simpleState.available === true && simpleState.decision.view === 'simple'} openedNote={opened === 'note'} onOpenedOnDevice={onOpened} />
+      <div className={`br-view${touchRow ? ' with-row' : ''}`}>
+        <span id={`${deskId}-picture-about`} className="sr-only">
+          {simplifies ? "A picture of the page, which a screen reader can't read. Simplified shows it as text." : "A picture of the page, which a screen reader can't read. This page can't be simplified."}
+        </span>
+        {/* First in the picture, so its buttons come right after the bar's in the Tab order. */}
+        <HandoffNote deskId={deskId} link={link} hidden={panel.kind !== 'playing'} onShown={setHandoffShown} />
+        {opened === 'card' && !handoffShown && panel.kind === 'playing' && (
+          <div className="br-card first-use" role="status" data-testid="browser-opened">
+            <span className="br-card-one">{OPENED_FIRST_WORDS}</span>
+            <button type="button" className="br-card-x" aria-label="Dismiss" title="Dismiss" onClick={dismissOpened}>
+              <svg width={12} height={12} viewBox="0 0 24 24" fill="none" stroke="currentColor" strokeWidth={2} strokeLinecap="round" aria-hidden="true"><path d="M6 6l12 12M18 6L6 18" /></svg>
+            </button>
+          </div>
+        )}
+        {view.canPlayVideo && <StreamVideo driver={driver} deskId={deskId} keysRef={keysRef} onAddress={focusAddress} covered={simpleCovers} describedBy={`${deskId}-picture-about`} />}
         {simpleFlag && link && live.link === 'open' && (
           <Suspense fallback={null}>
             <SimpleLayer deskId={deskId} link={link} driver={driver} ui={simple} tabs={view.tabs} />
@@ -208,6 +290,10 @@ export default function BrowserApp({ deskId, parked = false }: AppWindowProps) {
             </div>
           </div>
         )}
+        <DownloadNote deskId={deskId} link={link} hidden={panel.kind !== 'playing'} />
+        {view.touchHint && touchRow && <TouchHint onDismiss={driver.dismissTouchHint} phone={view.phone.mine} />}
+        {touchRow && <TouchRow driver={driver} zoom={view.zoom} soft={view.soft} desktopSite={view.phone.served && isPhoneScreen() ? view.desktopSite : null} notice={view.notice} />}
+        <ProtectedNote deskId={deskId} tabs={view.tabs} hidden={panel.kind !== 'playing' || handoffShown || opened === 'card'} />
         {view.muted && panel.kind === 'playing' && (!simpleCovers || simpleState.stream === 'island') && (
           <span className="br-muted" data-testid="browser-muted" title="Sound comes on with your first click or key">
             <Icon name="soundOff" size={16} />

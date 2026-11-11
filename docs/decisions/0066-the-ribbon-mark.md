@@ -41,3 +41,6 @@
 - **Tested in Chromium only.** Cognito accepts the lockups with their masks and gradients: the hosted sign-in page has shown the new logo since 2026-11-05, checked by eye in light and dark.
 - **`ui/before-after.png` keeps the old mark,** as ADR 0065's record, and stays out of the kit's zip.
 - **Rollout:** the UI/UX and Platform Engineers swap their copies. The exact files are in `~/ma-coord/product-designer.md`. Earlier rounds are on branch `wip/design-drafts`.
+
+## Addendum, 2026-11-11: the Zen variant
+The owner approved a Zen variant of the on-dark mark: "Ship it" (about 2 am MT, Nov 11, after seeing the Zen still and the Designer's ribbon sheet). Left ribbon, shading and shape are the on-dark mark's; the right ribbon is `#B3CBE8`, `#97B6DE`, `#7D9ECC` and the fold `#7F9DC8`, `#6B8BB8`. It is `web/src/assets/brand/ma-mark-zen.svg`, used on Zen only (ADR 0093).

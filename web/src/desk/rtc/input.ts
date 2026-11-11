@@ -298,16 +298,17 @@ const DEVTOOLS = new Set(['i', 'j', 'c']);
 
 /**
  * What a key does while the stream has focus. Ctrl+W, Ctrl+T and Ctrl+N belong to the member's own
- * browser, which won't give them up, so sending them would act on two browsers at once.
+ * browser, which won't give them up, so sending them would act on two browsers at once. In full screen with the keys
+ * locked, or in the office's own installed window (`locked`, `keysToDesk` in `shell/keyLock.ts`), the member's browser has
+ * given them up, so they and the tab keys go to the desk.
  */
-export function keyAction(e: KeyLike, isMac: boolean): KeyAction {
+export function keyAction(e: KeyLike, isMac: boolean, locked = false): KeyAction {
   const command = isMac ? e.metaKey : e.ctrlKey;
   const k = e.key.toLowerCase();
   if (e.key === 'Escape' && e.shiftKey) return 'leave'; // Shift+Esc always leaves the window (design 3.1)
   if (command) {
     if (k === 'l' && !e.shiftKey && !e.altKey) return 'address';
-    if (RESERVED_WITH_COMMAND.has(k)) return 'leave';
-    if (k === 'tab' || k === 'pageup' || k === 'pagedown') return 'leave';
+    if (RESERVED_WITH_COMMAND.has(k) || k === 'tab' || k === 'pageup' || k === 'pagedown') return locked ? 'send' : 'leave';
     if (isMac && RESERVED_MAC.has(k)) return 'leave';
     if (k === 'v' && !e.altKey) return 'paste';
     if (DEVTOOLS.has(k) && (isMac ? e.altKey : e.shiftKey)) return 'leave';

@@ -1,9 +1,10 @@
 // The Agent window: what shows until the desk can answer, and the app once it can. Only this file is in the initial chunk: the
 // app is `AgentBody`, loaded lazily. The Files app is hosted the same way (`HostedWindow`, with its own words and body), so the
-// ladder of states is here once. Rendering wakes nothing, here as everywhere: `Wake` and `Retry` are the member's own presses,
+// ladder of states is here once. Rendering wakes nothing, here as everywhere: `Wake` and `Try again` are the member's own presses,
 // and opening the window already asked (`shell/actions.ts`). Once the app has opened it stays mounted, parked or not and through
 // a dropped link, so a draft or a half-typed key is never lost: what's wrong shows over it, or beside it while it's only a blip.
 import { Component, lazy, Suspense, useEffect, useState, type ComponentType, type LazyExoticComponent, type ReactNode } from 'react';
+import { loadAgentBody } from '../apps/chunks';
 import type { AppWindowProps } from '../apps/registry';
 import type { AppId } from '../canvas/layout';
 import type { DeskLink } from '../desk/deskLink';
@@ -12,13 +13,14 @@ import { browserPanel, type BrowserPanel } from '../browser/panel';
 import { BillingLink, DataGuardNotice, MEMBERSHIP_LINE, SETTING_UP_LINE, SupportAddress } from '../chrome/DeskClosed';
 import { uuidv7 } from '../desk/idem';
 import { setTransferBusy, useDeskLink, useLive, wakeDesk } from '../desk/liveStore';
+import { windowVm } from '../desk/windowVm';
 import { api } from '../platform/api';
 import { useDeskWords, useOnGuildDesk } from '../guild/words';
 import { announce } from '../shell/announce';
 import { useDeskStore } from '../state/deskStore';
 import { useWindowStore, windowKey } from '../state/windowStore';
 
-const loadBody = (): Promise<typeof import('./AgentBody')> => import('./AgentBody');
+const loadBody = loadAgentBody;
 const AgentBody = lazy(loadBody);
 
 /** Only a blip: the app stays usable, with a line over it. */
@@ -46,14 +48,21 @@ function PanelBody({ panel, deskId, copy }: { panel: BrowserPanel; deskId: strin
         <>
           <h3>{words.asleep}</h3>
           <p>{guild ? 'Your agent is here when it wakes.' : copy.asleepLine}</p>
-          <button type="button" className="btn primary" onClick={() => wakeDesk(deskId)}>{copy.wake}</button>
+          <button type="button" className="btn primary" onClick={() => wakeDesk(deskId)}>{words.wake}</button>
         </>
       );
     case 'failed':
       return (
         <>
           <h3>{words.failed}</h3>
-          <button type="button" className="btn" onClick={() => wakeDesk(deskId)}>Retry</button>
+          <button type="button" className="btn" onClick={() => wakeDesk(deskId)}>Try again</button>
+        </>
+      );
+    case 'busy':
+      return (
+        <>
+          <h3>Free desks are all busy right now.</h3>
+          <p>Yours is saved, and we&rsquo;ll keep trying.</p>
         </>
       );
     case 'queued':
@@ -98,12 +107,11 @@ export interface HostCopy {
   /** What the window is called in "X couldn't open". */
   title: string;
   asleepLine: string;
-  wake: string;
   /** A panel over the app lets it show through, dimmed (the Files list stays readable, read-only). */
   dim?: boolean;
 }
 
-const AGENT: HostCopy = { name: 'agent', title: 'The Agent', asleepLine: 'Your desk team is here when it wakes.', wake: 'Wake' };
+const AGENT: HostCopy = { name: 'agent', title: 'The Agent', asleepLine: 'Your desk team is here when it wakes.' };
 
 function Panel({ panel, deskId, copy }: { panel: BrowserPanel; deskId: string; copy: HostCopy }) {
   return (
@@ -164,11 +172,11 @@ export interface HostShell {
 export function HostedWindow({ deskId, deskName, parked = false, app = 'agent', Body, load, copy }: AppWindowProps & { Body: LazyExoticComponent<ComponentType<HostedBodyProps>>; load: () => Promise<unknown>; copy: HostCopy }) {
   const link = useDeskLink(deskId);
   const live = useLive(deskId);
-  const vm = useDeskStore((s) => s.desks.find((d) => d.id === deskId)?.vm) ?? 'unknown';
+  const vm = windowVm(useDeskStore((s) => s.desks.find((d) => d.id === deskId)?.vm), link);
   const phase = useDeskStore((s) => s.desks.find((d) => d.id === deskId)?.phase) ?? null;
   const queuePosition = useDeskStore((s) => s.desks.find((d) => d.id === deskId)?.queuePosition) ?? null;
   // The same ladder as the Browser's, with nothing to wait for but the link: `playing` is a desk that can answer.
-  const panel = browserPanel({ vm, phase, queuePosition, link: live.link, unreachable: live.lostForSec >= 30, canPlayVideo: true, refused: null, hasFrame: true, refusal: live.refusal });
+  const panel = browserPanel({ vm, phase, queuePosition, link: live.link, unreachable: live.lostForSec >= 30, canPlayVideo: true, refused: null, hasFrame: true, refusal: live.refusal, busy: live.busy });
   const open = panel.kind === 'playing' && link !== null;
 
   // Comes first thing, so the app is here the moment the link is, and a chunk that can't load shows while a desk sleeps.

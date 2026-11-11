@@ -1,0 +1,301 @@
+/* Color in the Notebook: its own scheme's seam, the palette's colors in notes and lists, and the menus that set them.
+   Imported at the top of notebook.css. No color literals: the palette's values are --ma-nb-amber-highlight and the rest, from
+   src/ui/palette.ts (served with the Notebook's other tokens by vite-plugins/notebookThemes.ts). */
+
+/* ------------------------------------------------------------ the Notebook's own scheme
+   "Paper and ink" (the Product Designer, Nov 10) re-declares the office's surface and accent properties inside the Notebook,
+   its menus and its window on a desk (NOTEBOOK_SCHEME in src/ui/palette.ts, served as CSS by vite-plugins/notebookThemes.ts).
+   The Notebook's own surfaces read them through these names, so a later scheme can also set any one of them apart. */
+.ma-nb,
+.ma-nb-portal {
+  --nb-scheme-ground: var(--ma-surface-window); /* the window behind everything */
+  --nb-scheme-side: var(--ma-surface-sunken); /* the notebooks and pages column */
+  --nb-scheme-desk: var(--ma-surface-sunken); /* around the page and its binder tabs */
+  --nb-scheme-paper: var(--ma-surface-tile); /* the page, and the selected binder tab */
+  --nb-scheme-menu: var(--ma-surface-overlay); /* menus */
+  --nb-scheme-accent: var(--ma-accent); /* the notebook's spine */
+  --nb-scheme-accent-subtle: var(--ma-accent-subtle); /* the selected notebook and page */
+  --nb-scheme-selected: var(--ma-accent-subtle); /* a pressed toolbar button */
+}
+
+/* ------------------------------------------------------------ palette ids on our own elements
+   A swatch or a page's label dot carries data-pal="amber".."slate" and is filled with its label color in every use. */
+[data-pal="amber"] { --pal-label: var(--ma-nb-amber-label); }
+[data-pal="blue"] { --pal-label: var(--ma-nb-blue-label); }
+[data-pal="green"] { --pal-label: var(--ma-nb-green-label); }
+[data-pal="rose"] { --pal-label: var(--ma-nb-rose-label); }
+[data-pal="violet"] { --pal-label: var(--ma-nb-violet-label); }
+[data-pal="slate"] { --pal-label: var(--ma-nb-slate-label); }
+
+/* ------------------------------------------------------------ colors in a note
+   Highlight is the Highlight mark's color, by name. Older text's "yellow" (and a mark with none) is amber, the default.
+   Text keeps text.primary on every highlight. */
+.nb-prose mark,
+.nb-prose mark[data-color="yellow"],
+.nb-prose mark[data-color="amber"] { background: var(--ma-nb-amber-highlight); }
+.nb-prose mark[data-color="blue"] { background: var(--ma-nb-blue-highlight); }
+.nb-prose mark[data-color="green"] { background: var(--ma-nb-green-highlight); }
+.nb-prose mark[data-color="rose"] { background: var(--ma-nb-rose-highlight); }
+.nb-prose mark[data-color="violet"] { background: var(--ma-nb-violet-highlight); }
+.nb-prose mark[data-color="slate"] { background: var(--ma-nb-slate-highlight); }
+
+/* Text color. Inside a highlight it gives way to text.primary, which the palette guarantees there. */
+.nb-prose [data-text-color="amber"] { color: var(--ma-nb-amber-text); }
+.nb-prose [data-text-color="blue"] { color: var(--ma-nb-blue-text); }
+.nb-prose [data-text-color="green"] { color: var(--ma-nb-green-text); }
+.nb-prose [data-text-color="rose"] { color: var(--ma-nb-rose-text); }
+.nb-prose [data-text-color="violet"] { color: var(--ma-nb-violet-text); }
+.nb-prose [data-text-color="slate"] { color: var(--ma-nb-slate-text); }
+.nb-prose mark [data-text-color],
+.nb-prose [data-text-color] mark {
+  color: var(--ma-text-primary);
+}
+
+/* A colored block is a callout: its color's callout background with a 3 px rule of its label on the left. */
+.nb-prose [data-block-color="amber"] { --block: var(--ma-nb-amber-callout); --block-edge: var(--ma-nb-amber-label); }
+.nb-prose [data-block-color="blue"] { --block: var(--ma-nb-blue-callout); --block-edge: var(--ma-nb-blue-label); }
+.nb-prose [data-block-color="green"] { --block: var(--ma-nb-green-callout); --block-edge: var(--ma-nb-green-label); }
+.nb-prose [data-block-color="rose"] { --block: var(--ma-nb-rose-callout); --block-edge: var(--ma-nb-rose-label); }
+.nb-prose [data-block-color="violet"] { --block: var(--ma-nb-violet-callout); --block-edge: var(--ma-nb-violet-label); }
+.nb-prose [data-block-color="slate"] { --block: var(--ma-nb-slate-callout); --block-edge: var(--ma-nb-slate-label); }
+.nb-prose [data-block-color] {
+  padding: 8px 12px 8px 14px;
+  border-radius: 8px;
+  background: var(--block);
+  box-shadow: inset 3px 0 0 var(--block-edge);
+}
+.nb-prose ul[data-block-color],
+.nb-prose ol[data-block-color] {
+  padding-left: calc(1.4em + 12px);
+}
+
+/* ------------------------------------------------------------ a preview, before it's chosen
+   A swatch under the pointer or the keyboard in a menu shows on the text (colorPreview.ts): a decoration, never an edit.
+   The browser's selection color steps aside meanwhile, so the preview can be seen through it. */
+.nb-prose [data-preview-highlight="amber"] { background: var(--ma-nb-amber-highlight); }
+.nb-prose [data-preview-highlight="blue"] { background: var(--ma-nb-blue-highlight); }
+.nb-prose [data-preview-highlight="green"] { background: var(--ma-nb-green-highlight); }
+.nb-prose [data-preview-highlight="rose"] { background: var(--ma-nb-rose-highlight); }
+.nb-prose [data-preview-highlight="violet"] { background: var(--ma-nb-violet-highlight); }
+.nb-prose [data-preview-highlight="slate"] { background: var(--ma-nb-slate-highlight); }
+.nb-prose [data-preview-highlight="none"] { background: var(--nb-scheme-paper); }
+.nb-prose [data-preview-text="amber"] { color: var(--ma-nb-amber-text); }
+.nb-prose [data-preview-text="blue"] { color: var(--ma-nb-blue-text); }
+.nb-prose [data-preview-text="green"] { color: var(--ma-nb-green-text); }
+.nb-prose [data-preview-text="rose"] { color: var(--ma-nb-rose-text); }
+.nb-prose [data-preview-text="violet"] { color: var(--ma-nb-violet-text); }
+.nb-prose [data-preview-text="slate"] { color: var(--ma-nb-slate-text); }
+.nb-prose [data-preview-text="none"] { color: var(--ma-text-primary); }
+.nb-prose [data-preview-callout="amber"] { --block: var(--ma-nb-amber-callout); --block-edge: var(--ma-nb-amber-label); }
+.nb-prose [data-preview-callout="blue"] { --block: var(--ma-nb-blue-callout); --block-edge: var(--ma-nb-blue-label); }
+.nb-prose [data-preview-callout="green"] { --block: var(--ma-nb-green-callout); --block-edge: var(--ma-nb-green-label); }
+.nb-prose [data-preview-callout="rose"] { --block: var(--ma-nb-rose-callout); --block-edge: var(--ma-nb-rose-label); }
+.nb-prose [data-preview-callout="violet"] { --block: var(--ma-nb-violet-callout); --block-edge: var(--ma-nb-violet-label); }
+.nb-prose [data-preview-callout="slate"] { --block: var(--ma-nb-slate-callout); --block-edge: var(--ma-nb-slate-label); }
+.nb-prose [data-preview-callout]:not([data-preview-callout="none"]) {
+  border-radius: 8px;
+  background: var(--block);
+  box-shadow: inset 3px 0 0 var(--block-edge);
+}
+.nb-prose [data-preview-callout="none"] {
+  background: none;
+  box-shadow: none;
+}
+.nb-prose.nb-previewing::selection,
+.nb-prose.nb-previewing *::selection {
+  background: transparent;
+}
+
+/* ------------------------------------------------------------ a page's label in the list
+   A dot after the title (and its name for screen readers, .nb-sr): calm, and color is never the only cue. */
+.nb-page-line {
+  display: flex;
+  align-items: center;
+  gap: 7px;
+  min-width: 0;
+}
+.nb-page-line .nb-page-title {
+  min-width: 0;
+}
+.nb-label-dot {
+  flex: none;
+  width: 8px;
+  height: 8px;
+  border-radius: 50%;
+  background: var(--pal-label);
+}
+.nb-sr {
+  position: absolute;
+  width: 1px;
+  height: 1px;
+  overflow: hidden;
+  clip-path: inset(50%);
+  white-space: nowrap;
+}
+.nb-side-actions {
+  display: inline-flex;
+  align-items: center;
+  gap: 2px;
+}
+.nb-icon-btn.on {
+  background: var(--nb-scheme-accent-subtle);
+  color: var(--ma-text-link);
+}
+.nb-filter-hint {
+  display: flex;
+  align-items: center;
+  flex-wrap: wrap;
+  gap: 2px 8px;
+  padding-top: 6px;
+}
+
+/* ------------------------------------------------------------ the menu's other parts */
+.nb-menu-root {
+  display: contents;
+}
+.nb-menu:focus {
+  outline: none;
+}
+.nb-menu-label {
+  flex: 1;
+  min-width: 0;
+  overflow: hidden;
+  text-overflow: ellipsis;
+  white-space: nowrap;
+}
+.nb-menu-hint {
+  flex: none;
+  margin-left: 12px;
+  font-size: 12px;
+  font-weight: 600;
+  color: var(--ma-text-tertiary);
+  font-variant-numeric: tabular-nums;
+}
+.nb-menu-more,
+.nb-menu-check {
+  flex: none;
+  color: var(--ma-text-tertiary);
+}
+.nb-menu-check {
+  visibility: hidden;
+}
+.nb-menu-check.on {
+  visibility: visible;
+  color: var(--ma-text-link);
+}
+.nb-menu-item.open {
+  background: var(--ma-surface-fill);
+}
+.nb-menu-item[aria-disabled="true"] {
+  color: var(--ma-text-disabled);
+  cursor: default;
+}
+.nb-menu-item[aria-disabled="true"]:hover {
+  background: none;
+}
+.nb-menu-sep {
+  height: 1px;
+  margin: 4px 6px;
+  background: var(--ma-border-hairline);
+}
+.nb-menu-back {
+  color: var(--ma-text-secondary);
+}
+
+/* A color submenu: one row of round swatches, then "none" (the Designer's "In the context menu"). On a phone it wraps four
+   across, for a finger. The checked one is ringed in the accent. */
+.nb-menu.nb-menu-grid {
+  min-width: 0;
+  grid-template-columns: repeat(var(--cols, 7), 32px);
+  gap: 4px;
+  padding: 6px;
+}
+.nb-menu-grid .wide,
+.nb-menu-grid .nb-menu-back {
+  grid-column: 1 / -1;
+}
+.nb-menu-swatch {
+  display: grid;
+  place-items: center;
+  width: 32px;
+  height: 32px;
+  padding: 0;
+  border: 0;
+  border-radius: 50%;
+  background: none;
+}
+.nb-menu-swatch:hover,
+.nb-menu-swatch:focus-visible {
+  background: var(--ma-surface-fill);
+  outline: none;
+}
+.nb-menu-swatch:focus-visible {
+  box-shadow: inset 0 0 0 2px var(--ma-focus-ring);
+}
+.nb-menu-swatch[aria-checked="true"] .nb-pal {
+  box-shadow: 0 0 0 2px var(--nb-scheme-menu), 0 0 0 4px var(--ma-accent);
+}
+
+/* A swatch: its color's label, round. "None" is an empty ring with a stroke through it. */
+.nb-pal {
+  display: inline-block;
+  flex: none;
+  width: 20px;
+  height: 20px;
+  border-radius: 50%;
+  background: var(--pal-label);
+}
+.nb-menu-item .nb-pal {
+  width: 10px;
+  height: 10px;
+  margin: 0 2px;
+}
+.nb-pal-none {
+  background: linear-gradient(135deg, transparent 45%, var(--ma-border-strong) 45% 55%, transparent 55%);
+  box-shadow: inset 0 0 0 1.5px var(--ma-border-strong);
+}
+
+/* On a phone: rows tall enough for a finger, and the width placement.ts gives it. */
+.nb-menu.compact .nb-menu-item {
+  min-height: 44px;
+}
+.nb-menu.compact.nb-menu-grid {
+  grid-template-columns: repeat(4, 44px);
+  justify-content: center;
+}
+.nb-menu.compact .nb-menu-swatch {
+  width: 44px;
+  height: 44px;
+}
+.nb-menu.compact .nb-menu-swatch .nb-pal {
+  width: 26px;
+  height: 26px;
+}
+
+/* ------------------------------------------------------------ a quiet line in the editor ("Press Ctrl+V to paste.") */
+.nb-editor {
+  position: relative;
+}
+.nb-quiet-hint {
+  position: absolute;
+  left: 50%;
+  bottom: 12px;
+  z-index: 2;
+  margin: 0;
+  padding: 6px 12px;
+  transform: translateX(-50%);
+  border: 1px solid var(--ma-border-hairline);
+  border-radius: 10px;
+  background: var(--nb-scheme-menu);
+  box-shadow: var(--ma-elevation-menu);
+  color: var(--ma-text-secondary);
+  font-size: 13px;
+  white-space: nowrap;
+  animation: nb-fade-in 120ms ease-out;
+}
+
+/* A quiet line under the page list ("Update your desk to use this."). */
+.nb-side-notice {
+  margin: 8px 4px 0;
+  animation: nb-fade-in 120ms ease-out;
+}

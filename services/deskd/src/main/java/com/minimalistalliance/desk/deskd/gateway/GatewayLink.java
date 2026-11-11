@@ -71,10 +71,13 @@ public final class GatewayLink {
      * @param pingEvery at least every 45 s: the API firewall in front of {@code gw.} closes a WebSocket idle about
      *     100 s (ma-platform ADR 0108), so the default is 30 s
      * @param replyTimeout a ping or ready with no answer in this time means the connection is dead
-     * @param rateLimitedDelay the least wait after a 429 or 4429
+     * @param rateLimitedDelay the least wait after a 429 or 4429, or the handshake's {@code Retry-After} if longer; the
+     *     wait is that plus a random 0 to 100 % of it, so rate-limited desks don't all come back together
      * @param helloWhenBlockedAfter how long to wait, told not to reconnect, before asking for a hello,
      *     which is the only thing that lifts it
      * @param healthyAfter a link that lasted this long past ready resets the backoff
+     * @param healthyDropSpread the first retry after a healthy link drops waits a random 0 to this: a gateway deploy drops
+     *     every desk at once, and they mustn't all come back in the same second
      */
     public record Timing(
             Duration minBackoff,
@@ -83,7 +86,8 @@ public final class GatewayLink {
             Duration replyTimeout,
             Duration rateLimitedDelay,
             Duration helloWhenBlockedAfter,
-            Duration healthyAfter) {
+            Duration healthyAfter,
+            Duration healthyDropSpread) {
         public static final Timing DEFAULT = new Timing(
                 Duration.ofSeconds(1),
                 Duration.ofSeconds(30),
@@ -91,7 +95,8 @@ public final class GatewayLink {
                 Duration.ofSeconds(30),
                 Duration.ofSeconds(30),
                 Duration.ofMinutes(5),
-                Duration.ofSeconds(30));
+                Duration.ofSeconds(30),
+                Duration.ofSeconds(5));
     }
 
     private enum Next {
@@ -280,8 +285,7 @@ public final class GatewayLink {
                 if (outcome.healthy()) {
                     backoff = timing.minBackoff();
                 }
-                Duration delay = jitter(backoff);
-                Thread.sleep(delay.compareTo(outcome.atLeast()) > 0 ? delay : outcome.atLeast());
+                Thread.sleep(retryDelay(timing, backoff, outcome.healthy(), outcome.atLeast(), ThreadLocalRandom.current()));
                 Duration doubled = backoff.multipliedBy(2);
                 backoff = doubled.compareTo(timing.maxBackoff()) > 0 ? timing.maxBackoff() : doubled;
             }
@@ -290,9 +294,25 @@ public final class GatewayLink {
         }
     }
 
-    /** ±20 %, so a fleet doesn't come back all at once (gateway.md section 1). */
-    private static Duration jitter(Duration base) {
-        return Duration.ofNanos((long) (base.toNanos() * ThreadLocalRandom.current().nextDouble(0.8, 1.2)));
+    /**
+     * How long to wait before connecting again, so a fleet doesn't come back all at once (gateway.md section 1):
+     * <ul>
+     *   <li>rate-limited ({@code atLeast} set): that floor plus a random 0 to 100 % of it. A floor alone would bring every
+     *       limited desk back at the same moment, to be limited again;
+     *   <li>after a healthy link dropped: a random 0 to {@link Timing#healthyDropSpread}, as a deploy of the gateway drops
+     *       every desk in the same second;
+     *   <li>otherwise the backoff ±20 %, so a link that never came up retries fast.
+     * </ul>
+     */
+    static Duration retryDelay(
+            Timing timing, Duration backoff, boolean healthyDrop, Duration atLeast, java.util.random.RandomGenerator random) {
+        if (atLeast.isPositive()) {
+            return atLeast.plusNanos((long) (atLeast.toNanos() * random.nextDouble()));
+        }
+        if (healthyDrop) {
+            return Duration.ofNanos((long) (timing.healthyDropSpread().toNanos() * random.nextDouble()));
+        }
+        return Duration.ofNanos((long) (backoff.toNanos() * random.nextDouble(0.8, 1.2)));
     }
 
     private void block() {
@@ -362,12 +382,17 @@ public final class GatewayLink {
                     yield Outcome.RETRY;
                 }
                 case 403, 410 -> Outcome.BLOCK;
-                case 429 -> new Outcome(Next.RETRY, false, timing.rateLimitedDelay());
+                case 429 -> new Outcome(Next.RETRY, false, rateLimitedFloor(PlatformHttp.retryAfter(handshake.getResponse().headers())));
                 default -> Outcome.RETRY;
             };
         }
         log.warn("gateway connect failed: {}", cause == null ? "unknown" : cause.getClass().getSimpleName());
         return Outcome.RETRY;
+    }
+
+    /** The least wait after a 429: the gateway's {@code Retry-After} (held to 5 minutes) if it's longer than the usual. */
+    private Duration rateLimitedFloor(Duration retryAfter) {
+        return retryAfter != null && retryAfter.compareTo(timing.rateLimitedDelay()) > 0 ? retryAfter : timing.rateLimitedDelay();
     }
 
     private void markReady(Connection connection) {

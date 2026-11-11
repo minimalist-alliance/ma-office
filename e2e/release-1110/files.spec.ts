@@ -99,7 +99,8 @@ test('upload 50 MB, download, sha256 matches', async () => {
   await expect(filesWin().getByTestId('files-xfer').first()).toHaveAttribute('data-state', 'done', { timeout: 5 * 60_000 });
   note('upload seconds', ((Date.now() - t0) / 1000).toFixed(1));
   note('row size', (await row(`rel1110-${tag}.bin`).locator('.c-size').innerText()).trim());
-  await expect.poll(usage, { timeout: 30_000 }).not.toBe(before);
+  // The footer rounds to 0.1 GB, so 50 MB can leave it unchanged (1.07 to 1.12 GB both read "1.1 GB"): note it, and let the bytes on the desk below decide.
+  await expect.poll(usage, { timeout: 30_000 }).not.toBe(before).catch(() => note('usage line unchanged after the upload', 'rounds to the same 0.1 GB'));
   note('usage before / after upload', [before, await usage()]);
   const onDisk = await onDesk(`find /data/files -name 'rel1110-${tag}.bin' -printf '%s %u\\n'; sha256sum $(find /data/files -name 'rel1110-${tag}.bin') | cut -d' ' -f1`);
   note('on the desk (size owner, sha256 head)', onDisk.trim().split('\n').map((l, i) => (i === 1 ? l.slice(0, 16) + '...' : l)));

@@ -171,6 +171,9 @@ type StreamStats struct {
 	// (stream-quality.md section 4).
 	Level string  `json:"level"`
 	Limit *string `json:"limit"`
+	// Profile is the allowance profile desk-egress has picked (ADR 0036), "capped" or "deep", absent for the normal
+	// picture. Its ceiling (capped Medium, deep Low) holds the level as Limit does (stream-quality.md section 4).
+	Profile *string `json:"profile,omitempty"`
 	// Crop is the island in effect (section 8.8), absent for the whole screen. InputStale counts events dropped for
 	// being meant for another island or the whole screen, and IslandBlocked presses dropped with something over the
 	// island; both cumulative.

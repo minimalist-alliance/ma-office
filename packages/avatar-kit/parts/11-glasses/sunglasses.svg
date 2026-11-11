@@ -1,0 +1,6 @@
+<g data-part="glasses-sunglasses" fill="none" stroke="{{glasses}}" stroke-linecap="round" stroke-linejoin="round">
+  <path d="M94,108 H125 V121 Q125,132 114,132 H105 Q94,132 94,121 Z" stroke-width="3.4" fill="#1C2028" fill-opacity="0.9"/>
+  <path d="M162,108 H131 V121 Q131,132 142,132 H151 Q162,132 162,121 Z" stroke-width="3.4" fill="#1C2028" fill-opacity="0.9"/>
+  <path d="M125,112 H131" stroke-width="4.2"/>
+  <path d="M94,111 L84,109" stroke-width="3.4"/><path d="M162,111 L172,109" stroke-width="3.4"/>
+</g>

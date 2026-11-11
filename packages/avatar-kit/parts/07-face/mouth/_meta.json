@@ -1,0 +1,33 @@
+{
+  "category": "mouth",
+  "layer": "07-face",
+  "colorSlot": null,
+  "default": "smile",
+  "parts": [
+    {
+      "id": "calm",
+      "name": "Calm"
+    },
+    {
+      "id": "smile",
+      "name": "Smile"
+    },
+    {
+      "id": "grin",
+      "name": "Grin"
+    },
+    {
+      "id": "laugh",
+      "name": "Laugh"
+    },
+    {
+      "id": "thoughtful",
+      "name": "Thoughtful"
+    },
+    {
+      "id": "wink",
+      "name": "Wink",
+      "closesEye": "left"
+    }
+  ]
+}

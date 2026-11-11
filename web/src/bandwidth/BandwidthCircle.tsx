@@ -1,15 +1,17 @@
 // The bandwidth circle, bottom right of the office (task 24, ma-platform ADR 0095, ma-desk ADR 0051). A thin ring of
 // this week's bandwidth against the limit; hover, tap or Enter shows the numbers and when the week resets. It shows
-// what Platform counted, never a number of its own, and nothing at all until Platform answers.
+// what Platform counted, never a number of its own, and nothing at all until Platform answers. The panel is
+// `BandwidthPanel.tsx`, in the top bar's popovers chunk.
 import { useEffect, useId, useRef, useState, type PointerEvent as ReactPointerEvent } from 'react';
-import { DataGuardNotice } from '../chrome/DeskClosed';
+import { popovers } from '../chrome/popoversChunk';
+import { useOnDemand } from '../lib/onDemand';
 import { announce } from '../shell/announce';
+import { useFree } from '../free/door';
 import { useDeskStore } from '../state/deskStore';
-import { circleLabel, formatBytes, formatGb, formatReset, headsUp, ringShare, ringWindow, shareOf, stateLine, type BandwidthMeter, type MeterWindow } from './meter';
+import { useMaiaState } from './maiaState';
+import { circleLabel, headsUp, ringShare, ringWindow } from './meter';
 import { useBandwidth, watchBandwidth } from './store';
 import { Words } from './Words';
-import { maiaLine } from './maiaLine';
-import { useMaiaState } from './maiaState';
 import './bandwidth.css';
 
 const SEEN_KEY = 'ma.bandwidth.notice.v1';
@@ -42,65 +44,10 @@ function Ring({ share, level }: { share: number; level: string }) {
   );
 }
 
-function WindowRow({ label, w, resetText, warnAtPct }: { label: string; w: MeterWindow; resetText: string; warnAtPct: number }) {
-  const share = Math.min(1, Math.max(0, Number.isFinite(shareOf(w)) ? shareOf(w) : 1));
-  const used = formatBytes(w.usedBytes);
-  const limit = formatGb(w.limitGb);
-  return (
-    <div className="bw-row">
-      <div className="bw-head">
-        <span>{label}</span>
-        <b>{used} of {limit}</b>
-      </div>
-      <div
-        className={`bw-bar${share * 100 >= warnAtPct ? ' warn' : ''}`}
-        role="meter"
-        aria-label={label}
-        aria-valuemin={0}
-        aria-valuemax={Math.round(w.limitGb * 1000) / 1000}
-        aria-valuenow={Math.min(w.usedGb, w.limitGb)}
-        aria-valuetext={`${used} of ${limit}`}
-      >
-        <span style={{ width: `${share * 100}%` }} />
-      </div>
-      <p className="bw-reset">
-        <Words text={`Resets ${resetText}`} />
-      </p>
-    </div>
-  );
-}
-
-function Panel({ id, meter, now }: { id: string; meter: BandwidthMeter; now: number }) {
-  const c = { now };
-  const line = stateLine(meter, c);
-  const maia = maiaLine(useMaiaState(), c);
-  return (
-    <div className="bw-panel" id={id} data-testid="bandwidth-panel">
-      <p className="bw-title">Bandwidth</p>
-      {meter.dataGuard && (
-        <div className="bw-guard" data-testid="data-guard-panel">
-          <DataGuardNotice message={meter.dataGuard.message} resumesAt={meter.dataGuard.resumesAt} guild={false} />
-        </div>
-      )}
-      <WindowRow label="This week" w={meter.week} resetText={formatReset(meter.week.resetsAt, c)} warnAtPct={meter.warnAtPct} />
-      <WindowRow label="This month" w={meter.month} resetText={formatReset(meter.month.resetsAt, c)} warnAtPct={meter.warnAtPct} />
-      {line && (
-        <p className={`bw-line ${meter.state}`} data-testid="bandwidth-line">
-          <Words text={line} />
-        </p>
-      )}
-      <p className="bw-note">What your desks send to you. Guild apps don't count.</p>
-      {maia && (
-        <p className="bw-note bw-maia" data-testid="bandwidth-maia">
-          {maia}
-        </p>
-      )}
-    </div>
-  );
-}
-
 export function BandwidthCircle() {
-  const meter = useBandwidth((s) => s.meter);
+  // A free member's meter is the free tier's (`free/door.ts`), so this one says and shows nothing.
+  const free = useFree((s) => s.meter);
+  const meter = useBandwidth((s) => (free ? null : s.meter));
   const hasDesks = useDeskStore((s) => s.desks.length > 0);
   const [open, setOpen] = useState<false | 'hover' | 'pinned'>(false);
   const [notice, setNotice] = useState<string | null>(null);
@@ -137,6 +84,9 @@ export function BandwidthCircle() {
   }, [open]);
 
   useEffect(() => () => window.clearTimeout(closeTimer.current), []);
+
+  // The panel is the popovers chunk's (`BandwidthPanel.tsx`), here from the page's first idle moment.
+  const Panel = useOnDemand(popovers, open && 'open')?.BandwidthPanel;
 
   if (!meter || !hasDesks) return null;
   const now = Date.now();
@@ -178,7 +128,7 @@ export function BandwidthCircle() {
           }
         }}
       >
-        {open && <Panel id={panelId} meter={meter} now={now} />}
+        {open && Panel && <Panel id={panelId} meter={meter} now={now} useMaia={useMaiaState} />}
         <button
           ref={btnRef}
           type="button"

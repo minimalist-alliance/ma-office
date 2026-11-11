@@ -8,16 +8,22 @@ import { OWNER_CALLER, parseCaller, sameIdentity, type Caller } from './caller.t
 import { RpcError } from './errors.ts';
 import { encodeFrame, FRAME_COLLAB, FRAME_JSON, FrameDecoder, MAX_COLLAB_MESSAGE } from './frames.ts';
 import { errName, log } from './log.ts';
-import { FORBIDDEN, PAGE_FULL, RESET, Who, renameAwareness, type CollabContext } from './collab.ts';
+import { FORBIDDEN, PAGE_FULL, RESET, STORAGE_FULL, Who, renameAwareness, type CollabContext } from './collab.ts';
 import { type Members } from './members.ts';
+import { NOTEBOOK_SCHEMA, RELOAD_REASON, schemaOfToken, tokenSaysSchema, updateChanges } from './model.ts';
 import { Parts, type RpcHandler } from './rpc.ts';
 import { parseSettings, type EditBudget } from './settings.ts';
 
 const WS_OPEN = 1;
 const WS_CLOSED = 3;
 /** Hocuspocus's message types, as far as the adapter has to read them. */
+const MSG_SYNC = 0;
 const MSG_AUTH = 2;
 const MSG_CLOSE = 7;
+/** y-protocols' sync messages: step 1 asks, step 2 and update carry changes. */
+const SYNC_STEP2 = 1;
+const SYNC_UPDATE = 2;
+const AUTH_TOKEN = 0;
 const AUTH_PERMISSION_DENIED = 1;
 const AUTH_AUTHENTICATED = 2;
 const COLLAB_REQUEST = new Request('http://desk-notebook.invalid/collab');
@@ -39,6 +45,14 @@ function header(data: Uint8Array): { address: string; type: number; decoder: dec
   }
 }
 
+/** What a provider sends when it lets a page go. */
+function providerClose(address: string): Uint8Array {
+  const e = encoding.createEncoder();
+  encoding.writeVarString(e, address);
+  encoding.writeVarUint(e, MSG_CLOSE);
+  return encoding.toUint8Array(e);
+}
+
 function closeMessage(address: string, reason: string): Uint8Array {
   const e = encoding.createEncoder();
   encoding.writeVarString(e, address);
@@ -54,6 +68,11 @@ export interface SocketDeps {
   rev: () => number;
   health: () => Record<string, unknown>;
   members: Members;
+  /**
+   * ADR 0091, the guard: whether this page holds anything an editor of `schema` would drop when it edits (a block's color
+   * for schema 1). Asked only of an editor older than this build's schema, and only for a change.
+   */
+  outdated?: (pageId: string, schema: number) => boolean;
 }
 
 class Session {
@@ -65,6 +84,8 @@ class Session {
   private client: ReturnType<Hocuspocus['handleConnection']> | null = null;
   /** Pages on this connection the desk has closed, until the client asks again with Auth. */
   private readonly closedPages = new Set<string>();
+  /** The page schema each provider on this connection said in its Auth token (ADR 0091), and whether it said one. None is 1. */
+  private readonly schemas = new Map<string, { schema: number; said: boolean }>();
   /** Pages Hocuspocus has authenticated on this connection and not closed since, as its own replies say. */
   private readonly openPages = new Set<string>();
   /** Pages whose provider has gone and that Hocuspocus is still closing, each with what has come for it since. */
@@ -285,6 +306,11 @@ class Session {
         if (h.type !== MSG_AUTH) return;
         this.closedPages.delete(h.address);
       }
+      if (h.type === MSG_AUTH) this.schemas.set(h.address, this.tokenSchema(h.decoder));
+      else if (h.type === MSG_SYNC && this.fromOlderEditor(h.address, h.decoder)) {
+        this.refuseOlder(h.address);
+        return;
+      }
       if (h.type === MSG_CLOSE) {
         // A provider has gone. For a page with nothing open here, Hocuspocus would keep the CLOSE until the next
         // provider's Auth, and then close that one with it: a CLOSE from a socket deskd has since reset, say.
@@ -325,7 +351,7 @@ class Session {
       }
       // Refused for size, or on a guild desk for deleting another member's text: the provider stays attached and keeps
       // sending, and that's dropped until it asks again with Auth, as a fresh provider does.
-      if (reason === PAGE_FULL || reason === FORBIDDEN) this.closedPages.add(h.address);
+      if (reason === PAGE_FULL || reason === FORBIDDEN || reason === STORAGE_FULL) this.closedPages.add(h.address);
     } else if (h?.type === MSG_AUTH) {
       const kind = this.authType(h.decoder);
       if (kind === AUTH_AUTHENTICATED) {
@@ -352,6 +378,49 @@ class Session {
     }
     if (h && this.closedPages.has(h.address) && h.type !== MSG_CLOSE && h.type !== MSG_AUTH) return;
     this.sendRaw(FRAME_COLLAB, data);
+  }
+
+  /** The schema an Auth message's token says (ADR 0091). Anything unreadable is 1, the strictest, said by nobody. */
+  private tokenSchema(decoder: decoding.Decoder): { schema: number; said: boolean } {
+    try {
+      if (decoding.readVarUint(decoder) !== AUTH_TOKEN) return { schema: 1, said: false };
+      const token = decoding.readVarString(decoder);
+      return { schema: schemaOfToken(token), said: tokenSaysSchema(token) };
+    } catch {
+      return { schema: 1, said: false };
+    }
+  }
+
+  /**
+   * The guard (ADR 0091): a change from an editor older than this build's schema, to a page holding something that editor
+   * would drop, such as a block's color. Its empty SyncStep2 as it opens isn't a change, so it can still read the page.
+   */
+  private fromOlderEditor(address: string, decoder: decoding.Decoder): boolean {
+    const schema = this.schemas.get(address)?.schema ?? 1;
+    if (schema >= NOTEBOOK_SCHEMA || !this.deps.outdated) return false;
+    let update: Uint8Array;
+    try {
+      const kind = decoding.readVarUint(decoder);
+      if (kind !== SYNC_STEP2 && kind !== SYNC_UPDATE) return false;
+      update = decoding.readVarUint8Array(decoder);
+    } catch {
+      return false; // damaged: Hocuspocus's own path refuses it, and the connection resets
+    }
+    return updateChanges(update) && this.deps.outdated(address, schema);
+  }
+
+  /**
+   * Refuses an older editor's change whole, before Hocuspocus sees it, and closes the page for that provider as a refused
+   * update is closed: it stays attached, and what it sends is dropped until it asks again with Auth. Hocuspocus is told the
+   * provider let the page go, so that Auth opens it afresh. A provider that said a schema gets `reload`; one from before
+   * the guard said none and knows only `page_full`, which at least stops its editor taking text it can't keep.
+   */
+  private refuseOlder(address: string): void {
+    const { schema, said } = this.schemas.get(address) ?? { schema: 1, said: false };
+    log('INFO', `older editor refused page=${address} schema=${said ? schema : 'none'}`);
+    if (this.openPages.has(address)) this.onCollab(providerClose(address));
+    this.closedPages.add(address);
+    this.sendRaw(FRAME_COLLAB, closeMessage(address, said ? RELOAD_REASON : PAGE_FULL));
   }
 
   private authType(decoder: decoding.Decoder): number | null {

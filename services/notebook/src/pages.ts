@@ -36,6 +36,33 @@ export const PAGE_FULL_BYTES = Math.floor(3.5 * 1024 * 1024);
 /** A derived title is the first line, however long. A tree row or a hit has to fit a reply. */
 const TITLE_MAX = 500;
 const SLOW_STORE_MS = 100;
+/** While storage fails, the retry waits this long, doubling to the larger. */
+const RETRY_MIN_MS = 1000;
+const RETRY_MAX_MS = 30_000;
+/** What may wait in memory while the disk refuses writes, per page and over all. Past it, new edits are refused. */
+export const BACKLOG_PAGE_BYTES = 1024 * 1024;
+export const BACKLOG_TOTAL_BYTES = 8 * 1024 * 1024;
+/** After this long of failing storage with edits waiting, new edits are refused whatever the size, so the member sees it. */
+export const REFUSE_AFTER_MS = 60_000;
+
+/** Updates waiting for the log: an open page's, or a page's that left memory before they were written. */
+interface Queued {
+  pageId: string;
+  queue: Uint8Array[];
+  queueActors: Set<string>;
+}
+
+export interface StorageState {
+  /** `degraded` from the first failed write to the log or a store until all the waiting edits are written. */
+  state: 'ok' | 'degraded';
+  /** Edits waiting in memory: pages with some, and their size. */
+  unsavedPages: number;
+  unsavedBytes: number;
+  /** Whether new edits are being refused (`storage_full`). */
+  refusing: boolean;
+  /** How long it has been failing, in seconds; 0 when it isn't. */
+  degradedSeconds: number;
+}
 
 interface DayEdits {
   count: number;
@@ -77,6 +104,9 @@ export interface PagesOptions {
   sessionIdleMs: number;
   intervalMs: number;
   pageFullBytes: number;
+  backlogPageBytes: number;
+  backlogTotalBytes: number;
+  refuseAfterMs: number;
   debugStores: boolean;
   onStored: (pageId: string, ms: number) => void;
   onContentChange: (pageId: string) => void;
@@ -88,6 +118,9 @@ export const DEFAULT_PAGES_OPTIONS = {
   sessionIdleMs: SESSION_IDLE_MS,
   intervalMs: INTERVAL_MS,
   pageFullBytes: PAGE_FULL_BYTES,
+  backlogPageBytes: BACKLOG_PAGE_BYTES,
+  backlogTotalBytes: BACKLOG_TOTAL_BYTES,
+  refuseAfterMs: REFUSE_AFTER_MS,
   debugStores: false,
 };
 
@@ -125,6 +158,15 @@ export class Pages {
   readonly open = new Map<string, OpenPage>();
   private commitTimer: ReturnType<typeof setTimeout> | null = null;
   private commitFailing = false;
+  /** Pages whose store failed and will be tried again. */
+  private readonly failedStores = new Set<string>();
+  /** Updates of pages that left memory before they were written to the log. They are kept and retried. */
+  private readonly stranded = new Map<string, Queued>();
+  /** When storage began failing, or 0. */
+  private degradedSince = 0;
+  private retryTimer: ReturnType<typeof setTimeout> | null = null;
+  private retryMs = RETRY_MIN_MS;
+  private refusalLogged = false;
   closed = false;
 
   constructor(
@@ -174,8 +216,26 @@ export class Pages {
       stateBytes,
       gone: false,
     };
+    // Updates a closed page left unwritten (the disk was failing) come back with it, and are written when it can.
+    const left = this.stranded.get(pageId);
+    if (left) {
+      for (const u of left.queue) {
+        try {
+          Y.applyUpdate(doc, u);
+        } catch (e) {
+          log('ERROR', `stranded update skipped page=${pageId} bytes=${u.length} ${errName(e)}`);
+        }
+        entry.stateBytes += u.length;
+      }
+      entry.queue = left.queue;
+      entry.queueActors = left.queueActors;
+      entry.dirtySinceVersion = true;
+      entry.lastEditAt = now;
+      this.stranded.delete(pageId);
+    }
     doc.on('beforeTransaction', () => this.beforeEdit(entry));
     this.open.set(pageId, entry);
+    if (left) this.commitTimer ??= setTimeout(() => this.commit(), this.opts.commitMs);
   }
 
   /** The first edit after local midnight snapshots the page as the day left it (design 5.3, day_end). */
@@ -225,15 +285,24 @@ export class Pages {
     o.idleTimer.unref();
   }
 
-  /** Commits every open page's queue in one transaction. A failure keeps the queue and tries again. */
+  /**
+   * Commits every waiting queue in one transaction. A failure keeps the queues (merged, so they stay small), says so
+   * once, and tries again with a growing wait. The degraded state ends when everything waiting has been written.
+   */
   commit(): void {
     if (this.commitTimer) {
       clearTimeout(this.commitTimer);
       this.commitTimer = null;
     }
     if (this.closed) return;
-    const dirty = [...this.open.values()].filter((o) => o.queue.length);
-    if (!dirty.length) return;
+    const dirty: Queued[] = [...[...this.open.values()].filter((o) => o.queue.length), ...[...this.stranded.values()].filter((q) => q.queue.length)];
+    if (!dirty.length) {
+      if (this.commitFailing) {
+        this.commitFailing = false;
+        this.checkRecovered();
+      }
+      return;
+    }
     const merged = dirty.map((o) => (o.queue.length === 1 ? o.queue[0] as Uint8Array : Y.mergeUpdates(o.queue)));
     const now = this.opts.now();
     try {
@@ -249,28 +318,145 @@ export class Pages {
           );
         });
       });
-      for (const o of dirty) {
-        o.queue = [];
-        o.queueActors = new Set();
-        o.logged = true;
-      }
-      if (this.commitFailing) {
-        this.commitFailing = false;
-        log('INFO', 'commits work again');
-      }
     } catch (e) {
-      if (!this.commitFailing) {
-        this.commitFailing = true;
-        log('ERROR', `commit failed, keeping the queue ${errName(e)}`);
-      }
+      this.commitFailing = true;
       dirty.forEach((o, i) => {
         o.queue = [merged[i] as Uint8Array];
       });
-      this.commitTimer = setTimeout(() => this.commit(), 1000);
+      this.storageFailed('commit', e);
+      return;
+    }
+    for (const o of dirty) {
+      o.queue = [];
+      o.queueActors = new Set();
+      if ('logged' in o) (o as OpenPage).logged = true;
+      this.stranded.delete(o.pageId);
+    }
+    this.commitFailing = false;
+    this.checkRecovered();
+  }
+
+  // ---------------------------------------------------------------- storage failing
+
+  /** The first failure of a run is logged, with the error's code and no content; the retry is scheduled every time. */
+  private storageFailed(what: 'commit' | 'store', e: unknown): void {
+    if (!this.degradedSince) {
+      this.degradedSince = this.opts.now();
+      this.retryMs = RETRY_MIN_MS;
+      log('ERROR', `storage failing, keeping edits in memory and retrying ${what} ${errName(e)}`);
+    }
+    if (!this.retryTimer) {
+      this.retryTimer = setTimeout(() => this.retry(), this.retryMs);
+      this.retryTimer.unref();
+    }
+  }
+
+  private retry(): void {
+    this.retryTimer = null;
+    if (this.closed) return;
+    this.retryMs = Math.min(this.retryMs * 2, RETRY_MAX_MS);
+    this.commit();
+    for (const id of [...this.failedStores]) {
+      const o = this.open.get(id);
+      if (o && !this.commitFailing) this.storeQuietly(id);
+      else if (!o) this.failedStores.delete(id);
+    }
+    this.checkRecovered();
+    // commit() and storeQuietly() schedule the next try on a failure; if only a store is outstanding and nothing else
+    // asked, this does.
+    if (this.degradedSince && !this.retryTimer && !this.closed) {
+      this.retryTimer = setTimeout(() => this.retry(), this.retryMs);
+      this.retryTimer.unref();
+    }
+  }
+
+  private checkRecovered(): void {
+    if (!this.degradedSince || this.commitFailing || this.failedStores.size) return;
+    const secs = Math.round((this.opts.now() - this.degradedSince) / 1000);
+    this.degradedSince = 0;
+    this.refusalLogged = false;
+    this.retryMs = RETRY_MIN_MS;
+    if (this.retryTimer) {
+      clearTimeout(this.retryTimer);
+      this.retryTimer = null;
+    }
+    log('INFO', `storage works again after ${secs} s, everything waiting is written`);
+  }
+
+  private backlog(pageId?: string): { pages: number; bytes: number; page: number; max: number } {
+    let pages = 0;
+    let bytes = 0;
+    let page = 0;
+    let max = 0;
+    const add = (q: Queued): void => {
+      if (!q.queue.length) return;
+      const n = q.queue.reduce((t, u) => t + u.length, 0);
+      pages += 1;
+      bytes += n;
+      if (q.pageId === pageId) page = n;
+      max = Math.max(max, n);
+    };
+    for (const o of this.open.values()) add(o);
+    for (const q of this.stranded.values()) add(q);
+    return { pages, bytes, page, max };
+  }
+
+  /**
+   * Whether an update to this page is refused now: storage is failing, edits are waiting, and they have waited past
+   * the grace period or are over the page's or the total cap.
+   */
+  refuses(pageId: string): boolean {
+    if (!this.degradedSince) return false;
+    const b = this.backlog(pageId);
+    if (!b.bytes) return false;
+    const refuse = this.overLimit(b.page, b.bytes);
+    if (refuse && !this.refusalLogged) {
+      this.refusalLogged = true;
+      log('ERROR', `refusing new edits while storage fails pages=${b.pages} bytes=${b.bytes}`);
+    }
+    return refuse;
+  }
+
+  private overLimit(page: number, total: number): boolean {
+    return this.opts.now() - this.degradedSince >= this.opts.refuseAfterMs || page >= this.opts.backlogPageBytes || total >= this.opts.backlogTotalBytes;
+  }
+
+  /** For health: never throws. */
+  storage(): StorageState {
+    const b = this.backlog();
+    return {
+      state: this.degradedSince ? 'degraded' : 'ok',
+      unsavedPages: b.pages,
+      unsavedBytes: b.bytes,
+      refusing: !!this.degradedSince && b.bytes > 0 && this.overLimit(b.max, b.bytes),
+      degradedSeconds: this.degradedSince ? Math.round((this.opts.now() - this.degradedSince) / 1000) : 0,
+    };
+  }
+
+  /** Hocuspocus's onStoreDocument: a failed store is kept for the retry, not thrown into Hocuspocus. */
+  storeQuietly(pageId: string): void {
+    const o = this.open.get(pageId);
+    if (!o) return;
+    this.guarded(o, undefined);
+  }
+
+  private guarded(o: OpenPage, reason: VersionReason | undefined): void {
+    try {
+      this.storeOpen(o, reason);
+      this.failedStores.delete(o.pageId);
+      this.checkRecovered();
+    } catch (e) {
+      this.failedStores.add(o.pageId);
+      this.storageFailed('store', e);
     }
   }
 
   // ---------------------------------------------------------------- page_full
+
+  /** Whether a new page of this much Yjs state could be synced to a new client (a duplicate, an import). */
+  fitsNewPage(stateBytes: number): boolean {
+    return stateBytes <= this.opts.pageFullBytes;
+  }
 
   /** Would this update take the page past what a new client can sync? Delete-only updates and repeats never can. */
   wouldOverflow(pageId: string, update: Uint8Array): boolean {
@@ -467,16 +653,12 @@ export class Pages {
   /** The end of an editing session (design 5.3): 5 minutes idle, a page switch or the window closing. */
   endSession(pageId: string): void {
     const o = this.open.get(pageId);
-    if (o) this.storeOpen(o, o.dirtySinceVersion ? 'session' : undefined);
+    if (o) this.endSessionQuietly(o);
   }
 
   private endSessionQuietly(o: OpenPage): void {
     if (o.gone) return;
-    try {
-      this.storeOpen(o, o.dirtySinceVersion ? 'session' : undefined);
-    } catch (e) {
-      log('ERROR', `session store failed page=${o.pageId} ${errName(e)}`);
-    }
+    this.guarded(o, o.dirtySinceVersion ? 'session' : undefined);
   }
 
   /** The document left memory. */
@@ -486,12 +668,20 @@ export class Pages {
     o.gone = true;
     if (o.idleTimer) clearTimeout(o.idleTimer);
     this.open.delete(pageId);
+    this.failedStores.delete(pageId);
+    // Unwritten updates don't go with the page: they wait, and are written (or come back if it opens again).
+    if (o.queue.length) {
+      this.stranded.set(pageId, { pageId, queue: o.queue, queueActors: o.queueActors });
+      this.commitTimer ??= setTimeout(() => this.commit(), this.opts.commitMs);
+    }
   }
 
   /** SIGTERM: every open page stored, as a session that ended. */
   storeAll(): void {
-    for (const o of this.open.values()) this.endSessionQuietly(o);
+    for (const o of [...this.open.values()]) this.endSessionQuietly(o);
     this.commit();
+    const left = this.backlog();
+    if (left.bytes) log('ERROR', `stopping with edits not written pages=${left.pages} bytes=${left.bytes}`);
   }
 
   /** At start: pages with log rows, which the last process didn't get to store, are folded in and kept as a session. */

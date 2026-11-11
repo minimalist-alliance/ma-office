@@ -1,0 +1,43 @@
+{
+  "category": "extras",
+  "layer": "12-extras",
+  "colorSlot": "extraColor",
+  "default": null,
+  "parts": [
+    {
+      "id": "freckles",
+      "name": "Freckles",
+      "minSize": 40
+    },
+    {
+      "id": "earrings-studs",
+      "name": "Stud earrings",
+      "minSize": 40
+    },
+    {
+      "id": "earrings-hoops",
+      "name": "Hoop earrings",
+      "minSize": 40
+    },
+    {
+      "id": "hearing-aid",
+      "name": "Hearing aid",
+      "minSize": 40
+    },
+    {
+      "id": "beauty-mark",
+      "name": "Beauty mark",
+      "minSize": 40
+    },
+    {
+      "id": "nose-ring",
+      "name": "Nose ring",
+      "minSize": 40
+    },
+    {
+      "id": "blush",
+      "name": "Blush",
+      "minSize": 32
+    }
+  ]
+}

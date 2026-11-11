@@ -2,7 +2,8 @@
 """report.py: the slot report, as desk-host report prints it and desk-host-link carries it (ma-platform contract
 shared-host.md section 4). Host root. One JSON object on one line:
 
-  {"slots": [{"k": 1, "state": "running", "deskId": "d-...", "epoch": 3, "net": {"bytesOut": 123, "bytesIn": 456}, "fault": "..."}, ...],
+  {"slots": [{"k": 1, "state": "running", "deskId": "d-...", "epoch": 3, "class": "standard", "net": {"bytesOut": 123, "bytesIn": 456},
+              "fault": "..."}, ...],
    "conntrack": {"count": 9000, "max": 65536}}
 
 - state, exactly as the contract names them: starting and stopping while desk-host up or stop runs (its marker,
@@ -17,8 +18,28 @@ shared-host.md section 4). Host root. One JSON object on one line:
   reported one. desk-host resets it at each start (a wake at the same epoch included; Platform takes a lower count as a
   restart), and a boot starts it at 0. net.bytesIn is the same for what the desk receives (rx_<k>); Platform reads only
   bytesOut today, and the desk's own net.json carries both.
+- class (contract 0.3.46, S-119): for a slot that's starting, running or stopping, the class desk-host runs its container
+  at, from the host's own record (/run/desk-host/<k>/class.json, written at each start and each `desk-host class`), with
+  "+pending" while a memory.max waits (a lower cap the desk doesn't fit yet, until its next start). Platform orders set_class
+  when it isn't the slot's record's, and the link's set_class is done once this says the order's class; absent otherwise.
+- shaper (running slots only; ADR 0036 per container, egress.py show): the outbound shaper on the desk's veth: on, each class's
+  rate and tc's counters ({"10": {"rateBits", "bytes", "packets", "drops", "overlimits"}, "15": ..., "20": ...}), off when desk-host
+  shaper <k> off took it off, and the budget's state (slowed, clamped, profile, bucketGb, dayGb, monthGb, savedAgoS). Platform reads
+  none of it today (its validator ignores fields it doesn't know); ADR 0036's test 1 on a shared host reads each class's rate from
+  the counters between two reports, beside net.bytesOut.
 - fault: only when desk-host last refused to start the slot (/run/desk-host/fault/<k>): tag_unreadable, tag_mismatch,
   address_absent, address_mismatch, volume_absent, start_failed. Platform's validator reads the other fields only.
+
+- ADR 0077's fields (PU-1), additive: per slot `template` (its generation), `chromium` (that generation's), `lastVersion` (the
+  host's last read of its profile's Last Version, or null), `behind` (not on the current generation), `chromiumBehind` (no
+  generation here is new enough for its profile) and `update.holdUntil`; per host `templates` (current, previous, candidate,
+  each {gen, chromium, sealedAt, target}, and halted), `fetch` ({target, gen, state, at, step, error}) and `hostApt` ({lastOk,
+  lastResult, rebootPending: {since, kernel}}). A fresh root is `prepared` only on the current generation.
+
+- ADR 0078's fields (PB-1), additive: per slot `batch` ({seq, state}: current, behind, copying, switching, rolled-back or failed) and
+  `releases` (each store component's version in its rel/); per host `batches` (current, previous, candidate with its canary, halted
+  and floor, each {seq, id, at}), `batchFetch` ({seq, state, step, at, error}), `templatePending` ([{name, version}]: a batch's
+  desk-agent-filter the template doesn't have) and `imagePending` ({seq, image}). update.holdUntil (ADR 0077's) is ahead while a switch runs.
 
 Nothing about a member is in it: desk IDs and counts only.
 """
@@ -30,13 +51,16 @@ import sys
 
 sys.dont_write_bytecode = True   # nothing written beside the host's own code
 sys.path.insert(0, os.path.dirname(os.path.abspath(__file__)))
+import batches  # noqa: E402
+import egress  # noqa: E402
 import hostmeta  # noqa: E402
+import templates  # noqa: E402
 
 REC = "/var/lib/desk-host/slots"
 RUN = "/run/desk-host"
-T = "/srv/desk-host/template"
 S = "/srv/desk-host/slots"
 FAULTS = {"tag_unreadable", "tag_mismatch", "address_absent", "address_mismatch", "volume_absent", "start_failed"}
+CLASS = re.compile(r"[a-z][a-z0-9-]{0,31}")   # classes.conf's names
 
 
 def read_json(p):
@@ -111,7 +135,15 @@ def state_of(rec, status, op, tmpl_id, root_ok, held):
     return "stopped" if held else "unmounted"
 
 
-def slot_entry(k, tag, tag_ok, rec, status, op, run, tmpl_id, root_ok, held, counter, net_epoch, fault, counter_in=0):
+def class_of(rec):
+    """The class a slot's container runs at, from its class.json: "<class>", or "<class>+pending" while a memory.max waits;
+    None when there's no record or it names no class."""
+    if not isinstance(rec, dict) or not isinstance(rec.get("class"), str) or not CLASS.fullmatch(rec["class"]):
+        return None
+    return rec["class"] + ("+pending" if rec.get("pending") else "")
+
+
+def slot_entry(k, tag, tag_ok, rec, status, op, run, tmpl_id, root_ok, held, counter, net_epoch, fault, counter_in=0, cls=None):
     st = state_of(rec, status, op, tmpl_id, root_ok, held)
     if st in ("starting", "running", "stopping") and run and hostmeta.is_desk_id(run.get("deskId")) and isinstance(run.get("epoch"), int):
         desk, epoch = run["deskId"], run["epoch"]
@@ -122,6 +154,8 @@ def slot_entry(k, tag, tag_ok, rec, status, op, run, tmpl_id, root_ok, held, cou
     mine = net_epoch == epoch
     e = {"k": k, "state": st, "deskId": desk, "epoch": epoch,
          "net": {"bytesOut": counter if (counter and mine) else 0, "bytesIn": counter_in if (counter_in and mine) else 0}}
+    if cls and st in ("starting", "running", "stopping"):
+        e["class"] = cls
     if not tag_ok:
         e["fault"] = "tag_unreadable"
     elif fault in FAULTS and st not in ("running", "starting"):
@@ -136,18 +170,30 @@ def main():
         tags, tags_ok = hostmeta.slot_tags(imds, n), True
     except hostmeta.ImdsError:
         tags, tags_ok = {}, False
-    tmpl = (read_text(f"{T}/.complete") or "").splitlines()
-    tmpl_id = tmpl[0] if tmpl else None
+    tst = templates.load_state()
+    tmpl_id = templates.current_gen(tst)
+    bst = batches.load_state()
     cnt = counters()
     slots = []
     for k in range(1, n + 1):
         tag = tags.get(k)
         net_epoch = read_text(f"{RUN}/net/{k}.epoch")
-        e = slot_entry(k, tag, tags_ok and tag is not None, read_json(f"{REC}/{k}.json"), container_status(k), read_text(f"{RUN}/op/{k}"),
+        rec = read_json(f"{REC}/{k}.json")
+        e = slot_entry(k, tag, tags_ok and tag is not None, rec, container_status(k), read_text(f"{RUN}/op/{k}"),
                        read_json(f"{RUN}/slotstate/{k}.json"), tmpl_id, os.path.isdir(f"{S}/{k}/rootfs"),
                        volume_held(tag["volumeId"] if tag else None), cnt.get(k, (0, 0))[0],
                        int(net_epoch) if net_epoch and net_epoch.isdigit() else None, read_text(f"{RUN}/fault/{k}"),
-                       counter_in=cnt.get(k, (0, 0))[1])
+                       counter_in=cnt.get(k, (0, 0))[1], cls=class_of(read_json(f"{RUN}/{k}/class.json")))
+        if e["state"] == "running":
+            try:
+                e["shaper"] = egress.show(k, e["deskId"])
+            except Exception as x:  # noqa: BLE001 - the shaper's view never costs the report
+                e["shaper"] = {"on": False, "error": f"{type(x).__name__}: {x}"[:160]}
+        e.update(templates.report_slot(k, rec, tst))
+        try:
+            e.update(batches.report_slot(k, rec, bst))
+        except Exception as x:  # noqa: BLE001 - a batch field never costs the report
+            e["batch"] = {"seq": None, "state": "unknown", "error": f"{type(x).__name__}"}
         slots.append(e)
         net = read_json(f"{RUN}/{k}/net.json")   # the desk's own read-only view of its count (ADR 0072 section 8), as before
         if net is not None:
@@ -162,6 +208,11 @@ def main():
     out = {"slots": slots}
     if len(ct) == 2:
         out["conntrack"] = ct
+    out.update(templates.report_host())
+    try:
+        out.update(batches.report_host(bst))
+    except Exception as x:  # noqa: BLE001
+        out["batchFetch"] = {"state": "unknown", "error": f"{type(x).__name__}"}
     print(json.dumps(out, separators=(",", ":")))
 
 

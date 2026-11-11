@@ -21,9 +21,13 @@ export default defineConfig({
     // The default CSP has no font-src data:, so nothing gets inlined.
     assetsInlineLimit: 0,
     chunkSizeWarningLimit: 800, // the real budget is enforced by scripts/build-release.mjs
-    rollupOptions: { input: 'src/main.tsx' },
+    rollupOptions: {
+      input: 'src/main.tsx',
+      // The vendored avatar kit (renderer and parts) is one lazy chunk of its own, loaded when a built avatar is drawn.
+      output: { manualChunks: (id) => (id.includes('/packages/avatar-kit/') ? 'avatar-kit' : undefined) },
+    },
   },
   // The dev server may read Commons' source, beside this package.
-  server: { host: 'localhost', fs: { allow: ['.', '../apps/commons/web'] } },
+  server: { host: 'localhost', fs: { allow: ['.', '../apps/commons/web', '../packages/avatar-kit', '../packages/bell-kit'] } },
   test: { include: ['src/**/*.test.ts'], environment: 'node' },
 });

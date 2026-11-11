@@ -3,7 +3,8 @@
 // stopped, then loads the office afresh. The page wakes the desk by itself, as the member's office does; nothing is clicked to wake.
 // Writes samples.json per label to ~/ma-design-drafts/w3/<W3_LABEL>/wake-<WAKE_LABEL>.json and the guest's own boot data beside it.
 //
-// Needs WAKE_INSTANCE (a staging DeskKind=test instance tagged Owner=...), W3_DESK, W3_USER_SSM, W3_DESK_ID, W3_LABEL, WAKE_LABEL.
+// Needs WAKE_INSTANCE (a staging DeskKind=test instance tagged Owner=<WAKE_OWNER>...), W3_DESK, W3_USER_SSM, W3_DESK_ID, W3_LABEL, WAKE_LABEL.
+// WAKE_OWNER is the task's AWS owner tag (default syseng-td227, the task that wrote this); the instance's Owner tag must start with it.
 // WAKE_N samples (default 5). Skips unless WAKE_INSTANCE is set. Test desk only: it refuses the owner's desk and anything not tagged.
 import { execFile } from 'node:child_process';
 import { mkdirSync, writeFileSync } from 'node:fs';
@@ -15,6 +16,7 @@ import { BrowserWin, channelHook, clientLoad, installProbe, loadW3User, pickDesk
 
 const run = promisify(execFile);
 const INSTANCE = process.env.WAKE_INSTANCE ?? '';
+const OWNER = process.env.WAKE_OWNER ?? 'syseng-td227';
 test.skip(!INSTANCE, 'WAKE_INSTANCE is not set');
 test.setTimeout(3 * 60 * 60_000);
 
@@ -59,8 +61,7 @@ test('Alliance desk wake samples', async ({ browser }) => {
 
   const inst = JSON.parse(await aws('ec2', 'describe-instances', '--instance-ids', INSTANCE, '--query', 'Reservations[0].Instances[0]', '--output', 'json'));
   const tags: Record<string, string> = Object.fromEntries((inst.Tags ?? []).map((t: { Key: string; Value: string }) => [t.Key, t.Value]));
-  const protectedIds = (process.env.W3_PROTECTED ?? '').split(',').map((x) => x.trim()).filter(Boolean);
-  if (protectedIds.includes(INSTANCE) || tags.DeskKind !== 'test' || tags.Env !== 'staging' || !tags.Owner?.startsWith('syseng-td227')) throw new Error(`refusing ${INSTANCE}: not a staging test desk of this task`);
+  if (INSTANCE === '<instance>' || INSTANCE === '<instance>' || tags.DeskKind !== 'test' || tags.Env !== 'staging' || !OWNER.startsWith('syseng-') || !tags.Owner?.startsWith(OWNER)) throw new Error(`refusing ${INSTANCE}: not a staging test desk of this task`);
   const deskId = tags.DeskId;
   if (deskId !== inp.deskId) throw new Error('W3_DESK_ID must be this instance\'s DeskId');
 

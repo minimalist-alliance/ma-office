@@ -32,6 +32,7 @@ async function start(): Promise<LocalBackend> {
     await deleteDb(DB);
     try {
       localStorage.removeItem(STATE_KEY);
+      localStorage.removeItem(COLOR_KEY);
     } catch {
       // nothing to forget
     }
@@ -57,8 +58,27 @@ const THEMES: { id: DemoTheme; label: string }[] = [
   { id: 'dark', label: 'Dark' },
 ];
 
+/** The color last used in a menu: the Desk app keeps it in the member's prefs; the demo, in this browser. */
+const COLOR_KEY = 'ma.notebook-demo.color';
+function savedColor(): string | null {
+  try {
+    return localStorage.getItem(COLOR_KEY);
+  } catch {
+    return null;
+  }
+}
+
 function Demo({ backend }: { backend: LocalBackend }) {
   const [theme, setTheme] = useState<DemoTheme>(savedTheme());
+  const [lastColor, setLastColor] = useState<string | null>(savedColor);
+  const rememberColor = (id: string) => {
+    setLastColor(id);
+    try {
+      localStorage.setItem(COLOR_KEY, id);
+    } catch {
+      // Not remembered, still used.
+    }
+  };
   const choose = (t: DemoTheme) => {
     setTheme(t);
     document.documentElement.setAttribute('data-theme', t);
@@ -73,6 +93,7 @@ function Demo({ backend }: { backend: LocalBackend }) {
     await deleteDb(DB);
     try {
       localStorage.removeItem(STATE_KEY);
+      localStorage.removeItem(COLOR_KEY);
     } catch {
       // nothing to forget
     }
@@ -94,6 +115,8 @@ function Demo({ backend }: { backend: LocalBackend }) {
         <Notebook
           backend={backend}
           stateKey={STATE_KEY}
+          lastColor={lastColor}
+          onLastColorChange={rememberColor}
           headerStart={
             <h2 className="demo-title">
               <NotebookGlyph />

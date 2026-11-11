@@ -1,6 +1,5 @@
 // Small controls the Notebook shares: segmented switch, inline rename, menus, highlighted text.
-import { useEffect, useLayoutEffect, useRef, useState, type KeyboardEvent, type ReactNode } from 'react';
-import { createPortal } from 'react-dom';
+import { useEffect, useRef, useState, type KeyboardEvent, type ReactNode } from 'react';
 import type { MatchRange } from '../model/types.ts';
 
 export function Segmented<T extends string>({
@@ -55,12 +54,15 @@ export function InlineName({
   label,
   editing: editingProp = false,
   onDone,
+  readOnly = false,
 }: {
   value: string;
   onCommit: (name: string) => void;
   label: string;
   editing?: boolean;
   onDone?: () => void;
+  /** Shows the name and does not turn into a field. */
+  readOnly?: boolean;
 }) {
   const [editing, setEditing] = useState(editingProp);
   const [draft, setDraft] = useState(value);
@@ -77,6 +79,7 @@ export function InlineName({
     // Only when editing starts.
     // eslint-disable-next-line react-hooks/exhaustive-deps
   }, [editing]);
+  if (readOnly) return <span className="nb-name">{value}</span>;
   if (!editing) {
     return (
       <span className="nb-name" onDoubleClick={() => setEditing(true)} title="Double-click to rename">
@@ -109,118 +112,8 @@ export function InlineName({
   );
 }
 
-export interface MenuItem {
-  label: string;
-  onSelect?: () => void;
-  danger?: boolean;
-  disabled?: boolean;
-  /** A dot of this tab color before the label. */
-  swatch?: string;
-  checked?: boolean;
-  /** A heading row that isn't selectable. */
-  heading?: boolean;
-}
-
-/**
- * A menu anchored to a point or an element. Arrow keys move, Enter picks, Esc or a click away closes,
- * and focus goes back where it was. Rendered in a portal so a scrolling list never clips it.
- */
-export function Menu({
-  items,
-  anchor,
-  onClose,
-  label,
-}: {
-  items: MenuItem[];
-  anchor: { x: number; y: number } | HTMLElement;
-  onClose: () => void;
-  label: string;
-}) {
-  const ref = useRef<HTMLDivElement>(null);
-  const [pos, setPos] = useState<{ left: number; top: number } | null>(null);
-  const back = useRef<Element | null>(null);
-
-  useLayoutEffect(() => {
-    back.current = document.activeElement;
-    const el = ref.current;
-    if (!el) return;
-    const box = anchor instanceof HTMLElement ? anchor.getBoundingClientRect() : { left: anchor.x, right: anchor.x, top: anchor.y, bottom: anchor.y };
-    const w = el.offsetWidth;
-    const h = el.offsetHeight;
-    let left = anchor instanceof HTMLElement ? box.right - w : box.left;
-    let top = box.bottom + 4;
-    if (top + h > window.innerHeight - 8) top = Math.max(8, box.top - h - 4);
-    left = Math.max(8, Math.min(left, window.innerWidth - w - 8));
-    setPos({ left, top });
-    el.querySelector<HTMLElement>('[role^="menuitem"]:not([aria-disabled="true"])')?.focus();
-  }, [anchor]);
-
-  useEffect(() => {
-    const away = (e: PointerEvent) => {
-      if (!ref.current?.contains(e.target as Node)) onClose();
-    };
-    document.addEventListener('pointerdown', away, true);
-    return () => document.removeEventListener('pointerdown', away, true);
-  }, [onClose]);
-
-  const close = (refocus = true) => {
-    onClose();
-    if (refocus && back.current instanceof HTMLElement) back.current.focus({ preventScroll: true });
-  };
-
-  const onKey = (e: KeyboardEvent) => {
-    const list = [...(ref.current?.querySelectorAll<HTMLElement>('[role^="menuitem"]:not([aria-disabled="true"])') ?? [])];
-    const i = list.indexOf(document.activeElement as HTMLElement);
-    if (e.key === 'ArrowDown' || e.key === 'ArrowUp') {
-      e.preventDefault();
-      list[(i + (e.key === 'ArrowDown' ? 1 : -1) + list.length) % list.length]?.focus();
-    } else if (e.key === 'Home' || e.key === 'End') {
-      e.preventDefault();
-      list[e.key === 'Home' ? 0 : list.length - 1]?.focus();
-    } else if (e.key === 'Escape' || e.key === 'Tab') {
-      e.preventDefault();
-      e.stopPropagation();
-      close();
-    }
-  };
-
-  return createPortal(
-    <div
-      ref={ref}
-      className="nb-menu ma-nb-portal"
-      role="menu"
-      aria-label={label}
-      onKeyDown={onKey}
-      style={pos ? { left: pos.left, top: pos.top } : { left: -9999, top: -9999 }}
-    >
-      {items.map((it, i) =>
-        it.heading ? (
-          <div key={i} className="nb-menu-heading" role="presentation">
-            {it.label}
-          </div>
-        ) : (
-          <button
-            key={i}
-            type="button"
-            role={it.checked === undefined ? 'menuitem' : 'menuitemradio'}
-            aria-checked={it.checked}
-            aria-disabled={it.disabled || undefined}
-            className={`nb-menu-item${it.danger ? ' danger' : ''}`}
-            onClick={() => {
-              if (it.disabled) return;
-              close(false);
-              it.onSelect?.();
-            }}
-          >
-            {it.swatch && <span className="nb-swatch" data-color={it.swatch} aria-hidden="true" />}
-            <span>{it.label}</span>
-          </button>
-        ),
-      )}
-    </div>,
-    document.body,
-  );
-}
+// The Notebook's one menu (menu/Menu.tsx), here too for the views that have always imported it from here.
+export { Menu, type MenuItem } from './menu/Menu.tsx';
 
 /** Text with match ranges wrapped in <mark>. */
 export function Highlighted({ text, ranges }: { text: string; ranges: MatchRange[] }) {

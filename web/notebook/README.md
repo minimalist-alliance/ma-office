@@ -87,7 +87,8 @@ reject: the UI catches that and draws nothing further, and the host says what's 
 | Structure | `createNotebook`, `renameNotebook`, `createTab`, `renameTab`, `recolorTab`, `addTabAtPage`, `createPage`, `movePage`, `trashPage`, `restorePage` | `notebook.notebook.*`, `notebook.tab.*`, `notebook.page.*` with `idem`. Last writer wins |
 | Text | `openPage(id)` gives a `PageSession`: a `Y.Doc`, `ready`, `close()`, and optionally `onReadOnly`. `pageContent(id)` reads without a session | One `HocuspocusProvider` per open page on the same `Y.Doc`, over the `collab` channel. `notebook.page.content` in parts. A full page goes read-only |
 | History | `versions`, `version`, `saveVersion`, `restoreVersion`, `versionAsOf(page, day)` | `notebook.version.*` |
-| Temporal, search | `activity(from, to)`, `activeDays()`, `search(q, opts)` | `notebook.activity`, `notebook.activity.days`, `notebook.search` |
+| Temporal, search | `activity(from, to)`, `activeDays()`, `search(q, opts)` | `notebook.activity`, `notebook.activity.days`, `notebook.search` (`opts.labels` filters by label) |
+| Colors (ADR 0091) | `setPageLabel(pageId, id \| null)`, `duplicatePage(pageId)`, `importPage(tabId, page, {after?})` | `notebook.page.label`, `notebook.page.duplicate`, `notebook.page.import` |
 
 `tree()` returns a new immutable object after every change, so React reads it with
 `useSyncExternalStore`. Records follow design 5.4's tables (`NotebookRec`, `TabRec`, `PageRec`,
@@ -125,6 +126,54 @@ One database per desk: `dbName`. `importData()` (not part of the interface) writ
   stored by name, "Add tab at this page" (design 5.2), paging on across tab boundaries, pages
   dragged to another tab or within one, rename by double-click, recolor from a tab's menu (right
   click, or Shift+F10), Trash with Restore.
+- **Narrow** (a container query on `.ma-nb`, `container: ma-nb`): under 640 px of its own width on a screen over 720 px (a
+  narrow window, or the Desk app's open tile, ADR 0053), the notebooks and pages column (the days, in By day) steps aside
+  behind a toggle at the head's start ("Notebooks and pages", or "Days", `aria-expanded`), and the page takes the width;
+  open, the column comes over the page from the left, and choosing a page, Esc or a press on the page closes it. The head
+  and toolbar tighten as on a phone. A phone keeps its own layout (the column above the page).
+- **Context menus** (`src/ui/menu/`): one menu for the whole Notebook. It opens by right click, a long press on touch, and
+  Shift+F10 or the Menu key; arrows, Home, End and a letter move, Enter or Space chooses, Right opens a submenu and Left or
+  Esc closes it, Tab leaves, and focus goes back where it was (`nav.ts`, `gestures.ts`, pure and unit tested). Color
+  submenus are a grid of swatches, each a radio item named for its color. On a phone (under 600 px, or a coarse pointer)
+  a menu is never drawn over what it acts on, the selection or the pressed row (`placement.ts`), and a submenu opens in
+  its place with Back. The Desk app has no shared menu component the Notebook could import (its desk menu, hidden list and
+  Files menu each draw `.menu.desk-menu` themselves), so this is the Notebook's own, with the same keys.
+  - **On selected text** (`editorMenu.ts`): Highlight, Text color, Turn into callout, Clear formatting, Cut, Copy, Paste,
+    Block style. Cut, copy and paste use the async Clipboard API where the browser allows it; copy and cut fall back to the
+    browser's own command, and a refused paste says quietly which keys to press (`clipboard.ts`).
+  - **On a block** (the caret's): Turn into callout and Block style (the toolbar's and Markdown shortcuts' styles), Paste.
+  - **On a page row**: Label, Rename (selects the page's first line, which is its name), Duplicate, Delete page, which
+    asks in the footer as before with Keep focused. The ⋯ menu has Label and Duplicate page too.
+  - Every change goes through `colorCommands.ts`, the one door to `nb-data`'s commands (`model/commands.ts`,
+    `setPageLabel`, `duplicatePage`).
+- **Page labels**: a label shows as a dot after the page's title (and is in its accessible name). The filter button in
+  "Pages in …" appears once a page in the notebook has a label: show pages with one or several labels, or none, and sort
+  by label (palette order, unlabeled last, manual order within each). Remembered per notebook in this browser only, under
+  `<stateKey>.pages` (`pageView.ts`); it never reaches the desk.
+- **Colors** (`src/ui/palette.ts`), the Product Designer's (`~/ma-coord/design-drafts/app-colors/`, Nov 10, their picks
+  while the owner chooses from the stills; another pick changes only the values):
+  - **Organizing colors:** Amber, Blue, Green, Rose, Violet and Slate, stored by name, the binder tabs' (`TAB_COLORS`):
+    one color means the same thing on a tab, a label, a highlight and a callout. Amber comes first in every row: it's the
+    default highlight, and the old yellow reads as it. Each has highlight, text, callout and label values per theme. A
+    color submenu is one row of round swatches filled with the label color, named for screen readers, the checked one
+    ringed in the accent, then "none". `tests/unit/palette.test.ts` holds any palette to the Designer's contrast
+    (text.primary on a highlight or callout 7:1 in Light and 4.5:1 in Dusk and Dark, colored text 4.5:1 on the window,
+    the page and its callout). The values reach CSS as `--ma-nb-amber-highlight` and so on through `notebookThemesPlugin`,
+    and files that leave the app get the light ones (`exportPalette()`); pasted colors from elsewhere map to the nearest
+    (`nearestPaletteId`).
+  - **Preview and the last color** (the Designer's spec): a swatch under the pointer or the keyboard shows on the text
+    before it's chosen (`colorPreview.ts`, a decoration, never an edit). The color last chosen in any row is the host's
+    (`Notebook`'s `lastColor` and `onLastColorChange`): the rows start on it, and Turn into callout applies it at once
+    and then shows the row to change it. On a desk it's `notebookColor` in the member's layout `prefs`
+    (`web/src/notebook/NotebookApp.tsx`), saved with the layout once `prefs` keeps keys it doesn't name
+    (`sub/setup-circle`); the demo keeps it in `localStorage`.
+  - **The Notebook's own scheme, "Paper and ink":** `NOTEBOOK_SCHEME` re-declares the office's surface and accent
+    properties (window, sidebar, accent, accent subtle, on accent, link; text, borders, status and danger stay the
+    office's) on `.ma-nb`, its menus (`.ma-nb-portal`) and, on a desk, its window with the title bar
+    (`.ma-window[data-app="notebook"]`, the scope the Desk app's `APP_INKS` gives Files). Nothing outside them changes.
+    The Notebook's surfaces read them through `--nb-scheme-*` (`src/ui/color.css`). In Zen (`dusk`) its ground is slate,
+    the owner's rule for Zen (window `#4B5162`, sidebar `#444A5A`, the Designer's, Nov 11, with the indigo ink: text 7.1:1,
+    tertiary 5.5:1, accent 4.65:1, link 5.3:1); Light and Dark keep paper and ink.
 - **Temporal view**: month calendar with up to three activity dots a day, the day's pages as
   Created or Edited with first and last edit time and a snippet, the days list, ← and → between
   active days, a date picker, search within it, and "As of this day": the page's day-end version,
@@ -135,6 +184,16 @@ One database per desk: `dbName`. `importData()` (not part of the interface) writ
   and accents; title hits rank five times body hits; `has:checklist`; all notebooks or this one.
 - **Export**: Markdown (GitHub flavour, checklists as `- [ ]`), a self-contained HTML file, and
   print or PDF through the browser's own print of the page alone.
+- **Colors as data** ([ADR 0091](../../docs/decisions/0091-notebook-colors.md)): the binder tabs' six names (`blue`, `green`,
+  `amber`, `rose`, `violet`, `slate`; `src/model/colors.ts`), never color values. The `highlight` mark takes a name (an old
+  page's `yellow` is kept and reads as `amber`, the default), a
+  `textColor` mark, `color` on blocks (`COLOR_BLOCK_TYPES`), and `PageRec.label`. Rendered as `data-color`,
+  `data-text-color` and `data-block-color`, never a style. Commands for the menus in `src/model/commands.ts`
+  (`setHighlight`, `setTextColor`, `clearFormatting`, `setBlockColor`, `colorsAt`, `blockAt`), label helpers in
+  `src/model/tree.ts`, and the notebook's own file in `src/model/notebookFile.ts`, which round-trips pages exactly
+  (`exportNotebookFile` and `importNotebookFile` in `src/ui/exporting.ts`). Markdown and HTML export draw colors from
+  the UI palette's light values when given them. The palette's values and the menus are `ui/palette.ts` and the
+  context menus (`sub/notebook-color-menus`).
 - **Themes**: Light, Dusk and Dark from the brand kit's tokens, Nunito with the type rule's
   weights, and the kit's metric-matched fallback face (in `demo/demo.css`; the app has its own).
 

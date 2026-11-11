@@ -133,6 +133,28 @@ deskd sends each on every connection, once it knows the value, and when it chang
 |---|---|---|---|
 | `desk.prices.set` | `{table}`: the Platform's table as text, in `pricing.json`'s format, at most 1 MiB | `{applied, pricesAsOf}` | The table for new calls. As text, so nothing in it can break the frame. One that can't be used is ignored: `applied: false`, one log line, and the table in use stays |
 | `desk.account.set` | `{deskDay, deskMonth, timeZone}`, each a `Limit` or a zone, or null | `{}` | The account's values, from the config's `agentDefaults`. One that can't be used counts as not set, with one log line |
+| `desk.member.purge` | `{memberId}`, a `gm-` id; refused (`forbidden`, `permission`) from any frame carrying a `caller` | `{purged, agents, messages, files, usage, staged}`, counts | A guild member left, was removed or deleted their account (ADR 0080's addendum of 2026-11-10). Their run is stopped and awaited (else `conflict` `busy`, nothing deleted); their agent, thread, files' notes and limits go from `agent.db`, their staged files are wiped, their usage rows become the guild's (`guild:departed`), and both files' WALs are emptied. Idempotent: again, it's all zeros. deskd keeps its own list and sends it until answered |
+
+**Tool calls (S-14, the tools and approvals draft, section 11).** The other way round: desk-agent asks deskd to run a
+tool for a run (Files, the Browser, Notebook), and deskd answers. deskd serves them in its package `tools`
+(`ToolHost`), as the agent's owner by its own stamp from the agent's id, never anything in the frame.
+
+| From | `t` or `m` | Fields | Meaning |
+|---|---|---|---|
+| deskd | `req` `desk.tools.hello` | `{v: 1, tools: [names]}`, no `caller` | On each connection: the tools deskd runs now (Notebook only on a guild desk). desk-agent answers `{}`, and sends no `tcall` before it; an older desk-agent answers `not_found` and the link stays. A hello with a `caller` is refused |
+| desk-agent | `tcall` | `id`, `runId`, `agentId`, `tool`, `args`, `taint`, and `phase: "look"`, or `approval: {approvalId, sha256}` and `context` | One call. `look` classifies it with nothing done. `taint` is the run's flags (`U`, `S`); deskd adds them to its own copy and never removes any. `tool: "run_end"` says a run ended |
+| deskd | `tres` | `id`, `r`, `taint` | A look: `r` is `{risk, context, target, payload, before, refusal}`. A run: `{content, taints, risk}` and the area's chip words (`session`). `taint` is the run's flags as deskd now holds them |
+| deskd | `terr` | `id`, `code`, `details: {reason}` | A deskd error code and one word: `approval_required`, `approval_unknown`, `approval_used`, `approval_mismatch`, `scope`, `age_band`, `member`, `run`, `tool`, `changed`, `gone`, `exists`, `off_site`, `sensitive`, `no_space`, … Never content |
+
+- **What deskd checks** before an area runs anything (`ToolHost`): the tool is one it declares (`HostedDecls`), the
+  area is there and allowed (a guild desk has Notebook only), the desk's owner or the member is an adult, the run is
+  that agent's; its own class for the call (never below the declaration's, raised by what the area finds, and the
+  Rule of Two); and for a class that asks, the approval: the SHA-256 of the canonical JSON of `{v: 1, agentId, runId,
+  tool, context, payload}` over the arguments it received and its own context, equal to the call's, redeemed once
+  against the decisions deskd relayed (`ApprovalTickets`).
+- **Waits:** a look 15 s, a call 60 s; then desk-agent answers the model "Failed: unavailable." A call waiting when
+  the connection goes gets the same. At most 16 calls run at once in deskd (`rate_limited` past that) and 32 wait per
+  connection in desk-agent.
 
 **Version skew.** Both sides drop the link on a `t` they don't know (`AgentSocketServer.onJson`, `AgentLink.dispatch`),
 so neither can announce anything with a new one. desk-agent answers `not_found` to a method it doesn't know, and that's
@@ -181,7 +203,7 @@ types.ts`), with no changes. It already uses this code's words and units: provid
   and `limit_reached` (`precondition_failed` with `details.scope`), all before anything is added to the thread. Once
   it has returned, the reply message ends `done`, `stopped` or `failed`. A provider's failure is `failed` with
   `error: "provider_error"` and `errorDetail` its kind (`auth`, `rate_limited`, `unavailable`, `bad_request`,
-  `timeout`, `cancelled`). What isn't the member's to fix (no adapter for the provider, the records failing) is
+  `timeout`, `cancelled`, and OpenRouter's `free_limit` and `data_policy`, 2026-11-11). What isn't the member's to fix (no adapter for the provider, the records failing) is
   `failed` with `error: "unavailable"` and a word in `errorDetail`, which 07's `AgentErrorReason` already has.
 
 ## 7. Design and ADRs (System Engineer, Desk Engineer)

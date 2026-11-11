@@ -1,0 +1,7 @@
+[Unit]
+Description=Start the restart back-off over for services that have run well for two minutes (docs/interfaces/desk-runtime.md, "Restarts and memory pressure")
+
+[Service]
+Type=oneshot
+ExecStart=/usr/local/lib/ma/desk-restart-reset
+TimeoutStartSec=60

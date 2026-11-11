@@ -104,6 +104,35 @@ final class TeamSchema {
                       message_id TEXT PRIMARY KEY,
                       files TEXT NOT NULL
                     ) STRICT""");
+            // Memory (S-14): what each agent remembers about its member across conversations, one short line each,
+            // and the summary of the part of its thread that no longer goes to the model whole. Rows whose agent is
+            // gone go at every open, so a purge or delete a rolled-back desk-agent made, without knowing these
+            // tables, leaves nothing behind once this one runs again. `untrusted` marks a line saved, or a summary
+            // made from messages, in a run that read untrusted content (ADR draft-agent-tools-approvals §6): a run that
+            // reads it is untrusted too.
+            statement.execute("""
+                    CREATE TABLE IF NOT EXISTS memories (
+                      id TEXT PRIMARY KEY,
+                      agent_id TEXT NOT NULL,
+                      text TEXT NOT NULL,
+                      created_at INTEGER NOT NULL,
+                      run_id TEXT,
+                      untrusted INTEGER NOT NULL DEFAULT 0
+                    ) STRICT""");
+            statement.execute("CREATE INDEX IF NOT EXISTS memories_agent ON memories (agent_id, created_at)");
+            statement.execute("""
+                    CREATE TABLE IF NOT EXISTS thread_summaries (
+                      agent_id TEXT PRIMARY KEY,
+                      id TEXT NOT NULL,
+                      through_ord INTEGER NOT NULL,
+                      through_id TEXT NOT NULL,
+                      text TEXT NOT NULL,
+                      at_ms INTEGER NOT NULL,
+                      turns INTEGER NOT NULL,
+                      untrusted INTEGER NOT NULL DEFAULT 0
+                    ) STRICT""");
+            statement.execute("DELETE FROM memories WHERE agent_id NOT IN (SELECT id FROM agents)");
+            statement.execute("DELETE FROM thread_summaries WHERE agent_id NOT IN (SELECT id FROM agents)");
             // Retired icons and tones (Design H4) become the ones that took their place. It's a no-op once done, and
             // it catches rows a rolled-back desk-agent wrote meanwhile.
             retire(statement, "icon", TeamStore.RETIRED_ICONS);

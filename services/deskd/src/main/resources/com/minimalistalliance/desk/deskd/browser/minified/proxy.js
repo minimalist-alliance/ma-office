@@ -16,12 +16,31 @@
 //  - Sensitive fields (T47-1, T47-7). Password, one-time code, card and masked fields, and payment providers' frames:
 //    deskd never sends these to the office as fields, and never types into them.
 //  - Islands (T47-4's desk part). Video, audio, canvas and frames, with their boxes clamped to the viewport.
-// It writes nothing to the page's DOM, except a select's own selection when the member picks an option, and it fetches
-// nothing.
+//  - The Agent's clicks and keys (S-14). The Agent's tabs are hidden targets, which trusted input never reaches on a
+//    desk's Chromium, so deskd's ActionProxy for the Agent alone acts here instead: an untrusted el.click() or
+//    KeyboardEvent from this world on the one element deskd names (agentClick, agentPress, agentClear).
+// It writes nothing to the page's DOM, except a select's own selection when the member picks an option, and, for the
+// Agent, a field's value on Backspace or when it empties one. It fetches nothing.
+// Once per document it may scroll the page and put it back (the pre-scroll, below): never a press or a key.
 (() => {
   'use strict';
   if (globalThis.__maProxy) return;
   const TOP = window.top === window;
+  // A frame whose document isn't a web page's (a password manager's in-page menu is chrome-extension:, and so is any
+  // about: or blob: document of its origin) gets nothing of deskd's: no guard, no listener, no reading. This half
+  // answers every op there with a refusal, so deskd can't arm, walk or read it even if its world gets in by a race;
+  // deskd's own side keeps out of such a frame too (MinifiedModule.onAttached, PageWorld.runIn). An opaque origin keeps
+  // today's handling, as a sandboxed web frame has one.
+  if (!TOP) {
+    const origin = String(globalThis.origin || '');
+    const scheme = String(location.protocol || '');
+    const known = /^(https?|about|data|blob):$/.test(scheme);
+    if (!known || !(/^https?:\/\/[^/]/.test(origin) || origin === 'null')) {
+      const refuse = Object.freeze({ run: () => ({ error: 'foreign' }), element: () => null });
+      Object.defineProperty(globalThis, '__maProxy', { value: refuse, enumerable: false, configurable: false, writable: false });
+      return;
+    }
+  }
   const now = () => performance.now();
 
   // ------------------------------------------------------------------------------------------------ text and hashing
@@ -393,13 +412,40 @@
     return el.src || el.getAttribute('src') || '';
   }
   const MEDIA = new Set(['video', 'audio', 'canvas', 'iframe', 'embed', 'object']);
+  const FOREIGN_SRC = /^\s*(chrome|chrome-extension|chrome-untrusted|devtools|extension|moz-extension|edge):/i;
 
+  /**
+   * A player that draws its poster itself, over a video with none of its own (a picture, or a box's background, in the
+   * player and over most of the video): its address, for the island's still before it streams. Read only.
+   */
+  function drawnPoster(v) {
+    const vr = v.getBoundingClientRect();
+    if (vr.width < 100 || vr.height < 60) return null;
+    const over = (r) => (Math.max(0, Math.min(r.right, vr.right) - Math.max(r.left, vr.left)) * Math.max(0, Math.min(r.bottom, vr.bottom) - Math.max(r.top, vr.top))) / (vr.width * vr.height);
+    let box = v.parentElement;
+    for (let d = 0; box && box.parentElement && d < 3; d++) {
+      const r = box.parentElement.getBoundingClientRect();
+      if (r.width > vr.width + 80 || r.height > vr.height + 120) break;
+      box = box.parentElement;
+    }
+    if (!box) return null;
+    const els = box.querySelectorAll('img,[class*=poster i],[class*=preview i],[class*=thumb i]');
+    for (let i = 0; i < els.length && i < 24; i++) {
+      const x = els[i];
+      if (over(x.getBoundingClientRect()) < 0.6) continue;
+      if (x.localName === 'img') { if (x.currentSrc && /^https?:/.test(x.currentSrc)) return x.currentSrc; continue; }
+      const m = /url\(["']?(https?:[^"')]+)/.exec(getComputedStyle(x).backgroundImage || '');
+      if (m) return m[1];
+    }
+    return null;
+  }
   /** A media element's state, for the island's own controls (spec section 9: media). */
   function mediaFacts(el) {
     const f = { paused: !!el.paused };
     if (isFinite(el.duration)) f.dur = Math.round(el.duration * 10) / 10;
     if (isFinite(el.currentTime)) f.at = Math.round(el.currentTime * 10) / 10;
     if (el.poster) f.poster = String(el.poster).slice(0, 2048);
+    else if (el.localName === 'video') { const still = drawnPoster(el); if (still) f.poster = still.slice(0, 2048); }
     if (el.mediaKeys) f.drm = 1;
     if (el.muted) f.muted = 1;
     f.vol = Math.round(el.volume * 100) / 100;
@@ -679,6 +725,8 @@
         return false;
       }
       if (!MEDIA.has(ln) || media.length >= a.maxMedia) return false;
+      // A browser's or an extension's own frame (a password manager's menu) is never media, an island or content.
+      if ((ln === 'iframe' || ln === 'embed' || ln === 'object') && FOREIGN_SRC.test(srcOf(el))) return false;
       const r = el.getBoundingClientRect();
       if (r.width * r.height < 120 * 60 || !visible(el)) return false;
       const m = {
@@ -933,6 +981,99 @@
     el.scrollIntoView({ block: a.block === 'center' ? 'center' : 'start', behavior: 'instant' });
     return { ok: true };
   }
+  // ------------------------------------------------------------------------------------------------ the pre-scroll
+  // Once per document, after the view has the page and before the member acts, deskd has the page brought in what it
+  // loads only as it's scrolled to (lazy pictures, a thread's later replies, a list's next items): the page goes down in
+  // steps of a screen to its end or a cap, then back exactly where it was. It scrolls and nothing else: no press, no key,
+  // no focus, no DOM write. It never starts with focus in a field, on a page with a password, card or code field, on a
+  // page whose scrolling is locked (a modal open), or in a hidden tab, which loads nothing as it scrolls. An infinite feed
+  // stops at the cap. deskd's stop ends it at the next step, and the way back is here, not deskd's, so a lost reply never
+  // leaves the page scrolled.
+  let prescrolling = false;
+  let prescrollStopped = false;
+  const sleep = (ms) => new Promise((r) => setTimeout(r, ms));
+  /** A password, card or code field the member can see: the view's own sensitive signal (scanPage's), never a hidden one. */
+  function sensitiveOnPage() {
+    const all = document.querySelectorAll('input,select');
+    for (let i = 0; i < all.length && i < 3000; i++) if (sensitiveKind(all[i]) && visible(all[i])) return true;
+    return false;
+  }
+  function locked() {
+    for (const el of [document.documentElement, document.body]) {
+      if (!el) continue;
+      const s = getComputedStyle(el);
+      if (s.overflowY === 'hidden' || s.overflowY === 'clip' || s.position === 'fixed') return true;
+    }
+    return false;
+  }
+  function prescroll(a) {
+    if (prescrolling) return { skipped: 'running' };
+    if (document.visibilityState === 'hidden') return { skipped: 'hidden' };
+    if (document.readyState === 'loading') return { skipped: 'loading' };
+    const act = deepActive();
+    if (act && act !== document.body && act !== document.documentElement
+        && (isField(act) || act.localName === 'iframe' || act.localName === 'frame' || act.localName === 'object')) return { skipped: 'focus' };
+    if (sensitiveOnPage()) return { skipped: 'sensitive' };
+    const se = document.scrollingElement || document.documentElement;
+    const vh = innerHeight;
+    const x = scrollX, y = scrollY, h0 = se ? se.scrollHeight : 0;
+    if (!se || vh < 100 || h0 - y <= vh * 1.25) return { skipped: 'short' };
+    if (locked()) return { skipped: 'locked' };
+    const screens = clamp(Math.floor(+a.screens || 12), 1, 30);
+    const step = Math.max(100, Math.floor(vh * 0.9));
+    const pause = clamp(+a.pause || 110, 20, 500);
+    const t0 = now(), deadline = t0 + clamp(+a.ms || 1500, 100, 4000), settle = clamp(+a.settle || 600, 0, 2000);
+    prescrolling = true;
+    prescrollStopped = false;
+    const back = () => { try { scrollTo({ left: x, top: y, behavior: 'instant' }); } catch (e) { /* scrollTo is the page's, maybe gone */ } };
+    return (async () => {
+      let steps = 0, end = false, capped = false, lowest = y;
+      try {
+        for (let i = 1; ; i++) {
+          if (prescrollStopped) break;
+          if (i > screens || now() >= deadline) { capped = true; break; }
+          const max = Math.max(0, se.scrollHeight - innerHeight);
+          const top = Math.min(y + i * step, max);
+          scrollTo({ left: x, top, behavior: 'instant' });
+          steps++;
+          lowest = Math.max(lowest, top);
+          await sleep(pause);
+          // At the end, and the page didn't grow while it waited: done. A page that grows goes on, to the cap.
+          if (top >= max && se.scrollHeight - innerHeight <= max + 2) { end = true; break; }
+        }
+      } finally {
+        back();
+      }
+      // Scroll anchoring can move the page once more as what loaded above settles: back again, then exactly.
+      await sleep(0);
+      if (scrollX !== x || scrollY !== y) back();
+      const restored = scrollX === x && scrollY === y;
+      // What the steps started loading: a moment for the pictures they came near to arrive, back where the page was. A
+      // lazy picture further down never started, and a stop skips the wait.
+      const until = now() + settle, reached = lowest + innerHeight * 2.5;
+      while (!prescrollStopped && now() < until) {
+        let waiting = false;
+        const images = document.images;
+        for (let i = 0; i < images.length && i < 2000; i++) {
+          const im = images[i];
+          if (im.complete) continue;
+          const r = im.getBoundingClientRect();
+          if (r.width > 0 && r.height > 0 && r.top + scrollY < reached) { waiting = true; break; }
+        }
+        if (!waiting) break;
+        await sleep(50);
+      }
+      const stopped = prescrollStopped;
+      prescrolling = false;
+      prescrollStopped = false;
+      return { steps, end, capped: capped && !stopped, stopped, restored, grew: se.scrollHeight > h0, ms: Math.round(now() - t0) };
+    })();
+  }
+  function prescrollStop() {
+    if (prescrolling) prescrollStopped = true;
+    return { ok: true, running: prescrolling };
+  }
+
   /** The island's box over what's drawn there, clamped to the viewport. */
   function playerOf(el) {
     const r = el.getBoundingClientRect();
@@ -1095,7 +1236,182 @@
     return { host: location.hostname, text: (b.innerText || '').replace(/\s+/g, ' ').trim().slice(0, 2000), buttons: names.slice(0, 30) };
   }
 
-  const TOP_OPS = { snapshot, changed, wake, prepare, result, select, scroll, island, media, consent, arm, disarm };
+  // ------------------------------------------------------------------------------------------------ the Agent's acts
+  // The Agent's tabs are hidden targets, which trusted input never reaches on a desk's Chromium (S-14). Its clicks and keys
+  // are done here instead, for deskd's ActionProxy for the Agent and nothing else: an untrusted el.click() or KeyboardEvent
+  // from this world, never the page's own, on the one element deskd names. No input is dispatched, so no frame can take
+  // it, and the page gets no user activation (no pop-up, fullscreen or clipboard). Each act is two calls, each one
+  // synchronous run, so the page has no turn between a call's checks and what it does: a look, which makes every check and
+  // says where the act would navigate without doing anything; then the act, which makes every check again, refuses if it
+  // would now go anywhere else or a payment provider's frame came, and only then clicks or presses. What deskd sends is
+  // arguments, never script.
+  const AGENT_KEYS = {
+    Enter: [13, 'Enter'], Escape: [27, 'Escape'], Tab: [9, 'Tab'],
+    ArrowUp: [38, 'ArrowUp'], ArrowDown: [40, 'ArrowDown'], Backspace: [8, 'Backspace'],
+  };
+  // The fields whose Enter submits their form, as HTML's implicit submission has them.
+  const IMPLICIT = /^(text|search|url|tel|email|password|date|month|week|time|datetime-local|number)$/;
+  function isSubmitter(el) {
+    if (el.localName === 'button') return el.type === 'submit';
+    return el.localName === 'input' && /^(submit|image)$/i.test(el.type || '');
+  }
+  /** Where a form goes when this submits it (null for none: the form's own button), or null for a dialog's form. */
+  function formTarget(form, submitter) {
+    const method = ((submitter && submitter.getAttribute('formmethod')) || form.getAttribute('method') || 'get').toLowerCase();
+    if (method === 'dialog') return null;
+    return String(submitter && submitter.getAttribute('formaction') ? submitter.formAction : form.action);
+  }
+  /** A payment provider's frame anywhere in this document, open shadow roots too, whatever its size (Security, S-14). */
+  function payFrame(hosts) {
+    if (!Array.isArray(hosts) || !hosts.length) return false;
+    let found = false;
+    forEachDeep((el) => {
+      const ln = el.localName;
+      if (ln === 'iframe' || ln === 'frame' || ln === 'embed' || ln === 'object') found = onList(hostOf(srcOf(el)), hosts);
+      return found;
+    }, 50000);
+    return found;
+  }
+  /** What a click or a key checks of its element first, as prepare does: what the member saw, never sensitive, usable. */
+  function agentTarget(a, keys) {
+    const el = lookup(a.node);
+    if (!el) return { refused: 'gone' };
+    if (see(el) !== a.fp) return { refused: 'changed' };
+    const sk = sensitiveKind(el);
+    if (sk) return { refused: 'sensitive', kind: sk };
+    if (keys && !fits(el, 'press')) return { refused: 'kind' };
+    if (isDisabled(el)) return { refused: 'disabled' };
+    if (!visible(el)) return { refused: 'hidden' };
+    let r = el.getBoundingClientRect();
+    if (!inView(r)) {
+      el.scrollIntoView({ block: 'center', inline: 'center', behavior: 'instant' });
+      r = el.getBoundingClientRect();
+      if (!inView(r)) return { refused: 'hidden' };
+      // A virtualized list can rebind the node as it scrolls.
+      if (see(el) !== a.fp) return { refused: 'changed' };
+    }
+    return { el, r };
+  }
+  const expected = (a) => (typeof a.url === 'string' ? a.url : null);
+  /** A click: a link's or a submit control's own activation, or the page's click handlers, as an untrusted click. */
+  function agentClick(a) {
+    const t = agentTarget(a, false);
+    if (!t.el) return t;
+    const el = t.el, r = t.r;
+    // Only what's on top there: what a member couldn't click (under a dialog, say) the Agent doesn't either.
+    const x = clamp(r.left + Math.min(r.width / 2, 40), Math.max(r.left, 1), Math.min(r.right, innerWidth - 1));
+    const y = clamp(r.top + r.height / 2, Math.max(r.top, 1), Math.min(r.bottom, innerHeight - 1));
+    if (!owns(el, deepHit(x, y))) return { refused: 'covered' };
+    const link = el.closest ? el.closest('a[href],area[href]') : null;
+    const form = !link && isSubmitter(el) ? el.form : null;
+    const nav = link ? 'link' : form ? 'submit' : null;
+    const url = link ? String(link.href) : form ? formTarget(form, el) : null;
+    const pay = payFrame(a.payHosts);
+    if (a.look) return { ok: true, nav, url, pay };
+    if (expected(a) !== url || (pay && !a.spend)) return { refused: 'changed' };
+    el.click();
+    return { ok: true, nav };
+  }
+  /** HTML's implicit submission for Enter in el: the form's default button to click, or the form alone, or nothing. */
+  function implicitSubmission(el) {
+    if (el.localName !== 'input' || !IMPLICIT.test((el.type || 'text').toLowerCase()) || !el.form) return null;
+    const form = el.form;
+    let button = null, blocking = 0;
+    for (const c of Array.from(form.elements)) {
+      if (!button && isSubmitter(c)) button = c;
+      if (c.localName === 'input' && IMPLICIT.test((c.type || 'text').toLowerCase())) blocking++;
+    }
+    if (button) return button.disabled ? null : { form, button, url: formTarget(form, button) };
+    return blocking > 1 ? null : { form, button: null, url: formTarget(form, null) };
+  }
+  function keyEvent(type, spec, extra) {
+    return new KeyboardEvent(type, Object.assign({
+      key: spec[1], code: spec[1], keyCode: spec[0], which: spec[0], bubbles: true, cancelable: true, composed: true,
+    }, extra || {}));
+  }
+  /** Backspace's own edit of a plain field, after a beforeinput the page may cancel. A rich editor gets the events only. */
+  function deleteBack(el) {
+    if (el.localName !== 'input' && el.localName !== 'textarea') return;
+    const opts = { inputType: 'deleteContentBackward', bubbles: true, composed: true };
+    if (!el.dispatchEvent(new InputEvent('beforeinput', Object.assign({ cancelable: true }, opts)))) return;
+    const v = String(el.value);
+    let s = null, e = null;
+    try { s = el.selectionStart; e = el.selectionEnd; } catch (x) { /* a kind without a selection: from the end */ }
+    if (s == null || e == null) s = e = v.length;
+    if (s === e) {
+      if (s === 0) return;
+      s -= s > 1 && /[\udc00-\udfff]/.test(v[s - 1]) && /[\ud800-\udbff]/.test(v[s - 2]) ? 2 : 1;
+    }
+    el.value = v.slice(0, s) + v.slice(e);
+    try { el.setSelectionRange(s, s); } catch (x) { /* none */ }
+    el.dispatchEvent(new InputEvent('input', opts));
+  }
+  /**
+   * A key on the focused element, as the page's own handlers would hear it: keydown, then for Enter keypress and, unless
+   * the page cancelled either, implicit submission of the field's form; Backspace's edit; keyup. Escape, Tab and the
+   * arrows are the events alone: Tab doesn't move focus.
+   */
+  function agentPress(a) {
+    const spec = Object.prototype.hasOwnProperty.call(AGENT_KEYS, a.key) ? AGENT_KEYS[a.key] : null;
+    if (!spec) return { refused: 'kind' };
+    const t = agentTarget(a, true);
+    if (!t.el) return t;
+    const el = t.el;
+    if (!owns(el, deepActive())) el.focus({ preventScroll: true });
+    const target = deepActive();
+    if (!owns(el, target)) return { refused: 'focus' };
+    // A page can turn a field into a password one as it gets focus.
+    const flipped = sensitiveKind(el);
+    if (flipped) return { refused: 'sensitive', kind: flipped };
+    if (see(el) !== a.fp) return { refused: 'changed' };
+    const sub = a.key === 'Enter' ? implicitSubmission(el) : null;
+    const url = sub ? sub.url : null;
+    const pay = payFrame(a.payHosts);
+    if (a.look) return { ok: true, nav: sub ? 'submit' : null, url, pay };
+    if (expected(a) !== url || (sub && pay && !a.spend)) return { refused: 'changed' };
+    let submitted = false;
+    if (target.dispatchEvent(keyEvent('keydown', spec))) {
+      if (a.key === 'Enter') {
+        if (target.dispatchEvent(keyEvent('keypress', spec, { charCode: 13 })) && sub && el.isConnected && el.form === sub.form) {
+          if (!sub.button) {
+            sub.form.requestSubmit();
+            submitted = true;
+          } else if (sub.button.isConnected && !sub.button.disabled && sub.button.form === sub.form) {
+            sub.button.click();
+            submitted = true;
+          }
+        }
+      } else if (a.key === 'Backspace') {
+        deleteBack(el);
+      }
+    }
+    if (target.isConnected) target.dispatchEvent(keyEvent('keyup', spec));
+    return { ok: true, submitted };
+  }
+  /** Empties the field prepare armed and selected, for the Agent's fill of nothing: no key is dispatched. */
+  function agentClear(a) {
+    const g = armed;
+    if (!g || g.id !== String(a.id) || !g.el || !g.typing) return { lost: true };
+    const el = g.el;
+    const sk = sensitiveKind(el);
+    if (sk) return { refused: 'sensitive', kind: sk };
+    if (el.localName === 'input' || el.localName === 'textarea') {
+      const opts = { inputType: 'deleteContentBackward', bubbles: true, composed: true };
+      if (el.dispatchEvent(new InputEvent('beforeinput', Object.assign({ cancelable: true }, opts)))) {
+        el.value = '';
+        el.dispatchEvent(new InputEvent('input', opts));
+      }
+    } else if (el.isContentEditable) {
+      document.execCommand('delete');
+    }
+    return { ok: true };
+  }
+  function payFrames(a) {
+    return { pay: payFrame(a.payHosts) };
+  }
+
+  const TOP_OPS = { snapshot, changed, wake, prepare, result, select, scroll, island, media, consent, arm, disarm,
+    agentClick, agentPress, agentClear, payFrames, prescroll, prescrollStop };
   const FRAME_OPS = { arm, disarm, frameMedia, wallText };
   // This world's own random id, in every answer: deskd trusts a context id it keeps only with the same one (T47N-2).
   const WID = Math.random().toString(36).slice(2) + '.' + Date.now().toString(36);

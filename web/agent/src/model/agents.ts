@@ -82,10 +82,43 @@ export function badgeDismissable(agent: Pick<Agent, 'binding' | 'badgeHidden' | 
   return !!agent.binding && agent.badgeNotice && (!showBadges || agent.badgeHidden);
 }
 
-/** The neutral text monogram, until each provider's official mark is cleared for use (design 9.4). */
-export function monogram(providerName: string): string {
+/**
+ * The neutral text monogram, until each provider's official mark is cleared for use (design 9.4). OpenRouter's is two letters,
+ * "OR", as "O" alone would read as OpenAI's (agent-free-key spec §0).
+ */
+export function monogram(providerName: string, provider?: string | null): string {
+  if (provider === 'openrouter') return 'OR';
   return (providerName.trim()[0] ?? '?').toUpperCase();
 }
+
+/** The warn banner's words once today's free requests are used: when they come back, where the provider said (spec §4). */
+export function limitBannerText(resetAt: number | null | undefined, whenFn: (at: number) => string): string {
+  return resetAt ? `Today’s free requests at OpenRouter are used. More come back at ${whenFn(resetAt)}.` : 'Today’s free requests at OpenRouter are used. OpenRouter gives more each day.';
+}
+
+/** A failed reply that's a limit, not a failure: today's free requests are used. */
+export const isFreeLimit = (m: { state?: string; error?: string | null; errorDetail?: string | null }): boolean =>
+  m.state === 'failed' && m.error === 'provider_error' && m.errorDetail === 'free_limit';
+
+/** OpenRouter's words for a failed reply (spec §4), which pick another model before anything else. */
+function openRouterText(detail: string | null | undefined): string | null {
+  switch (detail) {
+    case 'free_limit':
+      return 'Stopped: today’s free requests are used.';
+    case 'rate_limited':
+      return 'OpenRouter’s free models are busy right now. Try again in a minute, or pick another free model.';
+    case 'timeout':
+      return 'The free model took too long to answer. Try again, or pick another free model.';
+    case 'data_policy':
+      return 'Your privacy settings at OpenRouter don’t allow any host for this free model. Pick another model, or change those settings at openrouter.ai.';
+    default:
+      return null;
+  }
+}
+
+/** The failed replies that offer "Pick another model": OpenRouter's busy, slow and privacy-settings ones. */
+export const offersOtherModel = (detail: string | null | undefined, provider?: string | null): boolean =>
+  provider === 'openrouter' && (detail === 'rate_limited' || detail === 'timeout' || detail === 'data_policy');
 
 /** Why an agent is paused, for its window: the desk has more agents than its plan allows (`agent_cap`), or the account can't run agents now. */
 export function pausedText(detail: string | null | undefined): string {
@@ -95,12 +128,18 @@ export function pausedText(detail: string | null | undefined): string {
 }
 
 /** A failed reply or a refused send, in words. Never the provider's own message, which could quote the prompt. */
-export function errorText(reason: AgentErrorReason | null | undefined, detail?: string | null): string {
+export function errorText(reason: AgentErrorReason | null | undefined, detail?: string | null, provider?: string | null): string {
+  if (reason === 'provider_error' && provider === 'openrouter') {
+    const own = openRouterText(detail);
+    if (own) return own;
+  }
   switch (reason) {
     case 'no_key':
       return 'This agent’s key needs adding.';
     case 'busy':
       return 'This agent is still answering. Wait for it, or stop it.';
+    case 'awaiting_approval':
+      return 'This agent is waiting for your answer. Answer its request, or stop it.';
     case 'limit_reached':
       return 'A usage limit is reached.';
     case 'key_refused':

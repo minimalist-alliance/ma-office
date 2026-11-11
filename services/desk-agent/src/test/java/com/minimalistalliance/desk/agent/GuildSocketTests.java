@@ -75,6 +75,23 @@ class GuildSocketTests {
         assertThat(desk.event(4, "error").toString()).contains("age_band");
     }
 
+    /**
+     * {@code desk.member.purge} is deskd's own push, with no caller (ADR 0080's addendum of 2026-11-10). A frame that
+     * carries one is a client's, relayed, and is refused whoever it says it is: deskd never relays it anyway.
+     */
+    @Test
+    void theMemberPurgeIsDeskdsOwnAndRefusedFromAnyClientSession() throws Exception {
+        desk.call("agent.list", Map.of(), A);
+        List<Map<String, Object>> callers = List.of(Map.of("kind", "owner"), A, B, Map.of("kind", "system"));
+        for (Map<String, Object> caller : callers) {
+            Map<String, Object> refused = desk.call("desk.member.purge", Map.of("memberId", "gm-aaaa0001"), caller);
+            assertThat(refused).as(caller.toString()).containsEntry("t", "err").containsEntry("code", "forbidden");
+        }
+        Map<String, Object> purged = desk.call("desk.member.purge", Map.of("memberId", "gm-aaaa0001"));
+        assertThat(purged).containsEntry("t", "res");
+        assertThat(purged.get("r").toString()).contains("purged=true").contains("agents=1");
+    }
+
     @Test
     void aMalformedCallerIsRefusedNeverReadAsTheOwner() throws Exception {
         Map<String, Object> reply = desk.call("agent.list", Map.of(), Map.of("kind", "guild_member", "memberId", "nobody"));

@@ -1,0 +1,12 @@
+{
+  "category": "neck",
+  "layer": "03-neck",
+  "colorSlot": "skin",
+  "default": "neck",
+  "parts": [
+    {
+      "id": "neck",
+      "name": "Neck and shoulders"
+    }
+  ]
+}

@@ -836,6 +836,16 @@ class Stream:
         self.meter = self.pipeline.get_by_name("meter")
         # Without a level, the encoder runs [video]'s x264 line: these are its values, for the contention control's steps.
         self.base_values = {key: self.encoder.get_property(key) for key in ENCODER_KEYS}
+        # A level's encoder values reach a new process only after its first encoded frame, then at once, as every switch
+        # mid-stream does (S-29). desk-rtc sends the level, resume and keyframe together on connecting; reopened while warm,
+        # with a frame held in the sink's preroll, the reopen ran on the streaming thread as the pipeline went to PLAYING, and
+        # x264enc met its next buffer with no format ("encoder not initialized"): 4 of 10 starts at Max on a real desk failed,
+        # and systemd's restarts took the picture away for 3.8 s. A size change still goes at once, so the first frame is
+        # already the level's size; its quantizer and ceiling follow one or two frames later.
+        self.encoded = False
+        self.reopen_pending = False
+        self.open_lock = threading.Lock()
+        self.encoder.get_static_pad("src").add_probe(Gst.PadProbeType.BUFFER, self.on_first_encoded)
         # Levels only. The screen's size comes from the caps reaching videoscale, which the source sends once it's warm. A level
         # picked before that is sized as they go by, so the first frame is already the right size.
         self.size = self.pipeline.get_by_name("size")
@@ -984,12 +994,35 @@ class Stream:
         """Puts effective() into the running pipeline, warm or live: the encoder's values, then the size. Costs one keyframe."""
         values = self.effective()
         if any(self.encoder.get_property(key) != values[key] for key in ENCODER_KEYS):
-            self.reopen_encoder(values)
+            with self.open_lock:
+                now = self.encoded
+                self.reopen_pending = not now
+            if now:
+                self.reopen_encoder(values)
         with self.size_lock:
             size = self.apply_size()
         # A reopened encoder starts on a keyframe with SPS and PPS anyway, so this is usually that same frame.
         self.keyframe()
         return values, size
+
+    def on_first_encoded(self, _pad, _info):
+        """The encoder's first frame since this process started: from now on a level reopens it at once."""
+        with self.open_lock:
+            self.encoded = True
+            pending = self.reopen_pending
+            self.reopen_pending = False
+        if pending:
+            GLib.idle_add(self.reopen_after_first)
+        return Gst.PadProbeReturn.REMOVE
+
+    def reopen_after_first(self):
+        """On the main loop, after the first frame: the level's (and the contention step's) encoder values, as they are now."""
+        values = self.effective()
+        if any(self.encoder.get_property(key) != values[key] for key in ENCODER_KEYS):
+            self.reopen_encoder(values)
+            self.keyframe()
+            log(f"level {self.level or 'of [video]'}: q{values['quantizer']} {values['bitrate']} kbit/s, after the first frame")
+        return GLib.SOURCE_REMOVE
 
     def reopen_encoder(self, values):
         """Sets a level's encoder values in READY, the only state x264enc takes a quantizer in. Only the encoder goes there and

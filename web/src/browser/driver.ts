@@ -1,14 +1,21 @@
 // The brain of one Browser window, outside React: which stream state to ask for, what the `<video>` plays,
 // and what the window should show. Nothing here runs per frame. The element plays by itself and the browser
 // composites it, so a live picture costs no React and no DOM write.
-import type { BrowserInput, BrowserMedia, BrowserTab, DeskLink, DeskRpc, StreamState } from '../desk/deskLink';
+import type { BrowserInput, BrowserMedia, BrowserTab, BrowserViewMessage, DeskLink, DeskRpc, PhoneDevice, StreamState } from '../desk/deskLink';
 import { LastSound } from '../desk/sound';
+import { pasteKeys } from '../desk/rtc/input';
 import { addressToUrl } from './address';
 import { loadLastScreen, saveLastScreen } from './lastScreen';
-import { CANT_CONTROL, PASTE_FAILED, PASTE_TOO_BIG, StreamClipboard } from './clipboard';
+import { CANT_CONTROL, NOTHING_TO_PASTE, PASTE_FAILED, PASTE_REFUSED, PASTE_TOO_BIG, StreamClipboard } from './clipboard';
 import { certainlyNotDone, mayHaveGoneOut, mutate } from './mutate';
 import { OLDER_THAN_PROFILE, StreamControl, STREAM_DEADLINE_MS, type StreamStatus } from './streamControl';
 import type { SimpleStream } from '../simple/ui';
+import { stepUsed } from '../setup/used';
+import { announce } from '../shell/announce';
+import { TOUCH_HINT, TOUCH_HINT_GESTURES, TOUCH_HINT_MORE, TOUCH_HINT_PHONE, touchHintDue, touchHintShown, ZOOM_STEP, type TouchControl, type ZoomState } from './touchInput';
+import { isIOS, isPhoneScreen, NO_PHONE_VIEW, phoneDevice, readView, regionFrame, type PhoneView } from './phoneView';
+import { keysLook } from './softKeys';
+import { NOT_TYPING, type SoftKeyboard, type SoftState } from './softKeyboard';
 
 /**
  * A hidden tab stays `live` this long, then goes `warm`, which stops the picture and the sound together. Not while
@@ -45,10 +52,28 @@ export interface BrowserView {
   streamFocused: boolean;
   /** The element holds the last screen kept in this browser (`lastScreen.ts`), until this session's first frame. */
   lastScreen: boolean;
+  /** The touch hint shows (`TOUCH_HINT`): a member's first finger on a picture in this browser, until Got it or a few gestures. */
+  touchHint: boolean;
+  /** The picture's zoom by touch (`touchInput.ts`), for the page row: told only when one of these changes. */
+  zoom: ZoomState;
+  /** The desk's phone view, as this session sees it (`phoneView.ts`). */
+  phone: PhoneView;
+  /** The member pressed Desktop site: this phone sends no device, and the desk keeps its own view. */
+  desktopSite: boolean;
+  /** The phone's keyboard (`softKeyboard.ts`): up, and Ctrl and Alt. */
+  soft: SoftState;
 }
 
-const INITIAL: BrowserView = { refused: null, trying: false, bandwidthPaused: false, bandwidthResumesAt: null, canPlayVideo: true, hasFrame: false, hadFrame: false, muted: false, tabs: [], pendingAddress: null, notice: null, heldText: null, keptAddress: null, streamFocused: false, lastScreen: false };
+const INITIAL: BrowserView = { refused: null, trying: false, bandwidthPaused: false, bandwidthResumesAt: null, canPlayVideo: true, hasFrame: false, hadFrame: false, muted: false, tabs: [], pendingAddress: null, notice: null, heldText: null, keptAddress: null, streamFocused: false, lastScreen: false, touchHint: false, zoom: { zoomed: false, canIn: true, canOut: false }, phone: NO_PHONE_VIEW, desktopSite: false, soft: NOT_TYPING };
+/** A phone's box settles this long before the desk hears it, so a turn of the phone reflows the page once. */
+const DEVICE_SETTLE_MS = 300;
+/** Another session's phone has the tabs: what a desktop watching sees in its picture's corner, and how to have them back. */
+const PHONE_HAS_IT = 'Your phone has this page. Click it to bring it back here.';
 const NOTICE_MS = 5_000;
+/** The keyboard is up once the visible page is this much shorter than the window. */
+const KEYBOARD_PX = 150;
+/** The key row's height, which sits on the keyboard. */
+const ROW_PX = 52;
 /** How often the last screen is kept while it shows (`lastScreen.ts`): a JPEG of one frame, about 10 ms of work. */
 export const LAST_SCREEN_EVERY_MS = 30_000;
 const PICK_A_TAB = "This page can't take that from here. Pick a tab.";
@@ -80,6 +105,17 @@ export class BrowserDriver {
   private offCursor: (() => void) | null = null;
   private offTabs: (() => void) | null = null;
   private offClipboard: (() => void) | null = null;
+  private offView: (() => void) | null = null;
+  /** The surface's box on a phone, from the window, and the device last sent for it. */
+  private phoneBox: { width: number; height: number } | null = null;
+  private deviceTimer = 0;
+  private sentDevice: PhoneDevice | null = null;
+  private softKeyboard: SoftKeyboard | null = null;
+  /** The keyboard came up because the page's field took focus, so it goes when the field does. */
+  private raisedByField = false;
+  private typingZoomed = false;
+  /** The picture's element has the phone view's frame written on it. */
+  private framed = false;
   private readonly clipboard = new StreamClipboard({
     link: () => this.link,
     open: () => this.mounted,
@@ -94,6 +130,9 @@ export class BrowserDriver {
   private readonly heldClosed = new Set<string>();
   private holdTimer = 0;
   private noticeTimer = 0;
+  private touchNoted = false;
+  private touchGestures = 0;
+  private touchControl: TouchControl | null = null;
   /** What's said for as long as text is held. */
   private heldLine = PICK_A_TAB;
   private noPictureTimer = 0;
@@ -176,7 +215,11 @@ export class BrowserDriver {
     window.clearTimeout(this.noticeTimer);
     window.clearTimeout(this.noPictureTimer);
     window.clearTimeout(this.holdTimer);
+    window.clearTimeout(this.deviceTimer);
     if (this.lastScreenTimer) window.clearInterval(this.lastScreenTimer);
+    this.phoneBox = null;
+    this.sendDevice(null);
+    window.visualViewport?.removeEventListener('resize', this.onViewport);
     this.keepScreen();
     this.clipboard.sessionChanged();
     this.apply();
@@ -313,7 +356,9 @@ export class BrowserDriver {
    * stream: no key, text, paste or pointer (security review T47O-2). Its own actions go by `act`, its islands by `media`.
    */
   setCovered(covered: boolean): void {
+    if (covered === this.covered) return;
     this.covered = covered;
+    this.deviceSoon(); // the simplified view keeps the desk's own view: no device while it covers
   }
 
   /** The stream takes no input: the simple view covers it, or shows over it while the real page catches up. */
@@ -326,6 +371,7 @@ export class BrowserDriver {
     if (simple === this.simple) return;
     this.simple = simple;
     this.apply();
+    this.deviceSoon();
   }
 
   /**
@@ -344,29 +390,38 @@ export class BrowserDriver {
 
   setLink(link: DeskLink | null): void {
     if (link === this.link) return;
+    this.sendDevice(null);
     this.offMedia?.();
     this.offCursor?.();
     this.offTabs?.();
     this.offTabs = null;
     this.offClipboard?.();
     this.offClipboard = null;
+    this.offView?.();
+    this.offView = null;
+    this.patch({ phone: NO_PHONE_VIEW });
     this.clipboard.sessionChanged();
     this.link = link;
     this.offMedia = link?.onMedia(this.onMedia) ?? null;
     this.offCursor = link?.onCursor(this.onCursor) ?? null;
     this.onMedia(); // first: `browser.stream.set` is what starts the browser
     this.syncSubscriptions();
+    this.deviceSoon();
   }
 
   private syncSubscriptions(): void {
     if (this.mounted && this.link && !this.offTabs) {
       this.offTabs = this.link.subscribe('browser.tabs', (m) => this.onTabs(m.tabs), (code) => this.onTabsRefused(code));
       this.offClipboard = this.link.subscribe('browser.clipboard', (m) => this.clipboard.onEvent(m.type), (code) => this.clipboard.onTopicRefused(code));
+      // A deskd before the phone view refuses it: the picture stays the desk's, and nothing changes.
+      this.offView = this.link.subscribe('browser.view', (m) => this.onView(m), () => this.patch({ phone: NO_PHONE_VIEW }));
     } else if (!this.mounted && this.offTabs) {
       this.offTabs();
       this.offTabs = null;
       this.offClipboard?.();
       this.offClipboard = null;
+      this.offView?.();
+      this.offView = null;
     }
   }
 
@@ -418,10 +473,10 @@ export class BrowserDriver {
    * place, or that isn't certain to have failed, such as when the session drops while waiting, waits for the member
    * and is never sent again by itself.
    */
-  readonly insertText = (text: string): void => {
+  readonly insertText = (text: string): Promise<void> => {
     const link = this.link;
-    if (!link || this.inputHeld) return;
-    mutate((idem) => link.call('browser.text.insert', { text }, { idem })).catch((err: unknown) => {
+    if (!link || this.inputHeld) return Promise.resolve();
+    return mutate((idem) => link.call('browser.text.insert', { text }, { idem })).then(() => undefined, (err: unknown) => {
       const { code = '', details = {} } = (err ?? {}) as { code?: string; details?: { reason?: string } };
       if (code === 'unavailable' && details.reason === 'active_tab') {
         this.holdText(text, PICK_A_TAB);
@@ -454,12 +509,198 @@ export class BrowserDriver {
     if (!this.inputHeld) this.clipboard.paste(text, pressKey, repeat);
   };
 
+  /**
+   * The phone's Paste key: the text `navigator.clipboard.readText()` gave inside the member's own tap (`TouchRow.tsx`, the
+   * only reader). It goes straight into the paste path and nothing here keeps it. Security's condition, Nov 11.
+   */
+  readonly pastePhone = (text: string): void => {
+    if (!text) {
+      this.say(NOTHING_TO_PASTE);
+      return;
+    }
+    this.paste(
+      text,
+      () => {
+        const sink = this.input();
+        if (sink) for (const k of pasteKeys(false)) sink.key(k.down, k.keysym);
+      },
+      false,
+    );
+  };
+
+  /** The browser said no, or isn't able: the line and nothing else. No second try. */
+  readonly pasteRefused = (): void => this.say(PASTE_REFUSED);
+
   /** In the member's own chord or click, which is what lets their browser take the copy (`browser/clipboard.ts`). */
   readonly copyGesture = (chord: boolean): void => this.clipboard.gesture(chord);
 
   readonly setStreamFocused = (streamFocused: boolean): void => this.patch({ streamFocused });
 
-  readonly noteTouch = (): void => this.say("Touch control isn't here yet. You can watch.");
+  /**
+   * A finger on the picture: the hint, once per member in this browser, and only on the first touch of this window. Said
+   * once, politely. It goes on Got it (`dismissTouchHint`) or after `TOUCH_HINT_GESTURES` gestures, and never comes back.
+   */
+  readonly noteTouch = (member: string | null): void => {
+    if (this.touchNoted) return;
+    this.touchNoted = true;
+    const who = member ?? '';
+    if (!touchHintDue(who)) return;
+    touchHintShown(who);
+    this.touchGestures = 0;
+    this.patch({ touchHint: true });
+    announce(`${this.view.phone.mine ? TOUCH_HINT_PHONE : TOUCH_HINT} ${TOUCH_HINT_MORE}`);
+  };
+
+  /** A gesture on the picture has ended (every finger up). The one that showed the hint counts. */
+  readonly noteTouchGesture = (): void => {
+    if (!this.view.touchHint) return;
+    this.touchGestures += 1;
+    if (this.touchGestures >= TOUCH_HINT_GESTURES) this.dismissTouchHint();
+  };
+
+  readonly dismissTouchHint = (): void => {
+    if (this.view.touchHint) this.patch({ touchHint: false });
+  };
+
+  // ----- the picture's zoom by touch: the page row's buttons, on `touchInput.ts`'s handle
+
+  readonly setTouchControl = (control: TouchControl | null): void => {
+    this.touchControl = control;
+  };
+
+  readonly setZoom = (zoom: ZoomState): void => this.patch({ zoom });
+
+  readonly zoomIn = (): void => this.touchControl?.zoomBy(ZOOM_STEP);
+  readonly zoomOut = (): void => this.touchControl?.zoomBy(1 / ZOOM_STEP);
+  readonly zoomFit = (): void => this.touchControl?.fit();
+
+  // ----- the desk's phone view (`phoneView.ts`, deskd API.md section 10 "On a phone")
+
+  /** The surface's box, while the window shows on a phone, or null. Sent as the device once it settles. */
+  readonly setPhoneBox = (box: { width: number; height: number } | null): void => {
+    const same = box && this.phoneBox && Math.round(box.width) === Math.round(this.phoneBox.width) && Math.round(box.height) === Math.round(this.phoneBox.height);
+    if (same || (!box && !this.phoneBox)) return;
+    // Never for the keyboard coming or going: a new size reflows the page. The picture pans instead.
+    if (box && this.view.soft.typing && this.phoneBox && Math.round(box.width) === Math.round(this.phoneBox.width)) return;
+    this.phoneBox = box;
+    this.applyPhoneFrame();
+    this.deviceSoon();
+  };
+
+  readonly toggleDesktopSite = (): void => {
+    this.patch({ desktopSite: !this.view.desktopSite });
+    this.deviceSoon(0);
+  };
+
+  /** What `touchInput.ts` maps through while the tabs have this phone's view. */
+  readonly region = (): { x: number; y: number; width: number; height: number; screenWidth: number; screenHeight: number } | null => {
+    const { mine, region, screen } = this.view.phone;
+    return mine && region && screen ? { ...region, screenWidth: screen.width, screenHeight: screen.height } : null;
+  };
+
+  /** The device to send now: this phone's box while the real page shows here, unless the member asked for the desktop site. */
+  private wantedDevice(): PhoneDevice | null {
+    if (!this.mounted || !this.phoneBox || this.view.desktopSite || this.inputHeld || !isPhoneScreen()) return null;
+    return phoneDevice(this.phoneBox);
+  }
+
+  private deviceSoon(ms = DEVICE_SETTLE_MS): void {
+    window.clearTimeout(this.deviceTimer);
+    const want = this.wantedDevice();
+    // Taking the view back goes at once; a size settles first.
+    if (!want || ms === 0) {
+      this.sendDevice(want);
+      return;
+    }
+    this.deviceTimer = window.setTimeout(() => this.sendDevice(this.wantedDevice()), ms);
+  }
+
+  private sendDevice(d: PhoneDevice | null): void {
+    if (d?.width === this.sentDevice?.width && d?.height === this.sentDevice?.height) return;
+    this.sentDevice = d;
+    this.link?.setDevice?.(d);
+  }
+
+  private onView(m: BrowserViewMessage): void {
+    const was = this.view.phone;
+    const phone = readView(m, this.link?.currentSessionId?.() ?? null, this.sentDevice !== null);
+    this.patch({ phone });
+    if (phone.other && !was.other) this.say(PHONE_HAS_IT);
+    if (phone.mine !== was.mine || phone.region?.width !== was.region?.width || phone.region?.height !== was.region?.height) this.applyPhoneFrame();
+    this.onField(was.field, phone.field);
+  }
+
+  /** The picture shows only the phone's region, filling the box: the element is the whole picture, scaled and offset. */
+  private applyPhoneFrame(): void {
+    const { mine, region, screen } = this.view.phone;
+    const box = this.phoneBox;
+    const f = mine && region && screen && box ? regionFrame(region, screen, box) : null;
+    // Nothing to write on a desk's own view that was never framed: the element is as `app.css` lays it out.
+    if (!f && !this.framed) return;
+    this.framed = f !== null;
+    for (const el of [this.video, this.held]) {
+      if (!el?.style) continue;
+      el.style.position = f ? 'absolute' : '';
+      el.style.left = f ? `${f.left}px` : '';
+      el.style.top = f ? `${f.top}px` : '';
+      el.style.width = f ? `${f.width}px` : '';
+      el.style.height = f ? `${f.height}px` : '';
+      el.style.maxHeight = f ? 'none' : '';
+      el.style.aspectRatio = f ? 'auto' : '';
+    }
+    if (this.video?.dataset) this.video.dataset['view'] = f ? 'phone' : 'desk';
+  }
+
+  /** A field took focus in the phone's view: the keyboard comes up for it, where the platform lets it (not iOS). */
+  private onField(was: BrowserViewMessage['field'], field: BrowserViewMessage['field']): void {
+    const soft = this.softKeyboard;
+    if (!soft) return;
+    if (field && field.kind !== 'unknown') {
+      const look = keysLook(field.kind, field.enterKey);
+      if (this.view.soft.typing) soft.look(look);
+      else if (!isIOS() && (!was || was.kind !== field.kind || was.box?.y !== field.box?.y)) {
+        this.raisedByField = true;
+        soft.open(look);
+      }
+    } else if (!field && was && this.raisedByField && this.view.soft.typing) soft.hide();
+  }
+
+  // ----- the phone's keyboard (`softKeyboard.ts`)
+
+  readonly setSoftKeyboard = (keyboard: SoftKeyboard | null): void => {
+    this.softKeyboard = keyboard;
+  };
+
+  readonly setSoftState = (soft: SoftState): void => {
+    const was = this.view.soft;
+    this.patch({ soft });
+    if (soft.typing && !was.typing) window.visualViewport?.addEventListener('resize', this.onViewport);
+    if (!soft.typing && was.typing) {
+      this.raisedByField = false;
+      window.visualViewport?.removeEventListener('resize', this.onViewport);
+      if (this.typingZoomed) this.touchControl?.back();
+      this.typingZoomed = false;
+    }
+  };
+
+  /** The page row's Keyboard: in the member's own tap, so iOS raises it. */
+  readonly openKeyboard = (): void => {
+    const field = this.view.phone.field;
+    this.raisedByField = false;
+    this.softKeyboard?.open(keysLook(field && field.kind !== 'unknown' ? field.kind : null, field?.enterKey ?? null));
+  };
+
+  readonly hideKeyboard = (): void => this.softKeyboard?.hide();
+  readonly softKey = (keysym: number): void => this.softKeyboard?.press(keysym);
+  readonly toggleMod = (mod: 'ctrl' | 'alt'): void => this.softKeyboard?.toggle(mod);
+
+  /** The keyboard came up: zoom to type, once, with the room left above the key row. */
+  private readonly onViewport = (): void => {
+    const vv = window.visualViewport;
+    if (!vv || this.typingZoomed || !this.view.soft.typing || vv.height > window.innerHeight - KEYBOARD_PX) return;
+    this.typingZoomed = true;
+    this.touchControl?.zoomToType(vv.offsetTop + vv.height - ROW_PX);
+  };
 
   // ----- tabs and the address bar
 
@@ -703,6 +944,8 @@ export class BrowserDriver {
       }
       this.releaseHeldFrame();
       this.patch({ hasFrame: true, hadFrame: true, lastScreen: false });
+      // The setup circle's "Open the Browser": a Browser window has shown a page. Only that, never which.
+      stepUsed('browser');
     };
     if (typeof video.requestVideoFrameCallback === 'function') {
       const id = video.requestVideoFrameCallback(seen);
@@ -750,6 +993,7 @@ export class BrowserDriver {
   attachVideo(video: HTMLVideoElement, held: HTMLCanvasElement | null = null): () => void {
     this.video = video;
     this.held = held;
+    this.applyPhoneFrame();
     void this.showLastScreen();
     this.showMedia();
     if (!video.srcObject) this.play(video);

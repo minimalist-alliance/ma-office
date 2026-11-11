@@ -1,7 +1,7 @@
 // What the Browser window asks of the desk, and when. A fake link and clock, with no element attached:
 // the video itself is the Playwright specs' job.
 import { afterEach, beforeEach, describe, expect, it, vi } from 'vitest';
-import { DeskNotConnected, type BrowserMedia, type DeskLink } from '../desk/deskLink';
+import { DeskNotConnected, type BrowserMedia, type BrowserViewMessage, type DeskLink, type PhoneDevice } from '../desk/deskLink';
 import { SOUND_QUIET_MS } from '../desk/sound';
 import { BrowserDriver, HIDDEN_LIVE_MS } from './driver';
 
@@ -17,6 +17,14 @@ class FakeLink {
   tabRefusals = new Set<(code: string) => void>();
   clipboardListeners = new Set<(m: { seq: number; type: string }) => void>();
   clipboardRefusals = new Set<(code: string) => void>();
+  viewListeners = new Set<(m: BrowserViewMessage) => void>();
+  devices: (PhoneDevice | null)[] = [];
+  setDevice(d: PhoneDevice | null): void {
+    this.devices.push(d);
+  }
+  currentSessionId(): string {
+    return 'cs-me';
+  }
   private readonly listeners = new Set<() => void>();
 
   media(): BrowserMedia | null {
@@ -47,6 +55,11 @@ class FakeLink {
 
   subscribe(topic: string, fn: (m: { seq: number; tabs: unknown[] }) => void, onRefused?: (code: string) => void): () => void {
     this.order.push(`sub ${topic}`);
+    if (topic === 'browser.view') {
+      const listener = fn as unknown as (m: BrowserViewMessage) => void;
+      this.viewListeners.add(listener);
+      return () => this.viewListeners.delete(listener);
+    }
     if (topic === 'browser.clipboard') {
       const listener = fn as unknown as (m: { seq: number; type: string }) => void;
       this.clipboardListeners.add(listener);
@@ -98,6 +111,13 @@ let driver: BrowserDriver;
 const states = (): (string | undefined)[] => link.calls.filter((c) => c.method === 'browser.stream.set').map((c) => c.state);
 const flush = async (ms = 0): Promise<void> => {
   await vi.advanceTimersByTimeAsync(ms);
+};
+/** A short notice about something else: a navigation the desk blocks. */
+const BLOCKED = { code: 'forbidden', details: { reason: 'blocked' } };
+const shortNotice = async (): Promise<void> => {
+  link.refuse['browser.tab.navigate'] = BLOCKED;
+  driver.navigate('example.org');
+  await flush();
 };
 const setHidden = (hidden: boolean): void => {
   doc.hidden = hidden;
@@ -397,10 +417,65 @@ describe('BrowserDriver', () => {
   it('a notice goes by itself after a few seconds', async () => {
     link.setMedia(session());
     await flush();
-    driver.noteTouch();
-    expect(driver.getView().notice).toMatch(/Touch control/);
+    await shortNotice();
+    expect(driver.getView().notice).toBe('This desk blocks that address.');
     await flush(5_000);
     expect(driver.getView().notice).toBeNull();
+  });
+
+  describe('the touch hint', () => {
+    let store: Map<string, string>;
+    beforeEach(() => {
+      store = new Map();
+      const localStorage = { getItem: (k: string) => store.get(k) ?? null, setItem: (k: string, v: string) => void store.set(k, v), removeItem: (k: string) => void store.delete(k) };
+      vi.stubGlobal('window', { setTimeout, clearTimeout, addEventListener() {}, removeEventListener() {}, localStorage });
+    });
+
+    it("a member's first finger shows it, with no notice in the bar, until Got it; it never comes back in this window", async () => {
+      driver.noteTouch('u-1');
+      expect(driver.getView().touchHint).toBe(true);
+      expect(driver.getView().notice).toBeNull();
+      await flush(60_000);
+      expect(driver.getView().touchHint).toBe(true); // no timing a member can miss
+      driver.dismissTouchHint();
+      expect(driver.getView().touchHint).toBe(false);
+      driver.noteTouch('u-1');
+      expect(driver.getView().touchHint).toBe(false);
+    });
+
+    it('it goes by itself after the third gesture on the picture, the one that showed it included', () => {
+      driver.noteTouch('u-1');
+      driver.noteTouchGesture();
+      driver.noteTouchGesture();
+      expect(driver.getView().touchHint).toBe(true);
+      driver.noteTouchGesture();
+      expect(driver.getView().touchHint).toBe(false);
+      driver.noteTouchGesture(); // nothing to count once it's gone
+      expect(driver.getView().touchHint).toBe(false);
+    });
+
+    it('once per member in this browser: a new window shows it to someone else only', () => {
+      driver.noteTouch('u-1');
+      const again = new BrowserDriver();
+      again.noteTouch('u-1');
+      expect(again.getView().touchHint).toBe(false);
+      const other = new BrowserDriver();
+      other.noteTouch('u-2');
+      expect(other.getView().touchHint).toBe(true);
+      expect(JSON.parse(store.get('ma.browser.touchHint.v1') ?? '[]')).toEqual(['u-1', 'u-2']);
+    });
+
+    it('with no storage (a private window) it still shows, and may show again in the next window', () => {
+      vi.stubGlobal('window', { setTimeout, clearTimeout, addEventListener() {}, removeEventListener() {} });
+      driver.noteTouch(null);
+      expect(driver.getView().touchHint).toBe(true);
+      driver.dismissTouchHint();
+      driver.noteTouch(null);
+      expect(driver.getView().touchHint).toBe(false);
+      const again = new BrowserDriver();
+      again.noteTouch(null);
+      expect(again.getView().touchHint).toBe(true);
+    });
   });
 
   it('live with no picture asks again every 30 s, which restarts a unit that stopped by itself', async () => {
@@ -534,7 +609,7 @@ describe('BrowserDriver', () => {
       link.refuse['browser.text.insert'] = ACTIVE_TAB;
       driver.insertText('hello');
       await flush();
-      driver.noteTouch();
+      await shortNotice();
       await flush(5_000);
       expect(driver.getView().heldText).toBe('hello');
       expect(driver.getView().notice).toBe("This page can't take that from here. Pick a tab.");
@@ -602,7 +677,7 @@ describe('BrowserDriver', () => {
       link.refuse['browser.text.insert'] = HUNG;
       driver.insertText('hello');
       await flush();
-      driver.noteTouch();
+      await shortNotice();
       await flush(5_000);
       expect(driver.getView().notice).toBe(LINE);
     });
@@ -1053,3 +1128,85 @@ describe('the clipboard, through the driver', () => {
 function callsOf(method: string): FakeLink['calls'] {
   return link.calls.filter((c) => c.method === method);
 }
+
+describe("the desk's phone view (deskd API.md section 10, \"On a phone\")", () => {
+  const phoneWindow = (): void => {
+    vi.stubGlobal('window', { setTimeout, clearTimeout, addEventListener() {}, removeEventListener() {}, matchMedia: () => ({ matches: true }), screen: { width: 390, height: 844 } });
+    vi.stubGlobal('navigator', { userAgent: 'Mozilla/5.0 (Linux; Android 15) Mobile', platform: 'Linux armv8l', maxTouchPoints: 5 });
+  };
+  const view = (m: BrowserViewMessage): void => {
+    for (const fn of link.viewListeners) fn(m);
+  };
+  const PHONE: BrowserViewMessage = { mode: 'phone', sessionId: 'cs-me', width: 390, height: 537, scale: 1.34, region: { x: 0, y: 0, width: 523, height: 720 }, screen: { width: 1280, height: 720 }, field: null };
+
+  it('a phone sends its box as the device once it settles, and nothing on a larger screen', async () => {
+    driver.setPhoneBox({ width: 390, height: 537 });
+    await flush(400);
+    expect(link.devices).toEqual([]); // not a phone: no matchMedia here
+    phoneWindow();
+    driver.setPhoneBox(null);
+    driver.setPhoneBox({ width: 390.2, height: 536.8 });
+    await flush(100);
+    expect(link.devices).toEqual([]);
+    await flush(300);
+    expect(link.devices).toEqual([{ kind: 'phone', width: 390, height: 537 }]);
+  });
+
+  it('Desktop site takes the device away at once, and gives it back', async () => {
+    phoneWindow();
+    driver.setPhoneBox({ width: 390, height: 537 });
+    await flush(400);
+    driver.toggleDesktopSite();
+    expect(driver.getView().desktopSite).toBe(true);
+    expect(link.devices.at(-1)).toBeNull();
+    driver.toggleDesktopSite();
+    expect(link.devices.at(-1)).toEqual({ kind: 'phone', width: 390, height: 537 });
+  });
+
+  it("the simplified view covering, or the window closing, takes it away", async () => {
+    phoneWindow();
+    driver.setPhoneBox({ width: 390, height: 537 });
+    await flush(400);
+    driver.setCovered(true);
+    expect(link.devices.at(-1)).toBeNull();
+    driver.setCovered(false);
+    await flush(400);
+    expect(link.devices.at(-1)).toEqual({ kind: 'phone', width: 390, height: 537 });
+    driver.unmount();
+    expect(link.devices.at(-1)).toBeNull();
+  });
+
+  it("browser.view: ours shows the region; another phone's says so, once", async () => {
+    phoneWindow();
+    driver.setPhoneBox({ width: 390, height: 537 });
+    await flush(400);
+    view(PHONE);
+    expect(driver.getView().phone).toMatchObject({ served: true, mine: true, other: false, region: PHONE.region });
+    expect(driver.region()).toEqual({ x: 0, y: 0, width: 523, height: 720, screenWidth: 1280, screenHeight: 720 });
+    view({ ...PHONE, sessionId: 'cs-other' });
+    expect(driver.getView().phone.other).toBe(true);
+    expect(driver.region()).toBeNull();
+    expect(driver.getView().notice).toBe('Your phone has this page. Click it to bring it back here.');
+    view({ mode: 'desktop', field: null });
+    expect(driver.getView().phone).toMatchObject({ served: true, mine: false, other: false });
+  });
+
+  it('a field taking focus in our view raises the keyboard with its look (not on iOS), and its going hides it', async () => {
+    phoneWindow();
+    const opened: string[] = [];
+    let hid = 0;
+    driver.setSoftKeyboard({ open: (l: { inputMode: string }) => opened.push(l.inputMode), look: () => undefined, hide: () => (hid += 1) } as unknown as Parameters<typeof driver.setSoftKeyboard>[0]);
+    view({ ...PHONE, field: { tabId: 't1', kind: 'email_address', enterKey: 'next', box: { x: 1, y: 2, width: 3, height: 4 } } });
+    expect(opened).toEqual(['email']);
+    driver.setSoftState({ typing: true, ctrl: 'off', alt: 'off' });
+    view({ ...PHONE, field: null });
+    expect(hid).toBe(1);
+    driver.setSoftState({ typing: false, ctrl: 'off', alt: 'off' });
+    vi.stubGlobal('navigator', { userAgent: 'Mozilla/5.0 (iPhone; CPU iPhone OS 18_0 like Mac OS X)', platform: 'iPhone', maxTouchPoints: 5 });
+    view({ ...PHONE, field: { tabId: 't1', kind: 'plain', enterKey: null } });
+    expect(opened).toEqual(['email']); // iOS keeps the Keyboard button
+    view({ ...PHONE, field: { tabId: 't1', kind: 'unknown', enterKey: null } });
+    expect(opened).toEqual(['email']);
+  });
+});
+

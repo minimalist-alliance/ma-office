@@ -119,6 +119,14 @@ describe('addressShown', () => {
     expect(addressShown(undefined)).toBe('');
   });
 
+  it("the desk's start page shows an empty bar (as an older deskd reports it), any other file:// URL as it is", () => {
+    expect(addressShown('file:///usr/local/share/ma/home.html')).toBe('');
+    expect(addressShown('file:///usr/local/share/ma/home.html#x')).toBe('');
+    expect(addressShown('file:///usr/local/share/ma/home.html?q=1')).toBe('');
+    expect(addressShown('file:///usr/local/share/ma/home.htmlx')).toBe('file:///usr/local/share/ma/home.htmlx');
+    expect(addressShown('file:///etc/hostname')).toBe('file:///etc/hostname');
+  });
+
   it('anything else shows as it is', () => {
     expect(addressShown('https://example.org/a')).toBe('https://example.org/a');
   });

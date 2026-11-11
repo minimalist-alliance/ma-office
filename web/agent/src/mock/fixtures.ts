@@ -1,14 +1,17 @@
 // The mock's desks. Prices are illustrative, not anyone's real price list, and no key here is real: a mock key
 // is metadata only (label and last 4), because the mock never keeps a key.
-import type { Agent, AgentCaps, KeyMeta, LimitLayer, LimitPolicy, Message, ModelInfo, Provider } from '../client/types';
+import type { Agent, AgentCaps, Binding, KeyMeta, LimitLayer, LimitPolicy, MemoryLine, Message, ModelInfo, Provider } from '../client/types';
+import type { AskName } from './asks';
 import type { LedgerRow } from './ledger';
 
-export type FixtureName = 'fresh' | 'ready' | 'limit';
-export const FIXTURES: readonly FixtureName[] = ['fresh', 'ready', 'limit'];
+export type FixtureName = 'fresh' | 'ready' | 'limit' | 'tools';
+export const FIXTURES: readonly FixtureName[] = ['fresh', 'ready', 'limit', 'tools'];
 
 export const PROVIDERS: Provider[] = [
   { id: 'anthropic', name: 'Anthropic', console: 'console.anthropic.com', keyPrefix: 'sk-ant-' },
   { id: 'openai', name: 'OpenAI', console: 'platform.openai.com', keyPrefix: 'sk-' },
+  // desk-agent's fourth (ma-desk `2b6b5534`): only its free models are listed. Connected by the free card, or pasted.
+  { id: 'openrouter', name: 'OpenRouter', console: 'openrouter.ai', keyPrefix: 'sk-or-' },
 ];
 
 const M = 1_000_000;
@@ -22,6 +25,11 @@ export const MODELS: Record<string, ModelInfo[]> = {
   openai: [
     { id: 'gpt-5', label: 'GPT-5', inputMicroUsdPerMTok: 1.25 * M, outputMicroUsdPerMTok: 10 * M },
     { id: 'gpt-5-mini', label: 'GPT-5 mini', inputMicroUsdPerMTok: 0.25 * M, outputMicroUsdPerMTok: 2 * M },
+  ],
+  // Free models, $0 by their id as desk-agent prices them, the first the default. The second is made up, and chats only.
+  openrouter: [
+    { id: 'nvidia/nemotron-3.5-super-vl:free', label: 'NVIDIA: Nemotron 3.5 Super VL (free)', inputMicroUsdPerMTok: 0, outputMicroUsdPerMTok: 0, free: true, tools: true },
+    { id: 'example-labs/chat-8b:free', label: 'Example Labs: Chat 8B (free)', inputMicroUsdPerMTok: 0, outputMicroUsdPerMTok: 0, free: true, tools: false },
   ],
 };
 
@@ -106,6 +114,10 @@ export interface Seed {
   deskName: string;
   /** Each agent's workspace: path to text. */
   files: Record<string, Record<string, string>>;
+  /** S-14: what each agent remembers, newest first. */
+  memories?: Record<string, MemoryLine[]>;
+  /** S-14: replies whose run waits on the member, and what it asks. */
+  waiting?: { agentId: string; messageId: string; runId: string; ask: AskName; at: number }[];
 }
 
 const HOUR = 3_600_000;
@@ -125,13 +137,110 @@ function manager(over: Partial<Agent> = {}, now = Date.now()): Agent {
     badgeNotice: false,
     unseen: 0,
     purpose: '',
-    look: { icon: 'spark', tone: 'graphite', png: null },
+    look: { icon: 'nodes', tone: 'graphite', png: null },
     solo: true,
     links: [],
     workspace: { quotaBytes: DEFAULT_CAPS.workspaceMb * MB, usedBytes: 0, sharedWith: [] },
     timers: 0,
     createdAt: now - 96 * HOUR,
     ...over,
+  };
+}
+
+/**
+ * S-14's `?fixture=tools` (the Product Designer's stills): Lead, Scout and Writer, Scout waiting on a Send outside with the
+ * chips of what it read, Writer idle, and what Scout remembers. Demo data only: Alex Demo, example sites, no key.
+ */
+function toolsSeed(now: number, keys: KeyMeta[], sonnet: Binding, mini: Binding): Seed {
+  const deskName = 'Personal';
+  const badgeS = { provider: 'anthropic', providerName: 'Anthropic', model: sonnet.model };
+  const badgeM = { provider: 'openai', providerName: 'OpenAI', model: mini.model };
+  const staff = (id: string, name: string, icon: string, tone: string, binding: Binding, purpose: string): Agent => ({
+    id,
+    name,
+    role: 'staff',
+    lead: false,
+    status: 'online',
+    binding,
+    badgeHidden: false,
+    badgeNotice: false,
+    unseen: 0,
+    purpose,
+    look: { icon, tone, png: null },
+    solo: false,
+    links: [],
+    workspace: { quotaBytes: 50 * MB, usedBytes: 0, sharedWith: [] },
+    timers: 0,
+    createdAt: now - 72 * HOUR,
+  });
+  const agents: Agent[] = [
+    manager({ status: 'online', binding: sonnet, look: { icon: 'list', tone: 'graphite', png: null } }, now),
+    staff('scout', 'Scout', 'search', 'cyan', sonnet, 'Find things on the web for Alex and check prices.'),
+    staff('writer', 'Writer', 'pen', 'plum', mini, 'Keep Alex’s notes tidy.'),
+  ];
+  const at = now - 4 * 60_000;
+  const lead1 = 'What did the team do today?';
+  const lead2 = 'Scout checked lamp prices and opened one shop page after you approved it. Writer left your drafts alone, as you asked.';
+  const s1 = 'Find me a desk lamp under $80 that’s good for reading. My Home office note has the size.';
+  const s2 = 'Your note says the desk is 120 cm wide, so a clamp lamp or a small base fits. Two review sites both like the Lumen Arc. I’d like to check its price today at the shop.';
+  const w1 = 'Tidy my Notebook: drafts older than a year can go to the Trash.';
+  const w2 = 'I found 3 pages with “draft” in the title that haven’t changed in over a year.';
+  const threads: Record<string, Message[]> = {
+    manager: [
+      { id: 'tl1', role: 'user', text: lead1, at: now - 30 * 60_000 },
+      { id: 'tl2', role: 'assistant', text: lead2, at: now - 30 * 60_000 + 3000, badge: badgeS, usage: usageOf(lead2), costMicroUsd: 2_100, stopReason: 'end_turn', state: 'done' },
+    ],
+    scout: [
+      { id: 'ts1', role: 'user', text: s1, at: at - 3 * 60_000 },
+      {
+        id: 'ts2',
+        role: 'assistant',
+        text: s2,
+        at: at,
+        runId: 'run-scout-1',
+        badge: badgeS,
+        state: 'awaiting_approval',
+        untrusted: true,
+        pendingApprovals: [],
+        tools: [
+          { name: 'notebook_read', summary: 'Read your note', ok: true, risk: 'read', target: { kind: 'page', pageId: 'pg-home-office', title: 'Home office' }, durationMs: 1000 },
+          { name: 'browser_read', summary: 'Read a web page', ok: true, risk: 'read', path: 'reviews.example.org/lamps', untrusted: true, session: 'agent', durationMs: 4000 },
+          { name: 'browser_read', summary: 'Read a web page', ok: true, risk: 'read', path: 'example.com/reviews/desk-lamps', untrusted: true, session: 'agent', durationMs: 3000 },
+        ],
+      },
+    ],
+    writer: [
+      { id: 'tw1', role: 'user', text: w1, at: now - 50 * 60_000 },
+      { id: 'tw2', role: 'assistant', text: w2, at: now - 50 * 60_000 + 4000, badge: badgeM, usage: usageOf(w2), costMicroUsd: 300, stopReason: 'end_turn', state: 'done', tools: [{ name: 'notebook_search', summary: 'Searched your Notebook', ok: true, risk: 'read', path: '“draft”', durationMs: 1000 }] },
+    ],
+  };
+  const day = 86_400_000;
+  const memories: Record<string, MemoryLine[]> = {
+    scout: [
+      { id: 'mem-1', text: 'Alex’s desk is 120 cm wide and faces a window.', createdAt: now - 10 * 60_000, untrusted: false },
+      { id: 'mem-2', text: 'Prefers prices in US dollars, with tax shown apart.', createdAt: now - 2 * day, untrusted: false },
+      { id: 'mem-3', text: 'The home office budget is $300 in all.', createdAt: now - 3 * day, untrusted: false },
+      { id: 'mem-4', text: 'Reads reviews.example.org before shop pages.', createdAt: now - 4 * day, untrusted: true },
+      { id: 'mem-5', text: 'Wants a lamp warm enough for evening reading.', createdAt: now - 5 * day, untrusted: false },
+      { id: 'mem-6', text: 'Likes short answers, with the price first.', createdAt: now - 6 * day, untrusted: false },
+    ],
+    writer: [{ id: 'mem-w1', text: 'Drafts go in the General tab.', createdAt: now - 7 * day, untrusted: false }],
+    manager: [],
+  };
+  const policies: Record<string, LimitPolicy> = { manager: { ...DEFAULT_POLICY }, scout: { ...DEFAULT_POLICY }, writer: { ...DEFAULT_POLICY } };
+  const today = new Date(now);
+  const midnight = new Date(today.getFullYear(), today.getMonth(), today.getDate()).getTime();
+  const ledger: LedgerRow[] = [{ agentId: 'scout', keyId: sonnet.keyId, at: Math.max(midnight, now - HOUR), microUsd: 420_000, tokens: 48_000 }];
+  return {
+    deskName,
+    keys,
+    agents,
+    threads,
+    policies,
+    ledger,
+    files: { manager: {}, scout: {}, writer: {} },
+    memories,
+    waiting: [{ agentId: 'scout', messageId: 'ts2', runId: 'run-scout-1', ask: 'shop', at }],
   };
 }
 
@@ -150,6 +259,7 @@ export function seed(name: FixtureName, now: number = Date.now()): Seed {
     { keyId: sonnet.keyId, provider: 'anthropic', providerName: 'Anthropic', label: 'Personal', last4: 'Q7xa', createdAt: now - 72 * HOUR, createdByDesk: deskName },
     { keyId: mini.keyId, provider: 'openai', providerName: 'OpenAI', label: 'Research', last4: 'p2Lm', createdAt: now - 30 * HOUR, createdByDesk: deskName },
   ];
+  if (name === 'tools') return toolsSeed(now, keys, sonnet, mini);
   const agents: Agent[] = [
     manager({ status: 'online', binding: sonnet }, now),
     {

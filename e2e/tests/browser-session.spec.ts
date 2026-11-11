@@ -7,6 +7,12 @@
 //   SESSION_CHECK=stop-wake ...       read only, after Platform has run that event. Also: root-swap, which also needs
 //                                     Chromium closed cleanly before the swap (image/desk-browser-close.sh, task 33 item 3)
 //
+// Slot mode (ADR 0077 1.3 item 9): a shared host's slot on a template builder, never a member's host. SESSION_SLOT=<k> runs
+// every command on the builder that image/host/template-build.sh launched (lib.ts onBuilder: SESSION_SLOT_SSH, SESSION_SLOT_KEY)
+// and reaches slot k's Chromium through the test host's CDP forward (10.98.<k>.2:19222, WR2-01: test hosts only), with the
+// pages on the host's side of the slot's veth (10.98.<k>.1:18766, a test host's HOST_PORTS). Only the seed (SESSION_KEEP=1)
+// and SESSION_CHECK=stop-wake run in a slot; history is read through chrome://history, since the profile is inside the desk.
+//
 // The restore rehearsal, docs/runbooks/restore-rehearsal.md (TD-110). These need the seed above, left with SESSION_KEEP=1:
 //   SESSION_MARK=<name> ...           set a marker cookie and history entry, prove they took, wait for Chromium to commit them
 //   SESSION_CHECK=restore SESSION_VOLUME=<vol> SESSION_ABSENT=<names> [SESSION_PRESENT=<names>] ...
@@ -17,9 +23,10 @@
 // could raze and the volume stays as the boot left it. Reading the session still means running Chromium on the profile.
 import { existsSync, mkdirSync, readFileSync, writeFileSync } from 'node:fs';
 import { test, expect } from '@playwright/test';
-import { onDesk } from './lib';
+import { onBuilder, onDesk } from './lib';
 
 const CHECK = process.env.SESSION_CHECK ?? '';
+const SLOT = process.env.SESSION_SLOT ?? '';
 const MARK = process.env.SESSION_MARK ?? '';
 const MARK_WAIT_S = Number(process.env.SESSION_MARK_WAIT ?? 120);
 const names = (v?: string) => (v ?? '').split(',').filter(Boolean);
@@ -32,6 +39,8 @@ const BASELINE = 'screenshots/session-baseline.json';
 // Refused at load, before anything reaches the desk.
 for (const n of [...(MARK ? [MARK] : []), ...ABSENT, ...PRESENT]) if (!/^[a-z0-9_]{1,24}$/.test(n)) throw new Error(`bad marker name "${n}": a-z, 0-9 and _ only`);
 if (MARK && CHECK) throw new Error('SESSION_MARK and SESSION_CHECK are separate runs');
+if (SLOT && !/^([1-9]|1[0-9]|2[0-9])$/.test(SLOT)) throw new Error('SESSION_SLOT is a slot number, 1 to 29');
+if (SLOT && (MARK || (CHECK && CHECK !== 'stop-wake'))) throw new Error('in a slot, only the seed and SESSION_CHECK=stop-wake run');
 if (!(MARK_WAIT_S >= 0)) throw new Error('SESSION_MARK_WAIT is seconds');
 if (!REHEARSAL && (ABSENT.length || PRESENT.length || VOLUME)) throw new Error('SESSION_ABSENT, SESSION_PRESENT and SESSION_VOLUME only go with SESSION_CHECK=restore, putback or rollback');
 if (CHECK === 'restore' && !ABSENT.length) throw new Error('SESSION_CHECK=restore needs SESSION_ABSENT: with no marker that must be gone, the old volume passes too');
@@ -46,7 +55,7 @@ const sleep = (ms: number) => new Promise((r) => setTimeout(r, ms));
 
 const SESS_PY = String.raw`
 import base64, http.server, json, os, shutil, socket, sqlite3, struct, sys, time, urllib.request
-WEB = 18766; BASE = 'http://127.0.0.1:%d' % WEB; CDP = 'http://127.0.0.1:9222'; PROFILE = '/data/browser/profile/Default'
+WEB = 18766; HOSTA = os.environ.get('SESS_WEB_HOST', '127.0.0.1'); BASE = 'http://%s:%d' % (HOSTA, WEB); CDP = os.environ.get('SESS_CDP', 'http://127.0.0.1:9222'); PROFILE = '/data/browser/profile/Default'
 USER = 'session-e2e'; SECRET = 'test-only-not-a-secret'
 def get(p, m='GET'):
     for i in range(6):
@@ -102,13 +111,18 @@ def pm(expr):
     t = new('chrome://password-manager/passwords'); time.sleep(2.5)
     try: return call(t, expr)
     finally: close(t)
+def hist_ui(q):
+    h = new('chrome://history/?q=' + q); time.sleep(3)
+    try: return call(h, "(()=>{const a=document.querySelector('history-app');const l=a&&a.shadowRoot.querySelector('history-list');return l?[...l.shadowRoot.querySelectorAll('history-item')].map(i=>i.item&&i.item.url):null})()")
+    finally: close(h)
 PW_LIST = 'new Promise(r=>chrome.passwordsPrivate.getSavedPasswordList(l=>r(l.map(x=>({id:x.id,username:x.username})))))'
 def read():
     out = {'cookies': visit('/echo'), 'tabs': sorted(t['url'] for t in tabs()), 'at': time.time()}
     h = new('chrome://history/?q=session-hist'); time.sleep(3)
     try: out['history'] = call(h, "(()=>{const a=document.querySelector('history-app');const l=a&&a.shadowRoot.querySelector('history-list');return l?[...l.shadowRoot.querySelectorAll('history-item')].map(i=>i.item&&i.item.url):null})()")
     finally: close(h)
-    shutil.copy(PROFILE + '/History', '/var/tmp/ma-session/h.db'); c = sqlite3.connect('/var/tmp/ma-session/h.db'); out['historyDb'] = sorted(r[0] for r in c.execute("select url from urls where url like '%session-hist%'")); c.close(); os.unlink('/var/tmp/ma-session/h.db')
+    if os.environ.get('SESS_SLOT'): out['historyDb'] = sorted({u for q in ('session-hist-1', 'session-hist-2') for u in (hist_ui(q) or []) if u and 'session-hist' in u})  # a slot's profile is inside the desk: chrome://history, one query a page (one query for both lists only the latest)
+    else: shutil.copy(PROFILE + '/History', '/var/tmp/ma-session/h.db'); c = sqlite3.connect('/var/tmp/ma-session/h.db'); out['historyDb'] = sorted(r[0] for r in c.execute("select url from urls where url like '%session-hist%'")); c.close(); os.unlink('/var/tmp/ma-session/h.db')
     t = new('chrome://password-manager/passwords'); time.sleep(2.5)
     try:
         l = call(t, PW_LIST); out['passwords'] = [x['username'] for x in l or []]; me = next((x for x in l or [] if x['username'] == USER), None)
@@ -127,7 +141,7 @@ def hist(like):
         if os.path.exists(PROFILE + '/History' + s): shutil.copy(PROFILE + '/History' + s, d + '/History' + s)
     c = sqlite3.connect(d + '/History'); r = sorted(x[0] for x in c.execute('select url from urls where url like ?', ('%' + like + '%',))); c.close(); shutil.rmtree(d); return r
 cmd = sys.argv[1]
-if cmd == 'serve': http.server.ThreadingHTTPServer(('127.0.0.1', WEB), H).serve_forever()
+if cmd == 'serve': http.server.ThreadingHTTPServer((HOSTA, WEB), H).serve_forever()
 elif cmd == 'seed':
     for t in tabs():
         if '18766' in t['url']: close(t)
@@ -149,10 +163,20 @@ elif cmd == 'close':
     print(json.dumps({'closed': n}))
 `;
 
-const deploy = () => onDesk(
+/** In a slot: the host's side of its veth, the CDP forward, and a thaw first (deskd may have frozen an unwatched Chromium). */
+const SLOT_ENV = SLOT ? `SESS_SLOT=${SLOT} SESS_WEB_HOST=10.98.${SLOT}.1 SESS_CDP=http://10.98.${SLOT}.2:19222` : '';
+const THAW = SLOT ? `python3 -I /var/lib/ma-tb/tools/units.py ${SLOT} thaw desk-browser >/dev/null 2>&1 || true; ` : '';
+const run = (command: string, timeoutS = 90) => (SLOT ? onBuilder(command, timeoutS) : onDesk(command, timeoutS));
+const deploy = () => run(
   `set -e; install -d -m 0755 ${DIR}; echo ${Buffer.from(SESS_PY).toString('base64')} | base64 -d > ${DIR}/sess.py; chmod 0644 ${DIR}/sess.py; ` +
-  `systemctl stop ${UNIT} 2>/dev/null || true; systemd-run --quiet --collect --unit=${UNIT} --uid=65534 --gid=65534 /usr/bin/python3 -I ${DIR}/sess.py serve; sleep 1; echo deployed`);
-const sess = async (cmd: string) => JSON.parse((await onDesk(`python3 -I ${DIR}/sess.py ${cmd} 2>&1 | tail -4`, 120)).trim().split('\n').pop()!);
+  `systemctl stop ${UNIT} 2>/dev/null || true; systemd-run --quiet --collect --unit=${UNIT} --uid=65534 --gid=65534 ${SLOT ? `--setenv=SESS_WEB_HOST=10.98.${SLOT}.1 ` : ''}/usr/bin/python3 -I ${DIR}/sess.py serve; sleep 1; echo deployed`);
+const sess = async (cmd: string) => JSON.parse((await run(`${THAW}env ${SLOT_ENV} python3 -I ${DIR}/sess.py ${cmd} 2>&1 | tail -4`, 120)).trim().split('\n').pop()!);
+/** A slot's Chromium: started through units.sock as deskd would, its CDP forward answering, restored tabs registered. */
+const slotBrowserUp = async () => {
+  await onBuilder(`python3 -I /var/lib/ma-tb/tools/units.py ${SLOT} start desk-browser >/dev/null 2>&1 || true; ` +
+    `for i in $(seq 1 120); do ${THAW}curl -s -m 2 http://10.98.${SLOT}.2:19222/json/version >/dev/null && exit 0; sleep 1; done; exit 1`, 180);
+  await sleep(12_000);
+};
 /** Chromium up, its port answering, and restored tabs registered. */
 const browserUp = async () => {
   await onDesk(`for i in $(seq 1 120); do [ "$(systemctl is-active desk-browser)" = active ] && curl -s -m 2 http://127.0.0.1:9222/json/version >/dev/null && exit 0; sleep 1; done; exit 1`, 180);
@@ -256,6 +280,22 @@ async function readSlowly(): Promise<Parameters<typeof expectSession>[0]> {
 
 test.describe.configure({ mode: 'serial' });
 
+if (SLOT) {
+  test(CHECK ? `slot ${SLOT}: the session after ${CHECK}` : `slot ${SLOT}: seed cookies, history, tabs and a saved password`, async () => {
+    test.setTimeout(10 * 60_000);
+    await slotBrowserUp();
+    await deploy(); // before the read, so restored tabs find their pages
+    if (!CHECK) {
+      await sess('seed');
+      await sleep(40_000);
+      expectSession(await sess('read'), `seed in slot ${SLOT}`);
+    } else {
+      expectSession(await readSlowly(), `${CHECK} in slot ${SLOT}`);
+    }
+    if (!process.env.SESSION_KEEP) await sess('close');
+  });
+}
+
 /**
  * deskd freezes an unwatched Chromium after 60 s (ADR 0045) and a frozen one answers nothing, so a check that drives
  * Chromium as root through systemd would hang part-way. This holds deskd off for the check: it stops deskd, thaws
@@ -263,9 +303,11 @@ test.describe.configure({ mode: 'serial' });
  * again calls it again, and the afterAll below starts deskd, which thaws anything left frozen at its own start.
  */
 const HOLD = 'systemctl stop deskd 2>/dev/null || true; f=/sys/fs/cgroup/system.slice/desk-browser.service/cgroup.freeze; [ -w "$f" ] && echo 0 > "$f"; rm -f /run/desk/browser-frozen; true';
-test.afterAll(async () => { await onDesk('systemctl start deskd', 90).catch(() => undefined); });
+test.afterAll(async () => { if (!SLOT) await onDesk('systemctl start deskd', 90).catch(() => undefined); }); // never the test desk from a slot run
 
-if (MARK) {
+if (SLOT) {
+  // slot mode above
+} else if (MARK) {
   test(`marker ${MARK}`, async () => {
     await onDesk(HOLD, 90);
     await deploy();
@@ -308,7 +350,22 @@ if (MARK) {
   test(`session survived ${CHECK}`, async () => {
     // Before anything starts Chromium, which marks its profile Crashed while it runs: how the last one ended.
     const f = await deskFacts();
-    if (CHECK === 'root-swap') expect.soft(f.exitType, 'Chromium was closed cleanly before the swap (image/desk-browser-close.sh)').toMatch(/"exit_type":"(SessionEnded|Normal)"/);
+    if (CHECK === 'root-swap') {
+      const clean = /"exit_type":"(SessionEnded|Normal)"/;
+      if (f.browser === 'active') {
+        // 0.3.2's prewarm (desk-browser-prewarm) has already started Chromium: it marks its profile Crashed while it runs, and
+        // desk-browser-start rewrites a Crashed before that start, so the profile no longer says how the last one ended.
+        // Don't read it. Take the close's own line (desk-browser-close prints exit_type before the swap, and it exits 1
+        // unless that is clean) from SESSION_CLOSE_EXIT, and require that it was prewarm that started Chromium. Without it
+        // this fails, rather than passing on a value that proves nothing. `touch /data/desk/no-prewarm` before the swap
+        // keeps the strict read of the profile below.
+        const prewarmed = await onDesk(`journalctl -b -u desk-browser-prewarm --no-pager -o cat | grep -c 'started the Browser' || true`);
+        expect.soft(Number(prewarmed.trim()), 'a running Chromium at this point was started by desk-browser-prewarm').toBeGreaterThan(0);
+        expect.soft(process.env.SESSION_CLOSE_EXIT ?? '', 'Chromium is running (prewarm), so the profile cannot say how it ended: pass the close helper\'s exit_type as SESSION_CLOSE_EXIT=Normal (or SessionEnded), or set /data/desk/no-prewarm before the swap').toMatch(/^(SessionEnded|Normal)$/);
+      } else {
+        expect.soft(f.exitType, 'Chromium was closed cleanly before the swap (image/desk-browser-close.sh)').toMatch(clean);
+      }
+    }
     await onDesk(HOLD, 90);
     await onDesk('systemctl start desk-browser', 120);
     await browserUp();

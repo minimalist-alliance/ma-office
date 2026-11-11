@@ -5,12 +5,12 @@ import { api, ApiError } from '../../platform/api';
 import { SignInRequired } from '../../platform/auth';
 import type { GuildAccess } from '../../guild/access';
 import { ATTENTION_DEADLINE_MS, AttentionSignal } from '../attention';
-import { DeskNotConnected, type BrowserInput, type BrowserMedia, type BulkChannel, type CollabChannel, type DeskLink, type DeskRefusal, type DeskRpc, type LinkDetails, type LinkState, type LinkTopics, type RpcOptions } from '../deskLink';
+import { DeskNotConnected, type BrowserInput, type BrowserMedia, type PhoneDevice, type BulkChannel, type CollabChannel, type DeskLink, type DeskRefusal, type DeskRpc, type LinkDetails, type LinkState, type LinkTopics, type RpcOptions } from '../deskLink';
 import { backoffMs } from './backoff';
 import { gateway, GatewayError, type GatewayListener, type GatewayMessage } from './gateway';
 import { tabIdentity } from './identity';
 import { PeerSession, type PeerHealth } from './peer';
-import { closeCodeAction, notReadyRetryMs, RECHECK_FIRST_ATTEMPT, REFUSAL_CODES, refusalOf, sessionClosedAction, type CloseAction } from './policy';
+import { CallWindow, closeCodeAction, CONNECT_CALLS_PER_MINUTE, notReadyRetryMs, RECHECK_FIRST_ATTEMPT, REFUSAL_CODES, refusalOf, sessionClosedAction, WAKE_POLL_MS, wakePollMs, type CloseAction } from './policy';
 import { answerMatchesIdentity } from './sdp';
 import { Subscriptions } from './subs';
 
@@ -29,6 +29,11 @@ const RELOAD_GUARD_MS = 5 * 60 * 1000;
 const WAKE_ASK_MS = 60_000;
 const ACTIVITY_EVERY_MS = 60_000;
 const RELOAD_KEY = 'ma.deskApi.reloadedAt';
+/** A 429 from `connect` holds every call this long when it says nothing itself, and never longer than 5 minutes. */
+const RATE_LIMITED_MS = 30_000;
+
+/** Every `connect` in this tab, so the wake's fast poll keeps inside the member's limit (`CallWindow`). */
+const connectCalls = new CallWindow(CONNECT_CALLS_PER_MINUTE, 60_000);
 
 interface ConnectResponse {
   state?: string;
@@ -90,7 +95,7 @@ export class RtcDeskLink implements DeskLink, GatewayListener {
   private shown: LinkState = 'idle';
   private readonly statusListeners = new Set<(s: LinkState) => void>();
   private readonly detailListeners = new Set<() => void>();
-  private info: LinkDetails = { unreachable: false, path: null, rttMs: null, desk: null, refusal: null };
+  private info: LinkDetails = { unreachable: false, path: null, rttMs: null, desk: null, refusal: null, busy: false };
 
   /** connect() was called, and nothing has told the link to stop. */
   private wanted = false;
@@ -112,6 +117,12 @@ export class RtcDeskLink implements DeskLink, GatewayListener {
   private waking = false;
   /** When the gateway last said `phase: ready`. A `connect` asked before that may have an older answer. */
   private readyHeardAt = 0;
+  /** A member asked for this desk while it was asleep or waking, so the wake is polled at `WAKE_POLL_MS`. */
+  private wokeHere = false;
+  /** When that wake was asked for: the fast poll lasts `WAKE_FAST_FOR_MS`. */
+  private wakeStartedAt = 0;
+  /** The desk is shown waking on the member's word alone (`showWaking`): nothing from `connect` has said so yet. */
+  private shownWaking = false;
 
   private peer: PeerSession | null = null;
   private opened = false;
@@ -136,7 +147,7 @@ export class RtcDeskLink implements DeskLink, GatewayListener {
   /** Outlives sessions: each new one asks for all of these again. */
   private readonly subs = new Subscriptions();
   /** `desk.attention.set`, again on each new session (`attention.ts`). An export session never says. */
-  readonly attention = new AttentionSignal((seen) => this.call('desk.attention.set', { seen }, { deadlineMs: ATTENTION_DEADLINE_MS }));
+  readonly attention = new AttentionSignal((seen, device) => this.call('desk.attention.set', device ? { seen, device } : { seen }, { deadlineMs: ATTENTION_DEADLINE_MS }));
   private currentMedia: BrowserMedia | null = null;
   private readonly mediaListeners = new Set<() => void>();
   private readonly cursorListeners = new Set<(css: string) => void>();
@@ -191,12 +202,19 @@ export class RtcDeskLink implements DeskLink, GatewayListener {
   close(): void {
     this.stop('idle', 'closed_by_client');
     if (this.info.refusal) this.patchInfo({ refusal: null });
+    if (this.info.busy) this.patchInfo({ busy: false });
   }
 
   wake(): void {
-    if (this.opened || this.waitingForReady) return; // running, or already on its way
+    if (this.opened) return; // running
+    if (this.waitingForReady) {
+      // Already on its way up, perhaps from another tab: someone is waiting for it here now, so look sooner.
+      if (this.waking) this.markWokeHere();
+      return;
+    }
     if (this.info.refusal) return; // `connect` refuses with or without `start`; `recheck` is the only way back
     this.wakeAskedUntil = this.wakeGiveUpAt = Date.now() + WAKE_ASK_MS;
+    this.showWaking();
     if (this.resting) this.reopen();
     else if (this.wanted) this.retryNow(); // an answer is on its way, or a retry is
     else this.connect();
@@ -207,6 +225,30 @@ export class RtcDeskLink implements DeskLink, GatewayListener {
     if (this.wanted || !r || r.kind === 'unavailable') return; // a desk that can't be opened is never asked again
     this.patchInfo({ refusal: null });
     this.connect();
+  }
+
+  private markWokeHere(): void {
+    if (this.wokeHere) return;
+    this.wokeHere = true;
+    this.wakeStartedAt = Date.now();
+  }
+
+  /**
+   * The member asked, and the last word on this desk is that it's stopped, so `start: true` is a round trip or two
+   * away (`start: false` first, then the wake). Say it's waking now: the window and the status line said "asleep"
+   * until the wake's own answer, about 2 s on a real desk (TD-227 part 3). Whatever `connect` says next replaces it,
+   * and a wake that never goes out puts "stopped" back (`unshowWaking`). Not a Guild Desk's, whose wake is its own.
+   */
+  private showWaking(): void {
+    if (this.guild || this.info.desk?.state !== 'stopped') return;
+    this.patchDesk({ state: 'starting', phase: 'starting', queuePosition: null });
+    this.shownWaking = true;
+  }
+
+  private unshowWaking(): void {
+    if (!this.shownWaking) return;
+    this.shownWaking = false;
+    this.patchDesk({ state: 'stopped', phase: 'stopped', queuePosition: null });
   }
 
   /** The link rests, and nothing retries it: not a timer, not a poll, not a refresh, not a focus. */
@@ -224,6 +266,7 @@ export class RtcDeskLink implements DeskLink, GatewayListener {
     this.waitingForReady = false;
     this.notReadyChecks = 0;
     this.waking = false;
+    this.wokeHere = false;
     this.wakeAskedUntil = 0;
     this.clearLost();
     this.setState('resting');
@@ -250,6 +293,15 @@ export class RtcDeskLink implements DeskLink, GatewayListener {
 
   knowsAttention(): boolean {
     return this.attention.answer === 'ok';
+  }
+
+  setDevice(device: PhoneDevice | null): void {
+    if (this.purpose !== 'export' && !this.guild) this.attention.device(device);
+  }
+
+  /** This session's id from the gateway, which `browser.view` names its phone by. */
+  currentSessionId(): string | null {
+    return this.sessionId;
   }
 
   call<M extends keyof DeskRpc>(method: M, params: Record<string, unknown> = {}, options?: RpcOptions): Promise<DeskRpc[M]> {
@@ -349,6 +401,7 @@ export class RtcDeskLink implements DeskLink, GatewayListener {
       if (c.remoteDeskId) this.remoteId = c.remoteDeskId;
       return c;
     }
+    connectCalls.note(Date.now());
     const res = await api<ConnectResponse>(`/v1/desks/${encodeURIComponent(this.deskId)}/connect`, {
       method: 'POST',
       headers: { 'Content-Type': 'application/json' },
@@ -362,6 +415,7 @@ export class RtcDeskLink implements DeskLink, GatewayListener {
   /** Whatever `connect` said, kept and passed on. */
   private absorbConnect(c: ConnectResponse): void {
     if (this.info.refusal) this.info = { ...this.info, refusal: null }; // told by `patchDesk`'s update
+    if (this.info.busy) this.patchInfo({ busy: false });
     this.token = c.deskToken;
     this.identity = c.deskIdentity?.fingerprintsSha256 ?? this.identity;
     gateway.fallbackUrl(c.gateway);
@@ -371,7 +425,8 @@ export class RtcDeskLink implements DeskLink, GatewayListener {
 
   private patchDesk(p: Partial<NonNullable<LinkDetails['desk']>>): void {
     const cur = this.info.desk ?? { state: null, phase: null, queuePosition: null, stopAt: null };
-    this.patchInfo({ desk: { ...cur, ...p } });
+    if (p.state !== undefined) this.shownWaking = false; // the desk's own word from here on
+    this.patchInfo({ desk: { ...cur, ...p, heardAt: Date.now() } });
   }
 
   /** `start` is only ever true right after an answer that says a desk the member asked for is stopped. */
@@ -386,13 +441,17 @@ export class RtcDeskLink implements DeskLink, GatewayListener {
       if (stale()) return;
       const asked = Date.now() < this.wakeAskedUntil;
       this.wakeAskedUntil = 0;
-      this.absorbConnect(c);
-
+      if (asked || start) this.markWokeHere();
       // Not `retained`: that desk can't be started, only restored or exported.
       if (asked && !start && c.state === 'stopped') {
+        // `start: true` goes out next, so this "stopped" is already out of date: it shows waking, as from the click.
+        this.absorbConnect(this.guild ? c : { ...c, state: 'starting', phase: 'starting' });
+        this.shownWaking = !this.guild;
         void this.establish(true);
         return;
       }
+      this.absorbConnect(c);
+
       if (isStopped(c.state) || c.phase === 'failed') {
         this.stop('idle', 'closed_by_client');
         return;
@@ -405,8 +464,9 @@ export class RtcDeskLink implements DeskLink, GatewayListener {
       if (c.phase !== 'ready' || !this.identity.length) {
         this.waitingForReady = true;
         if (c.state !== 'running') this.waking = true;
+        if (this.waking) this.watchWake();
         const pace = (c.retryAfterSeconds ?? c.pollAfterSeconds ?? 0) * 1000;
-        this.scheduleRetry(this.readyHeardAt >= askedAt ? 0 : pace || notReadyRetryMs(this.notReadyChecks++, this.waking));
+        this.scheduleRetry(this.readyHeardAt >= askedAt ? 0 : this.notReadyWaitMs(c.phase ?? null, pace));
         return;
       }
 
@@ -417,6 +477,7 @@ export class RtcDeskLink implements DeskLink, GatewayListener {
       }
       if (!opened.sessionId) throw new GatewayError('bad_reply', 'session.opened had no sessionId', true);
       this.sessionId = opened.sessionId;
+      if (this.watching) this.watchedOn = -1; // a wake's watch: again, with this session's token, which is refreshed from here on
       this.watching = true;
       this.ensureWatch();
 
@@ -458,6 +519,7 @@ export class RtcDeskLink implements DeskLink, GatewayListener {
       this.wakeAskedUntil = 0; // done with: a request that came during setup must not outlive it
       this.notReadyChecks = 0;
       this.waking = false;
+      this.wokeHere = false;
       this.clearLost();
       performance.measure('ma:desk-link-open', { start: this.setupStartedAt });
       this.setState('open');
@@ -468,6 +530,31 @@ export class RtcDeskLink implements DeskLink, GatewayListener {
     } catch (err) {
       if (!stale()) this.onSetupFailed(err, start);
     }
+  }
+
+  /**
+   * Until the next `connect` after one that said the desk isn't ready. A wake a member asked for here polls fast
+   * (`wakePollMs`); anything else keeps `connect`'s pace or grows from 3 s. Never sooner than the tab's `connect`
+   * budget has room for.
+   */
+  private notReadyWaitMs(phase: string | null, paceMs: number): number {
+    const now = Date.now();
+    const ms = this.waking && this.wokeHere ? wakePollMs({ phase, paceMs, wakeAgeMs: now - this.wakeStartedAt }) : paceMs || notReadyRetryMs(this.notReadyChecks++, this.waking);
+    return Math.max(ms, connectCalls.waitMs(now));
+  }
+
+  /**
+   * A desk on its way up is watched on the gateway now, with the wake's own token, not only once a session has opened
+   * (contract gateway.md 2.1 and 2.2, desks.md "Restart on open"). Its `phase: ready` then arrives as a push, as soon
+   * as the desk is on the gateway, and the poll is the fallback. A watch keeps nothing awake and spends no token.
+   */
+  private watchWake(): void {
+    if (this.guild) return;
+    if (!this.watching) {
+      this.watching = true;
+      if (!gateway.isUp()) void gateway.ready().catch(() => {}); // `onUp` sends it once the socket is open
+    }
+    this.ensureWatch();
   }
 
   private async readPath(peer: PeerSession): Promise<void> {
@@ -507,10 +594,22 @@ export class RtcDeskLink implements DeskLink, GatewayListener {
       this.stop('idle', 'closed_by_client'); // the session layer takes it from here
       return;
     }
+    // A free desk with no room yet (`503 free_capacity_wait`): a wait, not an error. Asked again at the pace it gives.
+    if (err instanceof ApiError && err.code === 'free_capacity_wait') {
+      this.patchInfo({ busy: true });
+      this.setState('retrying');
+      this.scheduleRetry(Math.min(600, Math.max(5, Number(err.details?.['retryAfterSeconds']) || err.retryAfterSec || 120)) * 1000);
+      return;
+    }
     const refusal = refusalFrom(err);
     if (refusal) {
       this.refuse(refusal); // a refused wake too: `start: false` would only be refused again
       return;
+    }
+    if (err instanceof ApiError && err.status === 429) {
+      // The API's own limit: nothing goes before it says, however this link would otherwise retry.
+      const given = Number(err.details?.['retryAfterSeconds']) || err.retryAfterSec || RATE_LIMITED_MS / 1000;
+      this.notBefore = Math.max(this.notBefore, Date.now() + Math.min(300, Math.max(1, given)) * 1000);
     }
     if (err instanceof ApiError && err.status >= 400 && err.status < 500 && err.status !== 408 && err.status !== 429) {
       if (this.purpose === 'export' && err.code === 'invalid_state' && stoppingFor(err) !== null) {
@@ -541,6 +640,8 @@ export class RtcDeskLink implements DeskLink, GatewayListener {
     }
     // A wake that hit a passing failure is still wanted: the retry asks again while the request holds.
     if (wasWake && Date.now() < this.wakeGiveUpAt) this.wakeAskedUntil = this.wakeGiveUpAt;
+    // A wake shown on the member's word alone, whose request has run out: no `start: true` got through, so it's asleep.
+    else if (Date.now() >= this.wakeGiveUpAt && Date.now() >= this.wakeAskedUntil) this.unshowWaking();
     this.retryWithBackoff();
   }
 
@@ -549,7 +650,9 @@ export class RtcDeskLink implements DeskLink, GatewayListener {
   private retryWithBackoff(): void {
     this.beginLost();
     this.setState('retrying');
-    this.scheduleRetry(backoffMs(this.attempt));
+    // In a wake's fast poll a failure never asks sooner than the poll would have.
+    const ms = backoffMs(this.attempt);
+    this.scheduleRetry(this.waking && this.wokeHere ? Math.max(ms, WAKE_POLL_MS) : ms);
     this.attempt += 1;
   }
 
@@ -661,6 +764,8 @@ export class RtcDeskLink implements DeskLink, GatewayListener {
   private stop(state: LinkState, reason: string): void {
     this.wanted = false;
     this.resting = false;
+    this.unshowWaking();
+    this.wokeHere = false;
     this.dropPeer(reason);
     window.clearTimeout(this.retryTimer);
     window.clearTimeout(this.refreshTimer);
@@ -671,6 +776,7 @@ export class RtcDeskLink implements DeskLink, GatewayListener {
     this.waitingForReady = false;
     this.wakeAskedUntil = 0;
     this.clearLost();
+    this.watching = false; // a fresh `connect()` watches again: from its wake, or its first session
     this.watchedOn = -1;
     gateway.remove(this);
     window.removeEventListener('online', this.onWakeUp);
@@ -850,6 +956,7 @@ export class RtcDeskLink implements DeskLink, GatewayListener {
       if (m.sessionId !== this.sessionId) return;
       if (m.type === 'signal') this.onSignal(m.data);
       else if (m.type === 'session.closed') this.onSessionClosed(m.reason ?? '');
+      else if (m.iceServers) this.peer?.useIceServers(m.iceServers); // new TURN servers, from a refresh or resume (gateway.md 2.4)
       return;
     }
     if (m.deskId !== this.remoteId) return;
@@ -858,6 +965,14 @@ export class RtcDeskLink implements DeskLink, GatewayListener {
         this.patchDesk({ state: m.state ?? null });
         if (isStopped(m.state)) this.stop('idle', 'desk_stopping');
         else this.stopping = m.state === 'stopping'; // a cancelled idle stop goes back to running
+        break;
+      case 'watching':
+        // The watch's own answer, with the desk as the gateway has it: a desk that came up before the watch did is
+        // ready already, and no `desk.progress` will say so.
+        if (m.phase === 'ready') {
+          this.readyHeardAt = Date.now();
+          this.retryNow();
+        }
         break;
       case 'desk.progress':
         this.patchDesk({ phase: m.phase ?? null, queuePosition: m.queue?.position ?? null });

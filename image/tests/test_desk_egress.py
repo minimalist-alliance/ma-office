@@ -34,16 +34,28 @@ def mbps_gbh(m):
     return m * 0.45
 
 
-def simulate(viewers, other_saturated=False, rtc_broken=False, days=31, baseline_gbh=0.03):
-    """By the minute, as section 5 did. Each class sends what its kernel ceiling lets it, so a clamp or a profile feeds back."""
+GBH_MAX = {"normal": 5.55, "capped": 1.89, "deep": 1.20}  # level Max (ADR 0039), held to the capped picture past 100 GB (S-29)
+
+
+def simulate(viewers, other_saturated=False, rtc_broken=False, days=31, baseline_gbh=0.03, uploads=(), gbh=None):
+    """By the minute, as section 5 did. Each class sends what its kernel ceiling lets it, so a clamp or a profile feeds back.
+    uploads: (start hour, GB), each sent on 1:20 as fast as its class lets it. gbh: a viewer's GB an hour at each profile."""
+    gbh = gbh or GBH
     b = E.Budget(cfg(), OCT1)
     counters = {"10": 0, "15": 0, "20": 0}
     minutes, per_minute = days * 1440, []
     flags = {"clamped": 0, "slowed": 0, "profiles": []}
+    pending, left = sorted(uploads), 0.0
     for m in range(minutes):
         rates = b.rates()
-        stream_gbh = mbps_gbh(rates["10"]) if rtc_broken else min(viewers(m) * GBH[b.profile], mbps_gbh(rates["10"]))
+        stream_gbh = mbps_gbh(rates["10"]) if rtc_broken else min(viewers(m) * gbh[b.profile], mbps_gbh(rates["10"]))
         other_gbh = mbps_gbh(rates["20"] + rates["15"]) if other_saturated else baseline_gbh
+        while pending and pending[0][0] * 60 <= m:
+            left += pending.pop(0)[1]
+        if left > 0 and not other_saturated:
+            up = min(left, max(0.0, mbps_gbh(rates["20"]) - other_gbh) / 60)
+            left -= up
+            other_gbh += up * 60
         s, o = stream_gbh * GB / 60, other_gbh * GB / 60
         counters["10"] += int(s)
         counters["20"] += int(o)
@@ -94,11 +106,11 @@ class AdrTable(unittest.TestCase):
 
     def test_one_viewer_and_other_saturated(self):
         r = simulate(lambda m: 1, other_saturated=True)
-        self.check(r, 12.2, 117, 1417)
+        self.check(r, 12.2, 107.7, 1411)  # S-29: 117 GB in 24 h before; the deep line looks ahead now
 
     def test_two_viewers_nonstop(self):
         r = simulate(lambda m: 2)
-        self.check(r, 1.9, 133, 2010)
+        self.check(r, 1.9, 105.4, 1996)  # S-29: 133 GB in 24 h before, 2 GB under the clamp; now the deep line holds them
         self.assertEqual(r.clamped, 0, "two honest viewers must never reach the clamp")
 
     def test_broken_rtc_section_3(self):
@@ -107,8 +119,132 @@ class AdrTable(unittest.TestCase):
         self.near(r.p24, 144, "broken desk-rtc, any 24 h")
 
     def test_broken_rtc_and_other_saturated_section_3(self):
+        """Both at their ceilings: the clamp counts desk-rtc's class alone now (S-29), so it comes at 135 GB of the stream, not
+        135 of everything, and the guard's day stop ends it sooner, at 4.4 h rather than 20.4. It reached the stop before too (153)."""
         r = simulate(lambda m: 0, rtc_broken=True, other_saturated=True, days=2)
-        self.near(r.p24, 153, "broken desk-rtc and bucket saturated, any 24 h")
+        self.near(r.p24, 184.6, "broken desk-rtc and bucket saturated, any 24 h")
+        self.assertGreater(r.clamped, 0)
+
+
+GUARD_DAY_GB = 150  # ADR 0082's `day` stop: everything the desk sent in 24 h
+
+
+class HonestViewers(unittest.TestCase):
+    """S-29 (16 D, item 2): two or three honest viewers and an upload never clamp desk-rtc or reach the guard's day stop.
+    From the 1st of a month, so the 100 GB month line can't step the stream down first. The weekend review's cases, by the
+    real class. Before S-29 each of these clamped, and the uploads also reached the stop (image/lab/s29/)."""
+
+    def honest(self, r, what):
+        self.assertEqual(r.clamped, 0, f"{what}: clamped {r.clamped} minutes")
+        self.assertLess(r.p24, GUARD_DAY_GB - 10, f"{what}: {r.p24:.1f} GB in 24 h")
+
+    def test_two_viewers_and_a_whole_bucket_upload_at_any_hour(self):
+        for hour in (12, 20, 23, 30):
+            with self.subTest(hour=hour):
+                self.honest(simulate(lambda m: 2, days=2, uploads=((hour, 30),)), f"2 viewers, 30 GB at hour {hour}")
+
+    def test_two_viewers_and_6_gb_a_day_of_other_traffic(self):
+        self.honest(simulate(lambda m: 2, days=2, baseline_gbh=0.25), "2 viewers, 6 GB a day")
+
+    def test_two_viewers_at_max(self):
+        r = simulate(lambda m: 2, days=3, gbh=GBH_MAX, uploads=((23, 30),))
+        self.honest(r, "2 viewers at Max, 30 GB at hour 23")
+        self.assertLessEqual(len(r.profiles), 6, f"flapping: {r.profiles}")
+
+    def test_three_viewers_and_an_upload(self):
+        for hour in (5, 17):
+            with self.subTest(hour=hour):
+                self.honest(simulate(lambda m: 3, days=2, uploads=((hour, 30),)), f"3 viewers, 30 GB at hour {hour}")
+
+    def test_four_viewers_never_clamp(self):
+        r = simulate(lambda m: 4, days=2)
+        self.assertEqual(r.clamped, 0)
+        self.assertLess(r.p24, GUARD_DAY_GB)
+
+    def test_one_viewer_is_as_before(self):
+        """One viewer nonstop at High: nothing in a day steps it, and only the month's 100 GB caps it, at hour 26.5."""
+        r = simulate(lambda m: 1, days=2)
+        self.assertEqual(r.profiles, ["normal", "capped"])
+        self.assertAlmostEqual(r.p24, 90.7, delta=0.5)
+
+    def test_one_viewer_at_max_steps_once(self):
+        r = simulate(lambda m: 1, days=3, gbh=GBH_MAX)
+        self.assertEqual(r.profiles, ["normal", "capped"])
+        self.assertEqual(r.clamped, 0)
+
+    def test_a_broken_desk_rtc_is_still_clamped_and_held_under_the_stop(self):
+        r = simulate(lambda m: 0, rtc_broken=True, days=2)
+        self.assertGreater(r.clamped, 0)
+        self.assertLess(r.p24, GUARD_DAY_GB)
+
+
+class Lookahead(unittest.TestCase):
+    def test_ahead_of(self):
+        now = OCT1 + 86400
+        self.assertEqual(E.ahead_of([], now, 0), 0)
+        self.assertEqual(E.ahead_of([], now, 1000), 1000 * 86400)
+        # 50 GB 23 h ago and 10 GB just now: at 1 MB a second the window grows until the 50 GB slot leaves in an hour.
+        w = [[now - 23 * 3600, 50 * GB], [now - now % 300, 10 * GB]]
+        self.assertEqual(E.ahead_of(w, now, 0), 60 * GB)
+        # Slowly: highest just before the 50 GB slot leaves, an hour on.
+        self.assertAlmostEqual(E.ahead_of(w, now, 10**5) / GB, 60 + 0.36, delta=0.001)
+        # Faster: highest just before the 10 GB slot leaves, a day on, with a day of the rate in it.
+        self.assertAlmostEqual(E.ahead_of(w, now, 10**6) / GB, 10 + 86.4, delta=0.001)
+        self.assertEqual(E.ahead_of(list(reversed(w)), now, 10**6), E.ahead_of(w, now, 10**6), "order doesn't matter")
+
+    def test_the_clamp_counts_desk_rtc_alone(self):
+        """16 D: 100 GB of stream and a 40 GB upload in 24 h clamped desk-rtc before; the upload is the bucket's business."""
+        b = E.Budget(cfg(), OCT1)
+        b.tick(OCT1 + 3600, {"10": 100 * GB, "15": 0, "20": 0})
+        b.tick(OCT1 + 7200, {"10": 100 * GB, "15": 0, "20": 40 * GB})
+        self.assertFalse(b.clamped)
+        self.assertEqual(b.rates()["10"], 60.0)
+        b.tick(OCT1 + 10800, {"10": 136 * GB, "15": 0, "20": 40 * GB})
+        self.assertTrue(b.clamped)
+
+    def test_a_step_comes_while_it_can_hold_the_line(self):
+        """Two viewers at High's cap from the 1st: capped well before 100 GB, deep before the window passes 105 GB."""
+        r = simulate(lambda m: 2, days=2)
+        self.assertEqual(r.profiles[:3], ["normal", "capped", "deep"])
+        self.assertLess(r.p24, 107)
+
+    def test_back_to_normal_only_if_max_fits(self):
+        """Capped and seeing the capped picture's rate, the desk can't tell Max from High, so it goes back to normal only if
+        the window could take normal at Max."""
+        b = E.Budget(cfg(), OCT1)
+        b.profile, b.profile_since = "capped", OCT1 - 2 * E.PROFILE_HOLD_S
+        b.windows = [[OCT1 - 3600, 50 * GB]]
+        b.deep_rate = 0.5 * 10**6  # deep-equivalent: 20 GB a day
+        b.updated = OCT1
+        b.last = {"10": 0, "15": 0, "20": 0}
+        stream = int(0.5 * 10**6 / E.DEEP_SHARE["capped"] * 60)
+        b.tick(OCT1 + 60, {"10": stream, "15": 0, "20": 0})
+        self.assertLess(b.ahead, 100 * GB)  # at the rate it sees, normal would fit
+        self.assertEqual(b.profile, "capped")  # but not at Max's
+        b2 = E.Budget(cfg(), OCT1)
+        b2.profile, b2.profile_since = "capped", OCT1 - 2 * E.PROFILE_HOLD_S
+        b2.windows, b2.updated, b2.last = [[OCT1 - 3600, 40 * GB]], OCT1, {"10": 0, "15": 0, "20": 0}
+        b2.tick(OCT1 + 60, {"10": 0, "15": 0, "20": 0})
+        self.assertEqual(b2.profile, "normal")
+
+    def test_a_state_from_before_keeps_its_month(self):
+        old = E.Budget(cfg(), OCT1).saved("x")
+        old["month"], old["month_bytes"] = "2026-10", 250 * GB
+        del old["stream_windows"], old["deep_rate"]
+        b = E.Budget(cfg(), OCT1 + 60, json.loads(json.dumps(old)), "x")
+        self.assertEqual(b.month_bytes, 250 * GB)
+        self.assertEqual((b.stream_windows, b.deep_rate), ([], 0.0))
+        for bad in ({**old, "stream_windows": 3}, {**old, "stream_windows": [[1]]}, {**old, "deep_rate": "fast"}):
+            b = E.Budget(cfg(), OCT1 + 60, bad, "x")
+            self.assertEqual(b.month_bytes, 250 * GB, bad)
+            self.assertEqual((b.stream_windows, b.deep_rate), ([], 0.0), bad)
+
+    def test_state_keeps_the_stream_window_and_rate(self):
+        b = E.Budget(cfg(), OCT1)
+        b.tick(OCT1 + 60, {"10": 5 * GB, "15": 0, "20": 0})
+        b2 = E.Budget(cfg(), OCT1 + 61, json.loads(json.dumps(b.saved("x"))), "x")
+        self.assertEqual(b2.stream_windows, b.stream_windows)
+        self.assertAlmostEqual(b2.deep_rate, b.deep_rate)
 
 
 class Bucket(unittest.TestCase):
@@ -167,10 +303,14 @@ class Steps(unittest.TestCase):
 
     def test_month_lines(self):
         b, t = E.Budget(cfg(), OCT1), OCT1
-        for gb, want in ((99, "normal"), (2, "capped")):
-            t += 2 * 86400
-            self.run_day(b, t, gb * GB)
-            self.assertEqual(b.profile, want)
+        for _ in range(3):  # 99 GB over three days, 33 a day: nowhere near a day line
+            for _ in range(24):
+                t += 3600
+                self.run_day(b, t, 33 * GB / 24)
+        self.assertEqual(b.profile, "normal")
+        t += 3600
+        self.run_day(b, t, 2 * GB)
+        self.assertEqual(b.profile, "capped")
         for _ in range(20):
             t += 86400 + 3600
             self.run_day(b, t, 20 * GB)
@@ -180,7 +320,10 @@ class Steps(unittest.TestCase):
 
     def test_other_traffic_counts_toward_the_lines(self):
         b = E.Budget(cfg(), OCT1)
-        b.tick(OCT1 + 86400 * 2, {"10": 40 * GB, "15": 1 * GB, "20": 60 * GB})
+        b.tick(OCT1 + 86400 * 2, {"10": 40 * GB, "15": 0, "20": 0})
+        self.assertEqual(b.profile, "normal")
+        b = E.Budget(cfg(), OCT1)
+        b.tick(OCT1 + 86400 * 2, {"10": 40 * GB, "15": 1 * GB, "20": 54 * GB})
         self.assertEqual(b.profile, "capped")
 
     def test_day_deep_has_a_hysteresis(self):
@@ -194,12 +337,14 @@ class Steps(unittest.TestCase):
         self.run_day(b, OCT1 + 86400 + 400, 0)
         self.assertFalse(b.day_deep)
 
-    def test_day_deep_releases_only_under_100(self):
+    def test_day_deep_releases_only_under_95(self):
         b, t = E.Budget(cfg(), OCT1), OCT1
-        self.run_day(b, t + 60, 90 * GB)
-        self.run_day(b, t + 43200, 31 * GB)
+        self.run_day(b, t + 60, 9 * GB)
+        self.run_day(b, t + 43200, 97 * GB)
+        self.assertTrue(b.day_deep)  # 106 GB in 24 h
+        self.run_day(b, t + 86400 + 400, 0)  # The 9 GB left the window, leaving 97: under 105, not under 95.
         self.assertTrue(b.day_deep)
-        self.run_day(b, t + 86400 + 400, 0)  # The 90 GB left the window, leaving 31.
+        self.run_day(b, t + 43200 + 86400 + 400, 0)
         self.assertFalse(b.day_deep)
 
     def test_clamp_at_135_until_under_120(self):
@@ -214,7 +359,7 @@ class Steps(unittest.TestCase):
 
     def test_sharper_waits_an_hour_softer_is_at_once(self):
         b = E.Budget(cfg(), OCT1)
-        self.run_day(b, OCT1 + 60, 101 * GB)
+        b.tick(OCT1 + 60, {"10": 0, "15": 0, "20": 101 * GB})  # not the stream, so no rate ahead: capped, not deep
         self.assertEqual(b.profile, "capped")
         t = calendar.timegm((2026, 11, 1, 0, 0, 0))  # The month rolled and the 24 h window emptied.
         self.run_day(b, t, 0)
@@ -238,11 +383,11 @@ class Steps(unittest.TestCase):
 
     def test_month_rollover_keeps_the_24_h_window(self):
         b, end = E.Budget(cfg(), OCT1), calendar.timegm((2026, 10, 31, 23, 0, 0))
-        self.run_day(b, end, 90 * GB)
-        self.run_day(b, end + 7200, 20 * GB)
+        b.tick(end, {"10": 0, "15": 0, "20": 85 * GB})
+        b.tick(end + 7200, {"10": 0, "15": 0, "20": 102 * GB})
         self.assertEqual(b.month, "2026-11")
-        self.assertEqual(b.month_bytes, 20 * GB)
-        self.assertEqual(b.profile, "capped")  # 110 GB in 24 h
+        self.assertEqual(b.month_bytes, 17 * GB)
+        self.assertEqual(b.profile, "capped")  # 102 GB in 24 h
 
 
 class Survival(unittest.TestCase):
@@ -473,6 +618,25 @@ class Files(unittest.TestCase):
         self.assertEqual(base["adapt"]["enabled"], capped["adapt"]["enabled"])
         self.assertEqual(base["adapt"]["enabled"], deep["adapt"]["enabled"])
 
+    def test_each_profile_holds_the_members_level_to_its_picture(self):
+        """S-29: the capped conf has stream.conf's four levels, each held to the capped picture (fewer lines, a higher quantizer,
+        a lower ceiling: never more than the profile itself asks of the encoder), so Low stays Low; the deep conf has none."""
+        def levels(name):
+            p = configparser.ConfigParser(interpolation=None)
+            p.read(RECIPE / "desk-stream" / name)
+            return {s[len("level."):]: {k: int(v) for k, v in p.items(s)} for s in p.sections() if s.startswith("level.")}
+        base, capped, deep = levels("stream.conf"), levels("stream-capped.conf"), levels("stream-deep.conf")
+        top = {"max-height": 0, "quantizer": 28, "bitrate": 4000, "vbv-buf-capacity": 150}  # [video]'s x264 line in stream-capped.conf
+        self.assertEqual(sorted(capped), ["high", "low", "max", "medium"])
+        for name, v in base.items():
+            lines = min(x for x in (v["max-height"], top["max-height"]) if x) if v["max-height"] or top["max-height"] else 0
+            want = {"max-height": lines, "quantizer": max(v["quantizer"], top["quantizer"]), "bitrate": min(v["bitrate"], top["bitrate"]),
+                    "vbv-buf-capacity": v["vbv-buf-capacity"]}
+            self.assertEqual(capped[name], want, name)
+        self.assertEqual(capped["low"], base["low"])
+        self.assertEqual(capped["high"], top)
+        self.assertEqual(deep, {})
+
     def run_conf(self, profile, have=("stream.conf", "stream-capped.conf", "stream-deep.conf")):
         with tempfile.TemporaryDirectory() as d:
             rel = pathlib.Path(d)
@@ -604,7 +768,7 @@ class MemberDeskUnchanged(unittest.TestCase):
         self.assertEqual(b.rates(), {"10": 60.0, "15": 2.0, "20": 100.0})
         self.assertEqual(E.normal_rates(cfg()), {"10": 60.0, "15": 2.0, "20": 100.0})
         self.assertEqual(sorted(b.saved("x")), sorted(["v", "boot", "updated", "last", "level", "slowed", "month", "month_bytes", "windows",
-                                                      "day_deep", "clamped", "profile", "profile_since"]))
+                                                      "day_deep", "clamped", "profile", "profile_since", "stream_windows", "deep_rate"]))
 
     def test_a_guild_state_on_a_members_desk_is_a_members(self):
         g = E.Budget(gcfg(), OCT1)

@@ -11,8 +11,8 @@ import { DEFAULT_EDIT_BUDGET, parseEditBudget, parseSettings } from '../src/sett
 
 const ALL_GRANTS = ['moderate', 'invite', 'remove_member', 'manage_spaces', 'manage_agents'];
 const member = (memberId: string, name: string, grants: string[] = [], role = 'member') => ({ kind: 'guild_member', memberId, role, grants, name, badge: null, teen: false });
-const ANA = member('gm-ana1', 'Ana');
-const BO = member('gm-bo2', 'Bo');
+const ANA = member('gm-ana1', 'Ana', ['manage_spaces']); // manage_spaces: these tests make notebooks and tabs, which it gates
+const BO = member('gm-bo2', 'Bo', ['manage_spaces']);
 const MO = member('gm-mo3', 'Mo', ['moderate'], 'officer');
 const LEE = member('gm-lee4', 'Lee', ALL_GRANTS, 'lead');
 const budget = (chars: number, windowMinutes: number) => ({ editBudget: { chars, windowMinutes } });

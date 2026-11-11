@@ -1,0 +1,59 @@
+Berean Standard Bible (BSB): the publisher's public-domain statements, quoted word for word.
+
+==========================================================================
+1. Terms and Conditions
+Source: https://berean.bible/terms.htm
+Read: 2026-11-11
+Links in this passage: both "dedicated to the public domain" link to
+https://creativecommons.org/publicdomain/zero/1.0/
+--------------------------------------------------------------------------
+April 30, 2023
+
+Terms and Conditions:
+
+The Berean Bible and Majority Bible texts are officially dedicated to the public domain as of April 30, 2023.
+
+All uses are freely permitted.
+
+Attribution Notice (appreciated but not required):
+
+The Holy Bible, Berean Standard Bible, BSB is produced in cooperation with Bible Hub, Discovery Bible, OpenBible.com, and the Berean Bible Translation Committee. This text of God's Word has been dedicated to the public domain.
+
+Linking (appreciated but not required):
+
+//berean.bible - Berean Bible Homepage
+//interlinearbible.com - Berean Interlinear Bible
+//literalbible.com - Berean Literal Bible
+//bereanbible.com - Berean Standard Bible
+//majoritybible.com - Majority Standard Bible
+
+Derivatives and Adaptations
+
+By definition all public domain materials may be freely reproduced, integrated, and adapted for both free and commercial resources.
+
+All applications that maintain the verbatim text from the above Berean sites are invited to bear the Berean name. For example, apps, audio, video, print reproductions, and commentaries with cited verses are all encouraged to use and cite the official text.
+
+For derivative works that vary from the official text, we respectfully request that the Berean name is not used. We request the help of the open source community in maintaining an official text.
+
+Print Applications
+
+Developers and Publishers are now free to produce and sell the full Berean Bible in any print format. We will also make available our own resources via PDF. We hope this will expand the possibilities for overseas publishing and specialties such as wide margin, single column, red letter, and Scripture portions.
+
+==========================================================================
+2. Free Licensing
+Source: https://berean.bible/licensing.htm
+Read: 2026-11-11
+--------------------------------------------------------------------------
+Licensing:
+
+The Berean Bible and Majority Bible texts are officially placed into the public domain as of April 30, 2023. See terms and conditions.
+
+Licensing is not required for any use. However, you are welcome to complete the licensing form in order to receive communications as we develop new resources.
+
+==========================================================================
+3. The header of the BSB's plain text, the file its words come from
+Source: https://bereanbible.com/bsb.txt (its first two lines)
+Read: 2026-11-11
+--------------------------------------------------------------------------
+The Holy Bible, Berean Standard Bible, BSB is produced in cooperation with Bible Hub, Discovery Bible, unfoldingWord, Bible Aquifer, OpenBible.com, and the Berean Bible Translation Committee.
+This text of God's Word has been dedicated to the public domain. Free resources and databases are available at BereanBible.com.

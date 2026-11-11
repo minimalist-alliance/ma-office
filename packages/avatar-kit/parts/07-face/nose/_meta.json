@@ -1,0 +1,27 @@
+{
+  "category": "nose",
+  "layer": "07-face",
+  "colorSlot": null,
+  "default": "small",
+  "parts": [
+    {
+      "id": "none",
+      "name": "None"
+    },
+    {
+      "id": "small",
+      "name": "Small",
+      "minSize": 32
+    },
+    {
+      "id": "round",
+      "name": "Round",
+      "minSize": 32
+    },
+    {
+      "id": "long",
+      "name": "Long",
+      "minSize": 32
+    }
+  ]
+}

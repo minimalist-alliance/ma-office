@@ -17,6 +17,8 @@ export default defineConfig({
     modulePreload: { polyfill: false },
   },
   server: {
+    // The vendored avatar kit sits at the repo root, beside apps/.
+    fs: { allow: ['.', '../../../packages/avatar-kit'] },
     // `npm run dev` proxies the room link to a stand-in server on 8790.
     proxy: { '/ws': { target: 'ws://127.0.0.1:8790', ws: true } },
   },

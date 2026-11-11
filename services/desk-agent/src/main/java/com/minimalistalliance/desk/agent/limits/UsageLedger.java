@@ -366,6 +366,41 @@ public final class UsageLedger implements AutoCloseable {
         });
     }
 
+    /**
+     * Who a removed guild member's spend is kept under (ADR 0080's addendum of 2026-11-10): no agent can have this id,
+     * as an agent's has no colon, so it adds to the desk's and the key's totals and to no agent's.
+     */
+    public static final String DEPARTED = "guild:departed";
+
+    /**
+     * A removed guild member's rows, kept as the guild's spend and no longer theirs: the agent and run ids become
+     * {@link #DEPARTED} and the token breakdown goes, while the time, key, model, tokens and dollars stay, so the guild's
+     * month and its key's month still count what was spent. They go at {@link #KEEP} as every row. Then the WAL is
+     * emptied. Doing it again finds nothing.
+     *
+     * @return the rows changed
+     * @throws IllegalStateException if a reservation of the agent is still out: a run is going
+     */
+    public int forget(String agentId) throws SQLException {
+        int changed = open(database).transaction(connection -> {
+            if (count(connection, "SELECT COUNT(*) FROM usage WHERE agent_id = ? AND state = 'reserved'", agentId) > 0) {
+                throw new IllegalStateException("a reservation is still out");
+            }
+            try (PreparedStatement update = connection.prepareStatement("UPDATE usage SET agent_id = ?, run_id = ?,"
+                    + " input_tokens = NULL, cached_input_tokens = NULL, cache_write_tokens = NULL,"
+                    + " output_tokens = NULL, reasoning_tokens = NULL WHERE agent_id = ?")) {
+                update.setString(1, DEPARTED);
+                update.setString(2, DEPARTED);
+                update.setString(3, agentId);
+                return update.executeUpdate();
+            }
+        });
+        if (!open(database).checkpoint()) {
+            throw new SQLException("the WAL couldn't be emptied");
+        }
+        return changed;
+    }
+
     /** One agent's runs and spend in a period: a run is the calls of one run id, not counting released ones. */
     public record AgentPeriod(String agentId, long runs, long microUsd) {}
 

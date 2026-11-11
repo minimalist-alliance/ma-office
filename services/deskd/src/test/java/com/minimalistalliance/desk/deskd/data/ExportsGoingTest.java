@@ -52,7 +52,9 @@ class ExportsGoingTest {
         assertThat(rig.data.exportsGoing()).isEqualTo(1);
         export.sendJson(Channels.CTL, FrameKind.CLOSE, 0, Map.of("code", 1000, "reason", "done"));
         await().untilAsserted(() -> assertThat(rig.data.exportsGoing()).isZero());
-        assertThat(told.get()).isGreaterThanOrEqualTo(4);
+        // The count drops under Transfers' lock and the listener is told just after it, so the count reaching zero doesn't
+        // mean the last telling has happened: wait for it, bounded, rather than assume the order.
+        await().untilAsserted(() -> assertThat(told.get()).isGreaterThanOrEqualTo(4));
     }
 
     @Test

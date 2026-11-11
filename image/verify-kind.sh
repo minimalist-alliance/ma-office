@@ -285,7 +285,7 @@ echo "egress.conf sha256 $(sha256sum < /etc/ma/egress.conf | cut -c1-16), this t
 [ "$(sha256sum < /etc/ma/egress.conf | cut -c1-64)" = "$EGRESS_SHA" ] || bad "/etc/ma/egress.conf isn't this tree's"
 for i in $(seq 1 70); do [ -s /data/desk-egress/state.json ] && break; sleep 1; done
 k=$(jq -r 'keys|join(" ")' /data/desk-egress/state.json); echo "state keys: $k"
-[ "$k" = "boot clamped day_deep last level month month_bytes profile profile_since slowed updated v windows" ] || bad "a member's state file should have exactly its own fields"
+[ "$k" = "boot clamped day_deep deep_rate last level month month_bytes profile profile_since slowed stream_windows updated v windows" ] || bad "a member's state file should have exactly its own fields"   # deep_rate and stream_windows: S-29 (docs/sub-status/s29-capped-stream.md)
 journalctl -b -u desk-egress -o cat --no-pager | grep -q 'Guild Desk' && bad "desk-egress took this desk for a Guild Desk"
 journalctl -b -u desk-egress -o cat --no-pager | grep -m1 'shaper on'
 at() { systemctl show -p "$2" --value "$1"; }

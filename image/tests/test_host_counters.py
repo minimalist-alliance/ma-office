@@ -6,6 +6,7 @@ import os
 import pathlib
 import re
 import shutil
+import sys
 import tempfile
 import types
 import unittest
@@ -19,6 +20,7 @@ def load_check():
     src = (LIB / "desk-host-check").read_text().replace("sys.exit(main())", "")
     m = types.ModuleType("desk_host_check")
     m.__dict__["__name__"] = "desk_host_check"
+    sys.path.insert(0, str(LIB))   # its modules (templates.py, ADR 0077) beside it
     exec(compile(src, "desk-host-check", "exec"), m.__dict__)
     return m
 

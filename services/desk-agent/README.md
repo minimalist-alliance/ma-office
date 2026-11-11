@@ -8,9 +8,9 @@ which relays task 07's `agent.*` interface over a local socket. The Agent window
 backend.
 
 **State: milestone 2.** desk-agent serves all of task 07's `agent.*` methods and topics on its agent socket, and talks
-to Anthropic (Messages API), OpenAI and xAI (Responses API) with thin adapters on the JDK's HTTP client, streamed. They
-are tested against a local stand-in only: no real key has touched them. deskd relays the interface to it
-(`services/deskd`, package `agent`, `API.md` section 11, from `sub/deskd-agent-relay`), and the image gives it its unit,
+to Anthropic (Messages API), OpenAI and xAI (Responses API) and OpenRouter (Chat Completions) with thin adapters on the
+JDK's HTTP client, streamed. They are tested against a local stand-in only: no real key has touched them. deskd
+relays the interface to it (`services/deskd`, package `agent`, `API.md` section 11, from `sub/deskd-agent-relay`), and the image gives it its unit,
 directories and egress rule (`image/README.md`, "desk-agent", from `sub/desk-agent-image`). Its first release,
 `2026.11.06-60828be`, is baked into the image from 0.2.7 (task 42), so every new desk runs it. No tools yet: see "Not built".
 `STATUS.md` in this folder has the questions and what the weekend lead can ship.
@@ -19,10 +19,11 @@ directories and egress rule (`image/README.md`, "desk-agent", from `sub/desk-age
 tier's cap; the manager is the **lead**, which sets the others up with the member through proposals the member
 confirms; agents have tools on every provider (their workspace, messages to linked agents, and the lead's), opt-in
 messaging with hard limits, a workspace and timers each. The client's interface is `docs/multi-agent.md`; "Many
-agents" below is how it works here.
+agents" below is how it works here. **S-14, memory** (`sub/agent-launch-left`): agents remember across conversations
+and long threads are summarized; "Memory" below.
 
 ## A guild desk (task 48)
-deskd adds the verified caller to every `req`, KEY frame and `sub` (`service/Caller`: `owner`, `guild_member` or deskd's own `system`; none means the owner, and a malformed one is `forbidden`, `reason: caller`). On a guild desk each member has one agent of their own, whose id is their member id, made the first time they look, and sees and uses only it: any other agent is `not_found`, and the Founder's view has no member's thread (draft decision 6). Its calls reserve against `service/GuildLimits`, from deskd's `desk.guild.set`: the member's dollars a day and month as the agent's, and the guild's month as the desk's, so both bind; runs a day (`member_runs_day`) and runs at once across the guild (`guild_runs`) are checked before a run starts. A teen member is refused (`age_band`), the guild's keys, limits and audit need `manage_agents`, and `agent.guild.usage` (each member's runs and spend, counts only) the Founder's or an Officer's role. `agent.state` has one view per member, the owner's and deskd's own (`AgentService.hubTopic`). No schema change: a member agent is a `manager` row whose id is a member id. deskd's `API.md` §15 has the client's side.
+deskd adds the verified caller to every `req`, KEY frame and `sub` (`service/Caller`: `owner`, `guild_member` or deskd's own `system`; none means the owner, and a malformed one is `forbidden`, `reason: caller`). On a guild desk each member has one agent of their own, whose id is their member id, made the first time they look, and sees and uses only it: any other agent is `not_found`, and the Founder's view has no member's thread (draft decision 6). Its calls reserve against `service/GuildLimits`, from deskd's `desk.guild.set`: the member's dollars a day and month as the agent's, and the guild's month as the desk's, so both bind; runs a day (`member_runs_day`) and runs at once across the guild (`guild_runs`) are checked before a run starts. A teen member is refused (`age_band`), the guild's keys, limits and audit need `manage_agents`, and `agent.guild.usage` (each member's runs and spend, counts only) the Founder's or an Officer's role. `agent.state` has one view per member, the owner's and deskd's own (`AgentService.hubTopic`). No schema change: a member agent is a `manager` row whose id is a member id. A member who leaves is purged by deskd's `desk.member.purge` (ADR 0080's addendum of 2026-11-10, `docs/proposals.md` §5): their agent, thread, files' notes, limits and staged files go, their usage stays only as the guild's (`guild:departed`), and every SQLite file is opened with `secure_delete`, its WAL emptied after a purge. deskd's `API.md` §15 has the client's side.
 On a guild desk the team (task 49) is the owner's: a member's own agent has no team tools, isn't counted toward the agent cap, and can't be linked or shared with; every new `agent.*` method but `agent.get` is `forbidden`, `reason: permission`, for a member.
 
 ## Layout
@@ -45,13 +46,14 @@ On a guild desk the team (task 49) is the owner's: a member's own agent has no t
 | Package | Holds |
 |---|---|
 | (root) | `DeskAgentApplication` (explicit imports, no scanning), `AgentConfiguration` (every bean by hand), `DeskAgentLifecycle` (health socket, records, agents, then the agent socket; on SIGTERM the reverse, with runs stopped and keys zeroed), `DeskAgentHealth`, `ReadinessReporter`, `DataDirectory` |
-| `socket` | `AgentSocketServer`: the agent socket, deskd's only way in (`docs/proposals.md` section 5). `PeerCheck`: deskd's uid only, by `SO_PEERCRED` |
+| `socket` | `AgentSocketServer`: the agent socket, deskd's only way in (`docs/proposals.md` section 5), and desk-agent's way to the tools deskd runs (`tcall`, after deskd's hello). `PeerCheck`: deskd's uid only, by `SO_PEERCRED` |
 | `service` | `AgentService`: every `agent.*` method, and the `agent.state` and `agent.conversation:<agentId>` topics. `TopicHub` (snapshot then events, in order, per subscription), `Deltas` (text deltas at 30 Hz at most), `RpcError` (deskd's codes) |
 | `store` | `AgentStore`: `agent.db`, with the agents, their threads, key metadata (never keys) and the desk's limits. `TeamSchema`: task 49's tables and columns, additive, applied at every open, with `user_version` still 1. `TeamStore`: their rows (each agent's look, purpose, solo flag, quota and shares; links; proposals; the agent-message log; timers) |
 | `team` | Task 49 (ADR 0047). `Team`: every new `agent.*` method of `docs/multi-agent.md`, the agent view's new fields, proposals and their answers, and `Host`, the way back into `AgentService` for runs a timer or another agent starts. `TeamTools`: each run's system prompt and tools, and the tools themselves (`message_agent` with its limits, the lead's `desk_*` and `propose_*`). `Timers`: the timers' RPCs and the thread that fires them. `Schedule`: the next fire in the member's zone. `TierCaps`: the tier's values from `desk.account.set`, with Alliance's as the defaults (the last tier and band are kept in `agent.db`). `Canonical`: a proposal's canonical JSON and SHA-256, as the Agent app computes them |
 | `provider` | `ChatProvider`, the interface every adapter implements, and its values: `ChatRequest`, `ChatResult`, `Usage`, `DeltaSink`, `ProviderId`, `ProviderInfo`, `ModelInfo`, `ProviderException`. `ProviderRegistry` |
 | `provider.anthropic` | `AnthropicProvider`: Messages API, streamed, and the model list that checks a key |
 | `provider.openai` | `OpenAiResponsesProvider`: Responses API, streamed, with `store: false`. OpenAI's and xAI's, which serve the same API |
+| `provider.openrouter` | `OpenRouterProvider`: OpenRouter's Chat Completions, streamed, its key check (`/api/v1/key`) and its free models from the public catalog ("OpenRouter", below). `ChatCompletions`: a thread as Chat Completions messages, with and without tools |
 | `provider.http` | `HttpTransport` (the one HTTP/1.1 client, the idle watchdog JDK 21 lacks, https-or-loopback base URLs), `SseReader` (bounded server-sent events), `Messages` |
 | `key` | `KeyVault` (keys sealed at rest in `/data/agent/keys`), `KeyRing` (keys in RAM, in direct buffers, zeroed on drop) and `KeyLease` (one call's heap copy, zeroed on close) |
 | `limits` | `UsageLedger` (SQLite: reserve, settle, release, keep, and each scope's use, in the member's zone), `LimitSettings` (the agent's scopes per agent, the desk's once, and the layers of ADR 0043), `PriceTable` (the table in use, swapped whole), `Pricing` (one table, and what an unlisted model counts at), `LimitPolicy`, `Limit`, `Scope`, `LimitReachedException` |
@@ -62,11 +64,15 @@ On a guild desk the team (task 49) is the owner's: a member's own agent has no t
 | `sqlite` | `SqliteDatabase`: one file, one platform thread, WAL, migrations by `user_version` |
 | `json` | `Json`, a copy of deskd's jackson-jr helper |
 | `icon` | `PngMark`: an uploaded icon decoded as a strict, real PNG with `java.util.zip` only (no ImageIO, no AWT) and re-encoded as a new gray+alpha mask with no metadata (`docs/multi-agent.md` section 7). `IconException`: `not_png`, `too_large`, `too_many_pixels`, `corrupt`, `no_shape`, `too_thin`, never any content. The mask is trimmed and centred in a square (section 7 of the doc) |
+| `memory` | S-14. `Memories`: what an agent remembers (`memory_save`, `memory_forget`, the pinned block, `agent.memory.*`, the line's checks, the run's taint from memory). `MemoryStore`: the `memories` and `thread_summaries` rows. `Compactor`: what a run sends of a long thread, and the summary that folds the rest |
+| `tool` | The shared interface of the tools and approvals (draft ADR "the Agent's tools and approvals", §11): `ToolDecl` (one tool, declared in code: wire name, the card's `words`, schema, one narrow scope, `Risk`, `Taint`s, host), `Risk` (`read`, `own`, `write`, `delete`, `send`, `spend`, `egress`; a call's class rises, never falls), `Taint` (`U`, `S`), `RunContext` (one run: its owner, origin, reply and grow-only flags, passed on to the run upstream that reads its reply), `Classified` (a call as the policy saw it, with its card's title and an optional refusal before asking), `ToolPolicy`. The tools themselves ("Tools" below): `ToolRegistry` (every declaration), `RegistryPolicy` (the policy in use), `Schemas`, `AgentTools` (the launch tools around each run's own), `DeskLink` (to the tools deskd runs), `Plans` |
+| `approval` | `Approvals`, the `ApprovalGate`: a step's calls that need the member wait here, the `approvals` and `run_marks` rows (`ApprovalStore`, `store.ApprovalSchema`), `agent.approvals.list`, `agent.approval.get`, `agent.approval.decide`, the `approval` event, the caps, expiry and the restart sweep. `Verdict`: what a call came to (`Auto`, `Approved`, `Declined`, `Expired`, `Refused`) |
 | `workspace` | `Workspaces`: a folder per agent under `<dataDir>/workspaces/` (section 5), with quotas, a cached use (every file and folder counts at least 4 KiB), 10,000 files, 2,000 folders, 1 MiB a write and a free-space floor of 1.5 GiB. Files with more than one hard link are refused. Paths are walked a component at a time with links never followed; a link at a file's name is replaced on write; `deleteAll` and `remove` delete links, not what they point at. `WorkspaceException`: `path`, `not_found`, `quota`, `not_text`, `too_large`, `disk_low`, `disk_budget`, `too_many_files`, `too_many_folders`. Wired in through `team.Team` (task 49); the class comment lists the limits that remain (hard links, a swap between check and use) |
 | `training` | `CdsTraining`, the AppCDS training run, with `TrainingAnthropic` (a stand-in on a loopback port) and `TrainingClient` (the socket's client side). Nothing else refers to it |
 
 Tests use stand-ins on real sockets: `FakeLlmServer` (Anthropic's and OpenAI's APIs on the JDK's HTTP server, every
-request recorded), `AgentSocketClient` (deskd's side of the agent socket, KEY frames included) and a scripted
+request recorded), `FakeOpenRouter` (OpenRouter's key check, catalog and Chat Completions, with scripted refusals and
+headers), `AgentSocketClient` (deskd's side of the agent socket, KEY frames included) and a scripted
 `FakeProvider`, with real SQLite files in temporary directories and a `MutableClock` (`testing/`). `Rig` wires the
 gateway as the configuration does. `DeskAgentSocketTests` drives the real application through its socket and the
 real adapters, as deskd and task 07's app will: the whole flow, every refusal, a restart. `icon/PngMarkTest` writes its own PNGs (every colour type and depth, Adam7, all filters, a bomb) and checks refusals and masks, with ImageIO only in the test to cross-check; `workspace/WorkspacesTest` makes real symlinks to prove nothing escapes. `key/KeyVaultTest` and
@@ -93,7 +99,7 @@ providers' endpoints vary, so a stand-in can take a provider's place.
 | `DESK_AGENT_ADMIN_SOCKET` | `/run/desk-agent/agent-admin.sock` | The health socket, `0600`. At most 107 bytes |
 | `DESK_AGENT_SOCKET` | `/run/desk-agent/agent.sock` | The agent socket, `0660`. desk-agent won't start without it |
 | `DESK_AGENT_PEER_UID` | `1100` | The one uid the agent socket accepts: deskd's |
-| `DESK_AGENT_ANTHROPIC_URL`, `DESK_AGENT_OPENAI_URL`, `DESK_AGENT_XAI_URL` | `https://api.anthropic.com`, `https://api.openai.com`, `https://api.x.ai` | Base URLs: `https`, or `http` only to loopback, so a key never goes anywhere else in clear text |
+| `DESK_AGENT_ANTHROPIC_URL`, `DESK_AGENT_OPENAI_URL`, `DESK_AGENT_XAI_URL`, `DESK_AGENT_OPENROUTER_URL` | `https://api.anthropic.com`, `https://api.openai.com`, `https://api.x.ai`, `https://openrouter.ai` | Base URLs: `https`, or `http` only to loopback, so a key never goes anywhere else in clear text. OpenRouter's paths are under `/api/v1` of its URL |
 | `DESK_AGENT_EGRESS_PROXY` | none | deskd's egress proxy (design 9.8) as `host:port`, once it exists |
 | `DESK_AGENT_VERSION` | From `/app/desk-agent.properties`, which the image writes from its `VERSION` build arg | `/health`'s `version`. Leave it unset |
 
@@ -118,7 +124,8 @@ the manager's status and the number of keys held are informational.
 - **Threads live here,** in `agent.db`, so the relay is a pass-through. `agent.message.send` refuses only `no_key`,
   `busy` and `limit_reached`, before anything is added. Then the member's message and a `streaming` reply go to the
   topic, deltas follow at 30 Hz at most, and the reply's final message replaces it: `done`, `stopped`, or `failed`
-  with `provider_error` and the kind, or `unavailable`. Each call sends the last 100 messages, done replies only.
+  with `provider_error` and the kind, or `unavailable`. Each call sends the thread's summary and the newest messages
+  after it, within a budget ("Memory", below).
 - **A thread comes in pages** (`AgentService.page`): the newest messages that fit in `PAGE_BYTES`, about 960 KiB of
   JSON, up to 1000, read 50 rows at a time, with `older` when there are more. `agent.thread.get` takes `before`, a
   message's id, to page back, and a conversation's snapshot is the newest page, so neither outgrows deskd's RES or a
@@ -135,7 +142,54 @@ the manager's status and the number of keys held are informational.
   `store: false`, so the provider keeps no copy for later.
 - **Prices** for every Phase 1 model are in `pricing.json`, with Haiku 5.5's and xAI's length tiers, until deskd pushes
   the Platform's table (Limits, below). A dated model id takes its undated entry's price; nothing else is matched
-  loosely.
+  loosely. OpenRouter's free models are $0 by their id, not by the table (Limits, below).
+
+## OpenRouter: the $0 first Agent run (2026-11-11)
+The owner approved it as a launch feature: a member connects OpenRouter with one click and uses its free models, so
+the first agent run needs no card or key anywhere. `OpenRouterProvider`, registered fourth, `openrouter` / "OpenRouter".
+- **The key** comes the way every key does: the Agent app runs OpenRouter's PKCE flow in the member's browser and sends
+  the key it gets over the desk session with `agent.key.add`, `provider: "openrouter"` (deskd `API.md` §11). It never
+  touches the platform 
+(TD-66). Pasting one works the same. Its prefix is `sk-or-`, longer than OpenAI's `sk-`, so an
+  OpenRouter key picked as OpenAI's is `provider_mismatch` before anything leaves the desk, and so is an OpenAI or
+  Anthropic key picked as OpenRouter's.
+- **The key check** is `GET /api/v1/key` with the key (OpenRouter's model list is public, so it would prove nothing). A
+  401 or 403 is `key_refused`; a management or provisioning key, which makes keys and can't chat, is refused the same.
+- **The models:** `agent.key.models` lists OpenRouter's free models only, from its public catalog
+  (`GET /api/v1/models`, no key, kept an hour, its `links.next` pages followed on its own host only, 16 MiB at most).
+  First come the picks, in order, when the catalog has them: `nvidia/nemotron-3.5-super-vl:free`,
+  `cohere/north-mini-code:free`, `nvidia/nemotron-3-ultra-550b-a55b:free` (each answered every request and passed
+  every tool call in a public run of all free models from Oct 28 to Nov 6, and was still free); then
+  `openrouter/free`, OpenRouter's router across its free models, which never goes away; then the other free models
+  that take tools, then those that take none. A client binds the first by default. Free models come and go within
+  days, so the list is whatever is free now; with none in the catalog it's `openrouter/free` alone. Each model has
+  `free` and `tools`. Paid OpenRouter models aren't listed at launch (STATUS.md).
+- **Without tools,** a model still chats. The catalog's `supported_parameters` says which take `tools`. One that takes
+  none is sent no tools and no tool turns, and the agent's instructions end with a line saying it has no tools, so it
+  answers from the thread, its instructions and its pinned memory alone, and says so when asked for something that
+  needs one. It can't use its workspace, message agents, set timers, save or forget memory lines, or (the lead)
+  propose changes, and no approval comes up. A long thread is still summarized, which is a plain call. A model the
+  catalog lists with tools, for which OpenRouter answers that no endpoint supports tool use, is asked once more
+  without them, and remembered until a restart.
+- **Requests:** `POST /api/v1/chat/completions` with `model`, `messages` (the instructions as a `system` message, a
+  call's turn as `tool_calls`, results as `tool` messages, files as `text` and `image_url` parts), `tools` as
+  `function` tools when sent, `max_tokens` and `stream: true`. No app attribution headers, no provider preferences: the
+  member's own OpenRouter settings apply. Streamed `delta.content` is the text; `delta.tool_calls` are put together by
+  `index`, with an id made up for a call that came without one. `: OPENROUTER PROCESSING` comments keep the 90 s
+  watchdog fed.
+- **Usage and cost:** the last chunk's `usage`: `prompt_tokens` less `cached_tokens` and `cache_write_tokens` is the
+  input, and output is the most of `completion_tokens` and `total_tokens` less the prompt. `usage.cost`, in dollars,
+  is `ChatResult.providerMicroUsd`, which `LlmGateway` charges when it's more than the table's price for the usage. A
+  stream with no `usage` counts as the gateway estimates, bytes over 3.
+- **Errors**, kinds only and never OpenRouter's words (the body is read for them, 64 KiB at most, and kept nowhere):
+  the free models' daily limit (50 requests, or 1000 for an account that ever bought 10 credits) is `free_limit`, by
+  its `free-models-per-day` message or, on a free model, a 429 whose `X-RateLimit-Limit` is 50 or more with nothing
+  remaining; the per-minute limit (20) and a 402 for credits are `rate_limited`; a 404 because the account's privacy
+  settings allow no endpoint for the model is `data_policy`; a 403 for moderation is `bad_request`, any other 401 or
+  403 `auth`. A failed reply carries them as `provider_error` and `errorDetail`, and the agent stays `online`. An
+  error inside a started stream may have been billed, as for every provider.
+- **Egress:** desk-agent's name filter (ADR 0070) allows only the names in `/etc/ma/agent-egress.conf`, which is the
+  image's. `openrouter.ai` has to be added there before the adapter can reach it on a desk (STATUS.md, the ask).
 
 ## Files on a message (S-118, ADR 0049)
 The owner's rule: files uploaded to an agent are not retained; as soon as they are processed through the LLM, they are removed. So a file only ever exists in desk-agent's memory.
@@ -240,6 +294,11 @@ machine or whoever holds the volume can, as with everything else on a desk. ADR 
   `agent.key.models` keeps such a model's prices null, so a client can say it has no listed price. A model a table
   lists at `input` 0 and `output` 0, in either length tier, is one it doesn't list: a table never makes a model free,
   and one with nothing else priced isn't taken.
+- **The one way a model is free** (2026-11-11): its provider serves it free, by its id (`ProviderId.servesFree`:
+  OpenRouter's `:free` variants and `openrouter/free`). `Pricing.price` gives `Pricing.FREE`, $0, whatever the table
+  says of it, so no dollar limit refuses it; token limits still bind, and `agent.key.models` gives it 0 prices and
+  `free: true`. If OpenRouter reports a cost for a call anyway, the gateway charges it (`LlmGateway.complete`: the
+  provider's reported cost when it's more than the table's).
 - A refusal writes a `limit.hit` row and turns the manager's status to `limit_reached` until a call fits again.
 - **What fails where (task 07's ask 3):** `ManagerAgent.start`, which `agent.message.send` calls, throws only for
   `no_key`, `busy` and `limit_reached`, all before anything is sent or added to the thread. Everything later ends the
@@ -436,12 +495,15 @@ Platform sets the tier's real value in `desk.account.set`, so this is a default,
   workspaces. Every refusal is logged (`bad_text`, `unknown_agent`, `self`, `internal` too), and after 3 refused calls in
   a row the tool closes for the run. A stop of the sender stops the receiver. The log row ends `replied` with the reply
   (8,000 characters at most) and the receiver run's cost, or `failed`. The log is pruned daily at 100 days.
-- **Timers.** `Timers` keeps them in `agent.db` and one virtual thread sleeps until the soonest (a minute at most).
+- 
+**Timers.** `Timers` keeps them 
+in `agent.db` and one virtual thread sleeps until the soonest (a minute at most).
   A fire starts a run with the timer's origin; `busy` retries a minute later up to ten times; `no_key` and
   `limit_reached` are kept as `lastState`. A run's end sets `ok` or `failed` and adds its cost. At start, one-shot
   timers missed by over a day end `missed`, and repeating ones skip ahead. While the member's band isn't adult, due timers wait (`paused`). At fire, an interval under the tier's minimum runs at the minimum and timers over `timersPerAgent` get `over_cap`. Timer and message-started runs stop at 3 of the 4 run slots. Day-and-time timers follow a changed zone.
 - **Workspaces and icons.** `workspace/Workspaces` (above) under `<dataDir>/workspaces/`, with a free-space floor of 1.5
-  GiB and a budget (all quotas together at most 50% of `/data`); the agent's quota is stored at create (its own `workspace_mb` or what the tier's `workspaceMb` and the budget allow) and held to `workspaceMaxMb` at use. Uploaded icons are `PngMark` masks in
+  GiB and a budget (all quotas together at most 50% of `/data`); the agent's quota is stored at create (its own `workspace_mb` or what the tier's `workspaceMb` and the budget allow) and held to `workspaceMaxMb` at use. Uploaded icons are `PngMark` 
+masks in
   `<dataDir>/icons/<agentId>.png`, written atomically, with a version the client caches by.
 - **Tier settings.** `desk.account.set` may carry `tier` (`agentCap`, `workspaceMb`, `workspaceMaxMb`,
   `timersPerAgent`, `timerMinMinutes`, `a2aPerHour`, `a2aDepth`, `a2aSpendPct`), from the Platform's config through
@@ -452,10 +514,154 @@ Platform sets the tier's real value in `desk.account.set`, so this is a default,
 - **Rollback.** `agent.db` keeps `user_version` 1, so an older desk-agent opens it, lists staff agents and refuses to
   run them (`not_found`); the new tables are ignored.
 
+## Memory 
+(S-14)
+The owner, Nov 11, on tools, approvals and memory at launch: "Yes, all three". Memory is two things: lines an agent
+remembers about its member across conversations, and the summary of a thread too long to send whole. Both are per agent,
+so on a guild desk per member. In the way of Maia's quiet memory (`ma-platform docs/maia.md` §16).
+
+- **Lines.** `memory_save {text}` keeps one line at once, no card: at most 300 characters, 3 a run, 50 an agent
+  (nothing is evicted; a save past it is refused `full`). The same line again is `already`. Refused: a line shaped like a
+  secret (password and PIN words, card and account numbers, key-shaped strings), one that reads as an order (Maia's
+  `looksLikeInstruction`), hidden or control characters. A desk agent may remember private things, unlike Maia: the desk
+  is the member's own. `memory_forget {id}` removes one of its own lines. Every run but one answering another agent gets
+  both tools, and its system part ends with the lines (design 9.10 pins them there), oldest first, each with its id,
+  under a header that says they're data. A run answering another agent sees none, as it sees only the pairing.
+- **Taint** (the tools and approvals draft §6, and Security's two rules). A run that loads a line, or the summary,
+  holds `S`; one that loads a line or summary marked `untrusted` holds `U`. A save in a run holding `U` (the member's
+  attached files, a marked line or summary, and whatever the loop adds) runs only with `Verdict.Approved` and keeps the
+  mark; otherwise it's refused `untrusted`. `ManagerAgent.RunSetup.taint()` is the run's live set, for the loop's
+  `RunContext`; `Memories.declarations()` has the two tools' `ToolDecl`s.
+- **Compaction.** A member's or a timer's run sends the summary, then the newest messages after it within 48,000
+  estimated tokens (the gateway's UTF-8 bytes over 3) and 200 messages; with no summary and more behind, a line says the
+  earlier part isn't shown. When the messages after the summary pass either, a run that ended `done` starts a
+  compaction on its own thread: one call on the agent's own key and model (`ManagerAgent.sideCall`), through the
+  gateway, reserved under that run (so the limits and the audit log count it, and it isn't a run of its own), folds the
+  old summary and all but the newest 16,000 tokens (from a member's turn, 40 messages at most) into a new summary of at
+  most 12,000 characters, with key-shaped strings replaced. It never holds the agent: a send meanwhile uses the summary
+  as it was. A failure or a limit leaves the thread within the budget, and the next run's end tries again. A run
+  answering another agent reads its pairing's newest messages within the same budget, and starts none.
+- **The member's.** `agent.memory.list {agentId}` → `{agentId, memories: [{id, text, createdAt, untrusted}], summary:
+  {id, text, messages, throughId, at, untrusted} | null, limits: {items, chars}}`; `agent.memory.delete {agentId,
+  memoryId}` (a line, or the summary by its id) → `{deleted: true}`, or `not_found` `detail: memory`;
+  `agent.memory.clear {agentId}` → `{deleted: n}` (every line, and the summary). A deleted summary keeps its place, so
+  what it held is never sent or summarized again, and a compaction that read it before the delete writes nothing. A
+  guild member reaches only their own agent's; the Founder's view has none of a member's. The WAL is emptied after a
+  delete.
+- **House rules.** Teens: none is ever made, as no run of a teen's starts (`age_band`), and a save checks the band
+  again. A guild member's purge takes their lines and summary (`desk.member.purge` answers `memories`), and rows whose
+  agent is gone go at every open, so a rolled-back desk-agent's purge leaves nothing once this one runs. The export
+  carries both in `agent.db` (the `agent` part). The audit log has `memory.save`, `memory.forget`, `memory.delete`,
+  `memory.clear` and `thread.compact`, ids and decisions only; no line or summary is ever logged.
+- **Rollback.** Two new tables and nothing else in the schema; `user_version` stays 1. An older desk-agent ignores
+  them and sends the last 100 messages again.
+- **Tests:** `memory/MemoryTest`, `memory/CompactionTest`, and `GuildMemberPurgeTest.aMembersMemoryIsTheirsAloneAndGoesWithThem`.
+
+## Approvals and taint (S-14)
+The approvals half of `docs/decisions/draft-agent-tools-approvals.md` and deskd's `API.md` §18. Nothing that matters
+happens without the member's yes, and deskd checks the yes again for the tools it runs.
+
+- **The loop** (`ManagerAgent.gatedStep`, every run through `AgentService.withGating`): a step's calls are classified
+  first (`ToolPolicy`, with the flags the run held when the step began, as the model wrote them all before any
+  result), then admitted at once; every call that asks gets its own card and the run waits until each is decided or
+  past its time; then the calls run in their order, approved ones with exactly the hashed payload, the rest answered
+  with the verdict's words; each is settled and audited, and its declared taints join the run's.
+- **What asks:** every `write`, `delete`, `send`, `spend` and `egress`, in every run; a memory save (`memory:self`) in
+  a run holding `U`. Whatever the policy says, the loop raises a browse action (`browser_open`, `_click`, `_type`,
+  `_press`, `_back`) to `egress` in a run holding both `U` and `S`, and in the member's signed-in session to at least
+  `write`, a navigation there (`browser_open`, `browser_back`) to `egress`; `browser_read`, `_tabs` and `_close` stay
+  `read`, and reading a session tab still sets `S`; a `spend` stays `spend`; and `browser_use_my_session` is refused
+  `origin` in a run a timer or another agent started (Security's S-14 rule) (`Classified.backstopped(RunContext)`). `spend` is never asked from a run a timer or another agent started (`unattended_spend`) and only
+  one is asked a step. Refused before asking, with no card: the policy's own refusal (`Classified.refusal`), the same
+  hash declined or expired earlier in the run (`declined_before`), anything after 3 declines or expiries in a run
+  (`declined`), past 10 asked a run, 5 pending for the agent, 20 on the desk or 2 signed-in sites a run (`ask_cap`),
+  past 100 tool calls a run (`tool_cap`), a payload over 900 KiB of JSON (`too_large`) or one the canonical JSON
+  can't carry (`payload`).
+- **A card** (`approvals` in `agent.db`): `ap-` and 20 base32 characters; the desk's title from the declaration's
+  `words`; the exact payload as canonical JSON; `sha256` of the canonical JSON of `{v: 1, agentId, runId, tool,
+  context, payload}`; `untrusted` when the run held `U`; the run's origin; 1 hour in a run the member started, 24 in
+  one a timer or another agent started. `agent.approval.decide` needs the stored hash from the caller (`bad_request`,
+  `sha256`), moves a card once (`conflict` `answered` or `expired`), and only the agent's owner sees or decides it
+  (`Caller.sees`: the owner the desk's agents, a guild member their own, else `not_found`). A note only with a
+  decline, 1 to 500 characters, no hidden characters.
+- **While a run waits** its reply reads `awaiting_approval` with `pendingApprovals`, the agent `working` with
+  `statusDetail: "awaiting_approval"` and `approvalsPending`, and a member's message to it is `conflict`
+  `awaiting_approval`. A stop expires its cards (`stopped`), the owner's band leaving adult (`age_band`), desk-agent
+  stopping (`restart`). An approved call whose tool never started is `expired` too; one that started and never ended
+  is `interrupted`. At open, `Approvals.restore` sweeps what a crash left the same way. Nothing re-runs.
+- **Taint** (`RunContext`, never cleared): `U` from another agent's message (the run it starts), the member's
+  attachments, a reply in the run's context whose run held `U`, a memory line or summary with the mark, and whatever
+  a tool's declaration (or the tool itself, `run.add`) says; `S` likewise from a reply's mark and from memory. A run
+  another agent's message started passes its flags on to the sender's run, which reads its reply. At its end a run's
+  flags and its count of `egress` calls are kept on its reply (`run_marks`): the reply shows `untrusted` and
+  `egressCount`, a later run reading it starts with them, and a thread summary that folds it is marked.
+- **Audit:** `approval.ask` (with the hash), `approval.decide` (actor `user` or `member`), `approval.expire`
+  (`timeout`, `stopped`, `restart`, `age_band`), `approval.interrupt`, `tool.call` for every call with its arguments'
+  hash and `ok`, `error:<word>` or `refused:<reason>`, `browser.session.grant`. Ids, tools and words only: never a
+  path, a page, a file or typed text. The approvals and marks go with their agent's thread (`agent.delete`, a purge).
+- **For the tools:** a gated run calls `Tools.call(call, RunContext, Verdict)`; a deskd-hosted tool sends
+  `{approvalId, sha256}` and `run.taint()`, and deskd redeems the ticket (`ApprovalTickets` in deskd). A failed
+  tool's text starts "Refused: <word>." or "Failed: <word>.", which becomes the card's `result.error`.
+- Tests: `approval/ApprovalsTest` (approve, decline and its note, expiry at an hour and at a day, a wrong hash, the
+  caps, spend, an unattended run, the marks and memory, egress, stop, a restart while waiting and while running, a
+  guild member, a large payload, the audit, the event) and `approval/ApprovalRulesTest` (the interface's rules, the
+  hash, the restart sweep, a member's card).
+
+## Tools (S-14)
+The tools half of `docs/decisions/draft-agent-tools-approvals.md` (sections 1, 2, 5, 6 and 11) and deskd's `API.md`
+§18. Package `tool`; deskd's side is `services/deskd`'s package `tools`.
+
+- **The registry** (`ToolRegistry`): every tool's `ToolDecl` in code: wire name, the card's words, schema, one scope,
+  class, taints and host. The team's tools and memory's (`Memories.declarations()`) are declared there too, so no tool
+  a run can have is undeclared (`ToolRegistryTest`). `DESK_AGENT_TOOLS_OFF` switches tools off by name, and does
+  nothing else: no setting lowers a class, widens a scope or removes an approval. deskd keeps its own copy of the
+  tools it runs (`HostedDecls`), and a test pins the two to the same classes and taints.
+- **The policy** (`RegistryPolicy`, `AgentService.toolPolicy`): classifies each call before the step runs. Input its
+  schema doesn't take is refused `input` (`Schemas`). For a tool deskd runs it asks deskd for a look
+  (`tcall` with `phase: "look"`, nothing done), which gives the class it rises to (a submit control `send`, a
+  pay-looking one `spend`, any navigation in the member's signed-in session `egress`), the context (`agent` or
+  `member:<site>`), target, exact payload (a Browser element's `label`, `role` and `origin` added), `before`, and a
+  refusal decided before asking (a sensitive field, `off_site`, a file already there), so nobody gets a card for
+  something that would be refused. The class never falls below the declaration's, and the Rule of Two makes a browse
+  action `egress` in a run holding both `U` and `S` (a `spend` stays one), here, in deskd and in the loop's backstop.
+  `browser_use_my_session` is refused `origin`, before deskd hears of it, in a run a timer or another agent started.
+- **Clicks and keys** (`browser_click`, `browser_press`): deskd's half does them in deskd's own isolated world, never
+  the page's, with an untrusted `el.click()` or key events, as trusted input never reaches the Agent's hidden tabs on a
+  desk's Chromium (deskd's `API.md` §14, "The Agent's walker"). deskd's look classes them before anything is done: a
+  submit or Enter that sends `send`; anything that looks like paying, or any click or submit on a page with a payment
+  provider's frame anywhere in it, `spend` (its payload says `spend: true`); a click on a link in the member's
+  session `egress`, any other click or key there at least `write`; a link off the granted site `off_site` and a
+  sensitive field `sensitive`, refused before asking.
+- **The tools** (`AgentTools`, around each run's own in `AgentService.begin`): Files (`files_list`, `_search`,
+  `_read`, `_write`, `_mkdir`, `_move`, `_trash`), the Browser (`browser_open`, `_read`, `_click`, `_type`, `_press`,
+  `_back`, `_close`, `_tabs`, `_use_my_session`) and Notebook (`notebook_search`, `_read`, `_write`, `_trash`), which
+  deskd runs; and `plan_update` (`own`, a checklist on the reply, `Plans`, kept in `run_plans`), `follow_up` (`write`,
+  a one-shot timer on the agent within 7 days, `Team.followUp`) and `workspace_delete` (`own`, its own workspace only),
+  which run here. A run is offered deskd's tools only once deskd's hello has named them; a guild member's own agent
+  gets Notebook and `plan_update` only. A document from Files is read here with the attachment readers, a page at a
+  time.
+- **To deskd** (`DeskLink`, `AgentSocketServer`; `docs/proposals.md` §5, "Tool calls"): `tcall {runId, agentId, tool,
+  args, taint}`, plus `{approval: {approvalId, sha256}, context}` for an approved call, answered `tres` or `terr`. deskd
+  redeems the approval itself before it runs anything that asks. A refusal reads "Refused: <word>." and a failure
+  "Failed: <word>."; the run's flags take what deskd's result adds (`S` from the member's session, `U` on a guild
+  desk). At a run's end desk-agent sends `run_end`, and deskd lets go of its browser context and any signed-in tab.
+- **Untrusted results** reach the model as one line of JSON behind a label saying it's data, so nothing in a page,
+  file or note can close a frame and pass as the desk's or the member's words.
+- **Workspace marks** (Security's finding 3, `workspace_marks` in `agent.db`, as memory marks a line): a workspace
+  file a run holding `U` wrote is marked; a run that reads it, from its own workspace or a shared one, holds `U`. A
+  whole new file from a clean run clears the mark, an append keeps it, and a delete takes it.
+- **Chips:** `summary` is the desk's few words per tool, never content; the gate adds `risk`, `approval`, `target`,
+  `untrusted` and `session`.
+- Tests: `tool/ToolRegistryTest`, `tool/RegistryPolicyTest`, `tool/AgentToolsFlowTest` (through a real service, its
+  gate and a scripted deskd, `FakeDeskLink`) and `socket/ToolCallSocketTest` (the hello and `tcall` on the real
+  socket).
+
 ## Not built
-- Google's adapter (Phase 2).
-- Approvals for destructive or egress tools (none exist yet), taint, durable runs that resume (ADR 0020's state
-  machine), memory and compaction, image generation, the usage report to Platform, and a signed `pricing.json`.
-- Timers that wake a stopped desk (they fire while desk-agent runs), browser and notebook tools for agents, and
-  agents deleting workspace files.
+- Google's adapter (Phase 2). Paid OpenRouter models priced and listed, pictures on OpenRouter's models, and
+  OpenRouter's `reasoning_details` kept across a tool run's steps (STATUS.md).
+- Durable runs that resume (ADR 0020's state machine; a restart ends a waiting run and its cards), image generation,
+  the usage report to Platform, and a signed `pricing.json`. The tier's `toolCallsPerRun` (100 on every tier for now).
+- Timers that wake a stopped desk (they fire while desk-agent runs).
 - The egress proxy (deskd's), which `DESK_AGENT_EGRESS_PROXY` will name.
+- Memory recalled by search (FTS5) beyond the pinned lines; a member writing a line themselves.
+- `STATUS.md`, "Launch scope", sorts these for launch.

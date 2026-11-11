@@ -1,0 +1,24 @@
+#!/bin/bash
+# desk-oom-container <container> <oom_score_adj>: ExecStartPost of the Docker-run units (deskd, desk-agent, desk-notebook).
+# A unit's OOMScoreAdjust= covers its main process, which here is the `docker run` client; the container's processes are
+# the daemon's children, so they start at 0 whatever the unit says. This puts the unit's value on every process of the
+# container's cgroup, so the kernel's choice under memory pressure is the order docs/interfaces/desk-runtime.md "Restarts
+# and memory pressure" sets. Best effort: the unit has "-" on it, and a missing container (the start failed) is not an error.
+name=${1:?container}; adj=${2:?adj}
+[[ $adj =~ ^-?[0-9]+$ ]] || exit 2
+pid=
+for _ in $(seq 1 60); do
+  pid=$(docker inspect -f '{{.State.Pid}}' "$name" 2>/dev/null)
+  [ "${pid:-0}" -gt 0 ] 2>/dev/null && break
+  # systemd sets MAINPID for an ExecStartPost=: if the docker client has already exited, the start failed and this must not
+  # hold the failure up (it would add its whole wait to every turn of a restart loop).
+  [ -z "${MAINPID:-}" ] || kill -0 "$MAINPID" 2>/dev/null || { echo "desk-oom-container: $name's client $MAINPID has gone" >&2; exit 1; }
+  pid=; sleep 0.25
+done
+[ -n "$pid" ] || { echo "desk-oom-container: no container $name in 15 s" >&2; exit 1; }
+cg=$(sed -n 's/^0:://p' "/proc/$pid/cgroup")
+n=0
+for p in $(cat "/sys/fs/cgroup$cg/cgroup.procs" 2>/dev/null) "$pid"; do
+  echo "$adj" > "/proc/$p/oom_score_adj" 2>/dev/null && n=$((n+1))
+done
+echo "desk-oom-container: $name pid $pid, oom_score_adj $adj on $n process(es)"

@@ -3,8 +3,12 @@
 import { lazy, Suspense, useEffect, useRef, useState, type KeyboardEvent as ReactKeyboardEvent, type RefObject } from 'react';
 import { Icon } from '../chrome/icons';
 import type { BrowserTab } from '../desk/deskLink';
-import { QualityMenu } from '../quality/QualityMenu';
+import { useFree } from '../free/door';
+import { QualityMenu, QualityNotice } from '../quality/QualityMenu';
 import { addressShown, displayText } from './address';
+import { LinkIcon } from './linkIcons';
+import { deviceUrl, openOnDevice } from './openOnDevice';
+import './bar.css';
 import type { BrowserDriver, BrowserView } from './driver';
 import type { SimpleUi } from '../simple/ui';
 
@@ -23,12 +27,12 @@ const SimpleSwitch = lazy(() =>
 function TabStrip({ driver, view, disabled, onNewTab }: { driver: BrowserDriver; view: BrowserView; disabled: boolean; onNewTab: () => void }) {
   const closable = view.tabs.length > 1;
   return (
-    <div className="br-tabs" role="tablist" aria-label="Tabs on this desk">
+    <div className="br-tabs" role="group" aria-label="Tabs on this desk">
       {view.tabs.map((tab: BrowserTab) => {
         const title = displayText(tab.title) || addressShown(tab.url) || 'New tab';
         return (
           <div key={tab.tabId} className={`br-tab${tab.active ? ' active' : ''}${tab.loading ? ' loading' : ''}`} data-testid="browser-tab">
-            <button type="button" className="br-tab-title" role="tab" aria-selected={tab.active} title={title} disabled={disabled} onClick={() => driver.activateTab(tab.tabId)}>
+            <button type="button" className="br-tab-title" aria-current={tab.active ? 'true' : undefined} title={title} disabled={disabled} onClick={() => driver.activateTab(tab.tabId)}>
               {title}
             </button>
             {closable && (
@@ -49,15 +53,20 @@ function TabStrip({ driver, view, disabled, onNewTab }: { driver: BrowserDriver;
   );
 }
 
-function AddressBar({ driver, view, activeUrl, activeLoading, connected, disabled, inputRef, onLeave }: {
+function AddressBar({ driver, view, activeUrl, activeLoading, connected, ready, disabled, inputRef, onLeave, deviceHref, onOpenedOnDevice }: {
   driver: BrowserDriver;
   view: BrowserView;
   activeUrl: string;
   activeLoading: boolean;
   connected: boolean;
+  /** The Browser can take an address now. Until then what's typed is a draft to keep, and Enter holds it to send. */
+  ready: boolean;
   disabled: boolean;
   inputRef: RefObject<HTMLInputElement | null>;
   onLeave: () => void;
+  /** The active tab's address when it can open on this device (http or https), else null. */
+  deviceHref: string | null;
+  onOpenedOnDevice: () => void;
 }) {
   // What's being typed. Null shows what the desk says. A page's own navigation never overwrites a draft.
   const [draft, setDraft] = useState<string | null>(null);
@@ -125,19 +134,37 @@ function AddressBar({ driver, view, activeUrl, activeLoading, connected, disable
         onFocus={(e) => e.target.select()}
         onKeyDown={onKeyDown}
         onBlur={() => {
-          // While the desk wakes, what's typed is a draft to keep. Otherwise it shows where the page really is.
-          if (connected && !submitted.current && !kept.current) setDraft(null);
+          // While the desk wakes or the Browser starts, what's typed is a draft to keep. Otherwise it shows where the page really is.
+          if (connected && ready && !submitted.current && !kept.current) setDraft(null);
         }}
       />
+      {/* Open on this device (#9): about this address, so at its end. Not while a new one is typed: the field is about that. */}
+      {draft === null && deviceHref && (
+        <button
+          type="button"
+          className="address-out"
+          aria-label="Open on this device"
+          title="Open on this device"
+          data-testid="browser-open-here"
+          onClick={() => {
+            // Inside the press, so no pop-up blocker stops it.
+            if (openOnDevice(deviceHref)) onOpenedOnDevice();
+          }}
+        >
+          <LinkIcon name="openOut" size={16} />
+        </button>
+      )}
     </form>
   );
 }
 
-export function BrowserBar({ driver, view, connected, closed, addressRef, isMac, onLeaveAddress, deskId, simple = null, covered = false, simpleShown = false }: {
+export function BrowserBar({ driver, view, connected, ready = true, closed, addressRef, isMac, onLeaveAddress, deskId, simple = null, covered = false, simpleShown = false, openedNote = false, onOpenedOnDevice = () => {} }: {
   driver: BrowserDriver;
   view: BrowserView;
   /** A session is open, so what needs the desk can go. */
   connected: boolean;
+  /** The Browser itself is up (not still starting): a typed address is sent at once, not held. */
+  ready?: boolean;
   /** Asleep, still being set up, or refused: nothing typed could go anywhere, so the address takes nothing. */
   closed: boolean;
   addressRef: RefObject<HTMLInputElement | null>;
@@ -155,9 +182,14 @@ export function BrowserBar({ driver, view, connected, closed, addressRef, isMac,
   simpleShown?: boolean;
   /** The simple view covers the stream: typing goes to the view, never the page under it (T47O-2). */
   covered?: boolean;
+  /** "Opened on this device" in the note slot for a moment, after the first time (#9). */
+  openedNote?: boolean;
+  onOpenedOnDevice?: () => void;
 }) {
   const active = view.tabs.find((t) => t.active);
   const why = connected ? undefined : 'Not connected to this desk right now';
+  // A free desk's one line about busy times (`free/door.ts`).
+  const FreeLine = useFree((s) => s.BrowserLine);
   return (
     <div className="br-chrome" data-testid="browser-chrome">
       <TabStrip driver={driver} view={view} disabled={!connected} onNewTab={() => addressRef.current?.focus()} />
@@ -171,7 +203,8 @@ export function BrowserBar({ driver, view, connected, closed, addressRef, isMac,
         <button type="button" className="icon-btn sm" aria-label="Reload" title={why ?? 'Reload'} disabled={!connected} onClick={() => driver.reload()}>
           <Icon name="reload" size={17} />
         </button>
-        <AddressBar driver={driver} view={view} activeUrl={addressShown(active?.url)} activeLoading={active?.loading ?? false} connected={connected} disabled={closed} inputRef={addressRef} onLeave={onLeaveAddress} />
+        <AddressBar driver={driver} view={view} activeUrl={addressShown(active?.url)} activeLoading={active?.loading ?? false} connected={connected} ready={ready} disabled={closed} inputRef={addressRef} onLeave={onLeaveAddress} deviceHref={addressShown(active?.url) ? deviceUrl(active?.url) : null} onOpenedOnDevice={onOpenedOnDevice} />
+        {openedNote && <span className="br-note" role="status" data-testid="browser-opened-note">Opened on this device</span>}
         {view.pendingAddress !== null && <span className="br-note" role="status" data-testid="browser-pending">Opens when the desk is ready</span>}
         {view.notice && <span className="br-note" role="status" title={view.notice} data-testid="browser-notice">{view.notice}</span>}
         {view.heldText !== null && (
@@ -190,7 +223,16 @@ export function BrowserBar({ driver, view, connected, closed, addressRef, isMac,
             <SimpleSwitch ui={simple} />
           </Suspense>
         )}
-        {!simpleShown && <QualityMenu app="browser" deskId={deskId} />}
+        {FreeLine && <FreeLine deskId={deskId} />}
+        {!simpleShown && <QualityNotice />}
+        {/* The bar's right group (#9's spec, section 1): #12's keyboard (touch screens), then #11's key and Extensions come
+            first, with their features. Under 720 px of bar, Picture quality folds into More. */}
+        {!simpleShown && (
+          <div className="br-tools">
+            <QualityMenu app="browser" deskId={deskId} notice={false} className="br-wide" />
+            <QualityMenu app="browser" deskId={deskId} notice={false} variant="more" className="br-more-wrap" />
+          </div>
+        )}
       </div>
     </div>
   );

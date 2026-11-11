@@ -29,7 +29,10 @@ import java.util.regex.Pattern;
  * written) is over that many tokens pays those prices for all of its tokens, as Anthropic and xAI bill it.
  *
  * <p>A model at {@code input} 0 and {@code output} 0, in either tier, has no price, as if it weren't listed: a table never
- * makes a model free. A table with nothing else lists nothing, and {@link PriceTable} won't take it.
+ * makes a model free. A table with nothing else lists nothing, and {@link PriceTable} won't take it. The only models at
+ * $0 are the ones the provider itself serves free, by their id ({@link ProviderId#servesFree}: OpenRouter's
+ * {@code :free} variants and its free router), whatever the table says of them, so a dollar limit never refuses them.
+ * Token limits still bind them, and a call on one that reports a cost anyway is charged it ({@code LlmGateway}).
  *
  * <p>A model id with a date after it, such as {@code claude-haiku-4-5-20251001} or {@code gpt-5-mini-2025-08-07},
  * takes its undated entry's price. Nothing else is matched loosely: {@code gpt-5-codex} isn't {@code gpt-5}.
@@ -63,6 +66,9 @@ public final class Pricing {
             return above != null && promptTokens > aboveInputTokens ? above : this;
         }
     }
+
+    /** The price of a model its provider serves free ({@link ProviderId#servesFree}). */
+    public static final Price FREE = new Price(0, 0, 0, 0);
 
     private static final long MILLION = 1_000_000;
     private static final Pattern DATE_SUFFIX = Pattern.compile("-(\\d{8}|\\d{4}-\\d{2}-\\d{2})$");
@@ -224,11 +230,14 @@ public final class Pricing {
     }
 
     /**
-     * @return the listed price, or null for a model the table doesn't list, which is how a client can say it has no
-     *     listed price. A dated id falls back to its undated entry. What a call on such a model counts at is
-     *     {@link #chargedPrice}
+     * @return the listed price, {@link #FREE} for a model its provider serves free, or null for a model the table
+     *     doesn't list, which is how a client can say it has no listed price. A dated id falls back to its undated
+     *     entry. What a call on such a model counts at is {@link #chargedPrice}
      */
     public Price price(ProviderId provider, String model) {
+        if (provider.servesFree(model)) {
+            return FREE;
+        }
         Price exact = models.get(provider.id() + "/" + model);
         if (exact != null) {
             return exact;

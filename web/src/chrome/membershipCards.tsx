@@ -1,7 +1,7 @@
 // What the office's membership cards say, word for word from the membership card proposal ("Copy"), and what each
 // offers. Calm, short and specific: at most one main button, no exclamation marks, and nothing about age. Prices come
 // from settings through Platform (`platform/membershipOffer.ts`), never from here. `CalmScreen.tsx` draws them.
-// A teen's two cards are the only ones that differ by age, and they don't say so: `teenWelcomeCard` and `parentCard`.
+// A teen's cards differ by age and don't say so: `teenWelcomeCard`, `parentCard`, and E's picture and offer.
 import type { ReactNode } from 'react';
 import { formatUsd, type MembershipOffer } from '../platform/membershipOffer';
 import { DEFAULT_TIER_NAMES, type TierNames } from '../platform/tiers';
@@ -106,7 +106,7 @@ export function waitlistCard(): NoticeCard {
 }
 
 /**
- * F. Ended or suspended by us, or held, and for now everyone whose membership stopped (C to E wait for `/v1/me`).
+ * F. Ended or suspended by us, or held, and anyone whose stop `/v1/me` doesn't explain plainly (`shell/deskNotice.ts`).
  * No offer, no dates and no reason: a held account must not learn it's held.
  */
 export function inactiveCard(support: string): NoticeCard {
@@ -120,5 +120,107 @@ export function inactiveCard(support: string): NoticeCard {
       </>
     ),
     say: `If you think this is a mistake, write to ${support}.`,
+  };
+}
+
+// ----- C, D and E: a membership that stopped, from `/v1/me`'s `stoppedBy`, `stoppedAt` and `dataDeleteAt` (ma-platform
+// contract desks.md 0.3.69). `shell/deskNotice.ts` picks which; anything it can't read plainly is F.
+
+/** A calendar date in the member's own time zone: "December 6", with the year when it isn't this year's. */
+export function calendarDate(iso: string, now: number, timeZone?: string): string {
+  const at = new Date(iso);
+  const year = (d: Date) => new Intl.DateTimeFormat('en-US', { year: 'numeric', ...(timeZone ? { timeZone } : {}) }).format(d);
+  const sameYear = year(at) === year(new Date(now));
+  return new Intl.DateTimeFormat('en-US', { month: 'long', day: 'numeric', ...(sameYear ? {} : { year: 'numeric' }), ...(timeZone ? { timeZone } : {}) }).format(at);
+}
+
+/** Proposal point 5: "with your tabs and sign-ins" only once the restore rehearsal passes (TD-110). It hasn't. */
+export const RESTORE_REHEARSAL_PASSED = false;
+
+export interface StopLinks {
+  /** `accountUrl`: the account page, with Pay and "Join again". */
+  account: string | null;
+  /** `billingUrl`: where a failed payment is paid. */
+  billing: string | null;
+  /** `exportPageUrl`: the office's own export page, where it's on. */
+  exportPage: string | null;
+  /** `supportAddress(config)`. */
+  support: string;
+}
+
+/**
+ * Where card D's "Ask for an export" goes: the office's own export page, which an ended member can use while their
+ * desks are kept, and by email where that page is off (proposal point 6).
+ */
+export const EXPORT_TARGET = (links: StopLinks): string =>
+  links.exportPage ?? `mailto:${links.support}?subject=${encodeURIComponent('Export my desks')}`;
+
+/** C. Payment failed, desks stopped. No price pitch: this person already wants in. */
+export function pausedCard(stoppedAt: string, dataDeleteAt: string, links: StopLinks, now: number, timeZone?: string): NoticeCard {
+  const stopped = calendarDate(stoppedAt, now, timeZone);
+  const kept = calendarDate(dataDeleteAt, now, timeZone);
+  return {
+    ...BLANK,
+    letter: 'C',
+    title: 'Your desks are paused',
+    body: (
+      <>
+        Your last payment didn't go through, so your desks stopped on <b>{stopped}</b>. Everything on them is kept until <b>{kept}</b>. Update your payment method and they start again.
+      </>
+    ),
+    say: `Your last payment didn't go through, so your desks stopped on ${stopped}. Everything on them is kept until ${kept}. Update your payment method and they start again.`,
+    action: links.billing ? { label: 'Update payment', href: links.billing } : null,
+    link: { label: 'Write to us', href: `mailto:${links.support}` },
+  };
+}
+
+/** D. Cancelled, desks still kept. Export is as easy to find as Rejoin. */
+export function keptCard(dataDeleteAt: string, links: StopLinks, now: number, timeZone?: string): NoticeCard {
+  const kept = calendarDate(dataDeleteAt, now, timeZone);
+  const restore = RESTORE_REHEARSAL_PASSED ? "Rejoin before then and we'll restore them, with your tabs and sign-ins." : "Rejoin before then and we'll restore them.";
+  return {
+    ...BLANK,
+    letter: 'D',
+    title: 'Your membership has ended',
+    body: (
+      <>
+        Your desks are kept until <b>{kept}</b>. {restore} After that we delete them, as our Terms say.
+      </>
+    ),
+    say: `Your desks are kept until ${kept}. ${restore} After that we delete them, as our Terms say.`,
+    action: links.account ? { label: 'Rejoin', href: links.account } : null,
+    link: { label: 'Ask for an export', href: EXPORT_TARGET(links) },
+  };
+}
+
+/**
+ * E. Cancelled, desks deleted: a fresh start, with A's picture and A's Alliance line. A teen sees one desk in the picture,
+ * as on their own A, a button only while Alliance is on sale, and no Alliance line: it speaks of starting smaller, and
+ * Alliance is all they're offered.
+ */
+export function welcomeBackCard(
+  dataDeleteAt: string,
+  offer: MembershipOffer | null,
+  links: StopLinks,
+  now: number,
+  opts: { names?: TierNames; teen?: boolean; timeZone?: string } = {},
+): NoticeCard {
+  const deleted = calendarDate(dataDeleteAt, now, opts.timeZone);
+  // As on a teen's A: the account page offers them Alliance only, so its button needs that tier on sale too.
+  const open = offer?.open === true && (opts.teen !== true || offer.allianceMonthlyUsd !== null);
+  return {
+    ...BLANK,
+    letter: 'E',
+    picture: true,
+    oneDesk: opts.teen === true,
+    title: 'Welcome back',
+    body: (
+      <>
+        Your earlier desks were deleted on <b>{deleted}</b>, as our Terms say, so rejoining starts with fresh ones.
+      </>
+    ),
+    say: `Your earlier desks were deleted on ${deleted}, as our Terms say, so rejoining starts with fresh ones.`,
+    action: open && links.account ? { label: 'See membership', href: links.account } : null,
+    alliance: open && !opts.teen && offer.allianceMonthlyUsd !== null ? allianceLine(offer.allianceMonthlyUsd, opts.names?.alliance) : null,
   };
 }

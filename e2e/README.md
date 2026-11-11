@@ -44,7 +44,9 @@ SESSION_CHECK=stop-wake npx playwright test tests/browser-session.spec.ts --outp
 SESSION_CHECK=root-swap npx playwright test tests/browser-session.spec.ts --output test-results-session
 ```
 
-The default run also closes Chromium as the root swap path does (`image/desk-browser-close.sh`, task 33 item 3): `deskd` first, then `desk-browser`, and checks the exit was clean (`exit_type` `SessionEnded` or `Normal`) before anything starts it again, then that the session is intact. It sends the helper from this tree over SSM, so it runs on any image. `SESSION_CHECK=root-swap` reads `exit_type` before it starts Chromium, and fails a swap that wasn't preceded by that close.
+The default run also closes Chromium as the root swap path does (`image/desk-browser-close.sh`, task 33 item 3): `deskd` first, then `desk-browser`, and checks the exit was clean (`exit_type` `SessionEnded` or `Normal`) before anything starts it again, then that the session is intact. It sends the helper from this tree over SSM, so it runs on any image. `SESSION_CHECK=root-swap` reads `exit_type` before it starts Chromium, and fails a swap that wasn't preceded by that close. From image 0.3.2 `desk-browser-prewarm` starts Chromium at boot, and a running Chromium marks the profile `Crashed` (and `desk-browser-start` rewrote any `Crashed` before that start), so when `desk-browser` is already active the check can't read it: pass the close helper's own `exit_type` as `SESSION_CLOSE_EXIT=Normal` (or `SessionEnded`), and it also requires that the prewarm journal line shows prewarm started it. Or `touch /data/desk/no-prewarm` before the swap and the strict read applies.
+
+**Slot mode** (ADR 0077 1.3 item 9): `SESSION_SLOT=<k>` runs the seed, or `SESSION_CHECK=stop-wake`, against slot k of a template builder that `image/host/template-build.sh` launched, never the test desk or a member's host. Its commands go over that run's SSH (`SESSION_SLOT_SSH=admin@<address>`, `SESSION_SLOT_KEY=<key>`), and `onBuilder` (`tests/lib.ts`) refuses unless EC2 says the address is a running `ma-template-builder-*` tagged `Purpose=desk-image-build`. Chromium is reached through the test host's CDP forward (`10.98.<k>.2:19222`) and the pages are on the host's side of the slot's veth (`10.98.<k>.1:18766`). History is read through `chrome://history`, one query per page, since the profile is inside the desk. `template-build.sh` runs it; on its own it needs a builder held with `TB_HOLD=1` (`docs/runbooks/host-template-build.md`). First run on host 0.1.10's builder, 2026-11-11: the seed on g1 and the read-back on g2 after a stop and a re-root, all six items each.
 
 The restore rehearsal adds `SESSION_MARK`, and `SESSION_CHECK=restore`, `putback` and `rollback`, with `SESSION_ABSENT`, `SESSION_PRESENT` and `SESSION_VOLUME`. `docs/runbooks/restore-rehearsal.md` has the commands and the order. They need that rehearsal's seed, so don't run them on their own. They ran against the test desk on 2026-11-07, Parts 1 to 5 of that rehearsal (its "Results, 2026-11-07"). The first `SESSION_MARK` run keeps the baseline in `screenshots/session-baseline.json`. **Use marker names nobody has used on that profile:** the cookies stay, so `on_new` from 2026-11-06 is still there and would pass a `SESSION_PRESENT` check by itself (the 2026-11-07 run used `d7_…`). **A marker needs Chromium to keep running about 30 s after it's set to reach the disk,** clean exit or not, so don't stop Chromium straight after a `SESSION_MARK_WAIT=0`.
 
@@ -70,6 +72,14 @@ npx playwright test tests/agent-relay.spec.ts --output test-results-agent
 
 Both were the weekend's integration checks (`int-15c`), made part of this gate by task 33. The agent relay check's "nothing changed" needs a `deskd` from `sub/desk-followups` on: an older one says `mayHaveApplied: true` there and fails it.
 
+## Agent window check
+
+`tests/agent-check.spec.ts` is a smoke check of the shipped app's Agent window on the test desk, as `desk-1`: `/health` says `agent: connected`, the Agent tile opens its window, and the window leaves its loading state (key setup, the agent's state or a thread, whichever the account has) with no console or CSP errors. It uses no provider key, adds none and sends no message, so it only reads. It has not been run (2026-11-11): typechecked only. Don't run it with another spec or a viewer on the desk.
+
+```bash
+npx playwright test tests/agent-check.spec.ts --output test-results-agent-check
+```
+
 ## Bandwidth pause check (opt-in, writes staging)
 
 `bandwidth-pause/` checks that the desk honours the Platform's bandwidth pause (`ma-platform` ADR 0095; task 33 item 1), on the test desk as `desk-1`, with a `deskd` from `sub/desk-followups` on. It sets staging's test knob, `bw_test_week_gb`, on the test desk's row below what the desk has sent this week, so Platform pauses `desk-1`, and checks that the open stream ends, a new `live` is refused with `bandwidth_limit`, `warm`, the tabs and `desk.status.get` go on, and Chromium is the same process, never stopped. Then it puts the row back as it found it, checks that, and that `live` works again. Outside the gate's `testDir`, and skipped unless `BANDWIDTH_PAUSE=1`:
@@ -81,3 +91,6 @@ BANDWIDTH_PAUSE=1 npx playwright test -c bandwidth-pause --output test-results-p
 W3 member desk size kit: see `w3/README.md`. Not part of this gate.
 
 Real-sites check (TD-212), 20 sites a member would try first, each pass, challenge or block, with GB/h: see `real-sites/README.md`. Not part of this gate.
+
+## TD-110 rerun specs (`td110/`, 2026-11-11)
+`td110/s09-deskd-recovery.spec.ts` (how long the page takes to recover while `deskd` is switched, by rollout, rollback and a signed desk batch) and `td110/s12-stopping-session.spec.ts` (a session opened while the desk is `stopping`) run on a **temporary staging test desk only**: they need `TD_INSTANCE`, `TD_DESK_ID`, `TD_APP` and `TD_USER` (`tests/lib.ts` reads them; the defaults are the shared test desk's) and refuse the shared test desk and the owner's. Outside the gate's `testDir`; `npx playwright test -c td110`. Results and the false starts: `docs/sub-status/td110-rerun.md`.

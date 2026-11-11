@@ -23,7 +23,8 @@ public final class TopicHub {
     private record Subscription(long sid, Subscriber subscriber) {}
 
     private static final class Topic {
-        final ReentrantLock lock = new ReentrantLock();
+        /** Fair: readers looping on a conversation (thread reads, snapshots) must never starve its reply's flushes. */
+        final ReentrantLock lock = new ReentrantLock(true);
         final List<Subscription> subscriptions = new ArrayList<>();
         long seq;
     }
@@ -53,6 +54,26 @@ public final class TopicHub {
         t.lock.lock();
         try {
             t.subscriptions.removeIf(subscription -> subscription.sid() == sid);
+        } finally {
+            t.lock.unlock();
+        }
+    }
+
+    /**
+     * Forgets a topic and its subscriptions, which get nothing more: a purged member's views (ADR 0080's addendum of
+     * 2026-11-10), whose sessions deskd has already closed. A later subscriber starts it again from seq 0.
+     */
+    public void drop(String topic) {
+        Topic t = topics.remove(topic);
+        if (t == null) {
+            return;
+        }
+        t.lock.lock();
+        try {
+            for (Subscription subscription : t.subscriptions) {
+                topicOf.remove(subscription.sid(), topic);
+            }
+            t.subscriptions.clear();
         } finally {
             t.lock.unlock();
         }

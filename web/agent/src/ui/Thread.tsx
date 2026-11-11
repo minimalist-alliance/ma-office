@@ -1,15 +1,18 @@
 // The conversation and its composer (design 9.1). Replies are untrusted text from a model: they render as plain
 // text, never HTML, and nothing in them loads (no images, no link previews). Markdown comes later, sanitized.
-import { memo, useLayoutEffect, useRef, useState, type ClipboardEvent, type DragEvent, type KeyboardEvent } from 'react';
+import { memo, useCallback, useEffect, useLayoutEffect, useMemo, useRef, useState, type ClipboardEvent, type DragEvent, type KeyboardEvent } from 'react';
 import type { AgentClient } from '../client/agentClient';
-import type { Agent, Message, SentFile } from '../client/types';
-import { errorText } from '../model/agents';
+import type { Agent, Approval, Message, SentFile } from '../client/types';
+import { approvalOpen } from '../model/approvals';
+import { errorText, isFreeLimit, offersOtherModel } from '../model/agents';
 import { formatSize } from '../model/attachments';
 import { tokens, usd, when } from '../model/format';
 import { refusedSaveText } from '../model/workspace';
+import { ApprovalCard, WaitingPill, type ApprovalContext } from './Approvals';
 import { Avatar, ProviderBadge } from './bits';
 import { Icon } from './icons';
 import { ProposalCard, type ProposalContext } from './Proposals';
+import { ToolChips } from './Running';
 import { useStagedFiles } from './useStagedFiles';
 
 /** Under this many pixels from the bottom counts as reading the newest message, so new text keeps it in view. */
@@ -57,7 +60,20 @@ function SentChips({ files }: { files?: SentFile[] | null }) {
   );
 }
 
-const MessageRow = memo(function MessageRow({ m, agentName, showBadge, agents, proposals }: { m: Message; agentName: string; showBadge: boolean; agents: readonly Pick<Agent, 'id' | 'name'>[]; proposals: ProposalContext | null }) {
+const NONE: readonly Approval[] = [];
+
+const MessageRow = memo(function MessageRow({ m, agentName, showBadge, agents, proposals, approvals = NONE, approvalCtx = null, onPickModel = null }: {
+  m: Message;
+  agentName: string;
+  showBadge: boolean;
+  agents: readonly Pick<Agent, 'id' | 'name'>[];
+  proposals: ProposalContext | null;
+  /** This reply's approvals (API.md section 18), oldest first. */
+  approvals?: readonly Approval[];
+  approvalCtx?: ApprovalContext | null;
+  /** Opens Keys, for "Pick another model" under a free model's busy, slow or privacy-settings failure. */
+  onPickModel?: (() => void) | null;
+}) {
   if (m.role === 'user' && m.origin) {
     const from = m.origin.kind === 'timer' ? `Timer: ${m.origin.label || 'unnamed'}` : `From ${agents.find((a) => a.id === (m.origin as { agentId: string }).agentId)?.name ?? 'an agent no longer here'}`;
     return <FromRow m={m} from={from} />;
@@ -75,28 +91,52 @@ const MessageRow = memo(function MessageRow({ m, agentName, showBadge, agents, p
   const by = m.badge ? `Answered by ${m.badge.providerName} · ${m.badge.model}` : undefined;
   return (
     <li className={`ag-msg agent${m.state === 'streaming' ? ' streaming' : ''}`} data-testid="msg-agent" data-state={m.state ?? 'done'} aria-busy={m.state === 'streaming' || undefined}>
-      <div className="ag-bubble">
-        {m.text}
-        {m.state === 'streaming' && <span className="ag-caret" aria-hidden="true" />}
-        {m.state === 'streaming' && !m.text && <span className="ag-sr">{agentName} is replying</span>}
-      </div>
+      {(m.text || m.state === 'streaming') && (
+        <div className="ag-bubble">
+          {m.text}
+          {m.state === 'streaming' && <span className="ag-caret" aria-hidden="true" />}
+          {m.state === 'streaming' && !m.text && <span className="ag-sr">{agentName} is replying</span>}
+        </div>
+      )}
       <span className="ag-msg-meta">
         {agentName}
         {showBadge && m.badge && <ProviderBadge badge={m.badge} compact />}
         <span aria-hidden="true">·</span> {when(m.at)}
         {m.state === 'stopped' && <span className="ag-tag">Stopped</span>}
       </span>
-      {m.state === 'failed' && <span className="ag-error ag-small">{errorText(m.error, m.errorDetail)}</span>}
+      {m.state === 'failed' &&
+        // Today's free requests used is a limit, not a failure: not red (agent-free-key spec §4).
+        (isFreeLimit(m) ? (
+          <span className="ag-msg-limit" data-testid="msg-free-limit">
+            {errorText(m.error, m.errorDetail, 'openrouter')}
+          </span>
+        ) : (
+          <span className="ag-error ag-small">{errorText(m.error, m.errorDetail, m.badge?.provider)}</span>
+        ))}
+      {m.state === 'failed' && onPickModel && offersOtherModel(m.errorDetail, m.badge?.provider) && (
+        <button type="button" className="ag-text-btn sm" onClick={onPickModel} data-testid="pick-model">
+          Pick another model
+        </button>
+      )}
       {(m.workspaceRefused ?? []).map((w) => (
         <span key={w.path} className="ag-chip-note" data-testid="msg-save-refused">
           {refusedSaveText(w.path, w.reason)}
         </span>
       ))}
-      {m.state !== 'streaming' && m.badge && (
+      <ToolChips tools={m.tools} />
+      {approvalCtx && approvals.length > 0 && (
+        <div className="ag-approvals">
+          {approvals.map((a) => (
+            <ApprovalCard key={a.id} approval={a} agentName={agentName} egressCount={m.egressCount ?? 0} ctx={approvalCtx} />
+          ))}
+        </div>
+      )}
+      {m.state !== 'streaming' && m.state !== 'awaiting_approval' && m.badge && (
         <span className="ag-msg-foot" title={by} data-testid="msg-foot">
           {m.badge.model}
           {total != null && ` · ${tokens(total)}`}
-          {m.costMicroUsd !== undefined && ` · est. ${usd(m.costMicroUsd)}`}
+          {/* A free model's reply costs nothing: "free", never "$0" (spec §3.1). */}
+          {m.costMicroUsd === 0 && m.badge.provider === 'openrouter' ? ' · free' : m.costMicroUsd !== undefined && ` · est. ${usd(m.costMicroUsd)}`}
         </span>
       )}
       {m.state !== 'streaming' && proposals && (m.proposals ?? []).length > 0 && (
@@ -110,30 +150,68 @@ const MessageRow = memo(function MessageRow({ m, agentName, showBadge, agents, p
   );
 });
 
-export function ThreadView({ agent, agents, messages, loaded, showBadge, deskName, proposals = null }: {
+export function ThreadView({ agent, agents, messages, loaded, showBadge, deskName, proposals = null, approvals = NONE, approvalCtx = null, free = false, onPickModel = null }: {
   agent: Agent;
   agents: readonly Pick<Agent, 'id' | 'name'>[];
   messages: Message[];
   loaded: boolean;
   showBadge: boolean;
   deskName: string;
+  /** On free models through OpenRouter: the empty thread says what that means, once (spec §3.1). */
+  free?: boolean;
+  onPickModel?: (() => void) | null;
   /** What a lead's proposal cards need. Without it, a reply's proposals don't show (only the lead makes them). */
   proposals?: ProposalContext | null;
+  /** The thread's approvals, each under the reply its `messageId` names. */
+  approvals?: readonly Approval[];
+  approvalCtx?: ApprovalContext | null;
 }) {
   const ref = useRef<HTMLOListElement>(null);
   const stick = useRef(true);
   const last = messages[messages.length - 1];
+  const byMessage = useMemo(() => {
+    const map = new Map<string, Approval[]>();
+    for (const a of approvals) map.set(a.messageId, [...(map.get(a.messageId) ?? []), a]);
+    return map;
+  }, [approvals]);
+  const waiting = approvals.filter((a) => approvalOpen(a, Date.now()) && byMessage.has(a.messageId) && messages.some((m) => m.id === a.messageId)).length;
+  const [pill, setPill] = useState(false);
 
   // Before paint, so a new line never shows a frame out of view. One layout read per committed frame at most.
   useLayoutEffect(() => {
     const el = ref.current;
     if (el && stick.current) el.scrollTop = el.scrollHeight;
-  }, [messages.length, last?.text.length, agent.id]);
+  }, [messages.length, last?.text.length, agent.id, approvals.length]);
   useLayoutEffect(() => {
     stick.current = true;
   }, [agent.id]);
 
+  // "1 request waiting · Show" while the oldest waiting card is out of view (spec 1.5).
+  const oldestCard = useCallback((): HTMLElement | null => ref.current?.querySelector<HTMLElement>('[data-approval-pending]') ?? null, []);
+  const measure = useCallback((): void => {
+    const box = ref.current;
+    const card = oldestCard();
+    if (!box || !card) {
+      setPill(false);
+      return;
+    }
+    const b = box.getBoundingClientRect();
+    const c = card.getBoundingClientRect();
+    setPill(c.bottom <= b.top + 24 || c.top >= b.bottom - 24);
+  }, [oldestCard]);
+  useEffect(() => {
+    measure();
+  }, [measure, waiting, messages.length]);
+  const showCard = (): void => {
+    const card = oldestCard();
+    if (!card) return;
+    card.scrollIntoView({ block: 'center' });
+    card.querySelector<HTMLElement>('h4')?.focus({ preventScroll: true });
+    setPill(false);
+  };
+
   return (
+    <div className="ag-thread-wrap">
     <ol
       ref={ref}
       className="ag-thread"
@@ -144,6 +222,7 @@ export function ThreadView({ agent, agents, messages, loaded, showBadge, deskNam
       onScroll={(e) => {
         const el = e.currentTarget;
         stick.current = el.scrollHeight - el.scrollTop - el.clientHeight < STICK_PX;
+        if (waiting) measure();
       }}
     >
       {loaded && messages.length === 0 && (
@@ -152,12 +231,19 @@ export function ThreadView({ agent, agents, messages, loaded, showBadge, deskNam
           <p>
             {agent.name} works on the {deskName} desk only. Ask anything.
           </p>
+          {free && (
+            <p className="ag-note" data-testid="free-note">
+              On free models through OpenRouter: slower than paid ones, with a limited number of requests a day. The companies running them may keep what you send.
+            </p>
+          )}
         </li>
       )}
       {messages.map((m) => (
-        <MessageRow key={m.id} m={m} agentName={agent.name} showBadge={showBadge} agents={agents} proposals={proposals} />
+        <MessageRow key={m.id} m={m} agentName={agent.name} showBadge={showBadge} agents={agents} proposals={proposals} approvals={byMessage.get(m.id) ?? NONE} approvalCtx={approvalCtx} onPickModel={onPickModel} />
       ))}
     </ol>
+    {waiting > 0 && pill && <WaitingPill count={waiting} onShow={showCard} />}
+    </div>
   );
 }
 
@@ -170,11 +256,13 @@ export interface SendResult {
 
 const hasFiles = (e: DragEvent<HTMLElement>): boolean => Array.from(e.dataTransfer.types).includes('Files');
 
-export function Composer({ client, agent, busy, streamingRunId, onSend, onStop, disabled, suggestions, initialDraft, onDraftChange }: {
+export function Composer({ client, agent, busy, streamingRunId, waiting = false, onSend, onStop, disabled, suggestions, initialDraft, onDraftChange }: {
   client: AgentClient;
   agent: Agent;
   busy: boolean;
   streamingRunId: string | null;
+  /** The run waits on the member's answer to a card: nothing goes until it's answered (spec 1.5). */
+  waiting?: boolean;
   onSend: (text: string, attachments: string[]) => Promise<SendResult>;
   onStop: () => void;
   /** Nothing can go now. The box still takes what's typed, so a dropped connection doesn't stop a thought. */
@@ -321,7 +409,7 @@ export function Composer({ client, agent, busy, streamingRunId, onSend, onStop, 
         <textarea
           id={`ag-input-${agent.id}`}
           rows={1}
-          placeholder={files.length ? 'Ask about your files' : `Ask ${agent.name}`}
+          placeholder={waiting ? 'Waiting for your answer' : files.length ? 'Ask about your files' : `Ask ${agent.name}`}
           value={draft}
           onChange={(e) => setDraft(e.target.value)}
           onKeyDown={onKey}

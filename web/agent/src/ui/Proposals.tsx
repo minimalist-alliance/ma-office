@@ -22,7 +22,7 @@ export interface ProposalContext {
 }
 
 const toneLabel = (id: string): string => TONES.find((t) => t.id === currentTone(id))?.label ?? `${id} (shown as Graphite)`;
-const iconLabel = (id: string): string => (id === 'png' ? 'Your picture' : iconById(id).id === currentIcon(id) ? iconById(id).label : `${id} (shown as Spark)`);
+const iconLabel = (id: string): string => (id === 'png' ? 'Your picture' : iconById(id).id === currentIcon(id) ? iconById(id).label : `${id} (shown as Team)`);
 
 /** An agent on a card: its mark, its name, and the end of its id when another agent's name is close. */
 function AgentChip({ tag, theme }: { tag: AgentTag; theme: LookTheme }) {

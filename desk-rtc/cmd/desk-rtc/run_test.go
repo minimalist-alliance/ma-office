@@ -62,7 +62,8 @@ func TestReleaseRunSetsTheMemoryLimit(t *testing.T) {
 	if limit, _ := strconv.Atoi(limit); limit >= 128<<20 {
 		t.Fatalf("memory limit %d isn't under MemoryMax", limit)
 	}
-	for _, want := range []string{"--socket /run/desk/rtc.sock", "--socket-group desk", "--display :99", "--config /etc/ma/desk-rtc.conf"} {
+	for _, want := range []string{"--socket /run/desk/rtc.sock", "--socket-group desk", "--display :99", "--config /etc/ma/desk-rtc.conf",
+		"--profile-file /run/desk-egress/profile"} {
 		if !strings.Contains(args, want) {
 			t.Errorf("args %q lack %q", args, want)
 		}

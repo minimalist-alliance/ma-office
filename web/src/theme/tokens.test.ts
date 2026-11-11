@@ -1,6 +1,6 @@
 import { describe, expect, it } from 'vitest';
 import { themeCss, themeTokens } from './themeCss';
-import { THEME_IDS, THEMES, type Tokens } from './tokens';
+import { APP_INKS, THEME_IDS, THEMES, type Tokens } from './tokens';
 
 type Rgba = { r: number; g: number; b: number; a: number };
 
@@ -82,7 +82,7 @@ describe.each(THEME_IDS)('%s contrast', (id) => {
 describe('the etch (ADR 0064)', () => {
   it('has the contrast in the ADR\'s table, in every theme', () => {
     expect(contrast(THEMES.light.etch.fill, THEMES.light.surface.panel)).toBeCloseTo(4.56, 2);
-    expect(contrast(THEMES.dusk.etch.fill, THEMES.dusk.surface.panel)).toBeCloseTo(5.57, 2);
+    expect(contrast(THEMES.dusk.etch.fill, THEMES.dusk.surface.panel)).toBeCloseTo(6.72, 2); // Zen (ADR 0093)
     expect(contrast(THEMES.dark.etch.fill, THEMES.dark.surface.panel)).toBeCloseTo(6.56, 2);
   });
 
@@ -96,7 +96,7 @@ describe('the etch (ADR 0064)', () => {
   });
 });
 
-describe('Dusk purity', () => {
+describe('Zen (dusk) purity', () => {
   const values = themeTokens('dusk').map(([, v]) => v.toLowerCase());
   it('holds no pure black or white, in any notation', () => {
     for (const v of values) {
@@ -106,11 +106,12 @@ describe('Dusk purity', () => {
       expect(v).not.toMatch(/\b(black|white)\b/);
     }
   });
-  it('has neutral whites (ADR 0050)', () => {
-    expect(THEMES.dusk.text.primary).toBe('#FAFAFA');
-    expect(THEMES.dusk.text.secondary).toBe('#E2E2E2');
-    expect(THEMES.dusk.text.tertiary).toBe('#DADADA');
-    for (const v of values) expect(v).not.toMatch(/240,\s*237,\s*231/);
+  it('has cool near-whites (ADR 0093, in place of ADR 0050\'s neutral ones)', () => {
+    expect(THEMES.dusk.text.primary).toBe('#F1F3F7');
+    expect(THEMES.dusk.text.secondary).toBe('#DFE3EA');
+    expect(THEMES.dusk.text.tertiary).toBe('#D3D8E0');
+    // The neutral white is gone from the set, hex and rgba alike: the lines are the cool white too.
+    for (const v of values) expect(v).not.toMatch(/#fafafa|250,\s*250,\s*250/);
   });
 });
 
@@ -122,8 +123,35 @@ describe('themes.css', () => {
     expect(css).toContain('color-scheme: light');
   });
   it('names tokens as the design does, and every theme has the same names', () => {
-    expect(css).toContain('--ma-surface-tile: #50565F');
+    expect(css).toContain('--ma-surface-tile: #474D5B');
     const names = THEME_IDS.map((id) => themeTokens(id).map(([k]) => k).join());
     expect(new Set(names).size).toBe(1);
+  });
+});
+
+describe.each(THEME_IDS)('%s: Files\' own colors', (id) => {
+  const ink = APP_INKS["files"]![id];
+  const t = THEMES[id];
+  it('meets the Product Designer\'s ratios on its own surfaces', () => {
+    expect(contrast(t.text.primary, ink.window)).toBeGreaterThanOrEqual(7 - 0.05);
+    expect(contrast(t.text.secondary, ink.sidebar)).toBeGreaterThanOrEqual(4.5 - 0.05);
+    expect(contrast(t.text.primary, ink.accentSubtle)).toBeGreaterThanOrEqual(4.5 - 0.05);
+    expect(contrast(ink.onAccent, ink.accent)).toBeGreaterThanOrEqual(4.5 - 0.05);
+    expect(contrast(ink.onAccent, ink.accentHover)).toBeGreaterThanOrEqual(4.5 - 0.05);
+    for (const bg of [ink.window, ink.sidebar]) {
+      expect(contrast(ink.accent, bg)).toBeGreaterThanOrEqual(3 - 0.05);
+      expect(contrast(ink.link, bg)).toBeGreaterThanOrEqual(4.5 - 0.05);
+    }
+  });
+  it('is declared only on the Files window, in this theme', () => {
+    const css = themeCss();
+    const at = css.indexOf(`:root[data-theme="${id}"] .ma-window[data-app="files"] {`);
+    expect(at).toBeGreaterThan(-1);
+    const block = css.slice(at, css.indexOf('}', at));
+    expect(block).toContain(`--ma-accent: ${ink.accent};`);
+    expect(block).toContain(`--ma-focus-ring: ${ink.accent};`);
+    expect(block).toContain(`--ma-surface-sunken: ${ink.sidebar};`);
+    expect(block).not.toContain('--ma-text-primary');
+    expect(block).not.toContain('--ma-border');
   });
 });

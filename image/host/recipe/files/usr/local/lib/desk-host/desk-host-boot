@@ -4,16 +4,27 @@
 #   charged their compressed pages (memory.zswap.max) and never write back (memory.zswap.writeback 0, set per desk).
 # - the swap file zswap sits in front of, never written to while every desk has writeback 0; no zram (the image has none).
 # - the slot store: the AMI's second volume, found by the filesystem UUID baked in and, from the first boot on, by its NVMe
-#   serial (the volume ID) too; grown to the volume's size; mounted prjquota,nosuid,nodev; the template bound read-only.
+#   serial (the volume ID) too; grown to the volume's size; mounted prjquota,nosuid,nodev; every sealed template generation
+#   bound read-only (ADR 0077: desk-host-template boot, which also makes an older bake's single template g1, removes what a
+#   cut-off fetch or re-root left, and makes desk-host-upd, the update cgroup).
 # - the cgroup for desks (+cpu +memory +pids +io), conntrack sized for every desk's limit (IN-06), the vsock modules out.
 # - DesksPerHost, SlotsPerHost and HostingVersion from the instance's tags at the first boot, kept after (ADR 0072 section 1).
 #   DesksPerHost is the host's size in standard desks (every class's unit); SlotsPerHost (proposed to Platform, "Container
 #   sizes by tier") how many slots it has, DesksPerHost to 29, default DesksPerHost: a host without it is a 0.1.4 host.
+# - SlotMode from the first boot's tags too (ma-platform contract shared-host.md, Platform's answer of 2026-11-10): address
+#   (choice A, a private address and an Elastic IP per slot; no tag means address) or port (choice B, the owner's: one
+#   public IPv4 for the host). Any other value is kept as refused, and then no slot starts: a host never guesses.
+# - Under SlotMode=port, desk-ice-demux's ground at every boot: its listen address (the host's own, the default route's
+#   interface's, TCP 443) and slot count in /run/desk-dmx/env, the live-slot directory desk-host marks, the mark's routing
+#   table that brings a slot's replies to the demux's transparent sockets (nftables.conf's divert), and the one accept in
+#   host_in for TCP 443 on that address and interface.
 set -euo pipefail
 conf() { sed -n "s/^$1=//p" /etc/desk-host/desk-host.conf 2>/dev/null | tail -1 | tr -d '"'; }
 log() { echo "desk-host-boot: $*"; }
-DH=/srv/desk-host; T=$DH/template; V=/var/lib/desk-host
-install -d -m 711 $V; install -d -m 700 $V/slots; install -d -m 755 /var/log/desk-host
+DH=/srv/desk-host; V=/var/lib/desk-host
+# Every directory desk-host-check dirs requires, at its mode: install -d -m sets the mode of a directory that exists too (and the
+# store's after its mount, below), so a host whose mode drifted is put right by its boot (sub/host-dirs, 0.1.13's /run/desk-host 755)
+install -d -m 711 $V; install -d -m 700 $V/slots; install -d -m 755 $V/batch /var/log/desk-host
 install -d -m 711 /run/desk-host; install -d -m 700 /run/desk-host/lock
 
 # zswap
@@ -47,8 +58,7 @@ else
 fi
 mountpoint -q $DH || { install -d -m 711 $DH; mount -o prjquota,nosuid,nodev,noatime "$dev" $DH; }
 resize2fs "$dev" >/dev/null 2>&1 || true
-chmod 711 $DH; install -d -m 711 $DH/slots
-if ! grep -q " $T ext4 ro," /proc/self/mounts; then mount --bind $T $T; mount -o remount,bind,ro,nosuid,nodev $T; fi
+chmod 711 $DH; install -d -m 711 $DH/slots $DH/releases $DH/templates
 log "slot store $dev (serial $serial) at $DH, $(df -h --output=size,avail $DH | tail -1 | tr -s ' ')"
 
 # cgroups, conntrack, modules
@@ -63,6 +73,8 @@ for _ in $(seq 1 40); do
 done
 [ $ok = 1 ] || { log "the desks' cgroup lacks a controller: root [$(cat /sys/fs/cgroup/cgroup.subtree_control)], desk-host [$(cat /sys/fs/cgroup/desk-host/cgroup.subtree_control)]"; exit 1; }
 log "cgroups: desk-host [$(cat /sys/fs/cgroup/desk-host/cgroup.subtree_control)]"
+# the template generations and the update cgroup (after the controllers: desk-host-upd's limits need cpu, memory and io on at the root)
+python3 -I /usr/local/lib/desk-host/desk-host-template boot || { log "the template generations: failed"; exit 1; }
 modprobe nf_conntrack
 for m in vsock_loopback vmw_vsock_virtio_transport vmw_vsock_virtio_transport_common vsock_diag vsock; do modprobe -r "$m" 2>/dev/null || true; done
 
@@ -73,11 +85,16 @@ def imds(p):
     t = urllib.request.urlopen(urllib.request.Request("http://169.254.169.254/latest/api/token", method="PUT", headers={"X-aws-ec2-metadata-token-ttl-seconds": "60"}), timeout=3).read().decode()
     return urllib.request.urlopen(urllib.request.Request("http://169.254.169.254/latest/meta-data/" + p, headers={"X-aws-ec2-metadata-token": t}), timeout=3).read().decode()
 out = {}
-for k, key in (("desksPerHost", "DesksPerHost"), ("slotsPerHost", "SlotsPerHost"), ("hostingVersion", "HostingVersion")):
+for k, key in (("desksPerHost", "DesksPerHost"), ("slotsPerHost", "SlotsPerHost"), ("hostingVersion", "HostingVersion"), ("slotMode", "SlotMode")):
     try:
         out[k] = imds("tags/instance/" + key)
     except Exception:
         pass
+m = out.get("slotMode", "address").strip()
+if m not in ("address", "port"):
+    out["slotModeRefused"] = m[:16]   # neither: kept as refused, so no slot starts (hostmeta.slot_mode raises)
+    m = "refused"
+out["slotMode"] = m
 if "desksPerHost" in out:
     out["desksPerHost"] = int(out["desksPerHost"]); out["from"] = "tags"
 else:
@@ -95,6 +112,8 @@ PY
 if [ -f $V/hosting.json ]; then
   [ "$(python3 -I -c 'import json,sys; print(json.load(open(sys.argv[1]))["desksPerHost"])' $V/hosting.json)" = "$(python3 -I -c 'import json,sys; print(json.loads(sys.argv[1])["desksPerHost"])' "$tags")" ] \
     || log "DesksPerHost differs from the first boot's ($tags): the first boot's kept"
+  [ "$(python3 -I -c 'import json,sys; print(json.load(open(sys.argv[1])).get("slotMode", "address"))' $V/hosting.json)" = "$(python3 -I -c 'import json,sys; print(json.loads(sys.argv[1])["slotMode"])' "$tags")" ] \
+    || log "SlotMode differs from the first boot's: the first boot's kept"
 else
   echo "$tags" > $V/hosting.json
 fi
@@ -105,3 +124,25 @@ ct=$(conf NF_CONNTRACK_MAX | grep . || echo 65536); ch=$(conf CT_HOST | grep . |
 [ $((slots * ch + 16384)) -gt "$ct" ] && ct=$((slots * ch + 16384))
 sysctl -q -w net.netfilter.nf_conntrack_max=$ct
 log "conntrack $ct for $slots slots"
+
+# SlotMode=port: desk-ice-demux's ground (its unit starts only when /run/desk-dmx/env exists). Every boot starts clean.
+mode=$(python3 -I -c 'import json,sys; print(json.load(open(sys.argv[1])).get("slotMode", "address"))' $V/hosting.json)
+DMX=/run/desk-dmx
+nft flush chain inet host host_in 2>/dev/null || true
+while ip rule del fwmark 0x4430 lookup 4430 2>/dev/null; do :; done
+ip route flush table 4430 2>/dev/null || true
+rm -rf "${DMX:?}"
+if [ "$mode" = port ]; then
+  dev=$(ip -4 -j route show default | python3 -I -c 'import json,sys; r=[x for x in json.load(sys.stdin) if x.get("dev")]; print(min(r, key=lambda x: x.get("metric", 0))["dev"] if r else "")')
+  addr=$(ip -4 -j addr show dev "$dev" 2>/dev/null | python3 -I -c 'import json,sys; a=[i["local"] for l in json.load(sys.stdin) for i in l.get("addr_info", []) if i.get("family") == "inet"]; print(a[0] if a else "")')
+  [ -n "$dev" ] && [ -n "$addr" ] || { log "SlotMode=port: no address of the host's own (default route: ${dev:-none})"; exit 1; }
+  getent group desk-dmx >/dev/null || { log "SlotMode=port: no desk-dmx group (the host recipe makes it)"; exit 1; }
+  install -d -m 755 -o root -g root $DMX; install -d -m 750 -o root -g desk-dmx $DMX/slots
+  printf 'DMX_LISTEN=%s:443\nDMX_SLOTS=%s\n' "$addr" "$slots" > $DMX/env.tmp; chmod 644 $DMX/env.tmp; mv $DMX/env.tmp $DMX/env
+  ip rule add fwmark 0x4430 lookup 4430 priority 90
+  ip route replace local 0.0.0.0/0 dev lo table 4430
+  nft add rule inet host host_in iifname "$dev" ip daddr "$addr" tcp dport 443 accept
+  log "SlotMode=port: the demux on the host's own address, TCP 443, for $slots slots; slot k on UDP 4430+k"
+else
+  log "SlotMode=$mode$([ "$mode" = refused ] && echo ': no slot starts')"
+fi

@@ -213,7 +213,8 @@ Per member a month at 200: light 0.53 GB, typical 4.91 GB, heavy 15.25 GB. Typic
 | 100 | 69.3 Mb/s | 31.2 |
 | 200 | 138.7 Mb/s | 62.4 |
 
-Under decision 4, each member's share counts toward their own 100 GB allowance. That's typically about 4.9 GB of it, and about 15 GB for a heavy user at 200 *(model)*. Every member is already planned at the full allowance, so the planned worst case doesn't move. To meter it, Platform needs a byte count per session from `desk-rtc` and from Commons. That's a kind of metadata it already sees for desks (ADR 0041). Members whose network blocks UDP reach voice through TURN on 443. That's the 5% share above, and the relay's CPU is Platform's, not the guild server's.
+Under decision 4, each member's share counts toward their own 100 GB allowance. That's typically about 4.9 GB of it, and about 15 GB for a heavy user at 200 *(model)*. Every member is already planned at the full allowance, so the planned worst case doesn't move. To meter it, Platform needs a byte count per
+ session from `desk-rtc` and from Commons. That's a kind of metadata it already sees for desks (ADR 0041). Members whose network blocks UDP reach voice through TURN on 443. That's the 5% share above, and the relay's CPU is Platform's, not the guild server's.
 
 **RAM at 200 members, by part** (MiB, before the 1.3 headroom; task 20's first estimate was 1,603 MiB with headroom):
 
@@ -288,8 +289,10 @@ Today other Officers' Guild Desks stand by with full replicas (§4.5.6). With no
 - Not included: real tools (a tool result here is canned text, as `deskd` would return it), `deskd` itself, and a real provider's TLS stack. The last is the same JDK client.
 
 **With a browser tool**, measured separately (`browser-tool/`). This is Chromium 156 headless from Playwright 1.64.1, the repo's version. Each run gets its own context and tab, opens a real page, reads its text and accessibility tree, and takes a screenshot. The sum is PSS over every Chromium process, two runs:
-- **The browser itself:** 216 MiB fresh, about 330 MiB once used, shared by all runs.
-- **Each run's tab:** about 157 MiB on ordinary pages (Wikipedia, MDN, GitHub, Hacker News and BBC News open at once; 210–380 MiB each alone, over the fresh browser). For a heavy, ad-laden page that never settled in 30 s (The Verge) it was 0.65–0.95 GiB.
+- **The browser itself:** 216 MiB fresh, about 330 MiB 
+once used, shared by all runs.
+- **Each run's tab:** about 157 MiB 
+on ordinary pages (Wikipedia, MDN, GitHub, Hacker News and BBC News open at once; 210–380 MiB each alone, over the fresh browser). For a heavy, ad-laden page that never settled in 30 s (The Verge) it was 0.65–0.95 GiB.
 - So the design's 0.6 GiB is high for an ordinary page and low for a heavy one.
 - A guild server offering it for 2 runs at once would need about 2.4 GiB at 200 members on ordinary pages, and 4.0 GiB on heavy ones. That's c7g.large or m7g.large, not counting the CPU of loading pages.
 - Hence decision 7: no browser tool on the guild server.
@@ -330,7 +333,8 @@ Task 12 (`docs/research/shared-desk-hosts.md`) covers **one member's own Persona
 2. Settings: `maxGuildsPerMember` (3), `maxGuildsLedPerLead` (1), `maxGuildMembers` (200), `guildServerTiers`, and where guild network is metered (decision 4).
 3. A guild server lifecycle: provision on guild creation, resize when the member count crosses a tier, the 24-hour rule on guild activity, snapshot and keep for 30 days when archived. Amend ADR 0033: `guild_desk_size_member` goes, and `guild_host_size_*` become `guildServerTiers`.
 4. Platform's CPU surplus guard (ADR 0081) never applies to a guild server.
-5. Retire N12, N14 and the member side of ADR 0041 (member Guild Desks and their sync sessions). Flip N17: members' clients do connect to the guild server, with no Browser streaming, so the 165 GB a member in N17 doesn't apply. Amend ADR 0019's "no member's client connects to another member's desk" to name the guild server, which is no member's desk.
+5. Retire N12, N14 and the member side of ADR 0041 (member Guild Desks and their sync sessions). Flip N17: members' clients do connect to the guild server, with no Browser streaming, so the 165 GB 
+a member in N17 doesn't apply. Amend ADR 0019's "no member's client connects to another member's desk" to name the guild server, which is no member's desk.
 6. Plan guild servers into the Savings Plan (Q15) before guilds open.
 
 **Design docs** (System Engineer): §4.5, §4.2.15, §8.6 and §11.2 to §11.5 change. Q12 and Q16 close. Q13's guild key stays, with members' own keys optional. ADRs 0024 and 0025 are superseded. ADR 0017's guild fan-out stays on the server, and its relay stays for direct messages.
@@ -338,7 +342,9 @@ Task 12 (`docs/research/shared-desk-hosts.md`) covers **one member's own Persona
 **The guild server load gate** replaces the host load gate (§11.2), and runs before guilds open:
 - **Load:** 200 simulated members' browsers over WebRTC. Each makes 1 edit a second across 20 pages, and the guild posts 1 chat message a second. All 200 are in Commons, driven by task 21's `commons-load`: 3 talking, then 10 heard with talkers never pausing. 8 agent runs go at once, and files are pulled at 5 MB.
 - **Where:** on the XL tier's server (c7g.xlarge), and once with 100 members on c7g.large.
-- **Pass:** a guild operation's p95 ≤ 150 ms, voice packets forwarded within 20 ms p99, and no out-of-memory kills. CPU ≤ 70% with 3 talking and ≤ 90% with 10 heard. The network card's allowance counters (`pps_allowance_exceeded`, `bw_out_allowance_exceeded` in `ethtool -S`) stay at zero.
+- **Pass:** a guild operation's p95 ≤ 150 ms, voice packets forwarded within 20 ms p99, and no out-of-memory kills. CPU ≤ 70% with 3 talking and ≤ 
+90% with 10 heard. The network card's allowance counters 
+(`pps_allowance_exceeded`, `bw_out_allowance_exceeded` in `ethtool -S`) stay at zero.
 - **Then:** its CPU per forwarded packet replaces the guessed EPYC-to-Graviton ratio (`cpu.vcpuPerX86Core` in `cost/config.json`), and `cost/model.py` reruns.
   - If c7g.large holds 100 members, tier L moves back there.
   - If c7g.xlarge doesn't hold 200 with 10 heard, cap voices heard at 3 above 100 members (T7) before moving to c7g.2xlarge.
@@ -378,3 +384,64 @@ Task 12 (`docs/research/shared-desk-hosts.md`) covers **one member's own Persona
 - AWS, [burstable instances' baselines](https://docs.aws.amazon.com/AWSEC2/latest/UserGuide/burstable-credits-baseline-concepts.html), read 2026-11-06: t4g.small and t4g.medium earn credits at 20% a vCPU, t4g.xlarge at 40%.
 - AWS, [C7g instances](https://aws.amazon.com/ec2/instance-types/c7g/), read 2026-11-06: Graviton3 delivers "up to 25% better compute performance" than Graviton2.
 - Opus: [RFC 6716](https://www.rfc-editor.org/rfc/rfc6716) (20 ms frames) and [RFC 7587](https://www.rfc-editor.org/rfc/rfc7587) (RTP payload, DTX). RTP, [RFC 3550](https://www.rfc-editor.org/rfc/rfc3550); SRTP, [RFC 3711](https://www.rfc-editor.org/rfc/rfc3711) (the 10-byte tag).
+
+## Addendum, 2026-11-10: how leaving deletes a member's agent conversations (audit Z28, Desk Engineer)
+
+Decision 12 says that when a member leaves, "that member's agent conversations on the guild server are deleted, and nothing else of theirs is kept". Until now `deskd` only closed their sessions, and `desk-agent` kept everything under the member's `gm-` id, which is the same id again if they rejoin (`sha256(guildId:sub)`). Leaving, being removed and deleting the account all reach the desk the same way: the member is missing from a newer roster. This addendum says how that becomes a deletion. Deletion can't be undone, so the first rule is that a wrong roster must never cause one. Branch `sub/guild-member-purge`, `docs/sub-status/guild-member-purge.md`.
+
+**When a purge is owed.** `deskd` compares each roster it applies with the last one it applied, whether that was read or loaded from `/data/desk/guild-roster.json` (`guild/GuildPurges`):
+- A purge is owed only when a roster whose `version` is newer than the last applied one doesn't list a member who was in the last one.
+- "Listed" means any entry naming that `memberId`, even one that's malformed in some other way. A member whose entry is malformed is refused, but is never taken as gone. The kept roster now records these ids (`listed`), so this holds across a restart.
+- Nothing is owed from the first roster a desk ever has 
+(none read and none kept), from a read that fails or answers 503, from another guild's roster, from a malformed body, or from an older or same version. A member who just has no session owes nothing either: sessions are never compared.
+- A closed guild (`closed: true`) owes nothing here. Its server and data go by decision 7 (30 days).
+
+**The guard against a roster that suddenly lists almost no one.** All of a roster's drops are **held** instead of owed when that roster:
+- lists no Founder (`lead`);
+- has an entry whose member id can't be read; or
+- drops more than half of the last roster's members at once.
+
+Held purges are never sent. A held purge becomes owed only when a later roster, one with a higher version, still doesn't list the member, and is itself sound: it lists a Founder, every entry is readable, and it isn't closed. That later roster's own new drops face the same guard. `/health` shows `guildPurges: {owed, held, done}` as counts, with no member named. The log does the same, and says which rule held them.
+
+**Coming back.** Any roster that lists the member again cancels their 
+purge, whether it 
+was owed or held, so they keep their data. A purge isn't sent for someone the current roster lists. There's also a **grace of 10 minutes**: an owed purge waits that long after the roster that made it owed. So a roster the Platform corrects at once deletes nothing. Access still ends at once, as before.
+
+**The list.** `/data/desk/guild-purges.json` holds `{guildId, purges: [{memberId, state: owed|held, version, dueAtMs}], done}`. It's written whole (temporary file, fsync, rename) at `0600`, and **before** the roster that changed 
+it is kept. If the list can't be written, the roster isn't kept either, so after a crash or a full disk the next start compares again instead of losing the purge. A list for another guild is ignored. An entry leaves the list when `desk-agent` answers.
+
+**How deskd tells desk-agent.** `desk.member.purge {memberId}` goes on the agent socket as a plain `req` of deskd's own, with no caller, the same way `desk.prices.set` goes (`agent/AgentPurges`).
+- **No client can send it.** It's not on `AgentMethods`' lists, so a client session gets `not_found` (the owner) or `forbidden` `scope` (a member) before anything reaches `desk-agent`. `desk-agent` also refuses it, `forbidden` `permission`, from any frame that carries a caller, which every request deskd relays for a client does, and from a member caller in any case (`desk.*`).
+- **One at a time.** A purge goes once it's due and desk-agent is connected. One owed while desk-agent is down waits for the next connection. One whose answer was lost goes again, and that's harmless, because the purge is idempotent.
+- **Retries.** An error answer is retried after 5 s, doubling up to 5 minutes. A `desk-agent` older than this one answers `not_found`, and is asked again only on the next connection.
+- **Completion.** The answer is `{purged: true, agents, messages, files, 
+usage, staged}`, all counts. deskd removes the entry, adds one to `done`, and logs the counts.
+
+**What desk-agent deletes** (`AgentService.purgeMember`, `AgentStore.purgeMember`, `UsageLedger.forget`). It takes only a `gm-` id, so the owner's lead and staff agents can't be named.
+1. The member's run is stopped first, and the purge waits up to 5 s for it to end. If it doesn't end, the answer is `conflict` `busy` with nothing deleted, and deskd retries.
+2. In one `agent.db` transaction it deletes the agent's row, and with it the name, the key binding, the limits and the unseen count. It also deletes the thread's messages, the `message_files` notes of those messages, and every proposal, timer, link and agent message that names the agent. A member's agent never has those last ones, but they go anyway.
+3. In memory it clears the member's runner and per-agent limits, wipes the files they had half attached in staging, and drops the subscriptions of their own views.
+4. **Usage is kept as the guild's spend, not theirs.** Their `usage.db` rows get `agent_id` and `run_id` `guild:departed`, an id no agent can have, and lose the token breakdown. The time, key, model, tokens and dollars stay, so the guild's month (`desk_month`) and its key's month still count what was spent. The rows go after 100 days, as every row does. `guild.usage.get` lists only members who have an agent, so `guild:departed` never shows there. As a consequence, a member who leaves and is let back in starts their own day and month caps again, while the guild's cap still counts what they spent before.
+5. **Nothing left in the files.** desk-agent now opens every SQLite file with `secure_delete` on, so a deleted row's bytes are zeroed, both in its page and in pages that are freed. After a purge, `agent.db` and `usage.db` are checkpointed with `wal_checkpoint(TRUNCATE)`, which empties the WAL. A purge whose WAL can't be emptied answers `unavailable`, and the retry does it. One limit: bytes that an older desk-agent freed, without `secure_delete`, can stay in a file's free space until SQLite reuses that space. That matters only for a Guild Desk that ran a desk-agent from before this one, and none hosts members yet outside the test desk.
+
+**The hash-chained audit log keeps its rows.**
+- Its rows hold no content: an 
+actor, an action, a target id, a payload's hash, a decision and a cost, never a prompt, a reply, a file or a name.
+- A row can't be removed or rewritten without breaking the chain, and catching changes is the reason the chain exists.
+- The rows go after a year, as every row does.
+- 
+A purge adds one more row: `system member.purge agent:gm-…`.
+- What the rows 
+name is the guild's pseudonymous `gm-` id. A Founder or an Officer with `manage_agents` can read those rows in `agent.audit.list`. If the member rejoins, their old rows are under the same id again. We accept that: the rows hold activity counts, never content, so "nothing else of theirs is kept" still holds for content.
+
+**What stays, on purpose.**
+- Notebook text the member wrote 
+stays. Other members built those pages with them, and decision 12 names only agent conversations. The same goes for Commons boards and chat threads.
+- `/data/desk/guild-audit.jsonl` keeps its record of who changed the guild's settings, for the same reason as the agent's audit log.
+
+**The owner's desk.** None of this runs there. Its roster is never read, so no purge is ever owed, nothing is sent, and `/health` has no `guildPurges`.
+
+**Also from the audit:**
+- 
+**Z30.** Before any roster has been read or kept, a guild desk now answers every member `desk_not_ready`. Before, the token stood alone, so a removed member's unexpired token could get in on a fresh desk, or after a restart with no kept roster and a failed read.
+- **Z29.** A SUB whose topic has a control character, a NUL included, is `bad_request`. No client's NUL can now reach the key under which deskd keeps a member's own subscription.

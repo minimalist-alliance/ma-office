@@ -7,17 +7,23 @@ import type { Agent, AgentCaps, KeyMeta, LimitScope, Provider } from '../client/
 import { AgentMark } from '../look/AgentMark';
 import type { LookTheme } from '../look/tones';
 import { attachErrorText, BUSY_WITH_FILES, desksKeepsFiles } from '../model/attachments';
-import { badgeDismissable, badgeShown, errorText, keysLast, pausedText, statusWord } from '../model/agents';
+import { onFreeModels } from '../connect/openrouter';
+import { badgeDismissable, badgeShown, errorText, isFreeLimit, keysLast, limitBannerText, pausedText, statusWord } from '../model/agents';
+import { approvalOpen, arrivedText, cardOf, countLabel, withApprovals } from '../model/approvals';
 import { streaming } from '../model/conversation';
+import { when } from '../model/format';
 import { browserZone, guildHeadline, headlineRow, needsZone, refusalText, type GuildCaps } from '../model/limits';
 import { ActivityPanel, noteZoneSet } from './Activity';
 import { AgentMessagesPanel } from './AgentMessages';
+import type { ApprovalContext } from './Approvals';
 import { Meter, ProviderBadge, StatusWord, Switch } from './bits';
-import { useAgents, useCalmRetry, useKeys, useLimits, useLookTheme, useMaskUrl, useRead, useThread } from './hooks';
+import { UnsavedContext, useAgents, useCalmRetry, useKeys, useLimits, useLookTheme, useMaskUrl, useRead, useThread, useUnsaved } from './hooks';
 import { Icon } from './icons';
 import { GuildKeyPanel, KeySetup, KeysPanel, type KeyWords } from './Keys';
 import { LimitsPanel } from './Limits';
+import { MemoryPanel } from './Memory';
 import type { ProposalContext } from './Proposals';
+import { RunningStrip, useRunningTools } from './Running';
 import { isLeadAgent, SettingsPanel } from './Settings';
 import { Composer, ThreadView, type SendResult } from './Thread';
 
@@ -46,11 +52,23 @@ export interface AgentAppProps {
   /** Opens an agent's own window, where the host has one per agent (the Desk), and says whether it did. Otherwise it's shown here. */
   onOpenAgent?: (agentId: string) => boolean;
   /**
+   * Whether anything here would be lost if the page went now: a draft with text, a settings form with changes. Told only when
+   * it changes, and `false` as the app goes. The Desk holds its close guard on it (`shell/closeGuard.ts`).
+   */
+  onUnsaved?: (unsaved: boolean) => void;
+  /**
    * A Guild Desk (the Desk app's task 48): the member's own agent seat on the guild's shared desk. Nobody gets the Keys tab or
    * this desk's limits form there; the Founder and an Officer with `manage_agents` get "Guild limits" (the guild's key and the
    * guild's limits) with Activity, everyone else neither. See `GuildMode`.
    */
   guild?: GuildMode | null;
+  /** This desk's id, so a free-models Connect resumes only on the desk it started on. Unset: `deskName`. */
+  deskId?: string;
+  /**
+   * Whether this member may be offered free models through OpenRouter (agent-free-key spec §8): never a teen. A teen never has
+   * the Agent at all, so this is the second lock. Never offered on a Guild Desk either, whatever this says.
+   */
+  offerFree?: boolean;
 }
 
 /** What the Agent app says and shows on a Guild Desk. */
@@ -106,19 +124,28 @@ function mayHaveGone(err: unknown): boolean {
   return err instanceof AgentError ? err.mayHaveApplied : (err as { inFlight?: unknown } | null)?.inFlight === true;
 }
 
-type Tab = 'settings' | 'usage' | 'keys' | 'activity' | 'messages';
-const TABS: { id: Tab; label: string; title: string; icon: 'gear' | 'meter' | 'key' | 'list' | 'messages' }[] = [
+type Tab = 'settings' | 'memory' | 'usage' | 'keys' | 'activity' | 'messages';
+const TABS: { id: Tab; label: string; title: string; icon: 'gear' | 'bookmark' | 'meter' | 'key' | 'list' | 'messages' }[] = [
   { id: 'settings', label: 'Settings', title: 'Settings', icon: 'gear' },
+  // S-14: what the agent remembers, its own tab (spec 3.1). The title names the agent where it's shown (`tabTitle`).
+  { id: 'memory', label: 'Memory', title: 'What {name} remembers', icon: 'bookmark' },
   { id: 'usage', label: 'Usage', title: 'Usage', icon: 'meter' },
   { id: 'keys', label: 'Keys', title: 'Keys', icon: 'key' },
   { id: 'activity', label: 'Activity', title: 'Activity', icon: 'list' },
   { id: 'messages', label: 'Messages', title: 'Agent messages', icon: 'messages' },
 ];
 
+const tabTitle = (t: { title: string }, name: string): string => t.title.replace('{name}', name);
+/** A tab's name holds the word it shows (WCAG 2.5.3, label in name): its title where that does, else its label. */
+const tabName = (t: { title: string; label: string }, name: string): string => {
+  const title = tabTitle(t, name);
+  return title.toLowerCase().includes(t.label.toLowerCase()) ? title : t.label;
+};
+
 /** An agent's mark, its uploaded picture included. Decorative beside its name. */
 function Mark({ client, agent, theme, size }: { client: AgentClient; agent: Agent; theme: LookTheme; size: number }) {
   const pngUrl = useMaskUrl(client, agent);
-  const look = agent.look ?? { icon: 'spark', tone: 'graphite', png: null };
+  const look = agent.look ?? { icon: 'nodes', tone: 'graphite', png: null };
   return <AgentMark icon={look.icon} tone={look.tone} theme={theme} pngUrl={pngUrl} size={size} />;
 }
 
@@ -130,6 +157,7 @@ function AddAgent({ client, keys, onAdded, onCancel }: { client: AgentClient; ke
   const [keyId, setKeyId] = useState(keys[0]?.keyId ?? '');
   const [busy, setBusy] = useState(false);
   const [error, setError] = useState<string | null>(null);
+  useUnsaved(name.trim() !== '');
   const submit = async (e: FormEvent): Promise<void> => {
     e.preventDefault();
     setBusy(true);
@@ -200,17 +228,19 @@ function NewAgent({ caps, count, adding, onToggle }: { caps: AgentCaps | null; c
   );
 }
 
-export function AgentApp({ client, deskName, showBadges, onShowBadgesChange, offline = false, parked = false, suggestions = [], canAddAgents = true, focusAgentId = null, theme: themeProp, onOpenAgent, guild = null }: AgentAppProps) {
+export function AgentApp({ client, deskName, showBadges, onShowBadgesChange, offline = false, parked = false, suggestions = [], canAddAgents = true, focusAgentId = null, theme: themeProp, onOpenAgent, onUnsaved, guild = null, deskId, offerFree = true }: AgentAppProps) {
   // On a Guild Desk: no Keys tab and no desk limits form for anyone; the guild's limits, and Activity, for those who set them.
   // Task 49's settings and agent messages are a member's own desk's: a Guild Desk's agent is one seat on the guild's key.
+  // Memory is every member's own, on a Guild Desk too: their agent's lines are their data (spec 3.1).
   const tabs = guild
     ? guild.limits !== null
       ? TABS.filter((t) => t.id !== 'keys' && t.id !== 'settings' && t.id !== 'messages').map((t) => (t.id === 'usage' ? { ...t, label: 'Guild limits', title: 'Guild limits' } : t))
-      : []
+      : TABS.filter((t) => t.id === 'memory')
     : TABS;
   const mayChangeLimits = !guild || guild.limits !== null;
   const team = useAgents(client);
-  const agents = team.value;
+  // A desk's `approvalsPending` is the app's "needs you" (API.md section 18), wherever an agent's status shows.
+  const agents = useMemo(() => team.value?.map(withApprovals) ?? null, [team.value]);
   const htmlTheme = useLookTheme();
   // Ids of this window's own: a desk can show several Agent windows at once (task 49).
   const uid = useId();
@@ -255,7 +285,38 @@ export function AgentApp({ client, deskName, showBadges, onShowBadgesChange, off
   const [notice, setNotice] = useState<Notice>(null);
   const [sending, setSending] = useState(false);
   const [announce, setAnnounce] = useState('');
+  // The same words twice are still news: the status changes by a space so a screen reader says them again.
+  const say = useCallback((text: string) => setAnnounce((cur) => (cur === text ? `${text}\u00a0` : text)), []);
+  const running = useRunningTools(client);
+  // The free limit's "Add a key": the Keys tab, opened afresh with its form open.
+  const [keysAdd, setKeysAdd] = useState(0);
+  const [addFresh, setAddFresh] = useState(false);
+  useEffect(() => {
+    if (addFresh) setAddFresh(false);
+  }, [addFresh]);
+  const openKeys = useCallback(() => setTab('keys'), []);
   const drafts = useRef(new Map<string, string>());
+  // What's unsaved, by who holds it: the host hears only when the answer changes.
+  const unsaved = useRef(new Set<string>());
+  const tellHost = useRef(onUnsaved);
+  useEffect(() => {
+    tellHost.current = onUnsaved;
+  }, [onUnsaved]);
+  const reportUnsaved = useCallback((key: string, on: boolean): void => {
+    const held = unsaved.current;
+    const was = held.size > 0;
+    if (on) held.add(key);
+    else held.delete(key);
+    if (was !== held.size > 0) tellHost.current?.(!was);
+  }, []);
+  useEffect(() => {
+    const held = unsaved.current;
+    const host = tellHost;
+    return () => {
+      if (held.size) host.current?.(false);
+      held.clear();
+    };
+  }, []);
   const unsure = useRef<{ agentId: string; text: string; idem: string } | null>(null);
 
   const focused = focusAgentId !== null;
@@ -266,11 +327,40 @@ export function AgentApp({ client, deskName, showBadges, onShowBadgesChange, off
   const agentId = agent?.id ?? null;
   const thread = useThread(client, agentId, parked);
   const live = streaming(thread);
+  const waitingRun = live?.state === 'awaiting_approval';
+  const approvalCtx = useMemo<ApprovalContext | null>(() => (agents ? { client, agents, offline, announce: say } : null), [client, agents, offline, say]);
+  // A card that arrives while the thread is open is announced, never focused (spec 1.8). Those already there when it opened aren't news.
+  const knownCards = useRef<{ agentId: string | null; ids: Set<string> } | null>(null);
+  useEffect(() => {
+    if (!thread.loaded || !agent) return;
+    const pending = thread.approvals.filter((a) => approvalOpen(a, Date.now()));
+    const known = knownCards.current;
+    if (!known || known.agentId !== agent.id) {
+      knownCards.current = { agentId: agent.id, ids: new Set(thread.approvals.map((a) => a.id)) };
+      return;
+    }
+    for (const a of pending) {
+      if (known.ids.has(a.id)) continue;
+      known.ids.add(a.id);
+      say(arrivedText(agent.name, cardOf(a, agents ?? []).asked));
+    }
+    // eslint-disable-next-line react-hooks/exhaustive-deps
+  }, [thread.approvals, thread.loaded, agent?.id]);
   // Limits change when a reply settles or a limit refuses: re-read on the agent's status and message count.
   const limits = useLimits(client, agentId, `${agent?.status}:${thread.messages.length}:${live ? 'live' : 'idle'}`);
   // Whether keys last here (ADR 0042): `agent.key.list`, or `agent.limits.get`'s `timeZone` while there are no keys yet.
   const keysStay = keysLast(keys.value, limits.value ?? (limits.error ? null : undefined));
   const [zoneNoted, setZoneNoted] = useState(0);
+  // Today's free requests used (spec §4): the warn banner, from the newest reply's failure, until a reply works or a key is added.
+  const lastReply = [...thread.messages].reverse().find((m) => m.role === 'assistant');
+  const freeLimitId = lastReply && isFreeLimit(lastReply) ? lastReply.id : null;
+  const keyCount = keys.value?.length ?? 0;
+  const [limitKeys, setLimitKeys] = useState<{ id: string; n: number } | null>(null);
+  useEffect(() => {
+    if (freeLimitId && limitKeys?.id !== freeLimitId) setLimitKeys({ id: freeLimitId, n: keyCount });
+    // eslint-disable-next-line react-hooks/exhaustive-deps
+  }, [freeLimitId]);
+  const freeLimitShown = freeLimitId !== null && limitKeys?.id === freeLimitId && keyCount <= limitKeys.n && onFreeModels(agent?.binding);
   const activityVersion = `${thread.seq}:${agent?.status}:${keys.value?.length ?? 0}:${limits.value?.policy.runMaxSteps}:${zoneNoted}`;
 
   // Where neither the desk nor the account has a zone, days would run in UTC: set this browser's, once a client, with no question
@@ -407,8 +497,13 @@ export function AgentApp({ client, deskName, showBadges, onShowBadgesChange, off
   const teamName = guild ? 'Your agent' : 'Desk team';
   const isLead = isLeadAgent(agent);
   const caps = team.caps;
+  const free = onFreeModels(agent.binding);
+  const freeKey = free ? (keys.value.find((k) => k.keyId === agent.binding?.keyId)?.free ?? null) : null;
+  const offered = offerFree && !guild;
+  const desk = deskId ?? deskName;
 
   return (
+    <UnsavedContext.Provider value={reportUnsaved}>
     <div className="ag-app" data-testid="agent-app" data-focus={focused ? agent.id : undefined} onKeyDown={keepTyped}>
       <div className={`ag-shell${tab ? ' drawer-open' : ''}${railOpen ? ' rail-open' : ''}${focused ? ' focused' : ''}`}>
       {!focused && (
@@ -431,7 +526,8 @@ export function AgentApp({ client, deskName, showBadges, onShowBadgesChange, off
         )}
         <ul className="ag-list" role="tablist" aria-label="Switch agent" aria-orientation="vertical">
           {agents.map((a) => (
-            <li key={a.id}>
+            // The tabs are the tablist's own children to assistive tech; the list items only lay them out.
+            <li key={a.id} role="presentation">
               <button
                 type="button"
                 role="tab"
@@ -447,11 +543,16 @@ export function AgentApp({ client, deskName, showBadges, onShowBadgesChange, off
                   <StatusWord agent={a} />
                 </span>
                 {badgeShown(a, showBadges) && a.binding && <ProviderBadge badge={a.binding} compact />}
-                {a.unseen > 0 && a.id !== agent.id && (
-                  <span className="ag-count" aria-label={`${a.unseen} new`}>
-                    {a.unseen}
-                  </span>
-                )}
+                {(() => {
+                  // Waiting cards count even on the agent being read; its unseen replies don't (spec 1.5).
+                  const waiting = a.approvalsPending ?? 0;
+                  const unseen = a.id !== agent.id ? a.unseen : 0;
+                  return waiting + unseen > 0 ? (
+                    <span className="ag-count" aria-label={waiting ? countLabel(waiting, unseen) : `${unseen} new`} data-testid="agent-count">
+                      {waiting + unseen}
+                    </span>
+                  ) : null;
+                })()}
               </button>
             </li>
           ))}
@@ -464,7 +565,17 @@ export function AgentApp({ client, deskName, showBadges, onShowBadgesChange, off
                 <b>{head.text}</b>
               </div>
               <Meter fraction={head.fraction ?? 0} level={head.level} label={`${agent.name}, ${head.label.toLowerCase()}: ${head.text}`} />
-              <p className="ag-muted ag-small">{head.level === 'reached' ? `${agent.name} is paused at this limit.` : guild ? `${agent.name} stops at the guild's limit.` : `${agent.name} stops at the limit you set.`}</p>
+              <p className="ag-muted ag-small" data-testid="usage-line">
+                {head.level === 'reached'
+                  ? `${agent.name} is paused at this limit.`
+                  : free
+                    ? freeKey
+                      ? `${freeKey.leftToday} of ${freeKey.perDay} free requests left today`
+                      : 'Free models cost nothing here. OpenRouter limits how many requests a day.'
+                    : guild
+                      ? `${agent.name} stops at the guild's limit.`
+                      : `${agent.name} stops at the limit you set.`}
+              </p>
             </>
           ) : (
             <p className="ag-muted ag-small">{(guild ? guild.caps : limits.value) ? 'No spending limit set.' : ' '}</p>
@@ -509,7 +620,7 @@ export function AgentApp({ client, deskName, showBadges, onShowBadgesChange, off
           {tabs.length > 0 && (
             <div className="ag-seg ag-tabs" role="group" aria-label="Agent details">
               {tabs.map((t) => (
-                <button key={t.id} type="button" aria-pressed={tab === t.id} aria-label={t.title} title={t.title} className={tab === t.id ? 'on' : ''} onClick={() => setTab(tab === t.id ? null : t.id)} data-testid={`tab-${t.id}`}>
+                <button key={t.id} type="button" aria-pressed={tab === t.id} aria-label={tabName(t, agent.name)} title={tabTitle(t, agent.name)} className={tab === t.id ? 'on' : ''} onClick={() => setTab(tab === t.id ? null : t.id)} data-testid={`tab-${t.id}`}>
                   <Icon name={t.icon} size={14} />
                   <span>{t.label}</span>
                 </button>
@@ -526,16 +637,72 @@ export function AgentApp({ client, deskName, showBadges, onShowBadgesChange, off
             </div>
           </div>
         ) : agent.status === 'no_key' || !agent.binding ? (
-          <KeySetup client={client} agent={agent} agents={agents} providers={providers.value} keys={keys.value} keysLast={keysStay} onKeysChanged={keys.reload} intro={guild?.addKey ?? null} introAgain={guild?.addKeyAgain ?? null} restartLine={guild?.restartLine ?? null} />
+          <KeySetup
+            client={client}
+            agent={agent}
+            agents={agents}
+            providers={providers.value}
+            keys={keys.value}
+            keysLast={keysStay}
+            onKeysChanged={keys.reload}
+            intro={guild?.addKey ?? null}
+            introAgain={guild?.addKeyAgain ?? null}
+            restartLine={guild?.restartLine ?? null}
+            deskId={desk}
+            deskName={deskName}
+            offerFree={offered}
+            announce={say}
+          />
         ) : (
           <>
-            <ThreadView agent={agent} agents={agents} messages={thread.messages} loaded={thread.loaded} showBadge={show} deskName={deskName} proposals={isLead ? proposalCtx : null} />
+            <ThreadView
+              agent={agent}
+              agents={agents}
+              messages={thread.messages}
+              loaded={thread.loaded}
+              showBadge={show}
+              deskName={deskName}
+              proposals={isLead ? proposalCtx : null}
+              approvals={thread.approvals}
+              approvalCtx={approvalCtx}
+              free={free}
+              onPickModel={tabs.some((t) => t.id === 'keys') ? openKeys : null}
+            />
+            <RunningStrip
+              client={client}
+              calls={running.calls}
+              offset={running.offset}
+              agent={agent}
+              agents={agents}
+              onOpenAgent={openAgent}
+              announce={say}
+              onStopFailed={() => setNotice({ kind: 'error', text: 'Couldn’t stop it just now. Try again.' })}
+            />
             {notice?.kind === 'limit' && (
               <div className="ag-banner warn" role="alert" data-testid="limit-banner">
                 <span>{refusalText(notice.scope, limits.value)}</span>
                 {mayChangeLimits && (
                   <button type="button" className="ag-btn sm" onClick={() => setTab('usage')} data-testid="limit-change">
                     Change limits
+                  </button>
+                )}
+              </div>
+            )}
+            {freeLimitShown && (
+              <div className="ag-banner warn" role="alert" data-testid="free-limit-banner">
+                <span>{limitBannerText(lastReply?.errorResetAt, when)}</span>
+                {tabs.some((t) => t.id === 'keys') && (
+                  <button
+                    type="button"
+                    className="ag-btn sm"
+                    onClick={() => {
+                      setKeysAdd((n) => n + 1);
+                      setAddFresh(true);
+                      setTab('keys');
+                    }}
+                    data-testid="free-limit-add"
+                  >
+                    Add a key
                   </button>
                 )}
               </div>
@@ -556,21 +723,25 @@ export function AgentApp({ client, deskName, showBadges, onShowBadgesChange, off
               agent={agent}
               busy={sending}
               streamingRunId={live?.runId ?? null}
+              waiting={waitingRun}
               onSend={send}
               onStop={stop}
               disabled={offline}
               suggestions={suggestions}
               initialDraft={drafts.current.get(agent.id) ?? ''}
-              onDraftChange={(t) => drafts.current.set(agent.id, t)}
+              onDraftChange={(t) => {
+                drafts.current.set(agent.id, t);
+                reportUnsaved(`draft:${agent.id}`, t.trim() !== '');
+              }}
             />
           </>
         )}
       </section>
 
       {tab && tabs.some((t) => t.id === tab) && (
-        <aside className="ag-drawer" aria-label={tabs.find((t) => t.id === tab)?.title} onKeyDown={onDrawerKey} data-testid="drawer">
+        <aside className="ag-drawer" aria-label={tabTitle(tabs.find((t) => t.id === tab) ?? { title: '' }, agent.name)} onKeyDown={onDrawerKey} data-testid="drawer">
           <div className="ag-side-head">
-            <h3>{tab === 'settings' ? `${agent.name}’s settings` : tabs.find((t) => t.id === tab)?.title}</h3>
+            <h3>{tab === 'settings' ? `${agent.name}’s settings` : tabTitle(tabs.find((t) => t.id === tab) ?? { title: '' }, agent.name)}</h3>
             <button type="button" className="ag-icon-btn" onClick={() => setTab(null)} aria-label="Close panel">
               <Icon name="close" />
             </button>
@@ -592,6 +763,7 @@ export function AgentApp({ client, deskName, showBadges, onShowBadgesChange, off
                 }}
               />
             )}
+            {tab === 'memory' && <MemoryPanel key={agent.id} client={client} agent={agent} agents={agents} version={`${thread.messages.length}:${live ? live.state : 'idle'}`} announce={say} />}
             {tab === 'messages' && <AgentMessagesPanel client={client} agent={agent} agents={agents} version={`${thread.seq}:${agents.map((a) => a.status).join()}`} />}
             {tab === 'usage' && guild && (
               <>
@@ -600,7 +772,23 @@ export function AgentApp({ client, deskName, showBadges, onShowBadgesChange, off
               </>
             )}
             {tab === 'usage' && (guild ? null : <LimitsPanel key={agent.id} client={client} agent={agent} view={limits.value} onSaved={(v) => limits.set(v)} />)}
-            {tab === 'keys' && <KeysPanel client={client} agent={agent} agents={agents} providers={providers.value} keys={keys.value} keysLast={keysStay} onKeysChanged={keys.reload} deskName={deskName} />}
+            {tab === 'keys' && (
+              <KeysPanel
+                key={keysAdd}
+                client={client}
+                agent={agent}
+                agents={agents}
+                providers={providers.value}
+                keys={keys.value}
+                keysLast={keysStay}
+                onKeysChanged={keys.reload}
+                deskName={deskName}
+                deskId={desk}
+                offerFree={offered}
+                openAdd={addFresh}
+                announce={say}
+              />
+            )}
             {tab === 'activity' && <ActivityPanel client={client} agents={agents} keys={keys.value} providers={providers.value} version={activityVersion} keysLast={keysStay} />}
           </div>
         </aside>
@@ -610,5 +798,6 @@ export function AgentApp({ client, deskName, showBadges, onShowBadgesChange, off
         {announce}
       </div>
     </div>
+    </UnsavedContext.Provider>
   );
 }

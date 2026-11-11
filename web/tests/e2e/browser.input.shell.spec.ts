@@ -494,16 +494,19 @@ test('text that comes with no key at all, as from an emoji picker, goes the same
   expect(await keysEl(page).inputValue()).toBe('');
 });
 
-test('a finger sends nothing: a phone can watch but not control', async ({ page }) => {
+test("a finger is touch control's (`browser.touch.shell.spec.ts`): a tap clicks where it landed, and never takes the keys", async ({ page }) => {
   const pic = await pictureBox(page);
   await clear(page);
   await video(page).evaluate((v: HTMLVideoElement, at) => {
     v.dispatchEvent(new PointerEvent('pointerdown', { pointerType: 'touch', pointerId: 7, clientX: at.x, clientY: at.y, buttons: 1, bubbles: true }));
     v.dispatchEvent(new PointerEvent('pointermove', { pointerType: 'touch', pointerId: 7, clientX: at.x + 5, clientY: at.y, buttons: 1, bubbles: true }));
     v.dispatchEvent(new PointerEvent('pointerup', { pointerType: 'touch', pointerId: 7, clientX: at.x + 5, clientY: at.y, bubbles: true }));
-  }, { x: pic.x + 10, y: pic.y + 10 });
+  }, { x: pic.x + pic.width / 4, y: pic.y + pic.height / 2 });
   await page.waitForTimeout(50);
-  expect(await sent(page)).toEqual([]);
+  const events = await sent(page);
+  expect(events.map((e) => [e.channel, e.type, e.down, e.button])).toEqual([['input', MOVE, 0, 0], ['keys', BUTTON, 1, 1], ['keys', BUTTON, 0, 1]]);
+  expect(events[1]?.x).toBeGreaterThan(65535 * 0.24);
+  expect(events[1]?.x).toBeLessThan(65535 * 0.26);
   await expect(keysEl(page)).not.toBeFocused();
 });
 

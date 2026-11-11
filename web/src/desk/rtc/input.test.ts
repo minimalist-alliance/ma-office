@@ -366,6 +366,22 @@ describe('keyAction', () => {
     expect(keyAction(press('PageDown', { ctrlKey: true }), false)).toBe('leave');
   });
 
+  it('in full screen with the keys locked, they and the tab keys go to the desk; the rest stay where they were', () => {
+    for (const key of ['w', 't', 'n', 'W', 'Tab', 'PageUp', 'PageDown']) {
+      expect(keyAction(press(key, { ctrlKey: true }), false, true)).toBe('send');
+      expect(keyAction(press(key, { ctrlKey: true, shiftKey: true }), false, true)).toBe('send');
+      expect(keyAction(press(key, { metaKey: true }), true, true)).toBe('send');
+    }
+    expect(keyAction(press('l', { ctrlKey: true }), false, true)).toBe('address');
+    expect(keyAction(press('r', { ctrlKey: true }), false, true)).toBe('send');
+    expect(keyAction(press('Tab', { altKey: true }), false, true)).toBe('send');
+    expect(keyAction(press('Escape', { shiftKey: true }), false, true)).toBe('leave');
+    for (const key of ['F11', 'F12']) expect(keyAction(press(key), false, true)).toBe('leave');
+    expect(keyAction(press('i', { ctrlKey: true, shiftKey: true }), false, true)).toBe('leave');
+    expect(keyAction(press('q', { metaKey: true }), true, true)).toBe('leave');
+    expect(keyAction(press('F4', { altKey: true }), false, true)).toBe('leave');
+  });
+
   it('on a Mac the command key is Cmd, so Ctrl+W goes to the page', () => {
     expect(keyAction(press('w', { ctrlKey: true }), true)).toBe('send');
     expect(keyAction(press('q', { metaKey: true }), true)).toBe('leave');

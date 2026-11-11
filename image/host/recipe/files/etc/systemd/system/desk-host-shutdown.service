@@ -5,9 +5,13 @@ After=desk-host-boot.service network-online.target nftables.service
 Wants=network-online.target
 
 [Service]
+OOMScoreAdjust=-900
 Type=oneshot
 RemainAfterExit=yes
-ExecStart=/bin/true
+# Its start lets desks start (desk-host resume ends a stop-all's halt; /run is empty at a boot anyway). Its stop is the host's:
+# stop-all marks the host halting, then stops every running desk and every one an up is still starting (the link,
+# ordered after this unit, has stopped by then, and KillMode=process leaves its up running: stop-all waits for it).
+ExecStart=/usr/local/lib/desk-host/desk-host resume
 ExecStop=/usr/local/lib/desk-host/desk-host stop-all
 TimeoutStopSec=300
 

@@ -1,5 +1,5 @@
-// The etched name and the hidden count stay one size on screen at every zoom (ADR 0064, amending 0062), read from the
-// canvas's own pixels: at the smallest zoom, at 100 %, at the largest, part way through a wheel zoom and after it, the
+// The etched name and icons scale with their desk and hide under 7 CSS px (ADR 0064, Nov 9
+// note), read from the canvas's own pixels: at the smallest zoom, at 100 %, at the largest, part way through a wheel zoom and after it, the
 // zoom pill and the keyboard, and a trackpad pinch, Chromium's (a ctrl+wheel, here from CDP's own pinch) and Safari's
 // (GestureEvents), wherever on the office it starts. A pinch the office doesn't take magnifies the whole page, the
 // name with it, and that's what the owner saw grow and shrink.
@@ -48,13 +48,13 @@ const frames = (page: Page): Promise<unknown> => page.evaluate(() => new Promise
 
 /**
  * Put the desk's strip at the middle of the screen at this zoom, and let the camera settle: its icons' center line, 22 px
- * up from its bottom edge on screen, and either the middle of its name or its right edge 100 px right of the middle.
+ * (times the zoom) up from its bottom edge on screen, and either the middle of its name or its right edge 100 px right of the middle.
  */
 async function aim(page: Page, s: number, at: 'name' | 'count'): Promise<void> {
   await page.evaluate(({ zoom, d, at: where }) => {
     const { camera } = __maDesk;
     const right = where === 'name' ? camera.vp.w / 2 + (d.w / 2) * zoom : camera.vp.w / 2 + 100;
-    const bottom = camera.vp.h / 2 + 22;
+    const bottom = camera.vp.h / 2 + 22 * zoom;
     camera.animateTo({ s: zoom, x: right - (d.x + d.w) * zoom, y: bottom - (d.y + d.h) * zoom }, 0);
   }, { zoom: s, d: DESK, at });
   await expect.poll(() => page.evaluate(() => __maDesk.camera.isMoving())).toBe(false);
@@ -62,9 +62,9 @@ async function aim(page: Page, s: number, at: 'name' | 'count'): Promise<void> {
 }
 
 /** Where the name was last drawn, in screen CSS pixels: its left end on its baseline. */
-const nameAt = (page: Page): Promise<{ x: number; y: number; text: string }> => page.evaluate((id) => {
+const nameAt = (page: Page): Promise<{ x: number; y: number; text: string; s: number }> => page.evaluate((id) => {
   const n = __maDesk.camera.getStage().findOne(`#desk-${id}`).findOne('.desk-name');
-  return { x: n.getAttr('drawnX') as number, y: n.getAttr('drawnY') as number, text: n.getAttr('drawn') as string };
+  return { x: n.getAttr('drawnX') as number, y: n.getAttr('drawnY') as number, text: n.getAttr('drawn') as string, s: n.getAttr('drawnScale') as number };
 }, ID);
 
 /** The bounding box of what differs from the box's corner pixel (the desk's surface), in screen CSS pixels. */
@@ -94,15 +94,52 @@ const inkIn = (page: Page, box: Box): Promise<Ink> => page.evaluate((b) => {
   return { w: (x1 - x0) / d, h: (y1 - y0) / d, count };
 }, box);
 
-/** The name's ink, wherever it was drawn last. */
-async function nameInk(page: Page): Promise<Ink> {
-  const at = await nameAt(page);
-  expect(at.text).toBe('PERSONAL');
-  return inkIn(page, { x: at.x - 6, y: at.y - 18, w: 120, h: 26 });
+/**
+ * The name's ink, wherever it was drawn last, at the zoom it was drawn at. Where and at what zoom it was drawn and its pixels
+ * are read in one task, so a frame drawn while the camera moves can't come between them.
+ */
+async function nameInk(page: Page): Promise<Ink & { s: number; moving: boolean }> {
+  const { text, ...ink } = await page.evaluate((id) => {
+    const { camera } = __maDesk;
+    const n = camera.getStage().findOne(`#desk-${id}`).findOne('.desk-name');
+    const s = n.getAttr('drawnScale') as number; // the zoom it was drawn at, which can lag the camera's while it moves
+    const k = Math.max(1, s);
+    const b = { x: (n.getAttr('drawnX') as number) - 6, y: (n.getAttr('drawnY') as number) - 18 * k, w: 140 * k, h: 26 * k };
+    const d = camera.dpr();
+    const ctx = camera.getStage().getLayers()[0]!.getCanvas().getContext()._context;
+    const width = Math.round(b.w * d);
+    const height = Math.round(b.h * d);
+    const { data } = ctx.getImageData(Math.round(b.x * d), Math.round(b.y * d), width, height);
+    const base = [data[0]!, data[1]!, data[2]!];
+    let count = 0;
+    let [x0, x1, y0, y1] = [Infinity, -Infinity, Infinity, -Infinity];
+    for (let row = 0; row < height; row += 1) {
+      for (let col = 0; col < width; col += 1) {
+        const i = (row * width + col) * 4;
+        if (Math.abs(data[i]! - base[0]!) + Math.abs(data[i + 1]! - base[1]!) + Math.abs(data[i + 2]! - base[2]!) < 24) continue;
+        count += 1;
+        x0 = Math.min(x0, col);
+        x1 = Math.max(x1, col + 1);
+        y0 = Math.min(y0, row);
+        y1 = Math.max(y1, row + 1);
+      }
+    }
+    return { text: n.getAttr('drawn') as string, w: (x1 - x0) / d, h: (y1 - y0) / d, count, s, moving: camera.isMoving() };
+  }, ID);
+  expect(text, `name at zoom ${ink.s}`).toBe('PERSONAL');
+  return ink;
 }
 
-/** The hidden count's ink: its icon and its "1", in its slot, found in the hit graph along the icons' center line. */
-async function countInk(page: Page): Promise<Ink> {
+/** The name's ink scales with the desk: this wide and tall at its zoom, within a pixel of the 100 % ink times the zoom. */
+const scaledLike = (ink: Ink & { s: number }, ref: Ink & { s?: number }, tol = 1): void => {
+  expect(ink.count).toBeGreaterThan(10);
+  const k = ink.s / (ref.s ?? 1);
+  expect(Math.abs(ink.w - ref.w * k)).toBeLessThanOrEqual(tol);
+  expect(Math.abs(ink.h - ref.h * k)).toBeLessThanOrEqual(tol);
+};
+
+/** The hidden count's ink: its icon and its "1", in its slot, found in the hit graph along the icons' center line. Null when the icons are hidden (no slot to press). */
+async function countInk(page: Page): Promise<(Ink & { s: number }) | null> {
   const slot = await page.evaluate(() => {
     const { camera } = __maDesk;
     const y = camera.vp.h / 2;
@@ -114,18 +151,14 @@ async function countInk(page: Page): Promise<Ink> {
         x1 = Math.max(x1, x + 1);
       }
     }
-    return { x0, x1, y };
+    return { x0, x1, y, s: camera.cam.s };
   });
-  expect(slot.x1 - slot.x0).toBeGreaterThan(40); // its 46 px slot, at every zoom
-  return inkIn(page, { x: slot.x0 - 2, y: slot.y - 12, w: slot.x1 - slot.x0 + 4, h: 24 });
+  if (!Number.isFinite(slot.x0)) return null;
+  expect(slot.x1 - slot.x0).toBeGreaterThan(40 * slot.s * 0.9); // its 46 px slot at 100 %, scaled with the desk
+  const k = Math.max(1, slot.s);
+  const ink = await inkIn(page, { x: slot.x0 - 2, y: slot.y - 12 * k, w: slot.x1 - slot.x0 + 4, h: 24 * k });
+  return { ...ink, s: slot.s };
 }
-
-const same = (a: Ink, b: Ink): void => {
-  expect(a.count).toBeGreaterThan(40);
-  expect(b.count).toBeGreaterThan(40);
-  expect(Math.abs(a.w - b.w)).toBeLessThanOrEqual(1);
-  expect(Math.abs(a.h - b.h)).toBeLessThanOrEqual(1);
-};
 
 const pageZoom = (page: Page): Promise<number> => page.evaluate(() => window.visualViewport?.scale ?? 1);
 
@@ -136,22 +169,29 @@ for (const dpr of [1, 2]) {
       await harness(request, { reset: true });
     });
 
-    test('the name and the hidden count are one size at the smallest zoom, at 100 % and at the largest', async ({ page, request }) => {
+    test('the name and the hidden count scale with the desk and hide below 7 px', async ({ page, request }) => {
       await open(page, request);
       const names: Record<string, Ink> = {};
-      const counts: Record<string, Ink> = {};
-      for (const s of [0.2, 1, 3]) {
+      const counts: Record<string, (Ink & { s: number }) | null> = {};
+      for (const s of [0.2, 0.6, 1, 3]) {
         await aim(page, s, 'name');
-        names[s] = await nameInk(page);
+        if (s < 0.5) {
+          // 14 px x 0.2 is 2.8 px: under 7 CSS px, so the name is hidden.
+          expect((await nameAt(page)).text).toBe('');
+        } else {
+          names[s] = await nameInk(page);
+        }
         await aim(page, s, 'count');
         counts[s] = await countInk(page);
       }
       console.log(`NAME ${dpr}x`, JSON.stringify(names), `COUNT ${dpr}x`, JSON.stringify(counts));
-      same(names['0.2']!, names['1']!);
-      same(names['3']!, names['1']!);
-      same(counts['0.2']!, counts['1']!);
-      same(counts['3']!, counts['1']!);
-      // 14 px capitals: about 10 px of cap height on screen, never the 2.8 px or 30 px a scaled bitmap would be.
+      scaledLike(names['0.6'] as Ink & { s: number }, names['1']!);
+      scaledLike(names['3'] as Ink & { s: number }, names['1']!);
+      // The icons scale with the desk too, and hide with the name.
+      expect(counts['0.2']).toBeNull();
+      scaledLike(counts['0.6']!, counts['1']!, 6);
+      scaledLike(counts['3']!, counts['1']!, 6); // the digit's cell is whole device pixels, so its ink steps
+      // 14 px capitals at 100 %: about 10 px of cap height on screen.
       expect(names['1']!.h).toBeGreaterThan(9);
       expect(names['1']!.h).toBeLessThan(15);
     });
@@ -160,31 +200,34 @@ for (const dpr of [1, 2]) {
       await open(page, request);
       await aim(page, 1, 'name');
       const rest = await nameInk(page);
+      expect(rest.s).toBe(1);
       const mid = await page.evaluate(() => ({ x: __maDesk.camera.vp.w / 2, y: __maDesk.camera.vp.h / 2 }));
       await page.mouse.move(mid.x, mid.y);
-      const seen: Ink[] = [];
+      const seen: (Ink & { s: number })[] = [];
       let movingReads = 0;
       // In, then out past the start: read part way, with the camera still moving.
-      for (const dy of [-40, 60]) {
+      for (const dy of [-20, 10]) {
         await page.keyboard.down('Control');
         for (let i = 0; i < 6; i += 1) {
           await page.mouse.wheel(0, dy);
-          await frame(page);
+          if (i < 5) await frame(page);
         }
-        // Read at once, with the camera still moving: the camera settles 140 ms after the last wheel.
-        const [ink, moving] = await Promise.all([nameInk(page), page.evaluate(() => __maDesk.camera.isMoving())]);
-        if (moving) movingReads += 1;
+        // Read at once, with the camera still moving: the camera settles 140 ms after the last wheel, and on a loaded
+        // machine a frame can take longer than that, so no frame is waited for after the last one.
+        const ink = await nameInk(page);
+        if (ink.moving) movingReads += 1;
         seen.push(ink);
         await page.keyboard.up('Control');
         await expect.poll(() => page.evaluate(() => __maDesk.camera.isMoving())).toBe(false);
         await frames(page);
         seen.push(await nameInk(page));
       }
+      await aim(page, 1, 'name');
       // The pill's 220 ms glide, part way and landed, then the keyboard's.
       await page.getByRole('button', { name: 'Zoom in' }).click();
       await frame(page);
-      const [glide, gliding] = await Promise.all([nameInk(page), page.evaluate(() => __maDesk.camera.isMoving())]);
-      if (gliding) movingReads += 1;
+      const glide = await nameInk(page);
+      if (glide.moving) movingReads += 1;
       seen.push(glide);
       await expect.poll(() => page.evaluate(() => __maDesk.camera.isMoving())).toBe(false);
       await frames(page);
@@ -195,7 +238,7 @@ for (const dpr of [1, 2]) {
       await frames(page);
       seen.push(await nameInk(page));
       console.log(`GESTURE ${dpr}x`, JSON.stringify({ rest, seen }));
-      for (const ink of seen) same(ink, rest);
+      for (const ink of seen) scaledLike(ink, rest, 2);
       expect(movingReads).toBeGreaterThanOrEqual(2);
       expect(await pageZoom(page)).toBe(1);
     });
@@ -225,8 +268,7 @@ test.describe('screenshots', () => {
   }
 });
 
-// A desk smaller on screen than its name: the fit is held through a zoom, so as not to cut a new bitmap per wheel tick,
-// and is cut at the panel's edges until the camera settles, when it ellipsizes or hides (ADR 0064). Never off the desk.
+// A small desk: the name's fit is in desk units, so it is the same at every zoom, never off the desk, and hides under 7 px (ADR 0064).
 test.describe('a desk smaller on screen than its name', () => {
   const SMALL = { ...DESK, w: 300, h: 300, items: [] as typeof DESK.items };
 
@@ -245,7 +287,7 @@ test.describe('a desk smaller on screen than its name', () => {
     await harness(request, { reset: true });
   });
 
-  test('is cut at the desk\'s edges while the camera moves, then hides, and never shows off the desk', async ({ page, request }) => {
+  test('keeps its fit through a zoom, never shows off the desk, and hides under 7 px', async ({ page, request }) => {
     await page.addInitScript((d) => {
       if (localStorage.getItem('test.seeded')) return;
       localStorage.setItem('test.seeded', '1');
@@ -267,22 +309,21 @@ test.describe('a desk smaller on screen than its name', () => {
     await place(1.5, true);
     await expect.poll(() => page.evaluate(() => __maDesk.camera.isMoving())).toBe(false);
     await frames(page);
-    expect((await nameAt(page)).text).toBe('PERSONAL WORKSPACE');
-    // Out to 60 px wide in one step, read in the same frame's wake, with the camera still moving and the fit held.
-    await place(0.2, false);
+    const full = (await nameAt(page)).text;
+    expect(full.length).toBeGreaterThan(3);
+    // The name scales with the desk, so its fit is the same at every zoom: out to 60 px wide in one step, with the camera still moving.
+    await place(0.6, false);
     await frame(page);
     expect(await page.evaluate(() => __maDesk.camera.isMoving())).toBe(true);
-    expect((await nameAt(page)).text).toBe('PERSONAL WORKSPACE');
-    // About 200 px of name on a 60 px desk. Off it means past the active ring and its glow, 8 px out.
+    expect((await nameAt(page)).text).toBe(full);
     const e = await edges();
-    const onDesk = await darkIn(page, { x: e.left + 1, y: e.bottom - 30, w: e.right - e.left - 2, h: 26 });
-    const offLeft = await darkIn(page, { x: e.left - 70, y: e.bottom - 30, w: 62, h: 26 });
-    const offRight = await darkIn(page, { x: e.right + 8, y: e.bottom - 30, w: 62, h: 26 });
-    expect(onDesk).toBeGreaterThan(20);
-    expect(offLeft + offRight).toBe(0);
+    expect(await darkIn(page, { x: e.left + 1, y: e.bottom - 30, w: e.right - e.left - 2, h: 26 })).toBeGreaterThan(20);
     await expect.poll(() => page.evaluate(() => __maDesk.camera.isMoving())).toBe(false);
     await frames(page);
-    // At rest the fit runs again: 36 px of room holds fewer than four letters, so it hides.
+    expect((await nameAt(page)).text).toBe(full);
+    // Under 7 CSS px it hides, and nothing of it is left on or off the desk.
+    await place(0.2, true);
+    await frames(page);
     expect((await nameAt(page)).text).toBe('');
     const r = await edges();
     expect(await darkIn(page, { x: r.left + 2, y: r.bottom - 30, w: r.right - r.left - 4, h: 26 })).toBe(0);
@@ -313,7 +354,7 @@ test.describe('a trackpad pinch zooms the office, never the page', () => {
       await frames(page);
       expect(await pageZoom(page)).toBe(1);
       expect(await page.evaluate(() => __maDesk.camera.cam.s)).toBeGreaterThan(s0 * 1.2);
-      same(await nameInk(page), before);
+      scaledLike(await nameInk(page), before, 2);
     });
   }
 
@@ -343,7 +384,7 @@ test.describe('a trackpad pinch zooms the office, never the page', () => {
     prevented.push(await send('gestureend', 1.5, 400, 300, 'canvas'));
     await expect.poll(() => page.evaluate(() => __maDesk.camera.isMoving())).toBe(false);
     await frames(page);
-    same(await nameInk(page), before);
+    scaledLike(await nameInk(page), before, 2);
     // Over the bottom bar too, and back out.
     prevented.push(await send('gesturestart', 1, 1250, 862, 'bar'));
     prevented.push(await send('gesturechange', 0.5, 1250, 862, 'bar'));
@@ -352,7 +393,7 @@ test.describe('a trackpad pinch zooms the office, never the page', () => {
     expect(await page.evaluate(() => __maDesk.camera.cam.s)).toBeCloseTo(s0 * 0.75, 5);
     expect(prevented.every(Boolean)).toBe(true);
     await frames(page);
-    same(await nameInk(page), before);
+    scaledLike(await nameInk(page), before, 2);
   });
 
   test('a pinch over an app window magnifies nothing and leaves the camera where it is', async ({ page, request }) => {

@@ -1,0 +1,388 @@
+#!/usr/bin/python3 -I
+"""ma-selfhost-bundle: checks an installer folder and its bundle before anything in them runs (EXP-10, README.md).
+
+  ma-selfhost-bundle verify <folder> [--bundle <dir>] [--installed]
+  ma-selfhost-bundle keys <folder>      only step 0: the installer's release key against its anchor, and its sha256
+
+<folder> holds selfhost/ and image/recipe/, the installer; <dir> is the bundle (default <folder>/bundle). All of this must
+hold, or nothing is installed:
+  0. The installer's release key folder, selfhost/files/opt/ma/etc/selfhost-release-keys/ (installed as
+     /opt/ma/etc/selfhost-release-keys/), holds exactly the one file its committed anchor, selfhost/release-keys.sha256
+     ("<sha256>  <name>.pem", sha256sum's format, one line), names, with that sha256, a P-256 public key, and nothing else.
+  1. bundle.pin starts with the line "# ma-selfhost-bundle/1", is at most 4096 bytes, and has only these lines besides
+     comments: one per release (desk-rtc, desk-stream, deskd, desk-agent-filter, and optionally desk-agent and
+     desk-notebook) and one "installer", each "<name> <version> <sha256>", and "batch-baseline" when the bundle has one.
+  2. bundle.pin.sig is an ECDSA P-256 SHA-256 signature over bundle.pin's exact bytes, DER, by a trusted key:
+     - with --installed (an update, and `sudo ma-selfhost verify`): the release key this desk already holds,
+       /opt/ma/etc/selfhost-release-keys/*.pem (root's, P-256, nothing else in the folder), and the folder's release key
+       folder must hold exactly the same files, so an update can never bring another key. A desk with no such folder
+       (installed from a bundle signed with the batch key, or before signed bundles) is refused: moving a desk to a new
+       key needs a statement signed by the old one, which isn't built;
+     - without (a first install): the folder's own release key, after step 0. That proves the bundle and installer go
+       together, not who made them: compare the key's sha256 it prints with the one in the guide.
+  3. Each release's file (<name>-<version>-amd64.tgz, or <name>-<version>.tgz) hashes to its line; installer.sha256 hashes
+     to the "installer" line, and every file it lists hashes to its own line there, with no other file anywhere in
+     selfhost/files/ or image/recipe/ (install.sh copies those wholesale); batch-baseline hashes to its line.
+Nothing is followed through a link: every file and folder it reads must be the thing itself.
+The key is the self-hosted channel's own release key (KMS alias/ma-selfhost-release, ECC_NIST_P256, ECDSA_SHA_256). It
+never signs an update batch, and the batch key (alias/ma-desk-batch, /opt/ma/etc/batch-keys/, which desk-batch trusts)
+never vouches for a bundle: this checker never reads batch-keys/. Apart from the keys, a batch manifest is JSON and can't
+start with this file's first line, and desk-batch reads only JSON, so neither signature passes for the other.
+Exit 0 with a summary when all of it holds; 1 with the reason; 2 for usage.
+"""
+import hashlib
+import os
+import re
+import stat
+import subprocess
+import sys
+import tempfile
+
+MAGIC = "# ma-selfhost-bundle/1"
+PIN, SIG, MANIFEST, BASELINE = "bundle.pin", "bundle.pin.sig", "installer.sha256", "batch-baseline"
+MAX_PIN, MAX_SIG, MAX_MANIFEST, MAX_KEY, MAX_BASELINE, MAX_ANCHOR = 4096, 256, 256 * 1024, 4096, 4096, 512
+RELEASES = ("desk-rtc", "desk-stream", "deskd", "desk-agent", "desk-agent-filter", "desk-notebook")
+REQUIRED = ("desk-rtc", "desk-stream", "deskd", "desk-agent-filter", "installer")
+INSTALLED_KEYS = "/opt/ma/etc/selfhost-release-keys"
+FOLDER_KEYS = "selfhost/files/opt/ma/etc/selfhost-release-keys"
+ANCHOR = "selfhost/release-keys.sha256"
+ANCHOR_LINE = re.compile(r"\A([0-9a-f]{64})  ([A-Za-z0-9][A-Za-z0-9._-]{0,99}\.pem)\Z")
+NO_KEY = ("this desk holds no release key in " + INSTALLED_KEYS + "/: it was installed from a bundle signed with the update "
+          "batch key, or from before signed bundles, and an update takes only a bundle signed with a key the desk already "
+          "holds. Moving a desk to the release key isn't built yet, so nothing was installed")
+TREES = ("selfhost/", "image/recipe/")          # every manifest path is under one of these
+STRICT = ("selfhost/files", "image/recipe")     # and nothing here may be missing from it
+KEY_OWNER = 0                                   # who must own the installed keys (the tests set their own uid)
+OPENSSL = "/usr/bin/openssl"
+NAME = re.compile(r"^[a-z][a-z-]{0,39}$")
+VERSION = re.compile(r"^[A-Za-z0-9][A-Za-z0-9._-]{0,63}$")
+SHA = re.compile(r"^[0-9a-f]{64}$")
+MANIFEST_LINE = re.compile(r"^([0-9a-f]{64})  ([A-Za-z0-9._/+@-]{1,240})$")
+
+
+class Refused(Exception):
+    pass
+
+
+def lstat_regular(path, limit=None):
+    st = os.lstat(path)
+    if not stat.S_ISREG(st.st_mode):
+        raise Refused(f"{path} isn't a plain file")
+    if limit is not None and st.st_size > limit:
+        raise Refused(f"{path} is over {limit} bytes")
+    return st
+
+
+def read_small(path, limit):
+    """A plain file's bytes, never through a link, never a FIFO."""
+    try:
+        fd = os.open(path, os.O_RDONLY | os.O_NOFOLLOW | os.O_NONBLOCK | os.O_CLOEXEC)
+    except FileNotFoundError:
+        raise Refused(f"there's no {path}") from None
+    except OSError as e:
+        raise Refused(f"{path} can't be read: {e.strerror}") from None
+    try:
+        st = os.fstat(fd)
+        if not stat.S_ISREG(st.st_mode) or st.st_size > limit:
+            raise Refused(f"{path} isn't a plain file of at most {limit} bytes")
+        data = b""
+        while len(data) <= limit:
+            chunk = os.read(fd, limit + 1 - len(data))
+            if not chunk:
+                break
+            data += chunk
+        if len(data) > limit:
+            raise Refused(f"{path} is over {limit} bytes")
+        return data
+    finally:
+        os.close(fd)
+
+
+def sha256_file(path):
+    fd = os.open(path, os.O_RDONLY | os.O_NOFOLLOW | os.O_NONBLOCK | os.O_CLOEXEC)
+    try:
+        if not stat.S_ISREG(os.fstat(fd).st_mode):
+            raise Refused(f"{path} isn't a plain file")
+        h = hashlib.sha256()
+        while True:
+            chunk = os.read(fd, 1 << 20)
+            if not chunk:
+                return h.hexdigest()
+            h.update(chunk)
+    finally:
+        os.close(fd)
+
+
+def real_dirs(root, rel):
+    """Every folder from root down to rel's parent is a folder, not a link."""
+    parts = rel.split("/")[:-1]
+    p = root
+    for part in parts:
+        p = os.path.join(p, part)
+        st = os.lstat(p)
+        if not stat.S_ISDIR(st.st_mode):
+            raise Refused(f"{p} isn't a folder")
+
+
+def parse_pin(data):
+    try:
+        text = data.decode("ascii")
+    except UnicodeDecodeError:
+        raise Refused("bundle.pin isn't plain text") from None
+    lines = text.split("\n")
+    if lines[0] != MAGIC:
+        raise Refused(f"bundle.pin doesn't start with \"{MAGIC}\" (a bundle from before signed bundles, or not a bundle)")
+    if not text.endswith("\n"):
+        raise Refused("bundle.pin doesn't end with a newline")
+    entries = {}
+    for line in lines[1:]:
+        if not line.strip() or line.startswith("#"):
+            continue
+        f = line.split()
+        if len(f) != 3 or not NAME.match(f[0]) or not VERSION.match(f[1]) or not SHA.match(f[2]):
+            raise Refused(f"bad line in bundle.pin: {line[:80]}")
+        if f[0] not in RELEASES and f[0] not in ("installer", BASELINE):
+            raise Refused(f"bundle.pin names {f[0]}, which no installer takes")
+        if f[0] in entries:
+            raise Refused(f"bundle.pin names {f[0]} twice")
+        entries[f[0]] = (f[1], f[2])
+    for name in REQUIRED:
+        if name not in entries:
+            raise Refused(f"bundle.pin has no {name}")
+    return entries
+
+
+def is_p256(path):
+    try:
+        r = subprocess.run([OPENSSL, "pkey", "-pubin", "-in", path, "-noout", "-text"], capture_output=True, text=True,
+                           timeout=10, stdin=subprocess.DEVNULL)
+    except (OSError, subprocess.TimeoutExpired):
+        return False
+    return r.returncode == 0 and ("prime256v1" in r.stdout or "P-256" in r.stdout)
+
+
+def read_anchor(folder):
+    """The committed anchor: one line, "<sha256>  <name>.pem", the release key's name and the sha256 of its bytes."""
+    try:
+        real_dirs(folder, ANCHOR)
+        os.lstat(os.path.join(folder, ANCHOR))
+    except FileNotFoundError:
+        raise Refused(f"the installer has no {ANCHOR}, its release key's anchor") from None
+    data = read_small(os.path.join(folder, ANCHOR), MAX_ANCHOR)
+    try:
+        lines = data.decode("ascii").splitlines()
+    except UnicodeDecodeError:
+        raise Refused(f"{ANCHOR} isn't plain text") from None
+    m = ANCHOR_LINE.match(lines[0]) if len(lines) == 1 else None
+    if not m:
+        raise Refused(f"{ANCHOR} isn't one line \"<sha256>  <name>.pem\" naming the release key")
+    return m.group(2), m.group(1)
+
+
+def folder_keys(folder):
+    """The installer's release key: its folder holds exactly the file the anchor names, with the anchor's sha256, P-256."""
+    name, want = read_anchor(folder)
+    d = os.path.join(folder, FOLDER_KEYS)
+    try:
+        real_dirs(folder, FOLDER_KEYS + "/x")
+    except FileNotFoundError:
+        raise Refused(f"the installer has no {FOLDER_KEYS}/, the release key's folder") from None
+    names = sorted(os.listdir(d))
+    if name not in names:
+        raise Refused(f"the installer has no {FOLDER_KEYS}/{name}, the key {ANCHOR} names")
+    others = [n for n in names if n != name]
+    if others:
+        raise Refused(f"{FOLDER_KEYS}/ holds {', '.join(others)} beside {name}, and {ANCHOR} names only {name}: a desk "
+                      "trusts every key in that folder, so it holds the release key alone")
+    k = os.path.join(d, name)
+    lstat_regular(k, MAX_KEY)
+    if hashlib.sha256(read_small(k, MAX_KEY)).hexdigest() != want:
+        raise Refused(f"{FOLDER_KEYS}/{name} isn't the key {ANCHOR} names (its sha256 differs)")
+    if not is_p256(k):
+        raise Refused(f"{k} isn't a P-256 public key")
+    return [k]
+
+
+def installed_keys():
+    try:
+        st = os.lstat(INSTALLED_KEYS)
+    except FileNotFoundError:
+        raise Refused(NO_KEY) from None
+    if not stat.S_ISDIR(st.st_mode) or st.st_uid != KEY_OWNER or st.st_mode & 0o022:
+        raise Refused(f"{INSTALLED_KEYS} isn't a folder only root can change")
+    keys = []
+    for n in sorted(os.listdir(INSTALLED_KEYS)):
+        k = os.path.join(INSTALLED_KEYS, n)
+        st = lstat_regular(k, MAX_KEY)
+        if st.st_uid != KEY_OWNER or st.st_mode & 0o022:
+            raise Refused(f"{k} isn't a file only root can change")
+        if not n.endswith(".pem") or not is_p256(k):
+            raise Refused(f"{k} isn't a P-256 public key, and {INSTALLED_KEYS}/ holds nothing else")
+        keys.append(k)
+    if not keys:
+        raise Refused(NO_KEY)
+    return keys
+
+
+def same_keys(installed, offered):
+    """The folder brings exactly the keys the desk holds: same names, same bytes."""
+    a = {os.path.basename(k): read_small(k, MAX_KEY) for k in installed}
+    b = {os.path.basename(k): read_small(k, MAX_KEY) for k in offered}
+    if a != b:
+        raise Refused("this installer's release key isn't the one this desk holds, and an update never changes it "
+                      f"(the desk holds {', '.join(sorted(a))}; the installer brings {', '.join(sorted(b))}, "
+                      "or the same names with other contents)")
+
+
+def verify_signature(pin, sig, keys, whose):
+    with tempfile.TemporaryDirectory(prefix="ma-selfhost-bundle-") as t:
+        pp, sp = os.path.join(t, "pin"), os.path.join(t, "sig")
+        with open(pp, "wb") as f:
+            f.write(pin)
+        with open(sp, "wb") as f:
+            f.write(sig)
+        for k in keys:
+            try:
+                r = subprocess.run([OPENSSL, "dgst", "-sha256", "-verify", k, "-signature", sp, pp], capture_output=True,
+                                   timeout=10, stdin=subprocess.DEVNULL)
+            except (OSError, subprocess.TimeoutExpired):
+                continue
+            if r.returncode == 0:
+                return k
+    raise Refused(f"bundle.pin's signature doesn't verify with {whose}")
+
+
+def release_file(bundle, name, version):
+    found = [p for p in (os.path.join(bundle, f"{name}-{version}-amd64.tgz"), os.path.join(bundle, f"{name}-{version}.tgz"))
+             if os.path.lexists(p)]
+    if len(found) != 1:
+        raise Refused(f"the bundle has {'no' if not found else 'two'} {name}-{version} file{'' if not found else 's'}")
+    lstat_regular(found[0])
+    return found[0]
+
+
+def check_installer(folder, data):
+    try:
+        text = data.decode("ascii")
+    except UnicodeDecodeError:
+        raise Refused("installer.sha256 isn't plain text") from None
+    listed = {}
+    for line in text.splitlines():
+        m = MANIFEST_LINE.match(line)
+        if not m:
+            raise Refused(f"bad line in installer.sha256: {line[:80]}")
+        sha, rel = m.groups()
+        parts = rel.split("/")
+        if not rel.startswith(TREES) or any(p in ("", ".", "..") for p in parts):
+            raise Refused(f"installer.sha256 names a path outside the installer: {rel}")
+        if rel in listed:
+            raise Refused(f"installer.sha256 names {rel} twice")
+        listed[rel] = sha
+    if "selfhost/install.sh" not in listed:
+        raise Refused("installer.sha256 doesn't name selfhost/install.sh")
+    for rel, sha in sorted(listed.items()):
+        path = os.path.join(folder, rel)
+        try:
+            real_dirs(folder, rel)
+            lstat_regular(path)
+        except FileNotFoundError:
+            raise Refused(f"the installer has no {rel}") from None
+        if sha256_file(path) != sha:
+            raise Refused(f"the installer's {rel} isn't the one this bundle was signed with")
+    for top in STRICT:
+        base = os.path.join(folder, top)
+        for dirpath, dirnames, filenames in os.walk(base):
+            for n in list(dirnames):
+                if os.path.islink(os.path.join(dirpath, n)):
+                    filenames.append(n)   # a link to a folder is an extra file, not a folder to walk
+                    dirnames.remove(n)
+            for n in filenames:
+                rel = os.path.relpath(os.path.join(dirpath, n), folder).replace(os.sep, "/")
+                if rel not in listed:
+                    raise Refused(f"the installer has a file this bundle wasn't signed with: {rel}")
+    return len(listed)
+
+
+def verify(folder, bundle, installed):
+    folder, bundle = os.path.abspath(folder), os.path.abspath(bundle)
+    pin = read_small(os.path.join(bundle, PIN), MAX_PIN)
+    entries = parse_pin(pin)
+    try:
+        sig = read_small(os.path.join(bundle, SIG), MAX_SIG)
+    except Refused:
+        raise Refused("this bundle isn't signed (no bundle.pin.sig). Use a signed bundle from Minimalist Alliance") from None
+    if installed:
+        keys = installed_keys()
+        same_keys(keys, folder_keys(folder))
+        whose = "the release key this desk already holds"
+    else:
+        keys = folder_keys(folder)
+        whose = "the release key in this installer: compare its sha256 with the guide's"
+    key = verify_signature(pin, sig, keys, whose.split(":")[0])
+    for name in RELEASES:
+        if name in entries:
+            version, sha = entries[name]
+            if sha256_file(release_file(bundle, name, version)) != sha:
+                raise Refused(f"{name}-{version} isn't the file bundle.pin names")
+    version, sha = entries["installer"]
+    manifest = read_small(os.path.join(bundle, MANIFEST), MAX_MANIFEST)
+    if hashlib.sha256(manifest).hexdigest() != sha:
+        raise Refused("installer.sha256 isn't the one bundle.pin names")
+    n = check_installer(folder, manifest)
+    has_baseline = os.path.lexists(os.path.join(bundle, BASELINE))
+    if has_baseline != (BASELINE in entries):
+        raise Refused("batch-baseline and bundle.pin don't agree on whether there's a baseline")
+    if has_baseline:
+        if hashlib.sha256(read_small(os.path.join(bundle, BASELINE), MAX_BASELINE)).hexdigest() != entries[BASELINE][1]:
+            raise Refused("batch-baseline isn't the one bundle.pin names")
+    fp = hashlib.sha256(read_small(key, MAX_KEY)).hexdigest()
+    releases = [f"{n} {entries[n][0]}" for n in RELEASES if n in entries]
+    return (f"signed by {os.path.basename(key)}, key sha256 {fp} ({whose})\n"
+            f"releases: {', '.join(releases)}; installer {version}, {n} files; "
+            f"{'batch baseline ' + entries[BASELINE][0] if BASELINE in entries else 'no batch baseline'}: all as signed")
+
+
+def keys_summary(folder):
+    """keys <folder>: step 0 alone, for build-bundle.sh and pin-release-key.sh."""
+    k = folder_keys(os.path.abspath(folder))[0]
+    return (f"release key {FOLDER_KEYS}/{os.path.basename(k)}, sha256 {hashlib.sha256(read_small(k, MAX_KEY)).hexdigest()}: "
+            f"exactly what {ANCHOR} names, P-256, alone in its folder")
+
+
+def main(argv):
+    if len(argv) == 2 and argv[0] == "keys":
+        try:
+            print(f"ma-selfhost-bundle: {keys_summary(argv[1])}")
+            return 0
+        except Refused as e:
+            print(f"ma-selfhost-bundle: REFUSED: {e}", file=sys.stderr)
+        except OSError as e:
+            print(f"ma-selfhost-bundle: REFUSED: {e.filename or ''} {e.strerror}", file=sys.stderr)
+        return 1
+    if len(argv) < 2 or argv[0] != "verify":
+        print(__doc__, file=sys.stderr)
+        return 2
+    folder, bundle, installed, rest = argv[1], None, False, argv[2:]
+    while rest:
+        if rest[0] == "--bundle" and len(rest) > 1:
+            bundle, rest = rest[1], rest[2:]
+        elif rest[0] == "--installed":
+            installed, rest = True, rest[1:]
+        else:
+            print(__doc__, file=sys.stderr)
+            return 2
+    try:
+        out = verify(folder, bundle or os.path.join(folder, "bundle"), installed)
+    except Refused as e:
+        print(f"ma-selfhost-bundle: REFUSED: {e}", file=sys.stderr)
+        return 1
+    except OSError as e:
+        print(f"ma-selfhost-bundle: REFUSED: {e.filename or ''} {e.strerror}", file=sys.stderr)
+        return 1
+    for line in out.splitlines():
+        print(f"ma-selfhost-bundle: {line}")
+    return 0
+
+
+if __name__ == "__main__":
+    sys.exit(main(sys.argv[1:]))

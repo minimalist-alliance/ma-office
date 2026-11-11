@@ -1,15 +1,30 @@
 // The app's non-desk screens: sign-in, refusal, and over the office's empty canvas the membership cards, no desk yet
 // and can't reach. Plain and calm.
 import { useEffect, useState, type KeyboardEvent, type ReactNode } from 'react';
+import { spaceKey } from '../lib/spaceKey';
+import { displayText } from '../browser/address';
+import { keepPending, linkFromAddress, linksOn } from '../open/intent';
 import { ageBandOf } from '../platform/age';
 import { ownSignInPath } from '../platform/auth';
-import { accountUrl, supportAddress } from '../platform/clientConfig';
+import { accountUrl, billingUrl, exportPageUrl, supportAddress } from '../platform/clientConfig';
 import { loadOffer, useOffer } from '../platform/membershipOffer';
 import { tierNamesFrom } from '../platform/tiers';
 import { retryDesks, retryConfig, signIn, signOut, useSession } from '../platform/session';
 import { announce } from '../shell/announce';
 import type { NoDeskNotice } from '../shell/deskNotice';
-import { inactiveCard, parentCard, SOON, teenWelcomeCard, waitlistCard, welcomeCard, type NoticeCard } from './membershipCards';
+import {
+  inactiveCard,
+  keptCard,
+  parentCard,
+  pausedCard,
+  SOON,
+  teenWelcomeCard,
+  waitlistCard,
+  welcomeBackCard,
+  welcomeCard,
+  type NoticeCard,
+  type StopLinks,
+} from './membershipCards';
 
 export function CalmCard({ title, children, testId }: { title: string; children: ReactNode; testId: string }) {
   return (
@@ -23,13 +38,40 @@ export function CalmCard({ title, children, testId }: { title: string; children:
   );
 }
 
+/** The link a sign-in card names (#9's `/open`): its host, then the whole address, both as plain text. */
+export function LinkBox({ url }: { url: string }) {
+  let host = '';
+  try {
+    host = new URL(url).hostname; // punycode for an IDN, so a lookalike shows as what it is
+  } catch {
+    // not a URL: the address alone
+  }
+  return (
+    <div className="op-link" data-testid="open-link">
+      {host && <div className="op-host">{host}</div>}
+      <div className="op-addr" title={displayText(url)}>{displayText(url)}</div>
+    </div>
+  );
+}
+
 export function SignInScreen() {
   const config = useSession((s) => s.config);
   const failed = useSession((s) => s.configFailed);
   const notice = useSession((s) => s.notice);
+  // Sent here to open a link (`/open`, #9): this card names it, and it waits in this tab for the trip to sign in.
+  const link = linksOn(config) ? linkFromAddress() : null;
+  useEffect(() => {
+    if (link) keepPending(link);
+  }, [link]);
   return (
-    <CalmCard title="Sign in to your office" testId="sign-in">
+    <CalmCard title={link ? 'Sign in to open this link' : 'Sign in to your office'} testId="sign-in">
       {notice && <p role="status">{notice}</p>}
+      {link && (
+        <>
+          <LinkBox url={link} />
+          <p>After you sign in, you’ll choose which desk opens it.</p>
+        </>
+      )}
       {failed ? (
         <>
           <p>Sign-in can't be reached right now.</p>
@@ -78,21 +120,6 @@ function ownKeys(e: KeyboardEvent<HTMLElement>): void {
   if (e.key === 'Enter' || e.key === ' ') e.stopPropagation();
 }
 
-/**
- * Card A's "See membership" is a link, since it goes to another page, styled as a button, and a button is pressed with
- * Space as well as Enter. So Space presses it too, as a button does: on the key's release, with nothing scrolling on
- * the way down. Enter stays the link's own, and a screen reader still hears a link.
- */
-const spaceKey = {
-  onKeyDown(e: KeyboardEvent<HTMLAnchorElement>): void {
-    if (e.key === ' ') e.preventDefault();
-  },
-  onKeyUp(e: KeyboardEvent<HTMLAnchorElement>): void {
-    if (e.key !== ' ') return;
-    e.preventDefault();
-    e.currentTarget.click();
-  },
-};
 
 /** The words of the two notices that aren't about membership: no desk yet, and Platform out of reach. */
 const OTHER = {
@@ -102,18 +129,21 @@ const OTHER = {
 
 /**
  * Over the empty canvas, with the top bar still there: no scrim, nothing blocked, and no way to dismiss it, since
- * nothing sits behind it. The membership cards (A or a teen's, B, F), no desk yet, or Platform out of reach. Card A waits for
- * Platform to say whether Pay is open, as every card waits for `/v1/me`, so nothing on it changes once it shows.
+ * nothing sits behind it. C and D also show over a suspended or ended member's stopped desks (S-82), which stay
+ * visible behind it, unchanged and with no scrim of their own. The membership cards (A or a teen's, B, C, D, E, F), no desk yet, or Platform out of reach.
+ * Cards A and E wait for Platform to say whether Pay is open, and every card waits for `/v1/me` and client-config's
+ * links, so nothing on one changes once it shows. Dates are the member's own calendar date (this browser's time zone).
  * A screen reader hears it once, through the shell's live region, and finds it as a region named by its title.
  */
 export function DeskNotice({ kind }: { kind: NoDeskNotice }) {
   const config = useSession((s) => s.config);
   const configFailed = useSession((s) => s.configFailed);
   const teen = useSession((s) => ageBandOf(s.me) === 'teen');
+  const membership = useSession((s) => s.me?.membership);
   const offer = useOffer((s) => s.offer);
   const offerFailed = useOffer((s) => s.failed);
   useEffect(() => {
-    if (kind === 'welcome') void loadOffer();
+    if (kind === 'welcome' || kind === 'welcomeBack') void loadOffer();
   }, [kind]);
 
   let card: NoticeCard | null = null;
@@ -125,6 +155,21 @@ export function DeskNotice({ kind }: { kind: NoDeskNotice }) {
     if (config || configFailed) card = parentCard(config && accountUrl(config));
   } else if (kind === 'waitlist') card = waitlistCard();
   else if (kind === 'inactive') card = inactiveCard(supportAddress(config));
+  else if ((kind === 'paused' || kind === 'kept' || kind === 'welcomeBack') && (config || configFailed)) {
+    // `shell/deskNotice.ts` chose this card only with readable dates. Every link goes in this tab, as A's does.
+    const links: StopLinks = {
+      account: config && accountUrl(config),
+      billing: billingUrl(config, membership?.billingUrl),
+      exportPage: exportPageUrl(config),
+      support: supportAddress(config),
+    };
+    const now = Date.now();
+    const stoppedAt = membership?.stoppedAt ?? '';
+    const deleteAt = membership?.dataDeleteAt ?? '';
+    if (kind === 'paused') card = pausedCard(stoppedAt, deleteAt, links, now);
+    else if (kind === 'kept') card = keptCard(deleteAt, links, now);
+    else if (offer || offerFailed) card = welcomeBackCard(deleteAt, offer, links, now, { names: tierNamesFrom(config?.tierNames), teen });
+  }
   const plain = kind === 'empty' || kind === 'error' ? OTHER[kind] : null;
   const title = card?.title ?? plain?.title ?? '';
   const said = title && `${title}. ${card?.say ?? plain?.body ?? ''}`;

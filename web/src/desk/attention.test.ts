@@ -191,3 +191,42 @@ describe('desk.attention.set', () => {
     expect(seenSent()).toEqual([true, true]);
   });
 });
+
+describe("desk.attention.set's device (API.md section 10, \"On a phone\")", () => {
+  let calls: { seen: boolean; device: unknown }[];
+  let phone: AttentionSignal;
+  beforeEach(() => {
+    calls = [];
+    phone = new AttentionSignal((seen, device) => {
+      calls.push({ seen, device });
+      return Promise.resolve({ seen });
+    });
+  });
+
+  it('goes with seen, again when the box changes, and not again for the same box; null takes it away', async () => {
+    phone.up();
+    phone.want(true);
+    phone.device({ kind: 'phone', width: 390, height: 537 });
+    await flush();
+    phone.device({ kind: 'phone', width: 390, height: 537 });
+    await flush();
+    phone.device({ kind: 'phone', width: 844, height: 300 });
+    await flush();
+    phone.device(null);
+    await flush();
+    expect(calls).toEqual([
+      { seen: true, device: null },
+      { seen: true, device: { kind: 'phone', width: 390, height: 537 } },
+      { seen: true, device: { kind: 'phone', width: 844, height: 300 } },
+      { seen: true, device: null },
+    ]);
+  });
+
+  it('a new session hears the device with its first seen', async () => {
+    phone.want(true);
+    phone.device({ kind: 'phone', width: 390, height: 537 });
+    phone.up();
+    await flush();
+    expect(calls).toEqual([{ seen: true, device: { kind: 'phone', width: 390, height: 537 } }]);
+  });
+});

@@ -4,8 +4,10 @@
 // The avatar is a picture of what's said beside it or by its control, so it's hidden from screen readers, and its
 // initials are drawn by CSS from `data-initials`, so they aren't text a control's name must contain (WCAG 2.5.3 counts
 // visible text, aria-hidden or not). `title` is its tooltip. No tier name is drawn into it, ever.
+import { useEffect, useState } from 'react';
 import type { BadgeId } from '../platform/tiers';
 import { hueOf, initialsOf } from './avatar';
+import { builtAvatarSrc } from './avatarKit';
 import { Icon } from './icons';
 
 export type AvatarSize = 32 | 40;
@@ -20,10 +22,27 @@ export interface AvatarProps {
   size: AvatarSize;
   /** The tooltip, "Dana Example, Officer". */
   title?: string | undefined;
+  /** The member's checked picture (`pictureOf(me)`), over the initials. A picture that fails to load is the initials again. */
+  picture?: string | null | undefined;
+  /** The member's built avatar (`builtRecipeOf(me)`), drawn by the lazy kit over the initials; the initials while it loads or if it fails. A `picture` wins. */
+  built?: Record<string, unknown> | null | undefined;
 }
 
-export function Avatar({ userId, displayName, email, badge, size, title }: AvatarProps) {
+export function Avatar({ userId, displayName, email, badge, size, title, picture, built }: AvatarProps) {
   const initials = initialsOf(displayName, email);
+  const [failed, setFailed] = useState<string | null>(null);
+  useEffect(() => setFailed(null), [picture]);
+  const [kitSrc, setKitSrc] = useState<string | null>(null);
+  const builtKey = built ? JSON.stringify(built) : '';
+  useEffect(() => {
+    setKitSrc(null);
+    if (!built || picture) return;
+    let live = true;
+    void builtAvatarSrc(built, size).then((s) => live && setKitSrc(s));
+    return () => { live = false; };
+    // eslint-disable-next-line react-hooks/exhaustive-deps -- `builtKey` is the recipe's value
+  }, [builtKey, size, picture]);
+  const shown = (picture && failed !== picture ? picture : null) ?? (kitSrc && failed !== kitSrc ? kitSrc : null);
   return (
     <span
       className={`avatar s${size}${badge ? ' has-seal' : ''}`}
@@ -32,7 +51,9 @@ export function Avatar({ userId, displayName, email, badge, size, title }: Avata
       aria-hidden="true"
       {...(title ? { title } : {})}
     >
-      <span className="avatar-face" data-initials={initials}>{!initials && <Icon name="account" size={size / 2} />}</span>
+      <span className="avatar-face" data-initials={shown ? '' : initials}>
+        {shown ? <img className="avatar-picture" src={shown} alt="" draggable={false} referrerPolicy="no-referrer" onError={() => setFailed(shown)} /> : !initials && <Icon name="account" size={size / 2} />}
+      </span>
       {badge && <span className={`avatar-seal ${badge}`} />}
     </span>
   );

@@ -56,4 +56,23 @@ public interface TabAccess {
 
     /** Chromium is frozen, or may be (ADR 0045): nothing is to ask it anything, or ask for a thaw. */
     boolean frozen();
+
+    /**
+     * A frame in a process of its own was attached under a tab, held at its start: what the tab's owner must do first,
+     * before deskd's guard goes in and the frame runs. The Agent's tabs stop the frame's document requests there, as
+     * their own (S-14). Must not throw for a frame that's gone.
+     *
+     * @return whether the frame may run: false leaves it held at its start, never let go, so it never loads
+     */
+    default boolean frameAttached(String sessionId) throws InterruptedException {
+        return true;
+    }
+
+    /**
+     * Whether a tab keeps its frames' attach when the view leaves it: the Agent's do, so a frame born later is still held
+     * and its requests stopped (S-14). The member's don't, so their stream is as it was.
+     */
+    default boolean keepsFrameAttach() {
+        return false;
+    }
 }

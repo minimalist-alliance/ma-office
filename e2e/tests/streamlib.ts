@@ -488,6 +488,8 @@ export const installClient = () => {
         tabsNow = ev.data.tabs;
         titles.push({ t: performance.now(), tabs: ev.data.tabs.map((x: any) => ({ tabId: x.tabId, title: x.title, active: x.active })) });
         if (titles.length > 2000) titles.shift();
+      } else if (ev.type === 'snapshot' && ev.data?.downloads) {
+        downloadEvents.push({ t: performance.now(), downloads: ev.data.downloads });
       } else mark('events other', { type: ev.type, code: ev.data?.code });
     };
     channels.keys.onmessage = (e) => {
@@ -548,6 +550,13 @@ export const installClient = () => {
     const timer = setTimeout(() => { s.pending.delete(id); res({ ok: false, code: 'client_timeout' }); }, 15_000);
     s.pending.set(id, (f: any) => { clearTimeout(timer); const b = JSON.parse(dec.decode(f.body)); res(f.kind === KIND.ERR ? { ok: false, code: b.code, details: b.details } : { ok: true, subId: b.subId }); });
     s.channels.rpc.send(frame(KIND.SUB, id, { topic: 'browser.tabs', params: {} }));
+  });
+  const downloadEvents: any[] = [];
+  const subscribeDownloads = () => new Promise<any>((res) => {
+    const id = S.nextId++;
+    const timer = setTimeout(() => { S.pending.delete(id); res({ ok: false, code: 'client_timeout' }); }, 15_000);
+    S.pending.set(id, (f: any) => { clearTimeout(timer); const b = JSON.parse(dec.decode(f.body)); res(f.kind === KIND.ERR ? { ok: false, code: b.code, details: b.details } : { ok: true, subId: b.subId }); });
+    S.channels.rpc.send(frame(KIND.SUB, id, { topic: 'browser.downloads', params: {} }));
   });
   /** PING to PONG on ctl: through SCTP, desk-rtc and deskd. */
   const pingRtt = async (n: number) => {
@@ -694,7 +703,7 @@ export const installClient = () => {
   const dropPeer = () => { if (S) { S.pc.close(); } };
 
   w.C = {
-    identity, open, call, subscribeTabs, pingRtt, stats, firstFrame, setAndWatch, segment, wheelStart, wheelStop, samplePixels, grabFrame, audioPeak, refresh, closeSession, dropPeer,
+    identity, open, call, subscribeTabs, subscribeDownloads, downloadEvents: () => downloadEvents, pingRtt, stats, firstFrame, setAndWatch, segment, wheelStart, wheelStop, samplePixels, grabFrame, audioPeak, refresh, closeSession, dropPeer,
     event: (a: { type: string; [k: string]: unknown }) => sendEvent(TYPE[a.type], a),
     arm: () => { P.armed = true; }, disarm: () => { P.arm = null; P.armed = false; }, results: () => P.results, resultCount: () => P.results.length, clearResults: () => { P.results = []; P.arm = null; P.armed = false; },
     frames: () => P.frames, cursors: () => cursors, titles: () => titles, tabEvents: () => tabEvents, tabs: () => tabsNow,

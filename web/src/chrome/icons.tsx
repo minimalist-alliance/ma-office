@@ -44,6 +44,46 @@ const PATHS = {
   forward: <path d="M5 12h13.5M13 6.5l5.5 5.5-5.5 5.5" />,
   reload: <path d="M18.5 12a6.5 6.5 0 1 1-2-4.7M18.5 5v3.5H15" />,
   soundOff: <path d="M4.5 9.5v5H8l4.5 4v-13L8 9.5ZM16 9.5l4.5 5M20.5 9.5l-4.5 5" />,
+  // The top bar's bell (ADR 0125 §9) and the kind icons on its rows (`packages/bell-kit` SPEC.md, `family`): a thread,
+  // a card, a desk's screen, the account (above), and a note for anything else. Stroke icons, no stars.
+  bell: <path d="M6 16.5V11a6 6 0 0 1 12 0v5.5l1.5 1.5h-15L6 16.5ZM10 20.5a2 2 0 0 0 4 0" />,
+  thread: <path d="M5 6.5h14v9h-9l-4 3.5v-3.5H5Z" />,
+  card: (
+    <>
+      <rect x="4" y="6.5" width="16" height="11" rx="2" />
+      <path d="M4 10.5h16" />
+    </>
+  ),
+  screen: (
+    <>
+      <rect x="4" y="5.5" width="16" height="11" rx="2" />
+      <path d="M9 19.5h6M12 16.5v3" />
+    </>
+  ),
+  note: (
+    <>
+      <path d="M7 4.5h7l4 4v11H7Z" />
+      <path d="M14 4.5v4h4M9.5 13h5M9.5 16h5" />
+    </>
+  ),
+  keyboard: (
+    <>
+      <rect x="3.5" y="6.5" width="17" height="11" rx="2" />
+      <path d="M7 10h.01M10 10h.01M13 10h.01M16 10h.01M7 13.5h.01M16 13.5h.01M9.5 13.5h4.5" />
+    </>
+  ),
+  clipboard: (
+    <>
+      <rect x="5.5" y="5.5" width="13" height="15" rx="2" />
+      <path d="M9 5.5V4.5h6v1M9 11h6M9 14.5h4" />
+    </>
+  ),
+  keyboardHide: (
+    <>
+      <rect x="3.5" y="4" width="17" height="10" rx="2" />
+      <path d="M7 7.5h.01M10 7.5h.01M13 7.5h.01M16 7.5h.01M9.5 10.5h4.5M9 17.5l3 2.5 3-2.5" />
+    </>
+  ),
 } satisfies Record<string, JSX.Element>;
 
 export type IconName = keyof typeof PATHS;
@@ -66,7 +106,7 @@ function AgentAppGlyph({ app, deskId, size }: { app: AppId; deskId?: string | un
   const Mark = lookChunk()?.AgentMark;
   return (
     <span className="app-glyph" aria-hidden="true" style={{ display: 'inline-flex', width: size, height: size }}>
-      {Mark && <Mark icon={agent?.icon ?? 'spark'} tone={agent?.tone ?? 'graphite'} theme={theme} pngUrl={url} size={size} />}
+      {Mark && <Mark icon={agent?.icon ?? 'nodes'} tone={agent?.tone ?? 'graphite'} theme={theme} pngUrl={url} size={size} />}
     </span>
   );
 }

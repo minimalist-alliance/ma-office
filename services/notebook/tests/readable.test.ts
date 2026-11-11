@@ -133,6 +133,41 @@ describe('readable/', () => {
     expect(files()).toEqual(['Work/General/Kept.md']);
   });
 
+  it('a mass move yields to the event loop, and ends with every file in place', async () => {
+    const { notebookId, tabId } = await makeNotebook(s);
+    const N = 4000;
+    const pm = JSON.stringify(doc(h1('T'), p('some text in a page')));
+    h.service.db.raw.exec('BEGIN');
+    const ins = h.service.db.raw.prepare(
+      `INSERT INTO pages (id, tab_id, sort_key, title, snippet, word_count, has_checklist, created_at, created_by, updated_at, updated_by, row_version, ydoc, pm_json, plain_text)
+       VALUES (?, ?, ?, ?, '', 4, 0, ?, 'u', ?, 'u', 1, x'00', ?, '')`,
+    );
+    for (let i = 0; i < N; i++) ins.run(`bulk${i}`, tabId, i, `Page ${i}`, 1000 + i, 1000 + i, pm);
+    h.service.db.raw.exec('COMMIT');
+    h.service.readable.treeChanged();
+    await until('the first copy', () => files().length >= N, 60000);
+    await h.service.readable.settled();
+    const before = files().length;
+
+    let worst = 0;
+    let last = performance.now();
+    const probe = setInterval(() => {
+      const now = performance.now();
+      worst = Math.max(worst, now - last - 5);
+      last = now;
+    }, 5);
+    await s.rpc('notebook.notebook.rename', { id: notebookId, title: 'Moved' });
+    await until('every move', () => files().filter((f) => f.startsWith('Moved/')).length >= N, 60000);
+    await h.service.readable.settled();
+    clearInterval(probe);
+    expect(worst).toBeLessThan(100);
+    const all = files();
+    expect(all.every((f) => f.startsWith('Moved/General/'))).toBe(true);
+    expect(all.length).toBe(before);
+    expect(readFileSync(join(readable, 'Moved/General/Page 1234.md'), 'utf8')).toContain('some text in a page');
+    expect(existsSync(join(readable, 'Work'))).toBe(false);
+  }, 120000);
+
   it('a start that is not behind writes nothing', async () => {
     const { pageId } = await makeNotebook(s);
     await write(pageId, doc(h1('Stable'), p('text')));

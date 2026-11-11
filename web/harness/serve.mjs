@@ -14,6 +14,7 @@ import { streamQuality } from './streamQuality.mjs';
 import { bandwidthReply } from './bandwidth.mjs';
 import { ageState } from './age.mjs';
 import { guilds } from './guilds.mjs';
+import { notifications } from './notifications.mjs';
 
 const args = Object.fromEntries(process.argv.slice(2).reduce((acc, a, i, all) => {
   if (a.startsWith('--')) acc.push([a.slice(2), all[i + 1]]);
@@ -26,11 +27,14 @@ const ORIGIN = `http://localhost:${PORT}`;
 
 // The default CSP, with this origin standing in for api. and auth, and the shim for gw.
 // `accountFrame`: Platform's frame-src for the account page (ma-platform contract hostnames.md, 0.3.49). Off, as in prod until it ships.
-const csp = () => `default-src 'self'; connect-src 'self'${state.shim ? ` ${gatewayUrl()}` : ''}; img-src 'self' data: blob:; media-src 'self' blob:; worker-src 'self' blob:;${state.accountFrame ? ' frame-src https://platform.localhost;' : ''} frame-ancestors 'none'`;
+// `openRouter`: the one origin the free models' Connect trades its code at (agent-free-key spec §2.5, hostnames.md). On, as the
+// office's CSP has it; off to see the office's own CSP refuse it. A spec answers that origin itself (`page.route`): nothing here,
+// and no test, ever reaches the real OpenRouter.
+const csp = () => `default-src 'self'; connect-src 'self'${state.openRouter ? ' https://openrouter.ai' : ''}${state.shim ? ` ${gatewayUrl()}` : ''}; img-src 'self' data: blob:${/^https:\/\/[a-z0-9.-]+$/.test(process.env.MA_AVATAR_ORIGIN ?? '') ? ` ${process.env.MA_AVATAR_ORIGIN}` : ''}; media-src 'self' blob:; worker-src 'self' blob:;${state.accountFrame ? ' frame-src https://platform.localhost;' : ''} frame-ancestors 'none'`;
 
 const MIME = {
   '.js': 'text/javascript', '.css': 'text/css', '.json': 'application/json', '.woff2': 'font/woff2', '.html': 'text/html', '.svg': 'image/svg+xml',
-  '.txt': 'text/plain; charset=utf-8',
+  '.txt': 'text/plain; charset=utf-8', '.webp': 'image/webp', '.avif': 'image/avif',
 };
 
 const LOADER_HTML = `<!doctype html>
@@ -114,6 +118,8 @@ const FRESH = () => ({
   accountLink: 'https://platform.localhost/account',
   /** The office CSP lets the account page be framed (Account settings, ADR 0052). Off, as in prod until Platform ships it. */
   accountFrame: false,
+  /** The office CSP lets the free models' Connect reach https://openrouter.ai (agent-free-key spec §2.5). Off: the CSP refuses it. */
+  openRouter: true,
   /** GET /v1/me's `roles`, such as ['owner']. Null: none, as for every member. */
   roles: null,
   /**
@@ -170,6 +176,8 @@ const FRESH = () => ({
    * `age` in a POST sets this and `ageRules` from a name (`age.mjs`).
    */
   membership: { status: 'active', tier: 'officer' },
+  /** GET /v1/me's `avatar`: { kind: 'built', config, setAt } or { kind: 'upload', url, setAt }. Null: none. */
+  avatar: null,
   /** GET /v1/me's `preferences.staySignedIn` ("Stay signed in", ma-platform contract auth.md section 3.3). Null: no `preferences`, as a Platform from before it. */
   staySignedIn: null,
   /** client-config's `tierNames` (contract tiers.md section 3). Null is the field being absent, as in prod until it ships. */
@@ -182,6 +190,8 @@ const FRESH = () => ({
   deskNames: {},
   /** client-config's `ageRules` block, on `desk-web` and `platform-web`. Null is the block being absent: off, as in prod. */
   ageRules: null,
+  /** client-config's `tierAllowances` (tiers.md 11.3; Officer's `weeklyAllowanceGb` is proposed). Null: the block is absent. */
+  tierAllowances: null,
   /**
    * Desks that answer the list and `connect` as contract desks.md says, such as [{ deskId, name, kind, state: 'stopped' }].
    * `allowedActions: []` is a held desk, which `connect` refuses with desk_unavailable; so does `refuse: 'desk_unavailable'`
@@ -190,6 +200,8 @@ const FRESH = () => ({
   fleet: null,
   /** Refuse every `connect` of the fleet as the membership does: { code: 'account_suspended', details: { billingUrl } }. `message` sets the words (the data guard's `403 data_guard` sends its own). */
   refuseConnect: null,
+  // A safety suspension: `purpose: "export"` is refused too (desks.md 0.3.64).
+  refuseExport: null,
   /** Refuse `start: true`, such as { status: 409, code: 'downtime_active' }, with `details` if given (a stopping desk's `{ state, retryAfterSeconds }`). */
   refuseWake: null,
   /** Every `connect` so far: { deskId, start }. */
@@ -242,6 +254,14 @@ const FRESH = () => ({
    * The Files specs turn it on: `{ files: { enabled: true } }`.
    */
   files: { enabled: false },
+  /**
+   * client-config's `setupCircle` block (S-121), the setup circle's kill switch (absent is on, as in prod). The harness has
+   * it OFF, as `files` is, so the specs about the bottom bar, the account menu and the canvas hold what they always did; the
+   * setup specs turn it on with `{ setupCircle: null }`.
+   */
+  setupCircle: { enabled: false },
+  /** More client-config for desk-web, as Platform may send it: `whatsNew`, `tierAllowances`, and `links` added to the usual. Null: none. */
+  configExtra: null,
   /** GET /v1/me/export answers 503 this many times. */
   meExportFails: 0,
   /** What POST /v1/moves made: { moveId, sourceDeskId, targetDeskId, state, createdAt }. GET /v1/moves lists them. */
@@ -252,6 +272,13 @@ const FRESH = () => ({
   removeSourceFails: false,
   /** The first remove-cloud-desk ask answers 202 (the desk is stopping), the next 200. */
   removeNeedsStop: false,
+  /**
+   * The member's notifications (`notifications.mjs`, ma-platform contract notifications.md): { items, paused, unreadExtra }.
+   * Null: an empty list, so the bell shows with no count.
+   */
+  notifications: null,
+  /** Every POST to `/v1/me/notifications/read` and `/seen`: { path, body }. */
+  notificationPosts: [],
 });
 let state = FRESH();
 let refreshGen = 0;
@@ -340,6 +367,7 @@ function fleetConnect(res, deskId, start, purpose) {
     return json(res, 403, envelope('desk_unavailable', "This desk can't be opened right now. Contact support."));
   }
   // `purpose: "export"` opens a closed account's desk for the export only (ma-platform draft ADR, section 3).
+  if (purpose === 'export' && state.refuseExport) return json(res, 403, envelope(state.refuseExport.code, state.refuseExport.message ?? 'Refused.', false, state.refuseExport.details ?? {}));
   if (state.refuseConnect && !(purpose === 'export' && state.export?.enabled)) return json(res, 403, envelope(state.refuseConnect.code, state.refuseConnect.message ?? 'Refused.', false, state.refuseConnect.details));
   if (start && state.refuseWake) {
     const { status, code, details, message } = state.refuseWake;
@@ -578,11 +606,13 @@ async function handleMaia(req, res, url) {
   if (path === '/v1/maia/state' && req.method === 'GET') {
     if (m.stateStatus && m.stateStatus !== 200) return json(res, m.stateStatus, envelope('unavailable', 'Try again.', true));
     return json(res, 200, {
-      enabled: m.enabled !== false, modelLabel: m.modelLabel ?? 'Claude Opus 5.5', limited: m.limited ?? null, resetsAt: m.resetsAt ?? null, usedFraction: m.usedFraction ?? 0.02, retentionDays: 30,
+      enabled: m.enabled !== false && m.trial !== 'ended' && m.trial !== 'off', modelLabel: m.modelLabel ?? 'Claude Opus 5.5', limited: m.limited ?? (m.trial === 'ended' || m.trial === 'off' ? 'trial' : null), resetsAt: m.resetsAt ?? null, usedFraction: m.usedFraction ?? 0.02, retentionDays: 30,
       animation: { enabled: m.animation !== false, sleepAfterSec: m.sleepAfterSec ?? 300 },
       memory: { enabled: m.memory !== false, maxItems: m.maxItems ?? 50 },
       // Free Maia (ma-platform ADR 0104): `m.freeUntil` makes this member past their allowance and on her free model.
       free: { enabled: true, active: !!m.freeUntil, until: m.freeUntil ?? null },
+      // A free member's trial (contract maia.md, "The free tier's trial"): `m.trial` is a status string, or a whole trial object, only in a free member's state.
+      ...(m.trial ? { trial: typeof m.trial === 'object' ? m.trial : { status: m.trial, days: 7, endsAt: m.trial === 'active' ? new Date(Date.now() + 5 * 86_400_000).toISOString() : null, usedFraction: m.trial === 'ended' ? 1 : 0 } } : {}),
       // File attachments: only when `m.attachments` is set, as in prod until the server turns them on.
       ...(m.attachments ? { attachments: { enabled: true, maxFiles: 3, maxFileBytes: 2_000_000, maxTotalBytes: 4_000_000, accept: ['png', 'jpg', 'pdf', 'txt', 'csv', 'md'], freeImages: false, ...(m.attachments === true ? {} : m.attachments) } } : {}),
     });
@@ -601,7 +631,9 @@ async function handleMaia(req, res, url) {
     return json(res, 204);
   }
   if (path === '/v1/maia/conversations' && req.method === 'GET') {
-    return json(res, 200, { conversations: Object.entries(state.maiaConversations).map(([conversationId, c]) => ({ conversationId, title: c.title, model: 'claude-opus-5-5', createdAt: c.createdAt, updatedAt: c.createdAt })) });
+    // Newest first, as the server sends them.
+    const list = Object.entries(state.maiaConversations).map(([conversationId, c]) => ({ conversationId, title: c.title, model: 'claude-opus-5-5', createdAt: c.createdAt, updatedAt: c.updatedAt ?? c.createdAt }));
+    return json(res, 200, { conversations: list.sort((a, b) => b.updatedAt.localeCompare(a.updatedAt)) });
   }
   const conversation = /^\/v1\/maia\/conversations\/([^/]+)$/.exec(path);
   if (conversation) {
@@ -657,13 +689,15 @@ async function maiaTurn(req, res) {
   state.maiaCount += 1;
   const n = state.maiaCount;
   const conversationId = body.conversationId ?? `c_harness${n}`;
-  state.maiaConversations[conversationId] ??= { title: 'Harness chat', createdAt: new Date().toISOString(), messages: [] };
+  // Titled from its first message, as the server does (ma-platform loop.ts titleFrom), so a list can tell chats apart.
+  state.maiaConversations[conversationId] ??= { title: String(body.message ?? '').slice(0, 60) || 'Harness chat', createdAt: new Date().toISOString(), messages: [] };
   const convo = state.maiaConversations[conversationId];
   const messageId = `m_harness${n}`;
   const message = String(body.message);
   // As the service stores it: the words, then a line for each file. The bytes are gone.
   const noted = (files ?? []).map((f) => `\n[Attached: ${f.name} (${(f.name.split('.').pop() ?? '').toUpperCase()}, ${Math.max(1, Math.round(f.bytes / 1000))} KB)]`).join('');
   convo.messages.push({ role: 'user', text: message + noted, at: new Date().toISOString() });
+  convo.updatedAt = new Date().toISOString();
   let open = true;
   req.on('close', () => { open = false; });
   res.on('close', () => { open = false; });
@@ -677,6 +711,20 @@ async function maiaTurn(req, res) {
   if (message.includes('[stub:free]')) {
     const upgrade = m.freeUpgrade !== false;
     send({ type: 'notice', code: 'free_mode', text: `You've used today's Maia allowance, so you're on free Maia until it resets in about 3 hours. It's a bit slower and simpler.${upgrade ? ' You can raise your limit by upgrading on your account page.' : ''}`, resetsAt: freeUntil, upgrade });
+  }
+  // A free trial (maia.md): the first message starts it, with the notice `trial_started`; `[stub:trial-over]` ends it, and a turn after that stops with `limit_trial`.
+  if (m.trial === 'ended') {
+    send({ type: 'stop', reason: 'limit_trial', text: "That was Maia's week.", retryable: false, upgrade: true });
+    return res.end();
+  }
+  if (m.trial === 'unused') {
+    m.trial = 'active';
+    send({ type: 'notice', code: 'trial_started', text: 'Your week with Maia has started.', upgrade: true });
+  }
+  if (message.includes('[stub:trial-over]')) {
+    m.trial = 'ended';
+    send({ type: 'stop', reason: 'limit_trial', text: "That was Maia's week.", retryable: false, upgrade: true });
+    return res.end();
   }
   if (message.includes('[stub:free-ended]')) send({ type: 'notice', code: 'free_ended', text: "Your Maia allowance has reset, so you're back to full Maia." });
   // Free Maia is slow to start (the eval: about 16 s): `m.freeFirstMs` holds her first words back that long.
@@ -753,13 +801,16 @@ async function handleApi(req, res, url) {
         scopes: ['openid', `${ORIGIN}/member`], identityProviders: ['COGNITO', 'Google'], googleSignIn: state.google ?? false,
         ...(state.signInPath ? { signInPath: state.signInPath } : {}),
       },
-      links: { billing: `${ORIGIN}/billing`, ...(state.accountLink ? { account: state.accountLink } : {}) },
+      links: { billing: `${ORIGIN}/billing`, ...(state.accountLink ? { account: state.accountLink } : {}), ...(state.membershipLink ? { membership: state.membershipLink } : {}), ...(state.configExtra?.links ?? {}) },
       ...(state.maia ? { maia: { url: state.maia.url ?? ORIGIN } } : {}),
+      ...(state.setupCircle ? { setupCircle: state.setupCircle } : {}),
+      ...(state.configExtra ? Object.fromEntries(Object.entries(state.configExtra).filter(([k]) => k !== 'links')) : {}),
       ...(state.export ? { export: state.export } : {}),
       ...(state.simpleView ? { simpleView: state.simpleView } : {}),
       ...(state.files ? { files: state.files } : {}),
       ...(state.tierNames ? { tierNames: state.tierNames } : {}),
       ...(state.ageRules ? { ageRules: state.ageRules } : {}),
+      ...(state.tierAllowances ? { tierAllowances: state.tierAllowances } : {}),
       ...(state.guildsConfig ? { guilds: state.guildsConfig } : {}),
     });
   }
@@ -767,6 +818,7 @@ async function handleApi(req, res, url) {
   if (!authorized(req)) return json(res, 401, { message: 'Unauthorized' });
   if (await streamQuality(req, res, path, state, { json, readBody, claimsOf, envelope })) return;
   if (await guilds(req, res, path, state, { json, readBody, envelope, gatewayUrl })) return;
+  if (await notifications(req, res, path, state, { json, readBody, envelope })) return;
 
   if (path === '/v1/me') {
     return json(res, 200, {
@@ -774,6 +826,7 @@ async function handleApi(req, res, url) {
       email: 'member-1@example.org',
       displayName: state.displayName ?? 'Test Member',
       membership: state.membership,
+      ...(state.avatar ? { avatar: state.avatar } : {}),
       ...(state.roles ? { roles: state.roles } : {}),
       ...(state.staySignedIn ? { preferences: { staySignedIn: state.staySignedIn } } : {}),
     });

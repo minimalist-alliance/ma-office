@@ -78,11 +78,21 @@ chmod 0644 /etc/nftables.conf /etc/ma/agent-egress.conf; chmod 0755 /opt/ma/smok
   /usr/local/lib/ma/desk-browser-close /usr/local/lib/ma/desk-browser-policy /usr/local/lib/ma/desk-xauth \
   /usr/local/lib/ma/desk-browser-quit /usr/local/lib/ma/desk-adblock /usr/local/lib/ma/desk-kind /usr/local/lib/ma/desk-guild-net /usr/local/lib/ma/desk-guild-rtc \
   /usr/local/lib/ma/desk-browser-prewarm
-# A teen's Browser lock (image/README.md) and the ad blocker's template (ADR 0076): root's alone, and no key in two of the
-# three managed files, since Chromium doesn't define which of two wins. Both helpers refuse a file anyone else can write.
-chown root:root /etc/ma/chromium-teen.json /etc/ma/chromium-adblock.json; chmod 0644 /etc/ma/chromium-teen.json /etc/ma/chromium-adblock.json
+# A teen's Browser lock (image/README.md), an adult's password managers (image/README.md, "Sign-in extensions") and the ad
+# blocker's template (ADR 0076): root's alone, and no key in two of the four managed files, since Chromium doesn't define
+# which of two wins. The helpers refuse a file anyone else can write.
+chown root:root /etc/ma/chromium-teen.json /etc/ma/chromium-adult.json /etc/ma/chromium-adblock.json
+chmod 0644 /etc/ma/chromium-teen.json /etc/ma/chromium-adult.json /etc/ma/chromium-adblock.json
 python3 -I -c 'import itertools, json, sys; d = {f: set(json.load(open(f))) for f in sys.argv[1:]}; s = [(a, b, sorted(d[a] & d[b])) for a, b in itertools.combinations(d, 2) if d[a] & d[b]]; sys.exit("shared keys: %s" % s if s else 0)' \
-  /etc/chromium/policies/managed/ma.json /etc/ma/chromium-teen.json /etc/ma/chromium-adblock.json || die "two managed policy files share a key"
+  /etc/chromium/policies/managed/ma.json /etc/ma/chromium-teen.json /etc/ma/chromium-adult.json /etc/ma/chromium-adblock.json || die "two managed policy files share a key"
+# Links out (runtime spec section 8.11): the xdg-open stand-in (services/deskd/desk-tools, copied in by bake.sh) is the only
+# xdg-open and xdg-email on the desk. xdg-utils itself can't go, as chromium-common depends on it, so its two are diverted
+# off PATH (dpkg keeps a diversion through every upgrade): run by name or by /usr/bin path, xdg-utils' xdg-open finds no
+# desktop here, and its script then tries x-www-browser, which is Chromium. Its other tools stay, unused.
+# xdg-email is a link made here, not one in recipe/files: the self-hosted bundle's installer.sha256 can't name a link.
+chmod 0755 /usr/local/bin/xdg-open; ln -sfn xdg-open /usr/local/bin/xdg-email
+install -d -m 0755 /usr/share/ma/xdg-utils
+for f in xdg-open xdg-email; do dpkg-divert --local --rename --divert /usr/share/ma/xdg-utils/$f --add /usr/bin/$f; done
 # The ad blocker (ADR 0076): built here from uBlock Origin Lite's pinned release (adblock/blocker.pin, its sha256 checked),
 # block and allow rules only, signed with a key made and destroyed in this step, so each build has its own id. Chromium
 # installs it from file:///usr/share/ma/adblock/update.xml and updates only from there: a new version is a new image.
@@ -137,13 +147,18 @@ chmod 0755 /usr/local/lib/ma/desk-batch
 install -d -m 0755 -o root -g root /opt/ma/etc /opt/ma/etc/batch-keys /etc/ma /etc/ma/batch-keys.d /var/lib/ma /var/lib/ma/batch
 install -d -m 0700 -o root -g root /var/lib/ma/batch/pending
 chown root:root /opt/ma/etc/batch-keys/*.pem; chmod 0644 /opt/ma/etc/batch-keys/*.pem
-# 20auto-upgrades stays as Debian's: selfhost/install.sh copies these files to a member's own machine without this block, so
-# Debian's timers still run apt there daily. Here they're masked, and unattended-upgrade, run by desk-batch, doesn't read it.
+# 20auto-upgrades stays as Debian's; unattended-upgrade, run by desk-batch, doesn't read it, and Debian's timers are masked.
+# selfhost/install.sh runs this block as written on a member's own machine (S-85), so keep it free of anything cloud-only.
 chmod 0644 /etc/apt/apt.conf.d/20auto-upgrades /etc/apt/apt.conf.d/51ma-unattended
 systemctl disable apt-daily.timer apt-daily-upgrade.timer 2>/dev/null || true
 systemctl mask apt-daily.timer apt-daily-upgrade.timer
 systemctl enable desk-batch.timer desk-batch.socket
 # <<< desk-batch
+# Reliability audit S1 and S2 (docs/interfaces/desk-runtime.md, "Restarts and memory pressure"): the units' restart back-off is in
+# their files; this timer starts it over for a service that has run well for two minutes, and the helper puts a Docker-run
+# unit's OOMScoreAdjust= on its container's processes.
+chmod 0755 /usr/local/lib/ma/desk-restart-reset /usr/local/lib/ma/desk-oom-container
+systemctl enable desk-restart-reset.timer
 # TD-227 (image/README.md, "Faster wakes"): cloud-init off after a desk's first boot. These two are installed here and not from files/,
 # because selfhost/install.sh copies all of files/ to a member's own machine, where a drop-in on cloud-final and a DHCP file for
 # every wired card have no business. cloud-init stays enabled in the image; the drop-in writes the marker at the end of a first boot.
@@ -327,6 +342,8 @@ chk test "$(systemctl is-enabled desk-batch.timer 2>/dev/null || true)" = enable
 chk test "$(systemctl is-enabled apt-daily.timer 2>/dev/null || true)" = masked
 chk test "$(systemctl is-enabled apt-daily-upgrade.timer 2>/dev/null || true)" = masked
 chk test -x /usr/local/lib/ma/desk-batch
+chk test "$(systemctl is-enabled desk-restart-reset.timer 2>/dev/null || true)" = enabled
+chk test -x /usr/local/lib/ma/desk-restart-reset -a -x /usr/local/lib/ma/desk-oom-container
 chk test -d /opt/ma/etc/batch-keys -a -d /etc/ma/batch-keys.d -a -d /var/lib/ma/batch/pending
 chk test -z "$(ls -A /etc/ma/batch-keys.d)" -a -z "$(ls -A /var/lib/ma/batch/pending)"   # no dev key, no batch, no state in the image (one ls per directory: ls with two prints their names)
 chk test "$(ls -A /opt/ma/etc/batch-keys)" = ma-desk-batch-2026-11.pem   # exactly Platform's release key (verify-batch.sh install checks its hash)
@@ -352,6 +369,15 @@ chk test -x /usr/local/lib/ma/desk-data
 chk test ! -e /data/.ma-export-tmp   # made on the data volume at boot, never on the root
 chk test -x /opt/ma/desk-agent-filter/current/run   # baked (releases.pin), never started here
 chk test -x /usr/local/lib/ma/desk-browser-policy
+# Links out (runtime spec section 8.11): the stand-in as both names, its socket directory's line, and xdg-utils' two off PATH.
+chk test "$(stat -c '%U:%G %a' /usr/local/bin/xdg-open)" = "root:root 755"
+chk test "$(readlink /usr/local/bin/xdg-email)" = xdg-open
+chk test "$(head -1 /usr/local/bin/xdg-open)" = '#!/usr/bin/python3 -I'
+chk grep -qx 'd /run/desk-links 2750 desk kiosk -' /etc/tmpfiles.d/desk-links.conf
+chk test ! -e /usr/bin/xdg-open
+chk test ! -e /usr/bin/xdg-email
+chk test "$(dpkg-divert --truename /usr/bin/xdg-open):$(dpkg-divert --truename /usr/bin/xdg-email)" = "/usr/share/ma/xdg-utils/xdg-open:/usr/share/ma/xdg-utils/xdg-email"
+chk test "$(setpriv --reuid=kiosk --regid=kiosk --clear-groups env -i PATH=/usr/local/sbin:/usr/local/bin:/usr/sbin:/usr/bin sh -c 'command -v xdg-open; command -v xdg-email' | paste -sd,)" = "/usr/local/bin/xdg-open,/usr/local/bin/xdg-email"
 # Faster wakes (TD-227, image/README.md): cloud-init off after the first boot, a MAC-free network fallback, and the
 # Browser's first units started once deskd answers. The image itself never has the marker.
 chk test ! -e /etc/cloud/cloud-init.disabled
@@ -360,8 +386,9 @@ chk test "$(systemctl show -p ExecStartPost --value cloud-final.service | grep -
 chk grep -qx 'DHCP=ipv4' /etc/systemd/network/20-ma-dhcp.network
 chk test "$(systemctl is-enabled desk-browser-prewarm.service 2>/dev/null || true)" = enabled
 chk test -x /usr/local/lib/ma/desk-browser-prewarm
-chk test "$(stat -c '%U:%G %a' /etc/ma/chromium-teen.json)" = "root:root 644"
+chk test "$(stat -c '%U:%G %a' /etc/ma/chromium-teen.json /etc/ma/chromium-adult.json | paste -sd,)" = "root:root 644,root:root 644"
 chk test ! -e /etc/chromium/policies/managed/ma-teen.json   # the helper decides at each start; the trace above leaves none
+chk test ! -e /etc/chromium/policies/managed/ma-adult.json  # and the builder has no band, so no allowlist either
 chk test -x /usr/local/lib/ma/desk-adblock
 chk test "$(stat -c '%U:%G %a' /etc/ma/chromium-adblock.json /etc/chromium/policies/managed/ma-adblock.json | paste -sd,)" = "root:root 644,root:kiosk 640"
 # The image ships blocking on everywhere, the kill switch off: the template with no site off (ADR 0076)

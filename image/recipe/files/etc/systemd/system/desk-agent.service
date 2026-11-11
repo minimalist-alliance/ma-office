@@ -15,14 +15,16 @@ After=desk-egress.service
 # the VPC). desk-agent never starts without it: nftables.service must have loaded, and ExecStartPre below lists the chain.
 Requires=nftables.service
 After=nftables.service
+StartLimitIntervalSec=0
 
 [Service]
 Environment=RELEASE_DIR=/opt/ma/desk-agent/current
 # No "-": if table inet ma or its agent chain is missing (a flushed or failed ruleset), the start fails and Restart= tries
-# again every 3 s, so desk-agent comes back by itself once the ruleset is loaded. /opt/ma/smoke-test checks the same.
+# again (from 3 s, backing off to 5 minutes, never giving up), so desk-agent comes back by itself once the ruleset is loaded. /opt/ma/smoke-test checks the same.
 ExecStartPre=/usr/sbin/nft list chain inet ma agent_redirect
 ExecStartPre=-/usr/bin/docker rm -f desk-agent
 ExecStart=/opt/ma/desk-agent/current/run
+ExecStartPost=-/usr/local/lib/ma/desk-oom-container desk-agent 200
 # run gives the container --stop-timeout=30.
 ExecStop=/usr/bin/docker stop -t 30 desk-agent
 # docker stop sends the JVM SIGTERM, and it exits 143, which the docker client passes on: without this a stop ends
@@ -31,6 +33,9 @@ SuccessExitStatus=143
 TimeoutStopSec=40
 Restart=always
 RestartSec=3
+RestartSteps=8
+RestartMaxDelaySec=300
+OOMScoreAdjust=200
 
 [Install]
 WantedBy=multi-user.target

@@ -96,7 +96,7 @@ try {
   await pause(500);
 
   // Temporal view, and a day back.
-  await page.getByRole('radio', { name: 'Temporal view' }).click();
+  await page.getByRole('radio', { name: 'By day' }).click();
   await pause(1000);
   await page.getByRole('button', { name: 'Previous day with notes' }).click();
   await pause(700);
@@ -106,7 +106,7 @@ try {
   // Dusk and Dark.
   await page.getByRole('radio', { name: 'Dusk' }).click();
   await pause(1100);
-  await page.getByRole('radio', { name: 'Tab view' }).click();
+  await page.getByRole('radio', { name: 'By tab' }).click();
   await pause(1000);
   await page.getByRole('radio', { name: 'Dark' }).click();
   await pause(1100);

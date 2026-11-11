@@ -16,9 +16,11 @@ import java.util.function.Supplier;
  * {@code notebook.*} methods, the {@code notebook.tree} topic and the {@code collab} channel. deskd checks the session
  * and relays. It reads and keeps no note content: desk-notebook is the only thing that touches {@code /data/notebook}.
  *
- * <p>Nothing here runs until a session uses it: no thread, no timer and no connection. A problem here never fails
+ * <p>Nothing here runs until a session uses it: no thread, no timer and no connection, apart from {@link #storage}, a
+ * short connection of its own that the heartbeat and {@code /health} make at most every 10 s. A problem here never fails
  * {@code /health} and never touches anything else: a stalled or absent desk-notebook costs its own session's calls and
- * {@code collab}, and only that (see {@link NotebookLink}).
+ * {@code collab}, and only that (see {@link NotebookLink}), and at most a second of a heartbeat's time; {@code /health}
+ * never waits on it.
  */
 public final class NotebookModule implements SessionListener {
 
@@ -29,10 +31,18 @@ public final class NotebookModule implements SessionListener {
      * @param writeStall how long a write may go with no progress before the link goes
      * @param clientStall how long a client that has stopped reading {@code collab} may hold a message back before the link
      *     goes, so that desk-notebook doesn't keep buffering for it
+     * @param healthyAfter a connection that lasted this long starts the backoff again; a shorter one doubles it, so a peer
+     *     that accepts and drops at once is tried with the backoff, not four times a second (audit D7)
      */
-    public record Timing(Duration minBackoff, Duration maxBackoff, Duration call, Duration writeStall, Duration clientStall) {
-        public static final Timing DEFAULT =
-                new Timing(Duration.ofMillis(250), Duration.ofSeconds(5), Duration.ofSeconds(10), Duration.ofSeconds(5), Duration.ofSeconds(30));
+    public record Timing(
+            Duration minBackoff, Duration maxBackoff, Duration call, Duration writeStall, Duration clientStall, Duration healthyAfter) {
+        public static final Duration HEALTHY_AFTER = Duration.ofSeconds(10);
+        public static final Timing DEFAULT = new Timing(
+                Duration.ofMillis(250), Duration.ofSeconds(5), Duration.ofSeconds(10), Duration.ofSeconds(5), Duration.ofSeconds(30), HEALTHY_AFTER);
+
+        public Timing(Duration minBackoff, Duration maxBackoff, Duration call, Duration writeStall, Duration clientStall) {
+            this(minBackoff, maxBackoff, call, writeStall, clientStall, HEALTHY_AFTER);
+        }
     }
 
     /**
@@ -49,14 +59,27 @@ public final class NotebookModule implements SessionListener {
     }
 
     private final NotebookLinks links;
+    private final NotebookStorage storage;
+    private final NotebookCalls calls;
 
     /** Registers the methods, the topic and the channel. Connects to nothing yet. */
     public NotebookModule(Path socket, SessionManager sessions, RpcDispatcher dispatcher, EventHub hub, Timing timing) {
         this.links = new NotebookLinks(sessions, hub, socket, Service.NOTEBOOK, timing);
+        this.storage = new NotebookStorage(socket);
+        // The Agent's Notebook tools: deskd's own calls, with the edit budget a session's hello would carry.
+        this.calls = new NotebookCalls(socket, links::settingsNow, timing.call());
         new NotebookMethods(links).register(dispatcher);
         hub.topics().register(NotebookTopic.TREE, new NotebookTopic(links));
         sessions.registerChannelHandler(Channels.COLLAB, new CollabChannel(links));
         sessions.addSessionListener(this);
+    }
+
+    /**
+     * deskd's own calls to desk-notebook as a caller it names, for the Agent's Notebook tools ({@code tools.NotebookTools}).
+     * Nothing a client sends reaches them.
+     */
+    public NotebookCalls calls() {
+        return calls;
     }
 
     /** Never blocks: closing a link waits for nothing. */
@@ -89,7 +112,27 @@ public final class NotebookModule implements SessionListener {
      * connections are per session, so {@code waiting} is also what a desk says while no session is using Notebook.
      */
     public Map<String, Object> health() {
-        return Map.of("notebook", links.anyConnected() ? "connected" : "waiting");
+        Map<String, Object> health = new java.util.LinkedHashMap<>();
+        health.put("notebook", links.anyConnected() ? "connected" : "waiting");
+        // What the last read found, never waiting: /health has 2 s in all, and a rollout reads it.
+        health.put("notebookStorage", storage.lastRead());
+        return health;
+    }
+
+    /**
+     * desk-notebook's storage state, from its health frame: {@code {state: "ok" | "degraded", unsavedPages, unsavedBytes,
+     * refusing, degradedSeconds}}, counts and the state only. Read at most every 10 s, waiting at most a second: for the
+     * heartbeat. {@link #health} shows the last read and never waits.
+     *
+     * @return null if desk-notebook isn't there, didn't answer, or is a build that doesn't say
+     */
+    public Map<String, Object> storage() {
+        try {
+            return storage.read();
+        } catch (InterruptedException e) {
+            Thread.currentThread().interrupt();
+            return storage.lastRead();
+        }
     }
 
     /** Never waits, whatever desk-notebook is doing. */

@@ -1,33 +1,15 @@
-// The Notebook app's window. This much is in the main bundle: the states that need nothing of the editor, the lazy chunk's door
-// and its prefetch. The rest (`NotebookApp.tsx`), about 200 KB gzipped of TipTap, ProseMirror and Yjs, is its own chunk.
-import { Component, lazy, Suspense, useMemo, useState, type ComponentType, type ReactNode } from 'react';
+// The Notebook app's window: the states that need nothing of the editor, and the lazy chunk's door. It's in the windows' own
+// chunk (`windows/WindowLayer.tsx`). The rest (`NotebookApp.tsx`), about 200 KB gzipped of TipTap, ProseMirror and Yjs, is its
+// own chunk, which `prefetch.ts` loads and prefetches.
+import { Component, lazy, Suspense, useMemo, useState, type ReactNode } from 'react';
 import type { AppWindowProps } from '../apps/registry';
 import { PanelBody } from '../browser/BrowserWindow';
 import { BillingLink, MEMBERSHIP_LINE, SETTING_UP_LINE, SupportAddress } from '../chrome/DeskClosed';
 import { noteDeskInput, useDeskLink, useLive } from '../desk/liveStore';
+import { windowVm } from '../desk/windowVm';
 import { useDeskStore } from '../state/deskStore';
-import type { NotebookAppProps } from './NotebookApp';
 import { deskPanel, isClosed } from './panel';
-
-/** Rendering never wakes a desk, and this asks nothing of one: it only has the code ready (design budget B4). */
-const PREFETCH_TIMEOUT_MS = 4_000;
-const PREFETCH_AFTER_MS = 1_000;
-
-const loadApp = (): Promise<{ default: ComponentType<NotebookAppProps> }> => import('./NotebookApp');
-
-/** At idle, once per page, after the office has settled in. A failure only means the window loads it when it opens. */
-export function prefetchNotebook(): () => void {
-  let idle = 0;
-  const run = (): void => void loadApp().catch(() => {});
-  const timer = window.setTimeout(() => {
-    if (typeof window.requestIdleCallback === 'function') idle = window.requestIdleCallback(run, { timeout: PREFETCH_TIMEOUT_MS });
-    else run();
-  }, PREFETCH_AFTER_MS);
-  return () => {
-    window.clearTimeout(timer);
-    if (idle) window.cancelIdleCallback(idle);
-  };
-}
+import { loadNotebookApp as loadApp } from './prefetch';
 
 /** What a window says while there's no Notebook to show. */
 export function NotebookStatePanel({ title, line, children, delayed, kind }: { title?: string; line?: string; children?: ReactNode; delayed?: boolean; kind: string }) {
@@ -78,12 +60,13 @@ export function NotebookWindow({ deskId, parked = false }: AppWindowProps) {
   const App = useMemo(() => lazy(loadApp), [attempt]);
 
   const panel = deskPanel({
-    vm: desk?.vm ?? 'unknown',
+    vm: windowVm(desk?.vm, link),
     phase: desk?.phase ?? null,
     queuePosition: desk?.queuePosition ?? null,
     link: live.link,
     unreachable: live.lostForSec >= 30,
     refusal: live.refusal,
+    busy: live.busy,
   });
 
   let body: ReactNode;

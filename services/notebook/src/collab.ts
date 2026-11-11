@@ -7,11 +7,14 @@ import { applyAwarenessUpdate } from 'y-protocols/awareness';
 import { actorOf, isGuild, mayModerate, OWNER_CALLER, type Caller } from './caller.ts';
 import { errName, log } from './log.ts';
 import { OWNER_ACTOR, type Notebook } from './notebook.ts';
+import { updateChanges } from './model.ts';
 import { judge, UnreadableUpdate, type Owners, type Removals } from './owners.ts';
 import { type Pages } from './pages.ts';
 import { DEFAULT_EDIT_BUDGET, type EditBudget } from './settings.ts';
 
 export const PAGE_FULL = 'page_full';
+/** The close reason for an update refused because the desk can't write to its disk and has too much waiting. */
+export const STORAGE_FULL = 'storage_full';
 /** The close reason for an update refused on a guild desk: it deletes another member's text, or writes as them. */
 export const FORBIDDEN = 'forbidden';
 /** The reason Hocuspocus closes a document with when something throws while it handles a message. */
@@ -82,6 +85,7 @@ export function sanitizeAwareness(state: unknown, caller: Caller): void {
   }
   user['name'] = caller.name ?? 'Member';
   user['memberId'] = caller.memberId;
+  if (caller.avatarUrl) user['avatarUrl'] = caller.avatarUrl; // verified by parseCaller; a client's own is dropped above
   s['user'] = user;
 }
 
@@ -163,9 +167,14 @@ export function createCollab(pages: Pages, notebook: Notebook, owners: Owners, r
     yDocOptions: { gc: true, gcFilter: () => true },
 
     // deskd has already authenticated the session; the token means nothing here. The check is that the page exists,
-    // so a provider can't make rows for a page nobody created.
-    async onAuthenticate({ documentName }) {
-      if (!notebook.page(documentName)) throw { reason: 'not_found' };
+    // so a provider can't make rows for a page nobody created. And on a guild desk a trashed page opens only for a
+    // moderator until the purge (authz-5), as `notebook.page.content` holds it: the caller is the connection's, as of now.
+    async onAuthenticate({ documentName, context }) {
+      const row = notebook.page(documentName);
+      if (!row) throw { reason: 'not_found' };
+      const ctx = context as CollabContext | undefined;
+      const caller = ctx?.who?.caller ?? ctx?.caller ?? OWNER_CALLER;
+      if (row.deleted_at != null && isGuild(caller) && !mayModerate(caller)) throw { reason: FORBIDDEN };
     },
     async onLoadDocument({ documentName, document }) {
       pages.load(documentName, document);
@@ -198,6 +207,8 @@ export function createCollab(pages: Pages, notebook: Notebook, owners: Owners, r
         log('WARN', `page full page=${documentName} update=${payload.length}`);
         throw { code: 4413, reason: PAGE_FULL };
       }
+      // The disk isn't taking writes and what waits in memory has passed its limit: refuse, so nothing more is shown saved.
+      if (pages.refuses(documentName) && updateChanges(payload)) throw { code: 4507, reason: STORAGE_FULL };
       const caller = handling.get(connection) ?? (context as CollabContext | undefined)?.who?.caller ?? OWNER_CALLER;
       if (isGuild(caller)) admit(documentName, document, payload, caller, (context as CollabContext | undefined)?.who?.budget ?? DEFAULT_EDIT_BUDGET);
       // y-protocols catches whatever Yjs throws, logs it, and lets Hocuspocus tell the client it was applied. So the
@@ -211,7 +222,7 @@ export function createCollab(pages: Pages, notebook: Notebook, owners: Owners, r
       }
     },
     async onStoreDocument({ documentName }) {
-      pages.store(documentName);
+      pages.storeQuietly(documentName);
     },
     // The last connection left. This is the end of an editing session, and this store may write its version.
     async beforeUnloadDocument({ documentName }) {

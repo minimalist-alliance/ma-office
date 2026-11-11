@@ -74,6 +74,12 @@ final class TrainingNotebook implements AutoCloseable {
                 reply.put("sid", message.get("sid"));
                 reply.put("data", Map.of("rev", 1));
             }
+            case "health" -> {
+                // The heartbeat's read of the storage state, so it loads here and doesn't wait out its second.
+                reply.put("t", "health");
+                reply.put("ok", true);
+                reply.put("storage", Map.of("state", "ok", "unsavedPages", 0, "unsavedBytes", 0, "refusing", false, "degradedSeconds", 0));
+            }
             default -> {
                 return;
             }

@@ -6,7 +6,6 @@ import type { FilesError } from './api';
 import type { NameProblem } from './paths';
 
 export const FILES_NAME = 'Files';
-export const WAKE = 'Wake your desk';
 export const GUILD_WORDS = "A guild's desk doesn't have Files yet.";
 export const OLD_DESK_WORDS = "This desk can't do Files yet. It will after its next update.";
 export const WAITING_FOR_DESK = 'Waiting for your desk';
@@ -20,6 +19,53 @@ export const SKIPPED_NOTE = (n: number): string => (n === 1 ? '1 item on your dr
 
 export function usageWords(used: number, total: number): string {
   return `${formatBytes(used)} of ${formatBytes(total)} used`;
+}
+
+// ----- A free desk's drive (ADR 0090, the Designer's free-tier draft row 5). The cap is counted in GiB and said as GB.
+const GIB = 1024 ** 3;
+const MIB = 1024 ** 2;
+/** Said to a screen reader after every link that opens in its own tab (the free tier's own copy of this, which isn't in this chunk). */
+export const NEW_TAB = ' (opens in a new tab)';
+export const SEE_MEMBERSHIP = 'See membership';
+
+/** "0 MB" up to "1023 MB", then "1.4 GB". Rounded down below the cap, so a nearly full drive never reads as full. */
+const capSize = (n: number): string => {
+  if (!Number.isFinite(n) || n < GIB) return `${Math.max(0, Math.floor(n / MIB))} MB`;
+  return `${Math.floor((n / GIB) * 10) / 10} GB`;
+};
+
+/** "1.4 GB of 2 GB used", from the desk's own cap and what it counts (the trash and unfinished uploads too). */
+export function capWords(used: number, cap: number): string {
+  const full = used >= cap;
+  return `${full ? capSize(cap) : capSize(used)} of ${capSize(cap)} used`;
+}
+
+/** `over`: more is kept than the cap allows (a step down to a smaller drive). Nothing is deleted; only new writes stop. */
+export type CapState = 'ok' | 'near' | 'full' | 'over';
+export const capState = (used: number, cap: number): CapState => (used > cap ? 'over' : used === cap ? 'full' : used >= cap * 0.9 ? 'near' : 'ok');
+
+/** The over-drive line (billing spec 4.4, Sales' sentence): what's kept, against what the plan's drive holds. */
+export function overDriveWords(used: number, cap: number): string {
+  return `You have ${capSize(used)} in Files, more than ${capSize(cap)}. It all stays readable; to add more, make room or move back up.`;
+}
+
+/** The second line at 90% and when full, or null. `drive` is the free office's (null when it has none to give). */
+export function capNote(state: CapState, drive: { alliance: string; allianceDrive: string | null } | null, over?: { used: number; cap: number }): string | null {
+  if (state === 'over') return over ? overDriveWords(over.used, over.cap) : null;
+  if (state === 'near') return drive?.allianceDrive ? `${drive.alliance} has a ${drive.allianceDrive} drive.` : null;
+  if (state === 'full') {
+    return drive?.allianceDrive
+      ? `Your drive is full. Delete something to make room, or get ${drive.allianceDrive} with ${drive.alliance}.`
+      : 'Your drive is full. Delete something to make room.';
+  }
+  return null;
+}
+
+/** The bar's tooltip and description on a free desk: the parts the cap counts. */
+export function capDetailWords(u: { cap: number; used: number; files: number; trash: number }): string {
+  const parts = [capWords(u.used, u.cap), `Files ${capSize(u.files)}`];
+  if (u.trash > 0) parts.push(`Trash ${capSize(u.trash)}`);
+  return `${parts.join(', ')}. The trash counts toward your drive until it is emptied.`;
 }
 
 /** One decimal from 1 KB up (formatBytes drops it from 10 on, which is what made 34 - 9.7 look like 25). For the breakdown only. */

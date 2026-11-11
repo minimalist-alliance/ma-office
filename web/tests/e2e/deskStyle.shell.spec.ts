@@ -4,13 +4,13 @@
 // here, as a PNG in a data URL, given to the app before it loads (`__maTestDeskStyles`, never in a production build).
 import { deflateSync } from 'node:zlib';
 import { expect, test, type APIRequestContext, type Locator, type Page } from '@playwright/test';
-import { canvasPainted, harness, setTheme, signIn, watchConsole, type ThemeId } from './helpers';
+import { canvasPainted, harness, setTheme, signIn, themeRadio, watchConsole, type ThemeId } from './helpers';
 
 const A = 'd-personal00001';
 const B = 'd-work000000001';
 const ME = 'u-test';
 const THEMES: ThemeId[] = ['light', 'dusk', 'dark'];
-const LABEL: Record<ThemeId, string> = { light: 'Light', dusk: 'Dusk', dark: 'Dark' };
+const LABEL: Record<ThemeId, string> = { light: 'Light', dusk: 'Zen', dark: 'Dark' };
 
 // ----- a test texture: a 256-pixel tile of grain that repeats seamlessly, since every term is periodic in 256.
 
@@ -323,7 +323,7 @@ test.describe('a style on the canvas', () => {
         requestAnimationFrame(loop);
       }, `grain.${theme}`);
       await page.getByRole('button', { name: 'Account' }).click();
-      await page.getByRole('radio', { name: LABEL[theme] }).click();
+      await themeRadio(page, LABEL[theme]).click();
       await page.keyboard.press('Escape');
       await expect(page.locator('html')).toHaveAttribute('data-theme', theme);
       await expect.poll(() => drawnLook(page, A)).toBe(`grain.${theme}`);

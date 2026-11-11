@@ -1,0 +1,54 @@
+# ma-bible-text 2 bsb
+H	GEN	1	1	1	The Creation
+H	GEN	1	1	r	(John 1:1–5; Hebrews 11:1–3)
+V	GEN	1	1	p	In the beginning God created the heavens and the earth.
+F	GEN	1	1	3	Or “When God began to create”
+V	GEN	1	2	-	Now the earth was formless and void, and darkness was over the surface of the deep. And the Spirit of God was hovering over the surface of the waters.
+H	GEN	1	3	2	The First Day
+G	GEN	1	3	4	Or “The Day One”
+V	GEN	1	3	p	And God said, “Let there be light,” and there was light.
+Q	GEN	1	3	0	And God said, “
+Q	GEN	1	3	1	Let there be light,” and there was light.
+V	GEN	1	4-5	-	And God saw that the light was good, and He separated the light from the darkness. God called the light “day,” and the darkness He called “night.”
+V	GEN	2	1	p	Thus the heavens and the earth were completed in all their vast array.
+V	GEN	2	2	-	And by the seventh day God had finished the work He had been doing; so on that day He rested from all His work.
+Q	GEN	2	2	0	And by the seventh day God had finished the work He had been doing;
+Q	GEN	2	2	pi	so on that day He rested from all His work.
+V	GEN	2	4	p	Fixture line — café naïve Élan 𐤀 the LORD’S “quoted” Beth-el and beth el, the Lord’s blessing.
+H	PSA	23	1	1	The LORD Is My Shepherd
+H	PSA	23	1	d	A Psalm of David.
+V	PSA	23	1	pq	The LORD is my shepherd; I shall not want.
+Q	PSA	23	1	1	The LORD is my shepherd;
+Q	PSA	23	1	2	I shall not want.
+V	PSA	23	2	q	He makes me lie down in green pastures; He leads me beside quiet waters.
+Q	PSA	23	2	1	He makes me lie down in green pastures;
+Q	PSA	23	2	2	He leads me beside quiet waters.
+V	PSA	23	3	bq	He restores my soul; He guides me in the paths of righteousness for the sake of His name.
+Q	PSA	23	3	b1	He restores my soul;
+Q	PSA	23	3	2	He guides me in the paths of righteousness
+Q	PSA	23	3	0	for the sake of His name.
+F	PSA	23	3	52	Or “in right paths”
+V	SNG	2	1	pq	I am a rose of Sharon, a lily of the valleys.
+Q	SNG	2	1	1	I am a rose of Sharon,
+H	SNG	2	1	2	The Beloved
+G	SNG	2	1	4	Or “The Bride”
+Q	SNG	2	1	b2	a lily of the valleys.
+H	JHN	3	1	1	Jesus and Nicodemus
+V	JHN	3	1	p	Now there was a man of the Pharisees named Nicodemus, a leader of the Jews.
+V	JHN	3	16	p	For God so loved the world that He gave His one and only Son, that everyone who believes in Him shall not perish but have eternal life.
+F	JHN	3	16	62	Or “His only begotten Son”
+V	JHN	3	17	-	For God did not send His Son into the world to condemn the world, but to save the world through Him.
+H	1CO	13	4	1	Love
+V	1CO	13	4	p	Love is patient, love is kind. It does not envy, it does not boast, it is not proud.
+V	1CO	13	5	-	It is not rude, it is not self-seeking, it is not easily angered, it keeps no record of wrongs.
+V	1CO	13	6	-	Love takes no pleasure in evil, but rejoices in the truth.
+V	1CO	13	7	-	It bears all things, believes all things, hopes all things, endures all things.
+V	1CO	13	13	p	And now these three remain: faith, hope, and love; but the greatest of these is love.
+V	1JN	4	8	p	Whoever does not love does not know God, because God is love.
+V	JUD	1	1	p	Jude, a servant of Jesus Christ and a brother of James, to those who are called.
+V	JUD	1	5	p	Although you are fully aware of this, I want to remind you that Jesus first delivered His people out of the land of Egypt.
+V	REV	22	21	p	The grace of the Lord Jesus be with all the saints. Amen.
+Q	REV	22	21	0	The grace of the Lord Jesus be with all the saints.
+Q	REV	22	21	d	Amen.
+H	REV	22	21	e	Fixture end note after the last verse.
+G	REV	22	21	8	A note on the end note

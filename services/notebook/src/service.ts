@@ -1,11 +1,13 @@
 // The service as a whole: what start and stop do, in order.
 import { mkdirSync } from 'node:fs';
+import * as Y from 'yjs';
 import { join } from 'node:path';
 import type { Hocuspocus } from '@hocuspocus/server';
 import { createCollab } from './collab.ts';
 import { Db, SCHEMA_VERSION } from './db.ts';
 import { errName, log } from './log.ts';
 import { Members } from './members.ts';
+import { holdsNewerThan } from './model.ts';
 import { Notebook } from './notebook.ts';
 import { Owners, Removals } from './owners.ts';
 import { DEFAULT_PAGES_OPTIONS, Pages } from './pages.ts';
@@ -27,6 +29,9 @@ export interface ServiceOptions {
   intervalMs?: number;
   readableDebounceMs?: number;
   pageFullBytes?: number;
+  backlogPageBytes?: number;
+  backlogTotalBytes?: number;
+  refuseAfterMs?: number;
   debugStores?: boolean;
 }
 
@@ -63,6 +68,9 @@ export async function startService(o: ServiceOptions): Promise<Service> {
     sessionIdleMs: o.sessionIdleMs ?? DEFAULT_PAGES_OPTIONS.sessionIdleMs,
     intervalMs: o.intervalMs ?? DEFAULT_PAGES_OPTIONS.intervalMs,
     pageFullBytes: o.pageFullBytes ?? DEFAULT_PAGES_OPTIONS.pageFullBytes,
+    backlogPageBytes: o.backlogPageBytes ?? DEFAULT_PAGES_OPTIONS.backlogPageBytes,
+    backlogTotalBytes: o.backlogTotalBytes ?? DEFAULT_PAGES_OPTIONS.backlogTotalBytes,
+    refuseAfterMs: o.refuseAfterMs ?? DEFAULT_PAGES_OPTIONS.refuseAfterMs,
     debugStores: o.debugStores ?? DEFAULT_PAGES_OPTIONS.debugStores,
     onStored: () => undefined,
     onContentChange: (pageId) => readable?.pageChanged(pageId),
@@ -81,10 +89,24 @@ export async function startService(o: ServiceOptions): Promise<Service> {
   readable = new Readable(o.dataDir, db, { debounceMs: o.readableDebounceMs ?? 30_000, rev: () => notebook.rev });
   socket = new SocketServer({
     path: o.socketPath,
-    methods: methods({ db, notebook, pages, collab, owners, members, removals }),
+    methods: methods({ db, notebook, pages, collab, owners, members, removals, now }),
     collab,
     members,
     rev: () => notebook.rev,
+    // ADR 0091's guard: an older editor's change to a page holding what it would drop. The live page if it's open, else as stored.
+    outdated: (pageId, schema) => {
+      const open = pages.open.get(pageId);
+      if (open) return holdsNewerThan(open.doc, schema);
+      const doc = new Y.Doc({ gc: true });
+      try {
+        pages.readInto(pageId, doc);
+        return holdsNewerThan(doc, schema);
+      } catch {
+        return false; // no such page: Hocuspocus refuses it on its own
+      } finally {
+        doc.destroy();
+      }
+    },
     health: () => {
       const count = db.get<{ n: number }>('SELECT count(*) AS n FROM pages')?.n ?? 0;
       const m = process.memoryUsage();
@@ -95,6 +117,7 @@ export async function startService(o: ServiceOptions): Promise<Service> {
         pages: count,
         open: pages.open.size,
         sessions: socket?.sessionCount ?? 0,
+        storage: pages.storage(),
         memory: { rss: m.rss, heapUsed: m.heapUsed, heapTotal: m.heapTotal, external: m.external, arrayBuffers: m.arrayBuffers },
       };
     },

@@ -39,11 +39,20 @@ const (
 
 // Config is desk-rtc's configuration.
 type Config struct {
-	SocketPath     string
-	SocketGroup    string
-	DataDir        string
-	Bind           string // an IPv4 address, or "auto" for the address of the default route
-	Port           int
+	SocketPath  string
+	SocketGroup string
+	DataDir     string
+	Bind        string // an IPv4 address, or "auto" for the address of the default route
+	Port        int
+	// TCPPort is the passive ICE-TCP listener's port when it isn't Port's (shared.go: a shared host's slot takes UDP on
+	// its own port and TCP on 443, which the host's demux shares between slots). 0 means Port.
+	TCPPort int
+	// SharedSlot is the slot of a shared desk host this desk runs on, 1 to 32, or 0 for a desk of its own (shared.go).
+	// With it every local ICE ufrag starts s<kk>, so the host's TCP 443 demux can route a connection to this slot.
+	SharedSlot int
+	// PublicIPv4 is the address both candidates name when it isn't configure's: a shared host's own public IPv4, which
+	// desk-host reads from the host's IMDS at each start (shared.go). Empty means configure's publicIpv4, as on any desk.
+	PublicIPv4     string
 	ConsentTimeout time.Duration
 	Version        string
 	Log            *slog.Logger
@@ -52,6 +61,9 @@ type Config struct {
 	// Empty means no video.
 	StreamSocket string
 	StreamUID    int
+	// ProfileFile is where desk-egress names the stream's allowance profile (production: /run/desk-egress/profile),
+	// read at start and each time desk-stream connects (quality.go). Empty, or no file there, is the normal picture.
+	ProfileFile string
 	// Display is the X display to inject into (section 8.6) and hold the clipboard on. Empty means input is
 	// decoded and dropped, and the clipboard answers no_display.
 	Display string
@@ -124,6 +136,9 @@ func New(cfg Config) (*Server, error) {
 	if cfg.GuildMaxSessions <= 0 {
 		cfg.GuildMaxSessions = defaultGuildMaxSessions
 	}
+	if err := validateShared(cfg); err != nil {
+		return nil, err
+	}
 	s := &Server{cfg: cfg, log: cfg.Log, pionLogs: logging.NewDefaultLoggerFactory(), memberTotals: map[string]*memberTotal{},
 		budget: newGuildBudget(cfg.GuildRxBudget, cfg.GuildTxSoft, cfg.GuildTxBudget)}
 
@@ -194,7 +209,7 @@ func (s *Server) bindICE() error {
 	_ = udpConn.SetReadBuffer(udpSocketBuffer)
 	_ = udpConn.SetWriteBuffer(udpSocketBuffer)
 
-	tcpLn, err := net.ListenTCP("tcp4", &net.TCPAddr{IP: s.bindIP, Port: s.cfg.Port})
+	tcpLn, err := net.ListenTCP("tcp4", &net.TCPAddr{IP: s.bindIP, Port: s.tcpPort()})
 	if err != nil {
 		_ = udpConn.Close()
 
@@ -629,9 +644,10 @@ func (l *link) handleConfigure(m *rtcsock.Message) {
 	} else if limit <= 0 || limit > clientSessionLimit {
 		limit = clientSessionLimit
 	}
+	public := l.srv.candidateIP(ip)
 	l.mu.Lock()
 	l.configured = true
-	l.publicIP = ip.String()
+	l.publicIP = public
 	l.maxSessions = limit
 	l.guild = guild
 	l.perMember = perMember
@@ -656,7 +672,7 @@ func (l *link) handleConfigure(m *rtcsock.Message) {
 			"maxSessionsPerMember", perMember, "credit", credit, "tcpGatePlaces", gate.total, "tcpGatePerNetwork", gate.perNet)
 		reply.DeskKind, reply.MaxSessions, reply.MaxSessionsPerMember, reply.Credit = rtcsock.DeskKindGuild, limit, perMember, credit
 	} else {
-		l.srv.log.Info("configured", "publicIpv4", ip.String(), "maxSessions", limit)
+		l.srv.log.Info("configured", "publicIpv4", ip.String(), "candidateIpv4", public, "maxSessions", limit)
 	}
 	l.sendJSON(reply)
 	l.sendJSON(l.srv.hub.stateMessage())

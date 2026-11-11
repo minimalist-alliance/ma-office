@@ -25,12 +25,66 @@ const NOT_READY_MAX_MS = 10_000;
 
 /**
  * Until the next `connect` when the last said the desk isn't ready and set no pace of its own. `checks`
- * counts those answers since the last open. A wake stays at 3 s: a link that has had no session has no
- * watch, so no `phase: ready` is coming, and these checks are how it finds out.
+ * counts those answers since the last open. A wake nobody here is waiting for (another tab's, say) stays
+ * at 3 s; one a member asked for here goes by `wakePollMs`.
  */
 export function notReadyRetryMs(checks: number, waking: boolean): number {
   return waking ? NOT_READY_FIRST_MS : Math.min(NOT_READY_FIRST_MS * 1.5 ** checks, NOT_READY_MAX_MS);
 }
+
+/**
+ * A wake the member asked for in this tab asks `connect` once a second (TD-227 part 3): the desk is up at its
+ * hello, and a 3 s poll found out a median 2.3 s later. The gateway's `phase: ready` push (a watch with the
+ * wake's own token) usually ends the wait first; this is its fallback.
+ */
+export const WAKE_POLL_MS = 1_000;
+/** Fast for this long into a wake, then `connect`'s own pace. A wake takes 20 to 30 s, a desk's first boot about 45. */
+export const WAKE_FAST_FOR_MS = 90_000;
+/** `connect` says 3 s for every wake (services/desks `deskTokenAnswer`). More than that is a real ask to slow down. */
+const WAKE_USUAL_PACE_MS = 3_000;
+
+/**
+ * Until the next `connect` in a wake the member asked for here, from what the last one said. `paceMs` is its
+ * `retryAfterSeconds` (or `Retry-After`), 0 if none; `wakeAgeMs` how long since `start: true` went out. A queue
+ * for capacity, and any pace above the usual 3 s, are kept; so is the pace once the wake has run long.
+ */
+export function wakePollMs(i: { phase: string | null; paceMs: number; wakeAgeMs: number }): number {
+  if (i.phase === 'queued' || i.paceMs > WAKE_USUAL_PACE_MS || i.wakeAgeMs > WAKE_FAST_FOR_MS) return i.paceMs || NOT_READY_FIRST_MS;
+  return WAKE_POLL_MS;
+}
+
+/**
+ * Every `connect` this tab sends, over a sliding minute, so a fast poll stays inside the API's limit for a
+ * member: 30 a minute (ma-platform contract errors.md, "Rate limits"), however many desks are waking. A poll
+ * waits for room; a member's own press and a token refresh never do. 24 leaves room for those. A clock that
+ * went back forgets what it counted, rather than holding polls for that long.
+ */
+export class CallWindow {
+  private readonly at: number[] = [];
+  constructor(
+    readonly max: number,
+    readonly windowMs: number,
+  ) {}
+
+  note(now: number): void {
+    this.trim(now);
+    this.at.push(now);
+  }
+
+  /** How long until one more call fits: 0 if it does now. */
+  waitMs(now: number): number {
+    this.trim(now);
+    const leaving = this.at[this.at.length - this.max];
+    return leaving === undefined ? 0 : leaving + this.windowMs - now;
+  }
+
+  private trim(now: number): void {
+    if ((this.at[this.at.length - 1] ?? -Infinity) > now) this.at.length = 0;
+    while ((this.at[0] ?? Infinity) <= now - this.windowMs) this.at.shift();
+  }
+}
+
+export const CONNECT_CALLS_PER_MINUTE = 24;
 
 /** `CLOSE {code}` on `ctl`. */
 export function closeCodeAction(code: number): CloseAction {

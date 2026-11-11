@@ -26,6 +26,8 @@ const { api, ApiError, peers, gateway } = vi.hoisted(() => {
       remove() {},
       fallbackUrl() {},
       kick() {},
+      isUp: () => true,
+      ready: () => Promise.resolve(),
       serial: 1,
       send(m: { type: string; sessionId?: string; reason?: string }): boolean {
         sent.push(m);
@@ -109,8 +111,10 @@ async function openLink(): Promise<Link> {
 const lastPeer = (): { events: PeerEvents } => peers[peers.length - 1] as { events: PeerEvents };
 const sessionsOpened = (): number => gateway.request.mock.calls.filter(([m]) => (m as { type: string }).type === 'session.open').length;
 
+// Each test an hour on from the last, so the tab's `connect` budget starts empty.
+let epoch = Date.UTC(2030, 0, 1);
 beforeEach(() => {
-  vi.useFakeTimers();
+  vi.useFakeTimers({ now: (epoch += 3_600_000) });
   starts = [];
   asks = [];
   peers.length = 0;
@@ -390,20 +394,21 @@ describe('a wake', () => {
     asks = [];
   };
 
-  it('on a link that has had no session: no watch, so no push, and its last step stays at 3 s', async () => {
+  it("on a link that has had no session: it watches with the wake's own token, and polls its last step once a second (TD-227 part 3)", async () => {
     answer = STOPPED;
     const link = new RtcDeskLink('d-1');
     gateway.answer = (sessionId) => link.onMessage({ type: 'signal', sessionId, data: { type: 'answer', sdp: 'answer' } });
     link.connect();
     await settle();
     await wakeFromRest(link);
-    expect(gateway.sent.filter((m) => m.type === 'watch')).toEqual([]);
-    await settle(30_000);
-    expect(new Set(gaps())).toEqual(new Set([3_000]));
+    expect(gateway.sent.filter((m) => m.type === 'watch')).toEqual([{ type: 'watch', id: 'watch:d-1', deskId: 'd-1', deskToken: 't' }]);
+    await settle(10_000);
+    expect(new Set(gaps())).toEqual(new Set([1_000]));
 
     answer = READY;
-    await settle(3_000);
+    await settle(1_000);
     expect(link.status()).toBe('open');
+    expect(gateway.sent.filter((m) => m.type === 'watch')).toHaveLength(2); // again, with the session's own token
   });
 
   it('with a push: phase: ready ends its last step at once', async () => {

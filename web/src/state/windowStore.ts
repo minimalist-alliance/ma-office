@@ -3,6 +3,10 @@ import { create } from 'zustand';
 import { readJson, writeJson } from '../lib/util';
 import { baseApp, type AppId, type CoreAppId, type Rect } from '../canvas/layout';
 import { adultOnly, mayHaveApp } from '../platform/age';
+import { isPhone } from '../canvas/phone';
+import { carouselApps, carouselOn } from '../carousel/model';
+import { setPhoneShown } from '../carousel/phone';
+import { setCarousel, useLayoutStore } from './layoutStore';
 
 export type WindowMode = 'window' | 'full';
 
@@ -77,15 +81,33 @@ function saveRects(): void {
   writeJson(RECTS_KEY, savedRects);
 }
 
-export function openWindow(deskId: string, app: AppId, itemId: string): void {
-  if (!mayHaveApp(app)) return; // the layout has no tile for it, so this is only the last word
+/**
+ * Where an app opened: in its desk's carousel (`carousel/`), or as a window. Null when it can't open here at all.
+ */
+export type Opened = 'carousel' | 'window' | null;
+
+export function openWindow(deskId: string, app: AppId, itemId: string): Opened {
+  if (!mayHaveApp(app)) return null; // the layout has no tile for it, so this is only the last word
+  // On a desk in carousel mode an app's window is its place in the carousel: opening it (a tile, the hidden list, a
+  // note's link, an agent) moves the carousel there, so the same app never runs twice. On a phone, which has no windows,
+  // every app the desk holds opens full screen in the phone's own carousel with the thumb row (the Product Designer's
+  // option 3), which is never saved: the desk stays exactly as a larger screen has it (`carousel/phone.ts`).
+  const desk = useLayoutStore.getState().desks[deskId];
+  if (desk && isPhone() && carouselApps(desk).includes(app)) {
+    setPhoneShown(deskId, app);
+    return 'carousel';
+  }
+  if (desk && carouselOn(desk) && carouselApps(desk).includes(app)) {
+    setCarousel(deskId, { on: true, app });
+    return 'carousel';
+  }
   const key = windowKey(deskId, app);
   const { windows } = useWindowStore.getState();
   const cur = windows[key];
   topZ += 1;
   if (cur && !cur.closing) {
     useWindowStore.setState({ windows: { ...windows, [key]: { ...cur, z: topZ } }, active: key });
-    return;
+    return 'window';
   }
   const openHere = Object.values(windows).filter((w) => w.deskId === deskId && !w.closing).length;
   const saved = savedRects[key];
@@ -94,6 +116,7 @@ export function openWindow(deskId: string, app: AppId, itemId: string): void {
     windows: { ...windows, [key]: { key, deskId, app, itemId, mode, rect, z: topZ, closing: false } },
     active: key,
   });
+  return 'window';
 }
 
 export function raiseWindow(key: string): void {

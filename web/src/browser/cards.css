@@ -1,0 +1,183 @@
+/* The picture's one card (TD-225's look): at the picture's top, centered, in the window's own colors; no red. Every color
+   is a token. The protected-playback note (`ProtectedNote.tsx`) and Open on this device's first-use card are one line; the
+   desk's hand-off (`HandoffNote.tsx`, #9) is the two-line form, from the Product Designer's desk-browser.css section 2. */
+.br-card {
+  position: absolute;
+  left: 50%;
+  top: 10px;
+  transform: translateX(-50%);
+  z-index: 2;
+  display: flex;
+  align-items: center;
+  gap: 10px;
+  width: max-content;
+  max-width: calc(100% - 24px);
+  padding: 8px 8px 8px 14px;
+  border: 1px solid var(--ma-border);
+  border-radius: 12px;
+  background: var(--ma-surface-window);
+  color: var(--ma-text-secondary);
+  font-size: 13px;
+  line-height: 18px;
+  animation: br-dl-in 160ms ease-out;
+}
+.br-card-one {
+  min-width: 0;
+}
+.br-card-link {
+  flex: none;
+  padding: 0;
+  border: 0;
+  background: none;
+  color: var(--ma-text-link);
+  font: inherit;
+  text-decoration: underline;
+  cursor: pointer;
+}
+.br-card-x {
+  flex: none;
+  display: inline-flex;
+  align-items: center;
+  justify-content: center;
+  width: 24px;
+  height: 24px;
+  border: 0;
+  border-radius: 6px;
+  background: none;
+  color: var(--ma-text-tertiary);
+  cursor: pointer;
+}
+.br-card-x:hover {
+  color: var(--ma-text-primary);
+}
+.br-card-link:focus-visible,
+.br-card-x:focus-visible {
+  outline: 2px solid var(--ma-focus-ring);
+  outline-offset: 2px;
+}
+
+/* The desk hands over a link (#9): the two-line form. */
+.br-card.two-line {
+  align-items: center;
+  gap: 12px;
+  max-width: min(600px, calc(100% - 24px));
+  padding: 8px 12px 8px 8px;
+}
+.br-card-chip {
+  flex: none;
+  display: grid;
+  place-items: center;
+  width: 32px;
+  height: 32px;
+  border-radius: 999px;
+  background: var(--ma-surface-sunken);
+  color: var(--ma-glyph);
+}
+.br-card-text {
+  flex: 1;
+  min-width: 0;
+  display: grid;
+  gap: 1px;
+}
+.br-card-say {
+  color: var(--ma-text-primary);
+  font-size: 13px;
+  line-height: 18px;
+  font-weight: 500;
+}
+/* The page's address: untrusted text (displayText), shown exactly, never inside our sentence. */
+.br-card-addr {
+  color: var(--ma-text-secondary);
+  font-size: 12.5px;
+  line-height: 17px;
+  white-space: nowrap;
+  overflow: hidden;
+  text-overflow: ellipsis;
+  direction: ltr;
+  unicode-bidi: isolate;
+}
+.br-card-acts {
+  flex: none;
+  display: flex;
+  align-items: center;
+  gap: 14px;
+  margin-left: 4px;
+}
+.br-card-go {
+  padding: 0;
+  border: 0;
+  background: none;
+  color: var(--ma-text-link);
+  font: inherit;
+  font-size: 13px;
+  font-weight: 500;
+  text-decoration: underline;
+  text-underline-offset: 2px;
+  white-space: nowrap;
+  cursor: pointer;
+}
+.br-card-no {
+  padding: 0;
+  border: 0;
+  background: none;
+  color: var(--ma-text-tertiary);
+  font: inherit;
+  font-size: 13px;
+  white-space: nowrap;
+  cursor: pointer;
+}
+.br-card-no:hover {
+  color: var(--ma-text-primary);
+}
+.br-card-go:focus-visible,
+.br-card-no:focus-visible {
+  outline: 2px solid var(--ma-focus-ring);
+  outline-offset: 2px;
+  border-radius: 4px;
+}
+@media (max-width: 599px) {
+  .br-card.two-line {
+    left: 8px;
+    right: 8px;
+    width: auto;
+    max-width: none;
+    transform: none;
+    flex-wrap: wrap;
+    align-items: flex-start;
+    row-gap: 2px;
+  }
+  .br-card.two-line .br-card-addr {
+    white-space: normal;
+    overflow-wrap: anywhere;
+    display: -webkit-box;
+    -webkit-box-orient: vertical;
+    -webkit-line-clamp: 2;
+  }
+  .br-card.two-line .br-card-acts {
+    flex-basis: 100%;
+    justify-content: flex-end;
+    margin: 0;
+  }
+}
+@media (pointer: coarse) {
+  .br-card-go,
+  .br-card-no {
+    min-width: 44px;
+    min-height: 44px;
+  }
+}
+@media (prefers-reduced-motion: reduce) {
+  .br-card {
+    animation: none;
+  }
+}
+/* Open on this device's first-use card: on a phone it wraps, 8 px from each side. */
+@media (max-width: 599px) {
+  .br-card.first-use {
+    left: 8px;
+    right: 8px;
+    width: auto;
+    max-width: none;
+    transform: none;
+  }
+}

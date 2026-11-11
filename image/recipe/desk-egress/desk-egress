@@ -17,6 +17,7 @@ guild's budget replaces the member's stream steps and desk-rtc clamp: one day li
 """
 import configparser
 import json
+import math
 import os
 import signal
 import socket
@@ -32,13 +33,23 @@ TC = "/usr/sbin/tc"
 FAIL_OPEN_TICKS = 10
 PROFILE_HOLD_S = 3600  # A softer picture comes at once. A sharper one waits, so a total near a line can't keep pausing the picture.
 PROFILES = ("normal", "capped", "deep")
+# What one viewer's stream would be in deep, as a share of what it is in each profile: the profiles' hard caps, video ceiling
+# plus sound and packet headers (ADR 0036 section 1: High's 3.75 GB/h, capped 1.89, deep 1.20). Exact at the caps, where the
+# day lines matter. Under normal at Low or Medium the stream is already nearer deep's, so the estimate is low there; the
+# lines' room covers it (docs/sub-status/s29-capped-stream.md).
+DEEP_SHARE = {"normal": 1.20 / 3.75, "capped": 1.20 / 1.89, "deep": 1.0}
+# Back to normal only if the window could take normal at Max (5.55 GB/h, ADR 0039), the most it can send against the 3.75
+# DEEP_SHARE assumes. Seen from capped, Max and High look alike (both are held to the capped picture), so without this a
+# member at Max would step down, look light, step back up and down again every hour.
+MAX_OVER_HIGH = 5.55 / 3.75
+RATE_TAU_S = 900.0  # The stream's rate is a 15-minute moving average, so one keyframe or a pause in a video doesn't swing a step.
 SAVED_FIELDS = {"level": float, "slowed": bool, "day_deep": bool, "clamped": bool, "month": str, "month_bytes": int, "profile_since": float, "updated": float}
 # Section 5's numbers. /etc/ma/egress.conf overrides them, and a bad or missing one is the value here.
 DEFAULTS = {
     "interface": "ens5", "tick_seconds": 60.0,
     "stream_mbps": 60.0, "root_mbps": 2.0, "other_mbps": 100.0,
     "bucket_gb": 30.0, "refill_mbps": 1.0, "reopen_gb": 1.0, "slowed_root_mbps": 0.25, "slowed_other_mbps": 0.75,
-    "capped_month_gb": 100.0, "capped_day_gb": 100.0, "deep_month_gb": 500.0, "deep_day_gb": 120.0, "deep_day_release_gb": 100.0,
+    "capped_month_gb": 100.0, "capped_day_gb": 100.0, "deep_month_gb": 500.0, "deep_day_gb": 105.0, "deep_day_release_gb": 95.0,
     "clamp_day_gb": 135.0, "clamp_day_release_gb": 120.0, "clamped_stream_mbps": 1.0,
 }
 # minor: what never changes, and the leaf. Rate equals ceiling, so nothing borrows. cburst too, because a class also needs the
@@ -128,6 +139,18 @@ def classes_for(cfg):
     return GUILD_CLASSES if cfg.get("guild") else CLASSES
 
 
+def ahead_of(windows, now, rate):
+    """The most the 24 h window would hold from now on if `rate` bytes a second kept coming and nothing else did: its highest
+    point is just before one of its 5-minute slots ages out, or a whole day of `rate` once they all have. Never under what
+    it holds now."""
+    total = sum(n for _, n in windows)
+    best, gone = float(total), 0
+    for slot, n in sorted(windows):
+        best = max(best, total - gone + rate * max(0.0, slot + 86400 - now))
+        gone += n
+    return max(best, rate * 86400)
+
+
 class Budget:
     """Layers 2 to 5, in bytes. It holds no I/O: it takes the clock and tc's counters, so the tests can run a month in a second."""
 
@@ -138,6 +161,8 @@ class Budget:
         self.slowed = self.day_deep = self.clamped = self.guarded = False
         self.month, self.month_bytes, self.windows, self.last = "", 0, [], {}
         self.profile, self.profile_since, self.updated = "normal", now, now
+        # desk-rtc's class alone, by 5 minutes over 24 h, for the clamp; and the stream's rate as deep would send it, in bytes a second.
+        self.stream_windows, self.deep_rate, self.ahead = [], 0.0, 0.0
         if saved:
             try:
                 fresh = {k: kind(saved[k]) for k, kind in SAVED_FIELDS.items()}
@@ -149,6 +174,14 @@ class Budget:
                     self.guarded = saved.get("guarded") is True
             except (KeyError, TypeError, ValueError, AttributeError) as e:
                 log(f"bad state, starting over: {e!r}", 4)
+            # S-29's two. A state from before has neither and keeps the rest: the clamp's window starts empty and the rate at
+            # 0, which a few ticks of streaming fill.
+            try:
+                self.stream_windows = [[float(t), int(n)] for t, n in saved.get("stream_windows", [])]
+                self.deep_rate = max(0.0, float(saved.get("deep_rate", 0.0)))
+            except (TypeError, ValueError, AttributeError) as e:
+                self.stream_windows, self.deep_rate = [], 0.0
+                log(f"bad stream window in state, starting it over: {e!r}", 4)
         if self.guild:  # No stream and no clamp on a Guild Desk: whatever a member's boot saved of them goes.
             self.profile, self.day_deep, self.clamped = "normal", False, False
 
@@ -183,15 +216,32 @@ class Budget:
             # for the guild: past it, voice and desk-rtc's class slow down until the 24 h total is under the release line.
             self.guarded = day >= c["guild_day_gb"] * GB or (self.guarded and day >= c["guild_day_release_gb"] * GB)
             return
-        # Layers 3 to 5.
-        self.day_deep = day >= c["deep_day_gb"] * GB or (self.day_deep and day >= c["deep_day_release_gb"] * GB)
-        self.clamped = day >= c["clamp_day_gb"] * GB or (self.clamped and day >= c["clamp_day_release_gb"] * GB)
+        # Layer 5, the clamp, is for a broken desk-rtc, so it counts desk-rtc's class alone (S-29, 16 D): a big upload or the
+        # Browser beside honest viewers is the bucket's business, never a reason to hold their video to 1 Mbit.
+        stream = deltas.get("10", 0)
+        if self.stream_windows and self.stream_windows[-1][0] == slot:
+            self.stream_windows[-1][1] += stream
+        else:
+            self.stream_windows.append([slot, stream])
+        self.stream_windows = [w for w in self.stream_windows if now - 86400 < w[0] <= now]
+        stream_day = sum(w[1] for w in self.stream_windows)
+        self.clamped = stream_day >= c["clamp_day_gb"] * GB or (self.clamped and stream_day >= c["clamp_day_release_gb"] * GB)
+        # Layers 3 and 4 hold the guard's day and month lines, which count everything, so they count every class. A day step
+        # comes while it can still hold its line: `ahead` is the most the last 24 h would reach if the stream went deep now and
+        # stayed there, so two or three viewers step down before their first hours fill the window, not after (S-29).
+        if elapsed > 0:
+            seen = stream * DEEP_SHARE[self.profile] / elapsed  # sent under the profile in effect since the last tick
+            self.deep_rate += (seen - self.deep_rate) * (1 - math.exp(-elapsed / RATE_TAU_S))
+        self.ahead = ahead_of(self.windows, now, self.deep_rate)
+        self.day_deep = self.ahead >= c["deep_day_gb"] * GB or (self.day_deep and self.ahead >= c["deep_day_release_gb"] * GB)
         if self.day_deep or self.month_bytes >= c["deep_month_gb"] * GB:
             want = "deep"
-        elif day >= c["capped_day_gb"] * GB or self.month_bytes >= c["capped_month_gb"] * GB:
+        elif self.ahead >= c["capped_day_gb"] * GB or self.month_bytes >= c["capped_month_gb"] * GB:
             want = "capped"
         else:
             want = "normal"
+        if want == "normal" and self.profile != "normal" and ahead_of(self.windows, now, self.deep_rate * MAX_OVER_HIGH) >= c["capped_day_gb"] * GB:
+            want = "capped"
         softer = PROFILES.index(want) > PROFILES.index(self.profile)
         if want != self.profile and (softer or now - self.profile_since >= PROFILE_HOLD_S):
             self.profile, self.profile_since = want, now
@@ -212,6 +262,8 @@ class Budget:
              "clamped": self.clamped, "profile": self.profile, "profile_since": self.profile_since}
         if self.guild:
             s["guarded"] = self.guarded
+        else:
+            s["stream_windows"], s["deep_rate"] = self.stream_windows, self.deep_rate
         return s
 
 

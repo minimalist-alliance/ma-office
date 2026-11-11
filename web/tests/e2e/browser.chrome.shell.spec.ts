@@ -111,7 +111,7 @@ for (const theme of ['light', 'dusk', 'dark'] as ThemeId[]) {
     await setTheme(page, theme);
     await open(page);
     await setTabs(page, [tab({ active: false }), tab({ tabId: 't2', title: 'Second', url: 'https://example.net/', active: true }), tab({ tabId: 't3', title: 'Third', active: false })]);
-    await expect(page.getByRole('tab', { name: 'Second' })).toHaveAttribute('aria-selected', 'true');
+    await expect(page.getByRole('group', { name: 'Tabs on this desk' }).getByRole('button', { name: 'Second', exact: true })).toHaveAttribute('aria-current', 'true');
     const look = await tabs(page).evaluateAll((els) =>
       els.map((el) => {
         const cs = getComputedStyle(el);
@@ -234,8 +234,8 @@ test('tabs: switch, close, new. It answers at once, and the snapshot has the las
   await open(page);
   await setTabs(page, [tab({}), tab({ tabId: 't2', title: 'Second', url: 'https://example.net/', active: false })]);
   await expect(tabs(page)).toHaveCount(2);
-  await page.getByRole('tab', { name: 'Second' }).click();
-  await expect(page.getByRole('tab', { name: 'Second' })).toHaveAttribute('aria-selected', 'true');
+  await page.getByRole('group', { name: 'Tabs on this desk' }).getByRole('button', { name: 'Second', exact: true }).click();
+  await expect(page.getByRole('group', { name: 'Tabs on this desk' }).getByRole('button', { name: 'Second', exact: true })).toHaveAttribute('aria-current', 'true');
   await expect(address(page)).toHaveValue('https://example.net/');
   expect((await calls(page, 'browser.tab.activate'))[0]?.p).toEqual({ tabId: 't2' });
 
@@ -267,7 +267,7 @@ test('a dead tabId is not a problem: the list is read again', async ({ page }) =
     const c = (window as unknown as Win).__maDeskMock;
     c.tabs = [{ ...(c.tabs[0] as Tab), tabId: 'new-1' }];
   });
-  await page.getByRole('tab', { name: 'Second' }).click();
+  await page.getByRole('group', { name: 'Tabs on this desk' }).getByRole('button', { name: 'Second', exact: true }).click();
   await expect(tabs(page)).toHaveCount(1);
   await expect(page.getByTestId('browser-notice')).toHaveCount(0);
 });
@@ -328,8 +328,8 @@ test.describe('when deskd cannot tell which tab is on screen', () => {
     expect((await calls(page, 'browser.tab.list')).length).toBe(listsBefore + 1);
     await expect(address(page)).toHaveValue('example.com/typed');
 
-    await page.getByRole('tab', { name: 'Second' }).click();
-    await expect(page.getByRole('tab', { name: 'Second' })).toHaveAttribute('aria-selected', 'true');
+    await page.getByRole('group', { name: 'Tabs on this desk' }).getByRole('button', { name: 'Second', exact: true }).click();
+    await expect(page.getByRole('group', { name: 'Tabs on this desk' }).getByRole('button', { name: 'Second', exact: true })).toHaveAttribute('aria-current', 'true');
     await expect(address(page)).toHaveValue('example.com/typed');
 
     // And it goes once things are right, then gives way to where the page really is.
@@ -427,9 +427,9 @@ test.describe('when the page may have taken it and did not answer', () => {
     await setTabs(page, [tab({}), tab({ tabId: 't2', title: 'Second', url: 'https://example.net/', active: false })]);
     await expect(tabs(page)).toHaveCount(2);
     await refuse(page, 'browser.tab.activate', 'unavailable', MAY);
-    await page.getByRole('tab', { name: 'Second' }).click();
+    await page.getByRole('group', { name: 'Tabs on this desk' }).getByRole('button', { name: 'Second', exact: true }).click();
     await expect(page.getByTestId('browser-notice')).toHaveText(LINE);
-    await expect(page.getByRole('tab', { name: 'Example page' })).toHaveAttribute('aria-selected', 'true');
+    await expect(page.getByRole('group', { name: 'Tabs on this desk' }).getByRole('button', { name: 'Example page', exact: true })).toHaveAttribute('aria-current', 'true');
     await page.waitForTimeout(1_500);
     expect(await calls(page, 'browser.tab.activate')).toHaveLength(1);
   });
@@ -521,7 +521,7 @@ test.describe('permission', () => {
 
 test.describe('a tab change the topic has not caught up with', () => {
   const two = [tab({}), tab({ tabId: 't2', title: 'Second', url: 'https://example.net/', active: false })];
-  const second = (page: Page) => page.getByRole('tab', { name: 'Second' });
+  const second = (page: Page) => page.getByRole('group', { name: 'Tabs on this desk' }).getByRole('button', { name: 'Second', exact: true });
   const slowTopic = (page: Page, ms: number): Promise<void> =>
     page.evaluate((delay) => {
       (window as unknown as Win).__maDeskMock.topicDelayMs = delay;
@@ -537,13 +537,13 @@ test.describe('a tab change the topic has not caught up with', () => {
     await expect(tabs(page)).toHaveCount(2);
     await slowTopic(page, 800);
     await second(page).click();
-    await expect(second(page)).toHaveAttribute('aria-selected', 'true');
+    await expect(second(page)).toHaveAttribute('aria-current', 'true');
     await staleSnapshot(page);
     await page.waitForTimeout(300);
-    await expect(second(page)).toHaveAttribute('aria-selected', 'true');
+    await expect(second(page)).toHaveAttribute('aria-current', 'true');
     await expect(address(page)).toHaveValue('https://example.net/');
     await page.waitForTimeout(800);
-    await expect(second(page)).toHaveAttribute('aria-selected', 'true');
+    await expect(second(page)).toHaveAttribute('aria-current', 'true');
   });
 
   test('if nothing ever agrees, past the hold the desk is asked, and it has the last word', async ({ page }) => {
@@ -556,8 +556,8 @@ test.describe('a tab change the topic has not caught up with', () => {
       (window as unknown as Win).__maDeskMock.tabs = list; // the page took it back, and the topic hasn't said
     }, two);
     await page.waitForTimeout(1_000);
-    await expect(second(page)).toHaveAttribute('aria-selected', 'true');
-    await expect(page.getByRole('tab', { name: 'Example page' })).toHaveAttribute('aria-selected', 'true', { timeout: 4_000 });
+    await expect(second(page)).toHaveAttribute('aria-current', 'true');
+    await expect(page.getByRole('group', { name: 'Tabs on this desk' }).getByRole('button', { name: 'Example page', exact: true })).toHaveAttribute('aria-current', 'true', { timeout: 4_000 });
   });
 
   test('a closed tab stays closed through a stale snapshot', async ({ page }) => {
@@ -637,12 +637,13 @@ test.describe('focus', () => {
     await expect(page.getByRole('dialog', { name: /Browser/ })).toHaveCount(0);
   });
 
-  test('a finger on the picture gets a quiet word, and nothing else', async ({ page }) => {
+  test('a first finger on the picture gets the touch hint over it, and no word in the bar', async ({ page }) => {
     await open(page);
     await page.getByTestId('browser-video').evaluate((v: HTMLVideoElement) => {
       v.dispatchEvent(new PointerEvent('pointerdown', { pointerType: 'touch', pointerId: 7, clientX: 300, clientY: 300, bubbles: true }));
     });
-    await expect(page.getByTestId('browser-notice')).toHaveText("Touch control isn't here yet. You can watch.");
+    await expect(page.getByTestId('browser-touch-hint')).toContainText('Tap to click, drag to scroll, pinch to zoom.');
+    await expect(page.getByTestId('browser-notice')).toHaveCount(0);
   });
 });
 
@@ -687,5 +688,5 @@ test('asleep, the address bar is off too: Wake is the one thing to do', async ({
   await openOnRealLink(page, request, [personal('stopped'), WORK]);
   await expect(page.getByTestId('browser-panel')).toHaveAttribute('data-panel', 'asleep');
   await expect(address(page)).toBeDisabled();
-  await expect(page.getByRole('button', { name: 'Wake', exact: true })).toBeVisible();
+  await expect(page.getByRole('button', { name: 'Wake this desk', exact: true })).toBeVisible();
 });

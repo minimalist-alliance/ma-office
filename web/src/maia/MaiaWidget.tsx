@@ -6,11 +6,13 @@
 //   text arrives, plays a score for the latest reply only, and is unavailable after a stop.
 // - Collapsed, nothing of ours runs: only her own loop, which stops while she's asleep or can't be seen.
 import { createAvatar, type MaiaAvatar } from '@minimalist-alliance/maia-avatar';
-import { memo, useCallback, useEffect, useLayoutEffect, useRef, useState, type ClipboardEvent, type DragEvent, type FormEvent, type KeyboardEvent, type RefObject } from 'react';
+import { memo, useCallback, useEffect, useLayoutEffect, useRef, useState, type ClipboardEvent, type DragEvent, type FormEvent, type KeyboardEvent, type ReactNode, type RefObject } from 'react';
 import { useIsPhone } from '../canvas/phone';
 import { ageBandOf, ageRulesOn } from '../platform/age';
 import { accountUrl } from '../platform/clientConfig';
 import { onBeforeSignOut, useSession } from '../platform/session';
+import { holdClose } from '../shell/closeGuard';
+import { useDeskStore } from '../state/deskStore';
 import { useWindowStore } from '../state/windowStore';
 import { getTheme, useTheme } from '../theme/themeStore';
 import { acceptAttr, splitAttached } from './attachments';
@@ -20,11 +22,17 @@ import { kindLabel } from './cards';
 import { Chat, type Msg } from './chat';
 import type { MaiaState } from './gate';
 import { FREE_TICK_MS, freeLabel } from './free';
+import { MAIA_NOT_NOW, writePref } from '../free/prefs';
+import { membershipUrl, readTrial } from '../free/wire';
+import { spaceKey } from '../lib/spaceKey';
+import { NEW_TAB, SEE_MEMBERSHIP, TRIAL_ENDED, TRIAL_NOT_NOW, TRIAL_OFFER, TRIAL_START } from '../free/words';
 import { MaiaIcon } from './icons';
 import { watchOfficeActivity } from './officeActivity';
 import { Markdown } from './Markdown';
 import { MAX_MESSAGE_CHARS } from './turn';
-import { keptLine } from './keptLine';
+import { keptParts } from './keptLine';
+import { CHATS_EMPTY, chatTitle, chatsLine } from './chats';
+import { useKeptInfo } from './KeptInfo';
 import './maia.css';
 
 /** The launcher, as her spec has it: 64 px, which draws her at the `md` tier. */
@@ -83,21 +91,42 @@ function formatDate(iso: string): string {
 interface Props {
   base: string;
   initial: MaiaState;
+  /** Set after an upgrade from the free tier: she opens her eyes and stays awake. */
+  woke?: boolean;
 }
 
-export default function MaiaWidget({ base, initial }: Props) {
+/**
+ * A free member's Maia (the free tier, S-119; contract maia.md, "The free tier's trial"): `trial` is only in a free
+ * member's state. Before the trial she's asleep in her usual spot and her panel offers it; once it's over she's asleep
+ * with its last word; while it runs she's herself. Off, she isn't there at all.
+ */
+type TrialMode = 'offer' | 'ended' | null;
+
+export default function MaiaWidgetOrNone(props: Props) {
+  return readTrial(props.initial.trial)?.status === 'off' ? null : <MaiaWidget {...props} />;
+}
+
+function MaiaWidget({ base, initial, woke }: Props) {
   const rootRef = useRef<HTMLDivElement>(null);
   const launcherRef = useRef<HTMLButtonElement>(null);
   const canvasRef = useRef<HTMLCanvasElement>(null);
   const avatarRef = useRef<MaiaAvatar | null>(null);
   const [chat] = useState(() => new Chat(base, initial, () => avatarRef.current));
+  useEffect(() => () => holdClose(chat.holdId, false), [chat]);
   const [open, setOpen] = useState(() => readStore('session', OPEN_KEY) === '1');
-  const [view, setView] = useState<'chat' | 'memory'>('chat');
+  const [view, setView] = useState<View>('chat');
   const [paused, setPaused] = useState(() => readStore('local', MOTION_KEY) === 'paused');
   const focusOnOpen = useRef(false);
   const theme = useTheme((s) => s.resolved);
   const phone = useIsPhone();
   const said = chat.store((s) => s.said);
+  const trialStatus = readTrial(initial.trial)?.status ?? null;
+  const [started, setStarted] = useState(false);
+  // A turn that stops with `limit_trial` ends it here too, without a reload.
+  const trialOver = chat.store((s) => s.trialOver);
+  const trial: TrialMode = trialStatus === 'ended' || trialOver ? 'ended' : trialStatus === 'unused' && !started ? 'offer' : null;
+  // Asleep until the member starts the week: office activity doesn't wake her, and neither does pressing her.
+  const asleep = useRef(trial !== null);
 
   // Her avatar, made once. The bubble is its positioned parent, where she breathes while asleep.
   useEffect(() => {
@@ -108,14 +137,22 @@ export default function MaiaWidget({ base, initial }: Props) {
       theme: getTheme().resolved,
       size: BUBBLE,
       sleepAfterMs: initial.animation.sleepAfterSec * 1000,
-      activityTarget: root,
+      activityTarget: asleep.current ? null : root,
       textSide: 1,
     });
     avatarRef.current = avatar;
     if (readStore('local', MOTION_KEY) === 'paused') avatar.pause();
+    if (asleep.current) avatar.setState('sleeping');
+    // After an upgrade she opens her eyes as part of the beat, and stays awake (the office's activity keeps her so).
+    else if (woke) {
+      avatar.setState('calm');
+      avatar.wake();
+    }
     // Office activity counts as use, so she isn't asleep beside a member working in the office. The owner: "Her
     // eyes cannot be closed the whole time!" She sleeps only once the whole office has been idle `sleepAfterSec`.
-    const activity = watchOfficeActivity(() => avatar.wake());
+    const activity = watchOfficeActivity(() => {
+      if (!asleep.current) avatar.wake();
+    });
     const offVideo = watchVideo((playing) => {
       avatar.setStreamMode(playing);
       activity.setStreaming(playing);
@@ -136,7 +173,7 @@ export default function MaiaWidget({ base, initial }: Props) {
       avatar.destroy();
       avatarRef.current = null;
     };
-  }, [initial]);
+  }, [initial, woke]);
 
   useEffect(() => avatarRef.current?.setTheme(theme), [theme]);
   useEffect(() => () => chat.destroy(), [chat]);
@@ -169,10 +206,30 @@ export default function MaiaWidget({ base, initial }: Props) {
   }, [phone, hide]);
 
   useEffect(() => {
-    if (!open) return;
+    // A trial that's over has no chats to read.
+    if (!open || trial === 'ended') return;
     void chat.loadConversation();
     if (!chat.get().memories) void chat.loadMemories();
-  }, [open, chat]);
+  }, [open, chat, trial]);
+
+  // "Start the week": she wakes, and the week starts with the member's first message (the contract's trial start).
+  // The trial ends in the middle of a chat: she goes to sleep, as she is when it's over at the start.
+  useEffect(() => {
+    if (!trialOver) return;
+    asleep.current = true;
+    avatarRef.current?.setState('sleeping');
+  }, [trialOver]);
+  const startTrial = useCallback((): void => {
+    asleep.current = false;
+    setStarted(true);
+    avatarRef.current?.setState('calm');
+    avatarRef.current?.wake();
+  }, []);
+  // "Not now": she stays asleep and doesn't ask again; pressing her later shows the card again, as the member asks.
+  const notNow = useCallback((): void => {
+    writePref(MAIA_NOT_NOW, new Date().toISOString());
+    hide();
+  }, [hide]);
 
   const onKeyDown = (e: KeyboardEvent<HTMLDivElement>): void => {
     if (e.key === 'Escape' && open) {
@@ -197,8 +254,11 @@ export default function MaiaWidget({ base, initial }: Props) {
           hide={hide}
           focusOnOpen={focusOnOpen}
           retentionDays={initial.retentionDays}
-          memoryOn={initial.memory.enabled}
+          memoryOn={initial.memory.enabled && trial === null}
           onLeft={onLeft}
+          trial={trial}
+          onStartTrial={startTrial}
+          onNotNow={notNow}
         />
       )}
       <button
@@ -222,10 +282,14 @@ export default function MaiaWidget({ base, initial }: Props) {
   );
 }
 
+/** The 
+chat, What Maia remembers, or Your chats (Security's maia-2: /privacy says a member can go back to a chat and delete it). */
+type View = 'chat' | 'memory' | 'chats';
+
 interface PanelProps {
   chat: Chat;
-  view: 'chat' | 'memory';
-  setView: (v: 'chat' | 'memory') => void;
+  view: View;
+  setView: (v: View) => void;
   paused: boolean;
   togglePause: () => void;
   hide: () => void;
@@ -233,9 +297,12 @@ interface PanelProps {
   retentionDays: number | null;
   memoryOn: boolean;
   onLeft: () => void;
+  trial: TrialMode;
+  onStartTrial: () => void;
+  onNotNow: () => void;
 }
 
-function Panel({ chat, view, setView, paused, togglePause, hide, focusOnOpen, retentionDays, memoryOn, onLeft }: PanelProps) {
+function Panel({ chat, view, setView, paused, togglePause, hide, focusOnOpen, retentionDays, memoryOn, onLeft, trial, onStartTrial, onNotNow }: PanelProps) {
   // A teen has no desk agents, so nothing here points them to any. With the age rules on, that waits for `/v1/me`.
   const agents = useSession((st) => (st.me ? ageBandOf(st.me) !== 'teen' : !ageRulesOn(st.config)));
   const modelLabel = chat.store((s) => s.modelLabel);
@@ -247,35 +314,58 @@ function Panel({ chat, view, setView, paused, togglePause, hide, focusOnOpen, re
   const inputRef = useRef<HTMLTextAreaElement>(null);
   const backRef = useRef<HTMLButtonElement>(null);
   const memoryBtnRef = useRef<HTMLButtonElement>(null);
+  const trialRef = useRef<HTMLElement | null>(null);
+  const chatsBtnRef = useRef<HTMLButtonElement>(null);
   const showMemory = memoryOn || remembered || view === 'memory';
+  const kept = keptParts(retentionDays, agents);
+  const keptInfo = useKeptInfo(retentionDays);
 
-  // Focus goes into the panel when the member opens it, not when a reload brings it back open.
+  // Focus goes into the panel when the member opens it, not when a reload brings it back open: to the trial's first
+  // control while it's offered or over, so its words are heard first.
   useLayoutEffect(() => {
     if (!focusOnOpen.current) return;
     focusOnOpen.current = false;
-    inputRef.current?.focus();
+    (trialRef.current ?? inputRef.current)?.focus();
   }, [focusOnOpen]);
+
+  // "Start the week" brings the Ask box, which takes focus where the button was.
+  const wasOffer = useRef(trial === 'offer');
+  useEffect(() => {
+    if (wasOffer.current && trial === null) inputRef.current?.focus();
+    wasOffer.current = trial === 'offer';
+  }, [trial]);
 
   const toMemory = (): void => {
     setView('memory');
     window.setTimeout(() => backRef.current?.focus(), 0);
   };
+  const toChats = (): void => {
+    setView('chats');
+    window.setTimeout(() => backRef.current?.focus(), 0);
+  };
+  /** Back: focus returns to the control that opened the view. */
   const toChat = (): void => {
+    const from = view === 'chats' ? chatsBtnRef : memoryBtnRef;
     setView('chat');
-    window.setTimeout(() => (memoryBtnRef.current ?? inputRef.current)?.focus(), 0);
+    window.setTimeout(() => (from.current ?? inputRef.current)?.focus(), 0);
+  };
+  /** A chat opened from the list: back to the chat, at the composer. */
+  const opened = (): void => {
+    setView('chat');
+    window.setTimeout(() => inputRef.current?.focus(), 0);
   };
 
   return (
     <section className="maia-panel" id="maia-panel" role="dialog" aria-labelledby="maia-title">
-      <header className="maia-head">
+      <div className="maia-head">
         <div className="maia-head-row">
-          {view === 'memory' && (
+          {view !== 'chat' && (
             <button ref={backRef} type="button" className="maia-tool" aria-label="Back to the chat" title="Back" onClick={toChat}>
               <MaiaIcon name="back" />
             </button>
           )}
           <h2 className="maia-title" id="maia-title">
-            {view === 'memory' ? 'What Maia remembers' : 'Maia'}
+            {view === 'memory' ? 'What Maia remembers' : view === 'chats' ? 'Your chats' : 'Maia'}
           </h2>
           {view === 'chat' && modelLabel && !onFree && <span className="maia-model">{modelLabel}</span>}
           <div className="maia-tools">
@@ -294,6 +384,11 @@ function Panel({ chat, view, setView, paused, togglePause, hide, focusOnOpen, re
                 <MaiaIcon name="newChat" />
               </button>
             )}
+            {view === 'chat' && (
+              <button ref={chatsBtnRef} type="button" className="maia-tool" aria-label="Your chats" title="Your chats" onClick={toChats}>
+                <MaiaIcon name="chats" />
+              </button>
+            )}
             {view === 'chat' && showMemory && (
               <button ref={memoryBtnRef} type="button" className="maia-tool" aria-label="What Maia remembers" title="What Maia remembers" onClick={toMemory}>
                 <MaiaIcon name="memory" />
@@ -307,18 +402,45 @@ function Panel({ chat, view, setView, paused, togglePause, hide, focusOnOpen, re
             </button>
           </div>
         </div>
-        {view === 'chat' ? (
+        {view === 'chat' && (trial === 'offer' || trial === 'ended') ? null : view === 'chat' ? (
           // Two lines, the owner's words (Nov 9). How long chats are kept is the server's `retentionDays`, never a number here.
+          // The info circle after "pass through us" (the owner, Nov 10); its words show below the line, over the chat.
           <>
             <p className="maia-sub">Ask about your desks, your account, or your office. I can be wrong.</p>
-            <p className="maia-sub" data-testid="maia-kept">{keptLine(retentionDays, agents)}</p>
+            <p className="maia-sub" data-testid="maia-kept">
+              {kept.lead}
+              {keptInfo.button}
+              {kept.tail}
+            </p>
+            {keptInfo.tip}
           </>
+        ) : view === 'chats' ? (
+          <p className="maia-sub">{chatsLine(retentionDays)}</p>
         ) : (
           <p className="maia-sub">{agents ? 'Delete anything, any time. Private things stay with your desk agents.' : 'Delete anything, any time.'}</p>
         )}
-      </header>
-      {view === 'chat' ? (
-        <ChatView chat={chat} inputRef={inputRef} onLeft={onLeft} />
+      </div>
+      {view === 'chat' && trial === 'ended' ? (
+        <TrialEnded focusRef={trialRef} />
+      ) : view === 'chat' ? (
+        <ChatView
+          chat={chat}
+          inputRef={inputRef}
+          onLeft={onLeft}
+          agents={agents}
+          composer={trial !== 'offer'}
+          intro={
+            trial === 'offer' ? (
+              <TrialOffer
+                focusRef={trialRef}
+                onStart={onStartTrial}
+                onNotNow={onNotNow}
+              />
+            ) : null
+          }
+        />
+      ) : view === 'chats' ? (
+        <ChatsView chat={chat} backRef={backRef} onOpened={opened} />
       ) : (
         <MemoryView chat={chat} backRef={backRef} />
       )}
@@ -326,9 +448,66 @@ function Panel({ chat, view, setView, paused, togglePause, hide, focusOnOpen, re
   );
 }
 
-function ChatView({ chat, inputRef, onLeft }: { chat: Chat; inputRef: RefObject<HTMLTextAreaElement | null>; onLeft: () => void }) {
+/** Her trial, offered in her panel in place of the opening lines (row 3). The week starts with the first message. */
+function TrialOffer({ focusRef, onStart, onNotNow }: { focusRef: RefObject<HTMLElement | null>; onStart: () => void; onNotNow: () => void }) {
+  return (
+    <div className="maia-trial" data-testid="maia-trial">
+      <p>{TRIAL_OFFER}</p>
+      <div className="maia-card-actions">
+        <button
+          ref={(el) => {
+            focusRef.current = el;
+          }}
+          type="button"
+          className="maia-btn primary"
+          onClick={onStart}
+        >
+          {TRIAL_START}
+        </button>
+        <button type="button" className="maia-btn" onClick={onNotNow}>
+          {TRIAL_NOT_NOW}
+        </button>
+      </div>
+    </div>
+  );
+}
+
+/** Her trial is over (row 9): her panel, only when pressed, says so once, with See membership. No composer. */
+function TrialEnded({ focusRef }: { focusRef: RefObject<HTMLElement | null> }) {
+  const href = useSession((s) => membershipUrl(s.config));
+  return (
+    <div className="maia-log">
+      <div className="maia-trial" data-testid="maia-trial-ended">
+        <p>{TRIAL_ENDED}</p>
+        {href && (
+          <a
+            ref={(el) => {
+              focusRef.current = el;
+            }}
+            className="maia-btn primary maia-trial-link"
+            href={href}
+            target="_blank"
+            rel="noopener"
+            {...spaceKey}
+          >
+            {SEE_MEMBERSHIP}
+            <span className="sr-only">{NEW_TAB}</span>
+          </a>
+        )}
+      </div>
+    </div>
+  );
+}
+
+/** What a new member can press before typing: the office tour always, the Work desk where there is one, the Agent's key for adults. */
+export function firstAsks(o: { hasWork: boolean; agents: boolean }): string[] {
+  return ['Show me around my office', ...(o.hasWork ? ['Open my Work desk'] : []), ...(o.agents ? ['How do I give my Agent a key?'] : [])];
+}
+
+function ChatView({ chat, inputRef, onLeft, agents, intro, composer = true }: { chat: Chat; inputRef: RefObject<HTMLTextAreaElement | null>; onLeft: () => void; agents: boolean; intro?: ReactNode; composer?: boolean }) {
   const messages = chat.store((s) => s.messages);
   const idle = chat.store((s) => s.phase === 'idle');
+  const hasWork = useDeskStore((s) => s.desks.some((d) => d.kind === 'work'));
   const line = chat.store((s) => s.line);
   const files = chat.store((s) => s.files);
   const attachLine = chat.store((s) => s.attachLine);
@@ -351,9 +530,11 @@ function ChatView({ chat, inputRef, onLeft }: { chat: Chat; inputRef: RefObject<
   }, []);
   useLayoutEffect(stick, [messages, stick]);
 
+  // Every change to the composer comes through here, so here is where a draft holds the close guard, and lets it go.
   const grow = (): void => {
     const el = inputRef.current;
     if (!el) return;
+    holdClose(chat.holdId, el.value.trim() !== '');
     el.style.height = 'auto';
     el.style.height = `${Math.min(el.scrollHeight, 132)}px`;
     const count = countRef.current;
@@ -460,10 +641,24 @@ function ChatView({ chat, inputRef, onLeft }: { chat: Chat; inputRef: RefObject<
           atEnd.current = el.scrollHeight - el.scrollTop - el.clientHeight < 48;
         }}
       >
+        {messages.length === 0 && intro}
         {messages.map((m) => (
           <Message key={m.key} msg={m} chat={chat} onLeft={onLeft} newChat={newChat} />
         ))}
         <Streaming chat={chat} stick={stick} />
+        {!messages.length && idle && composer && (
+          // Three quiet asks while the chat is empty, so her first turn is a press, not a guess. Each goes as a normal turn,
+          // so they come with the composer and never before it: with her trial on offer, pressing one started the week
+          // unchosen and left no box behind (the free walk's finding 8; the Designer's rule: nothing is sent before the member
+          // chooses the trial).
+          <div className="maia-asks" role="group" aria-label="Things to ask" data-testid="maia-asks">
+            {firstAsks({ hasWork, agents }).map((t) => (
+              <button key={t} type="button" className="maia-ask" onClick={() => void chat.send(t)}>
+                {t}
+              </button>
+            ))}
+          </div>
+        )}
       </div>
       {line && (
         <p className="maia-line" role="status">
@@ -471,6 +666,7 @@ function ChatView({ chat, inputRef, onLeft }: { chat: Chat; inputRef: RefObject<
         </p>
       )}
       <FreeLine chat={chat} />
+      {composer && (
       <form className={over ? 'maia-compose maia-over' : 'maia-compose'} onSubmit={(e) => void submit(e)} {...dropProps}>
         {caps && (
           <div className="maia-attach-row">
@@ -515,6 +711,7 @@ function ChatView({ chat, inputRef, onLeft }: { chat: Chat; inputRef: RefObject<
           <MaiaIcon name="send" />
         </button>
       </form>
+      )}
     </>
   );
 }
@@ -621,6 +818,85 @@ function Streaming({ chat, stick }: { chat: Chat; stick: () => void }) {
             </span>
           </p>
         )
+      )}
+    </div>
+  );
+}
+
+function ChatsView({ chat, backRef, onOpened }: { chat: Chat; backRef: RefObject<HTMLButtonElement | null>; onOpened: () => void }) {
+  const chats = chat.store((s) => s.chats);
+  const line = chat.store((s) => s.chatsLine);
+  const current = chat.store((s) => s.conversationId);
+  const idle = chat.store((s) => s.phase === 'idle');
+  const listRef = useRef<HTMLDivElement>(null);
+
+  // Fresh each time it opens: a chat may have started or been kept since.
+  useEffect(() => {
+    void chat.loadChats();
+  }, [chat]);
+
+  /** After a delete, focus goes on to the next one, or back to the panel, never to nothing. */
+  const settleFocus = (index: number): void => {
+    window.setTimeout(() => {
+      const buttons = listRef.current?.querySelectorAll<HTMLButtonElement>('.maia-chat-delete');
+      const next = buttons?.[Math.min(index, buttons.length - 1)];
+      (next ?? backRef.current)?.focus();
+    }, 0);
+  };
+
+  if (chats === null) {
+    return (
+      <div className="maia-log">
+        <p className="maia-intro">{line ?? 'Loading…'}</p>
+      </div>
+    );
+  }
+  return (
+    <div className="maia-log maia-memory" ref={listRef}>
+      {chats.length === 0 ? (
+        <p className="maia-intro">{CHATS_EMPTY}</p>
+      ) : (
+        <ul className="maia-mem-list" aria-label="Your chats with Maia">
+          {chats.map((c, i) => {
+            const date = formatDate(c.updatedAt);
+            const title = chatTitle(c);
+            const here = c.conversationId === current;
+            return (
+              <li key={c.conversationId} className="maia-mem">
+                <button
+                  type="button"
+                  className="maia-mem-main maia-chat-open"
+                  aria-current={here ? 'true' : undefined}
+                  disabled={!idle}
+                  onClick={() => {
+                    if (here) return onOpened();
+                    void chat.openChat(c.conversationId).then(() => onOpened());
+                  }}
+                >
+                  <span className="maia-mem-meta">
+                    {here ? 'Open now' : date ? `Last used ${date}` : 'A chat'}
+                  </span>
+                  <span className="maia-mem-text">{title}</span>
+                </button>
+                <button
+                  type="button"
+                  className="maia-btn maia-chat-delete"
+                  aria-label={`Delete "${title.length > 60 ? `${title.slice(0, 59)}…` : title}"`}
+                  onClick={() => {
+                    void chat.deleteChat(c.conversationId).then((ok) => ok && settleFocus(i));
+                  }}
+                >
+                  Delete
+                </button>
+              </li>
+            );
+          })}
+        </ul>
+      )}
+      {line && (
+        <p className="maia-line" role="status">
+          {line}
+        </p>
       )}
     </div>
   );

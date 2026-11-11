@@ -200,6 +200,18 @@ public final class Staging implements AutoCloseable {
     }
 
     /** Zeroes and forgets everything. */
+    /** Every file this member has half attached, wiped: their purge (ADR 0080's addendum of 2026-11-10). @return how many */
+    public synchronized int dropOwner(String owner) {
+        List<String> theirs = new ArrayList<>();
+        for (Map.Entry<String, Entry> entry : entries.entrySet()) {
+            if (entry.getValue().owner.equals(owner)) {
+                theirs.add(entry.getKey());
+            }
+        }
+        theirs.forEach(this::drop);
+        return theirs.size();
+    }
+
     public synchronized void dropAll() {
         for (Entry entry : entries.values()) {
             Arrays.fill(entry.buffer, (byte) 0);

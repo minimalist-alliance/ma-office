@@ -17,6 +17,7 @@ import com.minimalistalliance.desk.agent.provider.ProviderRegistry;
 import com.minimalistalliance.desk.agent.provider.anthropic.AnthropicProvider;
 import com.minimalistalliance.desk.agent.provider.http.HttpTransport;
 import com.minimalistalliance.desk.agent.provider.openai.OpenAiResponsesProvider;
+import com.minimalistalliance.desk.agent.provider.openrouter.OpenRouterProvider;
 import com.minimalistalliance.desk.agent.service.AgentService;
 import com.minimalistalliance.desk.agent.service.TopicHub;
 import com.minimalistalliance.desk.agent.socket.AgentSocketServer;
@@ -35,8 +36,8 @@ import org.springframework.core.env.Environment;
 /**
  * Wires desk-agent by hand. What varies is read from desk-agent.env (root-owned) when the beans are made: paths
  * (DESK_AGENT_DATA_DIR, DESK_AGENT_ADMIN_SOCKET, DESK_AGENT_SOCKET), deskd's uid (DESK_AGENT_PEER_UID), the
- * providers' base URLs (DESK_AGENT_ANTHROPIC_URL, DESK_AGENT_OPENAI_URL, DESK_AGENT_XAI_URL; https, or http to
- * loopback for a stand-in) and deskd's egress proxy (DESK_AGENT_EGRESS_PROXY). DESK_AGENT_VERSION comes from the
+ * providers' base URLs (DESK_AGENT_ANTHROPIC_URL, DESK_AGENT_OPENAI_URL, DESK_AGENT_XAI_URL,
+ * DESK_AGENT_OPENROUTER_URL; https, or http to loopback for a stand-in) and deskd's egress proxy (DESK_AGENT_EGRESS_PROXY). DESK_AGENT_VERSION comes from the
  * image. Beans that hold files or sockets are opened and closed by {@link DeskAgentLifecycle}.
  */
 @Configuration(proxyBeanMethods = false)
@@ -101,7 +102,7 @@ class AgentConfiguration {
         return new HttpTransport(HttpTransport.Timeouts.DEFAULT, address);
     }
 
-    /** Anthropic, OpenAI and xAI, in the order agent.providers lists them. */
+    /** Anthropic, OpenAI, xAI and OpenRouter, in the order agent.providers lists them. */
     @Bean
     ProviderRegistry providerRegistry(HttpTransport http, Environment environment) {
         ProviderRegistry registry = new ProviderRegistry();
@@ -111,6 +112,8 @@ class AgentConfiguration {
                 environment.getProperty("desk.agent.openai.url", "https://api.openai.com"))));
         registry.register(new OpenAiResponsesProvider(OpenAiResponsesProvider.XAI, http, HttpTransport.baseUri(
                 environment.getProperty("desk.agent.xai.url", "https://api.x.ai"))));
+        registry.register(new OpenRouterProvider(http, HttpTransport.baseUri(
+                environment.getProperty("desk.agent.openrouter.url", "https://openrouter.ai"))));
         return registry;
     }
 
@@ -151,12 +154,21 @@ class AgentConfiguration {
                 new Workspaces(data.resolve("workspaces"), Team.MIN_FREE_BYTES), data.resolve("icons"), clock);
     }
 
+    /**
+     * The agent socket, which is also the way to the tools deskd runs (the tools and approvals draft, section 11).
+     * {@code desk.agent.tools.off} ({@code DESK_AGENT_TOOLS_OFF}) switches tools off by name: they're neither offered
+     * nor run. It can do nothing else: no class, scope or approval is a setting.
+     */
     @Bean(destroyMethod = "")
     AgentSocketServer agentSocketServer(AgentService service, TopicHub topics, Environment environment) {
-        return new AgentSocketServer(
+        AgentSocketServer server = new AgentSocketServer(
                 Path.of(environment.getProperty("desk.agent.socket", DEFAULT_AGENT_SOCKET)),
                 new PeerCheck(environment.getProperty("desk.agent.peer.uid", Integer.class, DESKD_UID)),
                 service, topics);
+        service.agentTools().registry().switchOff(com.minimalistalliance.desk.agent.tool.ToolRegistry.parseOff(
+                environment.getProperty("desk.agent.tools.off", "")));
+        service.deskLink(server);
+        return server;
     }
 
     @Bean

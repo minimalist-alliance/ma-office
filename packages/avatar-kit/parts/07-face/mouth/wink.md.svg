@@ -1,0 +1,4 @@
+<g data-part="mouth-wink">
+  <path d="M113,145.5 Q128,162 143,145.5 Q128,153.5 113,145.5 Z" fill="{{feature}}" stroke="{{feature}}" stroke-width="3.8" stroke-linejoin="round"/>
+  <g data-replaces-eye="left"><path d="M98.5,122 Q109.5,110 120.5,122" fill="none" stroke="{{sclera}}" stroke-width="10.6" stroke-linecap="round"/><path d="M98.5,122 Q109.5,110 120.5,122" fill="none" stroke="{{eye}}" stroke-width="6" stroke-linecap="round"/></g>
+</g>

@@ -1,0 +1,12 @@
+{
+  "category": "head",
+  "layer": "05-head",
+  "colorSlot": "skin",
+  "default": "head",
+  "parts": [
+    {
+      "id": "head",
+      "name": "Head"
+    }
+  ]
+}

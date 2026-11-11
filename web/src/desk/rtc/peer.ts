@@ -8,6 +8,7 @@ import { cursorCss, InputEncoder } from './input';
 import { PongWatch } from './policy';
 import { PictureHold, type AudioTotals } from './pictureHold';
 import { answerRefusesVideo } from './sdp';
+import { watchConnectRtt } from './connectRtt';
 
 const CHANNELS: readonly { id: number; label: string; lossy?: boolean }[] = [
   { id: 0, label: 'ctl' },
@@ -221,6 +222,7 @@ export class PeerSession {
     this.deskId = deskId;
     this.events = events;
     this.pc = new RTCPeerConnection({ iceServers, bundlePolicy: 'max-bundle', rtcpMuxPolicy: 'require', certificates: [certificate] });
+    if (!guild) watchConnectRtt(this.pc, deskId); // one connect-time round trip a session, where client-config asks (ma-platform ADR 0112 P4)
     this.pc.addEventListener('connectionstatechange', () => {
       const s = this.pc.connectionState;
       if (s === 'connected' || s === 'disconnected' || s === 'failed') this.events.onHealth(s);
@@ -362,6 +364,20 @@ export class PeerSession {
   /** In-band token refresh. It goes on every refresh, beside the gateway's copy. deskd's answer is ignored. */
   sendAuth(deskToken: string): void {
     this.sendFrames(CTL, encodeJson(Kind.AUTH, this.nextId++, { deskToken }));
+  }
+
+  /**
+   * This session's new TURN servers, from `session.refreshed` or a resume's `session.opened` (ma-platform contract
+   * gateway.md 2.4): the last ones expire with the token they came with, so the next ICE restart allocates with these.
+   * `[]` is the relay paused, and is used as given. They're credentials: kept only in the connection, never logged.
+   */
+  useIceServers(iceServers: unknown): void {
+    if (this.closed || !Array.isArray(iceServers)) return;
+    try {
+      this.pc.setConfiguration({ ...this.pc.getConfiguration(), iceServers: iceServers as RTCIceServer[] });
+    } catch {
+      // Servers the browser won't take: it keeps the last ones, and a restart that can't allocate opens a new session.
+    }
   }
 
   /** Input handled here, not on channels 6 and 7, which desk-rtc counts itself (deskd API.md section 3). */

@@ -16,6 +16,7 @@ import type {
   AttachLimits,
   AgentLink,
   AgentPatch,
+  Approval,
   AuditPage,
   ConversationEvent,
   DeskErrorCode,
@@ -23,6 +24,7 @@ import type {
   LimitScope,
   LimitsChange,
   LimitsView,
+  MemoryList,
   Message,
   ModelInfo,
   Provider,
@@ -31,6 +33,8 @@ import type {
   Timer,
   TimerInput,
   TimerList,
+  ToolsEvent,
+  RunningCall,
   WorkspaceFile,
   WorkspaceView,
 } from './types';
@@ -196,7 +200,7 @@ export class RpcAgentClient implements AgentClient {
       this.getThread(agentId).then(
         (t) => {
           asking = false;
-          if (!gone) onEvent({ type: 'snapshot', seq: lastSeq, messages: t.messages });
+          if (!gone) onEvent({ type: 'snapshot', seq: lastSeq, messages: t.messages, ...(Array.isArray(t.approvals) ? { approvals: t.approvals } : {}) });
         },
         () => {
           asking = false; // what's shown stands, and the next snapshot asks again
@@ -207,12 +211,16 @@ export class RpcAgentClient implements AgentClient {
       lastSeq = msg.seq;
       if (msg.type === 'snapshot') {
         const messages = (msg['messages'] as Message[] | undefined) ?? [];
-        onEvent({ type: 'snapshot', seq: msg.seq, messages });
+        const approvals = Array.isArray(msg['approvals']) ? (msg['approvals'] as Approval[]) : undefined;
+        onEvent({ type: 'snapshot', seq: msg.seq, messages, ...(approvals ? { approvals } : {}) });
         if (Number(msg['omitted'] ?? 0) > 0 || messages.some((m) => m.truncated)) askForWhole();
       } else if (msg.type === 'message' && msg['message']) {
         const message = msg['message'] as Message;
         onEvent({ type: 'message', seq: msg.seq, message });
         if (message.truncated) askForWhole();
+      } else if (msg.type === 'approval' && msg['approval']) {
+        // API.md section 18: adds or replaces one by id, when it's asked and on every change.
+        onEvent({ type: 'approval', seq: msg.seq, approval: msg['approval'] as Approval });
       } else if (msg.type === 'delta') {
         onEvent({ type: 'delta', seq: msg.seq, messageId: String(msg['messageId']), runId: String(msg['runId']), text: String(msg['text'] ?? '') });
       }
@@ -307,5 +315,59 @@ export class RpcAgentClient implements AgentClient {
 
   listAudit(opts: { beforeSeq?: number; limit?: number } = {}): Promise<AuditPage> {
     return this.call<AuditPage>('agent.audit.list', { ...opts });
+  }
+
+  listApprovals(opts: { agentId?: string; state?: 'pending' | 'all'; before?: string } = {}): Promise<{ approvals: Approval[]; older: boolean }> {
+    const params: Record<string, unknown> = {};
+    if (opts.agentId !== undefined) params['agentId'] = opts.agentId;
+    if (opts.state !== undefined) params['state'] = opts.state;
+    if (opts.before !== undefined) params['before'] = opts.before;
+    return this.call('agent.approvals.list', params);
+  }
+
+  async getApproval(approvalId: string): Promise<Approval> {
+    return (await this.call<{ approval: Approval }>('agent.approval.get', { approvalId })).approval;
+  }
+
+  async decideApproval(approvalId: string, decision: { approve: boolean; sha256: string; note?: string }, m: Mutation): Promise<Approval> {
+    // Only what section 18 takes: a note goes only with a no.
+    const params: Record<string, unknown> = { approvalId, approve: decision.approve, sha256: decision.sha256 };
+    if (!decision.approve && decision.note) params['note'] = decision.note;
+    return (await this.call<{ approval: Approval }>('agent.approval.decide', params, m)).approval;
+  }
+
+  watchTools(onEvent: (e: ToolsEvent) => void, onAbsent?: () => void): () => void {
+    // Not served by any desk yet (the spec's section 2.8): the link's refusal says so, and nothing shows as running.
+    return this.link.subscribe(
+      'agent.tools',
+      (msg) => {
+        if (msg.type === 'snapshot' && Array.isArray(msg['calls'])) {
+          onEvent({ type: 'snapshot', serverNow: Number(msg['serverNow'] ?? Date.now()), calls: msg['calls'] as RunningCall[] });
+        } else if (msg.type === 'call' && msg['call']) {
+          onEvent({ type: 'call', call: msg['call'] as RunningCall });
+        } else if (msg.type === 'end' && typeof msg['callId'] === 'string') {
+          const result = msg['result'];
+          onEvent({ type: 'end', callId: msg['callId'], agentId: String(msg['agentId'] ?? ''), ...(result === 'done' || result === 'failed' || result === 'stopped' ? { result } : {}) });
+        }
+      },
+      () => onAbsent?.(),
+    );
+  }
+
+  async stopTool(callId: string, m: Mutation): Promise<void> {
+    await this.call('agent.tool.stop', { callId }, m);
+  }
+
+  listMemories(agentId: string): Promise<MemoryList> {
+    return this.call<MemoryList>('agent.memory.list', { agentId });
+  }
+
+  async deleteMemory(agentId: string, memoryId: string, m: Mutation): Promise<void> {
+    await this.call('agent.memory.delete', { agentId, memoryId }, m);
+  }
+
+  async clearMemories(agentId: string, m: Mutation): Promise<{ deleted: number }> {
+    const r = await this.call<{ deleted?: number }>('agent.memory.clear', { agentId }, m);
+    return { deleted: Number(r?.deleted ?? 0) };
   }
 }

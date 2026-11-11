@@ -7,6 +7,7 @@ Wants=network-online.target
 # The shaper goes on first if it can. Wants, not Requires: its failure never stops this unit (ADR 0036).
 Wants=desk-egress.service
 After=desk-egress.service
+StartLimitIntervalSec=0
 
 [Service]
 User=rtc
@@ -24,6 +25,9 @@ Environment=DISPLAY=:99 RELEASE_DIR=/opt/ma/desk-rtc/current
 ExecStart=/opt/ma/desk-rtc/current/run
 Restart=always
 RestartSec=2
+RestartSteps=8
+RestartMaxDelaySec=300
+OOMScoreAdjust=-500
 MemoryMax=128M
 CPUWeight=400
 LimitNOFILE=65536

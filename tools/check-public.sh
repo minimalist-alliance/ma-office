@@ -19,7 +19,7 @@
 #   key         private key blocks and cloud, Stripe, GitHub, Slack, Google, npm, xAI, OpenAI and Anthropic key shapes,
 #               JWTs, credentials in URLs and literal passwords or secrets
 #   email       any email address except support@..., noreply@... and ...@example.* (or *.example)
-#   image-meta  images with GPS or camera EXIF/XMP data, and camera originals (HEIC, RAW, MOV) it can't check
+#   image-meta  images with GPS or camera EXIF/XMP data (AVIF included), and camera originals (HEIC, RAW, MOV) it can't check
 #   business    private business numbers: a dollar figure beside "per member", "a guild", "margin", "profit" and the
 #               like (or in a Markdown table whose header names members with costs, prices or $), a share of a
 #               membership price, a spending cap or dial in dollars, and pointers to the private cost model
@@ -386,8 +386,8 @@ def text_hits(line):
 
 # ------------------------------------------------------------------ images
 
-IMAGE_EXT = {'.jpg', '.jpeg', '.png', '.webp', '.tif', '.tiff', '.gif'}
-ORIGINAL_EXT = {'.heic', '.heif', '.avif', '.dng', '.cr2', '.cr3', '.nef', '.arw', '.orf', '.rw2', '.raf', '.mov'}
+IMAGE_EXT = {'.jpg', '.jpeg', '.png', '.webp', '.tif', '.tiff', '.gif', '.avif'}
+ORIGINAL_EXT = {'.heic', '.heif', '.dng', '.cr2', '.cr3', '.nef', '.arw', '.orf', '.rw2', '.raf', '.mov'}
 CAMERA_TAGS = {271: 'Make', 272: 'Model', 42033: 'BodySerialNumber', 42034: 'LensSpecification', 42035: 'LensMake',
                42036: 'LensModel', 42037: 'LensSerialNumber', 0xA430: 'CameraOwnerName'}
 XMP_BAD = re.compile(rb'exif:GPS|GPSLatitude|GPSLongitude|tiff:Make|tiff:Model|aux:SerialNumber|aux:Lens|exifEX:LensModel')
@@ -412,7 +412,8 @@ def image_hits(path, data):
         im = Image.open(io.BytesIO(data))
         ex = im.getexif()
     except Exception:
-        return set()
+        # an AVIF this Pillow can't open can't be checked, so it fails like a camera original
+        return {'image-meta'} if ext == '.avif' else set()
     if 0x8825 in ex:
         try:
             if len(ex.get_ifd(0x8825)) > 0:
@@ -426,7 +427,7 @@ def image_hits(path, data):
         if any(t in sub for t in CAMERA_TAGS):
             return {'image-meta'}
     except Exception:
-        pass
+        return {'image-meta'}  # an Exif IFD that can't be read fails closed, like the GPS IFD above
     return set()
 
 # ------------------------------------------------------------------ allowlist

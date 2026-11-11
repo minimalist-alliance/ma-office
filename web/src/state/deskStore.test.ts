@@ -1,4 +1,4 @@
-import { beforeEach, describe, expect, it } from 'vitest';
+import { beforeEach, describe, expect, it, vi } from 'vitest';
 import type { PlatformDesk } from '../platform/api';
 import { applyDeskProgress, renameDeskInStore, setDeskList, setDeskListError, useDeskStore } from './deskStore';
 
@@ -20,6 +20,56 @@ describe('setDeskList, called on every poll, 304s included', () => {
     expect(useDeskStore.getState().desks[0]?.vm).toBe('stopping');
     setDeskList(LIST);
     expect(useDeskStore.getState().desks[0]?.vm).toBe('running');
+  });
+
+  it("keeps a link's word heard after the list was asked for, until the next answer (TD-227 part 3: no asleep flash)", () => {
+    const STOPPED_LIST: PlatformDesk[] = [{ deskId: 'd-1', kind: 'personal', name: 'Personal', state: 'stopped', phase: 'stopped' }];
+    const t0 = Date.now();
+    setDeskList(STOPPED_LIST, t0 - 10);
+    // The member pressed the desk: its link says waking, after a list now on its way was asked for.
+    applyDeskProgress('d-1', { state: 'starting', phase: 'starting', queuePosition: null, stopAt: null, heardAt: t0 });
+    setDeskList(STOPPED_LIST, t0 - 5); // that list, or a 304 for it
+    expect(useDeskStore.getState().desks[0]).toMatchObject({ vm: 'starting', phase: 'starting' });
+    setDeskList(STOPPED_LIST, t0 + 5); // asked after: the platform's word again
+    expect(useDeskStore.getState().desks[0]).toMatchObject({ vm: 'stopped', phase: 'stopped' });
+  });
+
+  it("never keeps a link's word over a hold, or with no time for the list", () => {
+    const t0 = Date.now();
+    setDeskList(LIST, t0 - 10);
+    applyDeskProgress('d-1', { state: 'stopping', phase: null, queuePosition: null, stopAt: null, heardAt: t0 });
+    setDeskList([{ ...LIST[0]!, allowedActions: [] }], t0 - 5);
+    expect(useDeskStore.getState().desks[0]?.vm).toBe('held');
+    setDeskList(LIST, t0 - 5);
+    applyDeskProgress('d-1', { state: 'stopping', phase: null, queuePosition: null, stopAt: null, heardAt: t0 });
+    setDeskList(LIST);
+    expect(useDeskStore.getState().desks[0]?.vm).toBe('running');
+  });
+
+  it('a desk that starts with the office reads "checking" on the first list of a load, not asleep, until its link speaks', () => {
+    const fresh = (id: string) => ({ id, name: id, kind: 'personal' as const, vm: 'unknown' as const, phase: null, queuePosition: null, stopAt: null, givebackUntil: null, badges: {} });
+    const row = (id: string): PlatformDesk => ({ deskId: id, kind: 'personal', name: id, state: 'stopped', phase: 'stopped', startsWithOffice: true });
+    const vm = (id: string) => useDeskStore.getState().desks.find((d) => d.id === id)?.vm;
+    try {
+      vi.stubGlobal('document', { hidden: false });
+      useDeskStore.setState({ desks: [fresh('d-a')], status: 'loading', unpaid: null });
+      setDeskList([row('d-a')], Date.now());
+      expect(vm('d-a')).toBe('unknown'); // the office is about to wake it
+      applyDeskProgress('d-a', { state: 'starting', phase: 'starting', queuePosition: null, stopAt: null, heardAt: Date.now() });
+      expect(vm('d-a')).toBe('starting');
+
+      vi.stubGlobal('document', { hidden: true }); // a background tab waits to be looked at: asleep meanwhile
+      useDeskStore.setState({ desks: [fresh('d-b')], status: 'loading', unpaid: null });
+      setDeskList([row('d-b')], Date.now());
+      expect(vm('d-b')).toBe('stopped');
+
+      vi.stubGlobal('document', { hidden: false }); // later in the load, once it has been running: asleep is asleep
+      setDeskList([{ ...row('d-b'), state: 'running' }], Date.now());
+      setDeskList([row('d-b')], Date.now());
+      expect(vm('d-b')).toBe('stopped');
+    } finally {
+      vi.unstubAllGlobals();
+    }
   });
 
   it('clears an error, even with the same desks', () => {
@@ -83,5 +133,15 @@ describe('contract desks.md 0.3.13: a desk on the member\'s own computer', () =>
     setDeskList([{ ...LIST[0]!, hosting: 'self' }, { ...LIST[0]!, deskId: 'd-2', hosting: 'cloud' }, { ...LIST[0]!, deskId: 'd-3' }]);
     expect(useDeskStore.getState().desks.map((d) => d.selfHosted ?? false)).toEqual([true, false, false]);
     expect(Object.hasOwn(useDeskStore.getState().desks[1]!, 'selfHosted')).toBe(false);
+  });
+});
+
+describe('a desk a step down ends at renewal (not built by Platform yet)', () => {
+  beforeEach(() => useDeskStore.setState({ desks: [], status: 'loading', unpaid: null }));
+  it('carries `endsAt` only when Platform sends it', () => {
+    setDeskList([{ deskId: 'd-w', kind: 'work', name: 'Work', state: 'running', endsAt: '2026-12-01T18:04:00Z' }, ...LIST]);
+    const [work, personal] = useDeskStore.getState().desks;
+    expect(work?.endsAt).toBe('2026-12-01T18:04:00Z');
+    expect(personal && 'endsAt' in personal).toBe(false);
   });
 });

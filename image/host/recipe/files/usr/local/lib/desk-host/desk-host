@@ -6,17 +6,50 @@
 #                                          start a desk on slot k: DeskSlot<k> must name it (and the volume, if given), and
 #                                          IMDS must associate <address> (the slot's public address, from the link's hello)
 #                                          with the tag's private address. The class is the tag's sixth field unless given.
-#   desk-host class <k> [<class>]          a running desk's size class, changed live (from DeskSlot<k> if not given)
-#   desk-host stop <k> | stop-all          signals only: deskd's sandbox, then the desk (its init closes Chromium), then the rest
-#   desk-host reset <k> | leftovers <k> | state | report | check | ctlimit <k> <desk n> <host n>
+#   desk-host class <k> [<class>] [--whole] a running desk's size class, changed live (from DeskSlot<k> if not given); --whole
+#                                          (the link's set_class): a raise the host has no room for changes nothing (75), and
+#                                          nothing changes while the host is stopping
+#   desk-host stop <k> | stop-all          signals only: deskd's sandbox, then the desk (its init closes Chromium), then the rest.
+#                                          stop-all (a host stop: desk-host-shutdown.service) first marks the host halting, so
+#                                          no start begins or finishes after it, then stops every running desk and every slot
+#                                          an up is still starting (it waits for that up's lock); resume (that unit's start, at
+#                                          every boot) lets desks start again
+#   desk-host shaper <k> [show|off|on]   slot k's outbound shaper (ADR 0036 per container, egress.py): its classes, counters and
+#                                          budget; off takes the classes off its veth and stops its desk-egress, as a bug would (test
+#                                          1's R5: only the guard's count and stop stand; desk-host-check shaper fails); on puts both back
+#   desk-host reset <k> | leftovers <k> | state | report | check | ctlimit <k> <desk n> <host n> | resume
+#   desk-host reroot <k> [--prebuild]      ADR 0077 1.5: a fresh root from the generation section 2 picks, built outside the slot's
+#                                          lock beside the old one, swapped in under it only if the slot is still stopped with the
+#                                          same record; --prebuild builds it beside a running slot for an idle restart
+#   desk-host restart <k> <deskId> [<vol-id>] --class <class> --public <address>
+#                                          an idle restart onto the prebuilt root: the slot idle by its idle.json, a stop (Chromium
+#                                          closed over CDP), the swap, a start on the same epoch; update.holdUntil 15 minutes ahead
+#   desk-host switch <k> [--verify]       ADR 0078 2.2: a running slot's live switch onto its batch at idle (in desk-host-upd): the changed
+#                                          components copied into rel/ outside the slot's lock, then each switched in the manifest's order
+#                                          under it (its sandbox stopped, renames, made again, smoke-tested); a failure rolls back. --verify:
+#                                          2.3's first run after a stop path's swap, at the wake. A switch cut off resumes here (3.4)
+#   desk-host relroot <k>                  ADR 0078 2.3, while Platform's liveSwitches is off: a stopped slot's rel/ onto its batch
+#   desk-host after-stop <k>               a stop's background work: reroot if its generation is due, then relroot if its batch is
+#   desk-host reboot [--urgent] [--order <id>]
+#                                          the host's own reboot for its packages (ADR 0077 section 3), refused unless a reboot is
+#                                          pending, no slot is starting, no hold is ahead and every running desk is idle
 # Platform drives a host through desk-host-link (ma-platform contract shared-host.md): prepare_slot, start_slot and
-# stop_slot run prepare, up and stop; report is what each report carries (report.py). A slot's new class (an upgrade in
-# place, the contract's set_class) maps to class, which the link doesn't run yet: a test harness calls it by hand.
+# stop_slot run prepare, up and stop; report is what each report carries (report.py), each up slot's class included. A slot's
+# new class (an upgrade in place, the contract's set_class) is class <k> --whole, which the link runs (S-119).
 #
 # The slot tag (contract section 2, PF-01): DeskSlot<k> = <deskId|->/<volumeId|->/<privateIp>/<allocationId>/<epoch>[/<class>],
-# read strictly (hostmeta.py; the class only one classes.conf names, missing means standard); anything else means nothing. Slot k's address is the tag's privateIp on whichever interface carries
-# it (slotnet.py; under PF-03 the slots' interface, not the host's own), never the k-th address; the slot's packets are
-# routed out of that interface. A desk's packets meet its slot's source check before any flow (IN-09); then its bytes out
+# read strictly for the host's SlotMode (hostmeta.py; the class only one classes.conf names, missing means standard);
+# anything else means nothing. The host's SlotMode is its first boot's launch tag (hosting.json):
+# - address (choice A, no tag): slot k's address is the tag's privateIp on whichever interface carries it (slotnet.py;
+#   under PF-03 the slots' interface, not the host's own), never the k-th address, with its own Elastic IP; the slot's
+#   packets are routed out of that interface; UDP and TCP 443 on that address are DNATed to the desk.
+# - port (choice B, the owner's, 2026-11-10; ADR 0072 section 6): one public IPv4 for the host, the one EC2 auto-assigned;
+#   the tag's address fields are "-". UDP 4430+k on the host's address is DNATed to slot k, and every slot's outbound is
+#   SNATed from it with the slot's own block of ports. TCP 443 is desk-ice-demux's (the host's, outside every desk), which
+#   hands each connection to its slot by the tag ("s<kk>") of the ufrag in its first STUN request, from the client's own
+#   address; desk-host marks a running slot for it (/run/desk-dmx/slots/<k>) and counts those bytes too (dmxi_<k>,
+#   dmxo_<k>). The slot's desk-rtc gets port, tcp_port 443, slot and public_ipv4 (the host's, from IMDS) in its own
+#   /run/desk-host/<k>/desk-rtc.conf. A desk's packets meet its slot's source check before any flow (IN-09); then its bytes out
 # and in are counted per veth, every packet of every flow (desk_est, ADR 0072 section 8), from 0 at each start. A desk reaches
 # 169.254.169.254 only as its own stand-in in desk-host-link (IN-03): TCP 80 from the slot's address DNATed to
 # 10.98.<k>.1:STANDIN_PORT, nothing else.
@@ -38,6 +71,9 @@
 #   memory.zswap.max 1,000 MiB, memory.zswap.writeback 0: compressed in its own cap, never written to the swap file; the
 #   proposal that replaces swap 0), io.max on both its devices summing to 0.8 of the instance's EBS baseline, a project quota,
 #   connection limits inside the desk and on the host.
+# - ADR 0036 per container (ADR 0072 section 8, TD-223): the outbound shaper's classes on the desk's end of its veth (eth0 in its
+#   network namespace, where the template's classify chain sets each packet's class), put on before anything in the desk runs, and
+#   its budgets in desk-host-egress@<k> on the host, state in /var/lib/desk-host/egress (egress.py). The desk has no CAP_NET_ADMIN.
 # - Size classes (ADR 0072, "Container sizes by tier"): each value above is one standard desk's, and a slot's class
 #   (/etc/desk-host/classes.conf, classes.py) multiplies it. A start or a raise is admitted only while the desks' memory.max and
 #   disk shares, as the kernel holds them, stay within DesksPerHost standard desks' (one host-wide lock), so a desk's peak never
@@ -49,7 +85,7 @@ set -euo pipefail
 umask 022
 LIB=/usr/local/lib/desk-host
 SVCS="desk-rtc deskd desk-agent desk-notebook desk-stream desk-data"
-DH=/srv/desk-host; T=$DH/template; S=$DH/slots; REC=/var/lib/desk-host/slots; CGR=/sys/fs/cgroup/desk-host; RUN=/run/desk-host
+DH=/srv/desk-host; TPL=$DH/templates; S=$DH/slots; REC=/var/lib/desk-host/slots; CGR=/sys/fs/cgroup/desk-host; RUN=/run/desk-host
 log() { echo "[desk-host $(date -u +%T)] $*"; }
 mb() { awk -v b="$1" 'BEGIN {printf "%.1f", b / 1e6}'; }
 die() { echo "desk-host: $*" >&2; exit 1; }
@@ -60,10 +96,14 @@ CT_HOST=$(conf CT_HOST); CT_HOST=${CT_HOST:-4608}
 QUOTA_HEAD_MB=$(conf QUOTA_HEAD_MB); QUOTA_HEAD_MB=${QUOTA_HEAD_MB:-1024}
 QUOTA_HEAD_INODES=$(conf QUOTA_HEAD_INODES); QUOTA_HEAD_INODES=${QUOTA_HEAD_INODES:-50000}
 IO_SPLIT=$(conf IO_SPLIT); IO_SPLIT=${IO_SPLIT:-40,10,25,25}   # percent of a desk's disk share: root reads, root writes, volume reads, volume writes
-ADDR_MODE=$(conf ADDR_MODE); ADDR_MODE=${ADDR_MODE:-slot-ip}             # slot-ip (443 on the slot's own address) or port (4430+k)
+SLOT_MODE=$(python3 -I $LIB/slotnet.py mode 2>/dev/null) || SLOT_MODE=none   # address (A) or port (B): the first boot's SlotMode tag
+DMX=/run/desk-dmx                                                        # desk-ice-demux's: the live slots it may hand connections to
+HALT=$RUN/halt                                                           # stop-all's mark: the host is stopping its desks, none starts
 HOST_PORTS=$(conf HOST_PORTS)                                            # host ports a desk may reach on its veth: a test host's fixtures
 STANDIN_PORT=$(conf STANDIN_PORT); STANDIN_PORT=${STANDIN_PORT:-9254}    # each slot's metadata stand-in (desk-host-link), on 10.98.<k>.1
 TEST=0; [ -f /etc/desk-host/test.conf ] && [ -d /var/lib/desk-host/test ] && TEST=1
+TT=$LIB/desk-host-template                                               # the template generations (ADR 0077; templates.py)
+BT=$LIB/desk-host-batch                                                  # service batches (ADR 0078; batches.py)
 
 imds() {
   local tok; tok=$(curl -fsS -m 3 -X PUT -H 'X-aws-ec2-metadata-token-ttl-seconds: 60' http://169.254.169.254/latest/api/token) || return 1
@@ -78,13 +118,63 @@ dev_for_vol() { local want=${1/-/} c; for c in /sys/class/nvme/nvme*; do [ "$(tr
 op_mark() { install -d -m 700 $RUN/op; echo "$2" > "$RUN/op/$1"; }
 op_clear() { rm -f "$RUN/op/$1"; }
 fault() { install -d -m 700 $RUN/fault; echo "$2" > "$RUN/fault/$1"; }
+# IN-09, ADR 0035: once stop-all has begun (a host stop), no desk starts. up asks this under its slot's lock, after its "starting"
+# mark, before it changes anything and again before runc create and runc start; stop-all marks the host before it looks for
+# slots, so a start either sees the mark or is seen (running, or marked starting) and stopped once its up lets the lock go.
+# 0.1.7 looked only for running containers: an up the link had begun (the link stops first at a host stop, leaving its child
+# running) was skipped, finished after stop-all, and its desk was killed with the host, not closed (verify-port.sh, run 5).
+halting() {
+  [ -e "$HALT" ] || return 1
+  fault "$1" host_stopping; echo "slot $1: refused, the host is stopping every desk (desk-host stop-all; desk-host resume, or a boot, ends it)" >&2
+}
 record_desk() { python3 -I -c 'import json,sys; print(json.load(open(sys.argv[1])).get("deskId") or "none")' "$REC/$1.json" 2>/dev/null || echo none; }
 record_state() { python3 -I -c 'import json,sys; r=json.load(open(sys.argv[1])); print(r.get("state","desk"), r.get("template","-"))' "$REC/$1.json" 2>/dev/null || echo "none -"; }
-template_id() { head -1 $T/.complete; }
-write_record() {   # write_record <k> <fresh|desk> <deskId or "">: a temp file, then a rename, so a crash leaves the old one or none
-  python3 -I -c 'import json,sys; json.dump({"slot": int(sys.argv[1]), "state": sys.argv[2], "deskId": sys.argv[3] or None, "template": sys.argv[4], "at": sys.argv[5]}, open(sys.argv[6], "w"))' \
-    "$1" "$2" "$3" "$(template_id)" "$(date -u +%FT%TZ)" "${REC:?}/$1.json.tmp"
+# ADR 0077: a slot's root is a copy of one template generation, $TPL/<gen>, which its record names ("template"); every reader of
+# the template reads the slot's own generation (the prepare's copy, the firewall, svc-spec.py's roots and resolver, preread.py)
+cur_gen() { python3 -I $TT current; }
+gen_path() { [[ ${1:-} =~ ^g[1-9][0-9]{0,5}$ ]] && echo "$TPL/$1"; }
+gen_ok() { local p; p=$(gen_path "${1:-}") && [ -f "$p/.complete" ] && grep -qx "gen=$1" "$p/.complete"; }
+write_record() {   # write_record <k> <fresh|desk> <deskId or ""> <gen> [<epoch>] [<vol>] [<choice JSON>]: a temp file, then a rename, so a
+  # crash leaves the old one or none. The host's last read of the profile's Last Version (a choice's) stays while the desk is the same.
+  python3 -I -c 'import json,os,sys
+k, state, desk, gen, epoch, vol, choice, at, out, old = sys.argv[1:]
+r = {"slot": int(k), "state": state, "deskId": desk or None, "template": gen, "at": at}
+if epoch.isdigit(): r["epoch"] = int(epoch)
+if vol.startswith("vol-"): r["volumeId"] = vol
+try: prev = json.load(open(old))
+except (OSError, ValueError): prev = {}
+keep = ("lastVersion", "lastVersionRead", "lastVersionAt", "chromiumBehind")
+if desk and prev.get("deskId") == desk: r.update({x: prev[x] for x in keep if x in prev})
+# ADR 0078: what rel/ holds and its batch belong to the root, kept whoever claims it (a prepare removes the record first)
+r.update({x: prev[x] for x in ("releases", "batch", "rolledBack", "batchTries", "switching", "verify") if x in prev})
+if choice:
+    c = json.loads(choice); r.update({"lastVersion": c.get("lastVersion"), "lastVersionRead": c.get("read"), "lastVersionAt": at, "chromiumBehind": bool(c.get("chromiumBehind"))})
+json.dump(r, open(out, "w"))' "$1" "$2" "$3" "$4" "${5:-}" "${6:-}" "${7:-}" "$(date -u +%FT%TZ)" "${REC:?}/$1.json.tmp" "${REC:?}/$1.json"
   chmod 600 "${REC:?}/$1.json.tmp"; mv "${REC:?}/$1.json.tmp" "${REC:?}/$1.json"
+}
+rec_field() { python3 -I -c 'import json,sys; v = json.load(open(sys.argv[1])).get(sys.argv[2]); print("" if v is None else v)' "$REC/$1.json" "$2" 2>/dev/null; }
+json_field() { python3 -I -c 'import json,sys; v = json.loads(sys.argv[1]).get(sys.argv[2]); print("" if v is None else str(v).lower() if isinstance(v, bool) else v)' "$1" "$2"; }
+
+# The host's one turn for a copy onto the store (templates.py CopyTurn): a background re-root or unpack holds it as its process group;
+# a prepare with a member waiting (fg) takes it from one (SIGTERM to that group: the work is dropped and tried again later). Every copy
+# onto the store holds it: a prepare's (prep_turn, both modes), a re-root's, a batch's, and the fresh rel/ copies of a swap or of a
+# switch cut off half way (both fg: they run under the slot's lock and are never dropped).
+copy_turn() {
+  install -d -m 700 $RUN/lock; exec 7>"$RUN/lock/copy"
+  if ! flock -n 7; then
+    local h; h=$(cat "$RUN/copy.holder" 2>/dev/null || true)
+    if [ "$1" = fg ] && [[ $h =~ ^[0-9]+$ ]]; then log "taking the copy turn from a background copy (process group $h), which is dropped"; kill -TERM -- "-$h" 2>/dev/null || true; fi
+    flock -w "${COPY_WAIT:-3600}" 7 || die "the host's copy turn not had"
+  fi
+  if [ "$1" = fg ]; then echo fg > "$RUN/copy.holder"; else ps -o pgid= -p $$ | tr -d ' ' > "$RUN/copy.holder"; fi
+  COPY_HELD=1
+}
+copy_done() { [ "${COPY_HELD:-0}" = 1 ] && rm -f "$RUN/copy.holder"; COPY_HELD=0; exec 7>&-; }   # the holder file only if it's this one's
+# a wake takes its slot at once (contract 13.2, ADR 0077 1.5): a background re-root of the slot, copying outside the lock, is dropped
+abort_reroot() {
+  local p; p=$(cat "$RUN/reroot/$1.pgid" 2>/dev/null || true)
+  [[ $p =~ ^[0-9]+$ ]] && kill -0 -- "-$p" 2>/dev/null && { kill -TERM -- "-$p" 2>/dev/null || true; log "slot $1: a re-root in the background was dropped for this start"; }
+  rm -f "$RUN/reroot/$1.pgid"
 }
 valid_slot() { [[ $1 =~ ^[0-9]{1,2}$ ]] && [ "$1" -ge 1 ] && [ "$1" -le "$(slots_per_host)" ] || die "no slot $1 (slots $(slots_per_host))"; }
 
@@ -103,16 +193,58 @@ lock_slot() {
 lock_admit() { install -d -m 700 $RUN/lock; exec 8>"$RUN/lock/admit"; flock -w 120 8 || die "the host's admission lock not had in 120 s"; }
 unlock_admit() { exec 8>&-; }
 
-prepare() {
-  local k=${1:?} base=$((100000 + $1 * 65536)) proj=$((1000 + $1)) new old t0 svc; t0=$(date +%s)
+# The store's room (Platform's reclaim wave, 2026-11-11: six slots prepared again at once filled two 0.1.9 hosts' 36 GB stores, and
+# desks placed after it failed with ENOSPC). The store is sized for one copy in flight (ADR 0077 section 4, ADR 0078's PB-8). So a
+# prepare (docs/sub-status/prepare-space.md):
+# 1. deletes the slot's old root before its copy, never after: it's orphaned once its record is gone (nothing starts on a root no
+#    record names, and everything a desk keeps is on its /data, ADR 0072 sections 10 and 12), so a prepare never holds two roots;
+# 2. copies only in the host's copy turn (copy_turn, held from the room check to the rename), and under it only when the store holds
+#    one more root beside what the other slots' desks may still write and a spare (desk-host-template room); else it refuses (75)
+#    with nothing made. A tree whose maker died (SIGKILL) is removed then: in the turn, a .new or .old tree is only ever the holder's;
+# 3. removes the tree it was making on every way out before the rename (prep_drop, never following links), so a failure (an ENOSPC
+#    in tar, shift.py or cp) or a background prepare stopped for a start leaves nothing that keeps other slots failing.
+PREP_SPARE_MB=$(conf PREP_SPARE_MB); PREP_SPARE_MB=${PREP_SPARE_MB:-512}
+PREP_NEW=""   # the tree a prepare is making, until its rename
+prep_drop() {   # the tree an unfinished prepare was making, removed without following links; the copy turn let go if it's this one's
+  copy_done
+  if [ -n "$PREP_NEW" ] && [ -d "$PREP_NEW" ]; then
+    rm -rf --one-file-system "${PREP_NEW:?}" && log "removed $(basename "$PREP_NEW"), the unfinished prepare's tree" || echo "desk-host: $PREP_NEW not removed" >&2
+  fi
+  PREP_NEW=""
+}
+prep_old_root() {   # prep_old_root <k> <old>: the slot's root, no record naming it, deleted before the copy (renamed first: a crash leaves
+  # .<k>.old.<pid>, which the next prepare removes)
+  [ -d "$S/$1" ] || return 0
+  mv "$S/$1" "$2" && rm -rf --one-file-system "${2:?}" || { echo "slot $1: removing its old root failed" >&2; return 1; }
+  log "slot $1: its old root deleted before the copy (no record names it)"
+}
+prep_turn() {   # prep_turn <k> <gen>: the copy turn, then a dead prepare's trees removed and the room checked; 75 when there's no room
+  local d p why
+  copy_turn "${COPY_MODE:-fg}"
+  for d in "${S:?}"/.*.new.* "${S:?}"/.*.old.*; do   # never .rr.: a prebuilt root waits there for its idle restart after its maker exits
+    [ -d "$d" ] || continue; p=${d##*.}; [[ $p =~ ^[0-9]+$ ]] || continue
+    kill -0 "$p" 2>/dev/null && continue
+    rm -rf --one-file-system "${d:?}" 2>/dev/null && log "removed $(basename "$d"), left by a prepare that's gone" || true
+  done
+  why=$(python3 -I $TT room "$1" "$2" "$PREP_SPARE_MB") || { copy_done; echo "slot $1: refused for room: $why; nothing copied" >&2; return 75; }
+  log "slot $1: room for a root: $why"
+}
+
+prepare() { local rc=0; prepare_root "$@" || rc=$?; prep_drop; return $rc; }
+prepare_root() {   # prepare <k> [<gen>]: from the current generation unless given
+  local k=${1:?} gen=${2:-} base=$((100000 + $1 * 65536)) proj=$((1000 + $1)) new old t0 svc T; t0=$(date +%s)
   new=${S:?}/.$k.new.$$; old=${S:?}/.$k.old.$$
-  [ -f $T/.complete ] || { echo "no template" >&2; return 1; }
+  gen=${gen:-$(cur_gen)}; gen_ok "$gen" || { echo "no sealed template generation ${gen:-(none current)}" >&2; return 1; }
+  T=$(gen_path "$gen")
   local left; left=$(leftovers "$k"); [ -z "$left" ] || { echo "slot $k: refused, a desk's state is still there: $left" >&2; return 1; }
   rm -f "${REC:?}/$k.json"
-  local stale n=0; for stale in "${S:?}"/.$k.new.* "${S:?}"/.$k.old.*; do [ -d "$stale" ] && { rm -rf --one-file-system "${stale:?}"; n=$((n + 1)); }; done
-  [ "$n" = 0 ] || log "slot $k: removed $n tree(s) a crashed prepare left"
+  local stale n=0; for stale in "${S:?}"/.$k.new.* "${S:?}"/.$k.old.* "${S:?}"/.$k.rr.*; do [ -d "$stale" ] && { rr_drop "$k" "$stale"; n=$((n + 1)); }; done
+  [ "$n" = 0 ] || log "slot $k: removed $n tree(s) a crashed prepare or re-root left"
+  prep_old_root "$k" "$old" || return 1
+  prep_turn "$k" "$gen" || return $?
+  PREP_NEW=$new
   mkdir -m 711 "$new" && mkdir "$new/rootfs" "$new/rel" "$new/svc" && chmod 711 "$new/rel" "$new/svc" || return 1
-  tar -C $T -cf - . | tar -C "$new/rootfs" -xpf - --numeric-owner || { echo "slot $k: copying the template failed" >&2; return 1; }
+  tar -C "$T" --exclude=./.complete -cf - . | tar -C "$new/rootfs" -xpf - --numeric-owner || { echo "slot $k: copying the template ($gen) failed" >&2; return 1; }
   python3 -I $LIB/shift.py "$new/rootfs" "$base" >/dev/null || return 1
   echo "desk-$k" > "$new/rootfs/etc/hostname" || return 1
   # the project ID on every directory (inherited, +P) and regular file (links and sockets can't carry one), checked
@@ -122,21 +254,184 @@ prepare() {
   for svc in deskd desk-agent desk-notebook desk-rtc desk-stream; do   # RC-01: the host's own store, never the desk's /opt/ma
     cp -a "$DH/releases/$svc/current/." "$new/rel/$svc" || { echo "slot $k: copying $svc's release failed" >&2; return 1; }
   done
-  sed -n 's/^version=/DESKD_IMAGE_VERSION=/p' $T/etc/ma-release > "$new/rel/deskd/version.env" || return 1
+  sed -n 's/^version=/DESKD_IMAGE_VERSION=/p' "$T/etc/ma-release" > "$new/rel/deskd/version.env" || return 1
   [ "${CRASH_AT:-}" = copy ] && { log "slot $k: CRASH_AT=copy, stopping after the copy"; kill -9 $$; }
   local used inodes; read -r used inodes <<<"$(du -s --block-size=1K "$new/rootfs" | cut -f1) $(find "$new/rootfs" -xdev | wc -l)"
+  if python3 -I $TT halted "$gen"; then   # halted (a rollback) during the copy: fails closed (prep_drop), and the next prepare takes the current one
+    echo "slot $k: $gen was halted while the root was copied from it; not prepared" >&2; return 1
+  fi
   setquota -P "$proj" 0 $((used + QUOTA_HEAD_MB * 1024)) 0 $((inodes + QUOTA_HEAD_INODES)) $DH || return 1
-  if [ -d "$S/$k" ]; then mv "$S/$k" "$old" || return 1; fi
+  if [ -d "$S/$k" ]; then mv "$S/$k" "$old" || return 1; fi   # only when prep_old_root is off: the old order (verify-wave.sh's mutation)
   mv "$new" "$S/$k" || return 1
+  PREP_NEW=""; copy_done
   [ "${CRASH_AT:-}" = rename ] && { log "slot $k: CRASH_AT=rename, stopping after the rename"; kill -9 $$; }
   [ -d "$old" ] && rm -rf --one-file-system "${old:?}"
-  write_record "$k" fresh ""
-  log "slot $k: prepared fresh from the template ($(template_id)) and the release store in $(( $(date +%s) - t0 )) s; quota $((used / 1024 + QUOTA_HEAD_MB)) MiB, $((inodes + QUOTA_HEAD_INODES)) inodes"
+  write_record "$k" fresh "" "$gen" || { echo "slot $k: its record wasn't written" >&2; return 1; }
+  python3 -I $BT record "$k" fresh || return 1   # ADR 0078: its rel/ is the store's current
+  log "slot $k: prepared fresh from template generation $gen and the release store in $(( $(date +%s) - t0 )) s; quota $((used / 1024 + QUOTA_HEAD_MB)) MiB, $((inodes + QUOTA_HEAD_INODES)) inodes"
+}
+
+# ---- ADR 0077 1.5: a re-root. A prepare for the same desk: a fresh tree from the target generation, built beside the old root and
+# outside the slot's lock; the slot's rel/ (host-owned release copies no desk can write) moved in once its tree hash matches the store's;
+# then, under the slot's lock and only if the slot is still stopped with the same record: the record removed, the new tree swapped in by
+# rename, the record written (the same desk and epoch, the new template), the old root deleted without following links. WALL-03 holds:
+# the host writes only into a tree it has just made, and only deletes the desk's old one. CRASH_AT=reroot-copy|reroot-swap stop it there.
+rr_build() {   # rr_build <k> <gen> <dir>: the new tree, shifted, the slot's project ID on it; prints "<used KiB> <inodes>"
+  local k=$1 gen=$2 new=$3 base=$((100000 + $1 * 65536)) proj=$((1000 + $1)) T; T=$(gen_path "$gen")
+  mkdir -m 711 "$new" && mkdir "$new/rootfs" "$new/svc" && chmod 711 "$new/svc" || return 1
+  python3 -I $TT copy-tree "$T" "$new/rootfs" || { echo "slot $k: copying $gen failed" >&2; return 1; }   # paced, for desk-host-upd's io.max
+  python3 -I $LIB/shift.py "$new/rootfs" "$base" >/dev/null || return 1
+  echo "desk-$k" > "$new/rootfs/etc/hostname" || return 1
+  local used inodes; read -r used inodes <<<"$(du -s --block-size=1K "$new/rootfs" | cut -f1) $(find "$new/rootfs" -xdev | wc -l)"
+  # while the old root is still the slot's (a running slot's prebuild), its quota grows by the new tree, so the desk's own room is unchanged
+  # (the slot's own limits kept in .quota-orig beside the tree, and put back by rr_drop if the tree is dropped)
+  python3 -I -c 'import sys; sys.path.insert(0, sys.argv[1]); import templates as T, subprocess
+q = T.project_quota(int(sys.argv[2]))
+if q and q[0]:
+    open(sys.argv[5], "w").write(f"{q[0] // 1024} {q[2]}\n")
+    subprocess.run(["setquota", "-P", sys.argv[2], "0", str(q[0] // 1024 + int(sys.argv[3])), "0", str(q[2] + int(sys.argv[4])), T.DH], check=True)' \
+    "$LIB" "$proj" "$used" "$inodes" "$new/.quota-orig" || return 1
+  find "$new/rootfs" -xdev -type d -print0 | xargs -0 -r chattr +P -p "$proj" || return 1
+  find "$new/rootfs" -xdev -type f -print0 | xargs -0 -r chattr -p "$proj" || return 1
+  [ "$(lsattr -pd "$new/rootfs" | awk '{print $1}')" = "$proj" ] || return 1
+  echo "$used $inodes"
+}
+rr_drop() {   # rr_drop <k> <dir>: a re-root's tree dropped; the slot's quota as it was before the tree raised it
+  local b i
+  if [ -f "$2/.quota-orig" ]; then read -r b i < "$2/.quota-orig"; [[ $b =~ ^[0-9]+$ ]] && [[ $i =~ ^[0-9]+$ ]] && setquota -P $((1000 + $1)) 0 "$b" 0 "$i" $DH; fi
+  rm -rf --one-file-system "${2:?}"
+}
+rel_ok() {   # rel_ok <k>: the slot's release copies are the store's, by tree hash (deskd's version.env, the host's own line, aside)
+  python3 -I - "$1" <<'P'
+import hashlib, os, stat, sys
+k = sys.argv[1]
+def th(root, skip):
+    h = hashlib.sha256()
+    for dp, dns, fns in os.walk(root):
+        dns.sort()
+        for name in sorted(dns + fns):
+            if dp == root and name in skip:
+                continue
+            p = os.path.join(dp, name); st = os.lstat(p); rel = os.path.relpath(p, root)
+            if stat.S_ISREG(st.st_mode):
+                fd = os.open(p, os.O_RDONLY | os.O_NOFOLLOW | os.O_CLOEXEC)
+                hh = hashlib.sha256()
+                with os.fdopen(fd, "rb") as fh:
+                    for blk in iter(lambda: fh.read(1 << 20), b""):
+                        hh.update(blk)
+                c = hh.hexdigest()
+            elif stat.S_ISLNK(st.st_mode):
+                c = "->" + os.readlink(p)
+            else:
+                c = "-"
+            h.update(f"{rel}\0{stat.S_IFMT(st.st_mode):o}\0{stat.S_IMODE(st.st_mode):o}\0{st.st_uid}\0{st.st_gid}\0{c}\n".encode())
+    return h.hexdigest()
+import json
+try:
+    named = json.load(open(f"/var/lib/desk-host/slots/{k}.json")).get("releases") or {}
+except (OSError, ValueError):
+    named = {}
+bad = []
+for c in ("deskd", "desk-agent", "desk-notebook", "desk-rtc", "desk-stream"):   # ADR 0078: the release its record names (the store's current before batches)
+    mine = f"/srv/desk-host/slots/{k}/rel/{c}"
+    try:
+        want = open(f"/srv/desk-host/releases/{c}/{named.get(c) or 'current'}/tree.sha256").read().strip()
+    except OSError:
+        want = None
+    if not want or not os.path.isdir(mine) or os.path.islink(mine) or th(mine, {"tree.sha256", "version.env"}) != want:
+        bad.append(c)
+print(" ".join(bad))
+sys.exit(1 if bad else 0)
+P
+}
+rr_swap() {   # rr_swap <k> <new dir> <gen> <state> <desk> <epoch> <vol> <used> <inodes> <choice>: under the slot's lock
+  local k=$1 new=$2 gen=$3 rst=$4 desk=$5 epoch=$6 vol=$7 used=$8 inodes=$9 choice=${10:-} old=${S:?}/.$1.old.$$ proj=$((1000 + $1)) svc
+  if [ "${RR_REL:-keep}" = keep ]; then
+    mv "$S/$k/rel" "$new/rel" || return 1
+  else   # the copies weren't the store's: fresh ones (1.0 GB more), in the host's copy turn (its log to stderr: stdout is the old root's path)
+    copy_turn fg >&2
+    mkdir -m 711 "$new/rel"; for svc in deskd desk-agent desk-notebook desk-rtc desk-stream; do cp -a "$DH/releases/$svc/current/." "$new/rel/$svc" || { copy_done; return 1; }; done
+    copy_done
+  fi
+  sed -n 's/^version=/DESKD_IMAGE_VERSION=/p' "$(gen_path "$gen")/etc/ma-release" > "$new/rel/deskd/version.env" || return 1
+  rm -f "${REC:?}/$k.json"
+  mv "$S/$k" "$old" && mv "$new" "$S/$k" || return 1
+  rm -f "$S/$k/.quota-orig" "$S/$k/.ready"
+  [ "${CRASH_AT:-}" = reroot-swap ] && { log "slot $k: CRASH_AT=reroot-swap, stopping in the swap (no record)"; kill -9 $$; }
+  write_record "$k" "$rst" "$desk" "$gen" "$epoch" "$vol" "$choice"
+  [ "${RR_REL:-keep}" = keep ] || python3 -I $BT record "$k" fresh >/dev/null   # ADR 0078: fresh copies are the store's current
+  setquota -P "$proj" 0 $((used + QUOTA_HEAD_MB * 1024)) 0 $((inodes + QUOTA_HEAD_INODES)) $DH || return 1
+  echo "$old"
+}
+reroot() {   # reroot <k> [--prebuild]: in desk-host-upd (desk-host-template upd), never holding the slot's lock while it copies
+  local k=$1 mode=${2:-} rst desk gen epoch vol recsum choice target t0 new out used inodes old why trial
+  t0=$(date +%s)
+  read -r rst gen <<<"$(record_state "$k")"; desk=$(record_desk "$k"); epoch=$(rec_field "$k" epoch); vol=$(rec_field "$k" volumeId)
+  [ "$desk" = none ] && desk=""
+  case "$rst" in desk|fresh) ;; *) log "slot $k: no root to re-root (record $rst)"; return 0 ;; esac
+  if [ "$mode" != --prebuild ] && { runc state dh-desk-$k >/dev/null 2>&1 || [ -s "$RUN/op/$k" ]; }; then log "slot $k: running or busy, not re-rooted"; return 0; fi
+  recsum=$(sha256sum "$REC/$k.json" | cut -d' ' -f1)
+  if [ "$rst" = fresh ]; then target=$(cur_gen); choice=""
+  else
+    trial=--trial-at-stop; [ "$mode" = --prebuild ] && trial=--trial
+    choice=$(python3 -I $TT choose "$k" reroot $trial) || { log "slot $k: no choice of generation, not re-rooted"; return 1; }
+    target=$(json_field "$choice" gen)
+    recsum=$(sha256sum "$REC/$k.json" | cut -d' ' -f1)   # choose wrote the read of Last Version into the record
+  fi
+  if [ -z "$target" ] || [ "$target" = "$gen" ]; then log "slot $k: on $gen, which is its generation ($(json_field "${choice:-{\}}" reason 2>/dev/null || echo current)); nothing to do"; [ "$mode" = --prebuild ] && echo "none"; return 0; fi
+  gen_ok "$target" || { log "slot $k: $target isn't sealed"; return 1; }
+  install -d -m 700 $RUN/reroot; ps -o pgid= -p $$ | tr -d ' ' > "$RUN/reroot/$k.pgid"
+  new=$S/.$k.rr.$$
+  local me; me=$(ps -o pgid= -p $$ | tr -d ' ')
+  # the exit, a dropped copy's included: its pgid file, the copy turn if it's still this re-root's, the half-built tree and its quota
+  trap 'rm -f "$RUN/reroot/'"$k"'.pgid"; [ "$(cat "$RUN/copy.holder" 2>/dev/null)" = "'"$me"'" ] && rm -f "$RUN/copy.holder"; [ -d "'"$new"'" ] && [ ! -e "'"$new"'/.ready" ] && rr_drop '"$k"' "'"$new"'"' EXIT
+  trap 'exit 143' TERM
+  [ "$mode" = --prebuild ] && python3 -I $TT hold "$k" 900
+  if [ "$TEST" = 1 ] && [ "${REROOT_HOLD_LOCK:-}" = 1 ]; then lock_slot "$k"; log "slot $k: REROOT_HOLD_LOCK (a test host's mutation): the slot's lock held through the copy"; fi
+  local stale; for stale in "${S:?}"/.$k.rr.*; do [ "$stale" != "$new" ] && [ -d "$stale" ] && rr_drop "$k" "$stale"; done
+  copy_turn "${COPY_MODE:-bg}"
+  out=$(rr_build "$k" "$target" "$new") || { copy_done; log "slot $k: building the new root from $target failed"; return 1; }
+  copy_done
+  read -r used inodes <<<"$out"
+  [ "${CRASH_AT:-}" = reroot-copy ] && { log "slot $k: CRASH_AT=reroot-copy, stopping after the copy"; trap - EXIT; kill -9 $$; }
+  RR_REL=keep; why=$(rel_ok "$k") || { RR_REL=fresh; log "slot $k: its release copies aren't the store's ($why): fresh ones go in"; }
+  if [ "$mode" = --prebuild ]; then   # an idle restart's: the tree waits beside the running root for desk-host restart
+    printf 'gen=%s\nrecord=%s\nused=%s\ninodes=%s\nrel=%s\nchoice=%s\n' "$target" "$recsum" "$used" "$inodes" "$RR_REL" "$choice" > "$new/.ready"
+    log "slot $k: a root from $target built beside the running one in $(( $(date +%s) - t0 )) s, for an idle restart"
+    echo "$new"; trap - EXIT; return 0
+  fi
+  [ "${REROOT_HOLD_LOCK:-}" = 1 ] && [ "$TEST" = 1 ] || { exec 9>"$RUN/lock/$k"; flock -n 9 || { log "slot $k: a start or another operation holds the slot: the new root is dropped"; return 0; }; }
+  if [ "$(sha256sum "$REC/$k.json" 2>/dev/null | cut -d' ' -f1)" != "$recsum" ] || runc state dh-desk-$k >/dev/null 2>&1 || [ -s "$RUN/op/$k" ]; then
+    log "slot $k: the slot changed while its new root was built (a start, a prepare): the new root is dropped"; return 0
+  fi
+  if python3 -I $TT halted "$target"; then log "slot $k: $target was halted while its new root was built (a rollback): the new root is dropped"; return 0; fi
+  old=$(rr_swap "$k" "$new" "$target" "$rst" "$desk" "$epoch" "$vol" "$used" "$inodes" "$choice") || { log "slot $k: the swap failed"; return 1; }
+  exec 9>&-
+  [ "$target" = "$(python3 -I -c 'import sys; sys.path.insert(0, sys.argv[1]); import templates as T; print((T.load_state().get("candidate") or {}).get("gen") or "")' "$LIB")" ] && python3 -I $TT trial "$target" "$k" start >/dev/null
+  log "slot $k: re-rooted from $gen to $target in $(( $(date +%s) - t0 )) s ($([ "$RR_REL" = keep ] && echo "rel/ kept" || echo "rel/ copied fresh"); $(json_field "${choice:-{\}}" reason 2>/dev/null || echo "a fresh root"))"
+  rm -rf --one-file-system "${old:?}"
+  python3 -I $TT gc >/dev/null 2>&1 || true
+}
+# after a stop (never a host's stop-all): a re-root in the background, in desk-host-upd, when the slot isn't on its generation
+reroot_later() {
+  [ -e "$HALT" ] && return 0
+  local g=0 b=0
+  python3 -I $TT due "$1" && g=1
+  stop_path_due "$1" && b=1
+  [ $g = 1 ] || [ $b = 1 ] || return 0
+  mkdir -p /var/log/desk-host
+  setsid -f python3 -I $TT upd -- /bin/bash $LIB/desk-host after-stop "$1" >> /var/log/desk-host/reroot-$1.log 2>&1 < /dev/null 7>&- 8>&- 9>&-
+  log "slot $1: $([ $g = 1 ] && echo "a re-root onto its generation")$([ $g$b = 11 ] && echo ", then ")$([ $b = 1 ] && echo "its rel/ onto its batch (ADR 0078 2.3)") in the background (desk-host-upd)"
+}
+# ADR 0078 2.3: the stop path, while Platform's liveSwitches is off (and batches on): a stopped slot's rel/ onto its batch
+stop_path_due() {
+  local sw; sw=$(python3 -I $BT switches 2>/dev/null) || return 1
+  [ "$(json_field "$sw" batches)" = true ] && [ "$(json_field "$sw" liveSwitches)" != true ] && python3 -I $BT due "$1"
 }
 
 nft_slot_reset() {
   local k=$1 c
-  for c in src_$k slot_$k ct_$k in_$k fwdin_$k est_$k; do nft list chain inet host $c >/dev/null 2>&1 && nft flush chain inet host $c || nft add chain inet host $c; done
+  for c in src_$k slot_$k ct_$k in_$k fwdin_$k est_$k $([ "$SLOT_MODE" = port ] && echo dmxi_$k dmxo_$k); do nft list chain inet host $c >/dev/null 2>&1 && nft flush chain inet host $c || nft add chain inet host $c; done
   for c in pre_$k post_$k; do nft list chain ip host_nat $c >/dev/null 2>&1 && nft flush chain ip host_nat $c || nft add chain ip host_nat $c; done
   local n   # the slot's byte counters: out_<k> (what the desk sends) and rx_<k> (what it receives); each start counts from 0 (ADR 0072 section 8)
   for n in out_$k rx_$k; do nft list counters table inet host 2>/dev/null | grep -q "counter $n " && nft reset counter inet host $n >/dev/null || nft add counter inet host $n; done
@@ -146,6 +441,10 @@ nft_slot_reset() {
   nft list chain inet host desk_fwd | grep -qE "jump slot_$k\$" || nft add rule inet host desk_fwd iifname "dhv$k" jump slot_$k
   nft list chain inet host desk_fwd | grep -qE "jump fwdin_$k\$" || nft add rule inet host desk_fwd oifname "dhv$k" jump fwdin_$k
   nft list chain inet host desk_in | grep -qE "jump in_$k\$" || nft add rule inet host desk_in iifname "dhv$k" jump in_$k
+  if [ "$SLOT_MODE" = port ]; then   # the demux's connections to this slot: its replies in (dmxi), the demux's bytes to it (dmxo)
+    nft list chain inet host desk_dmx | grep -qE "jump dmxi_$k\$" || nft add rule inet host desk_dmx iifname "dhv$k" jump dmxi_$k
+    nft list chain inet host desk_dmxo | grep -qE "jump dmxo_$k\$" || nft add rule inet host desk_dmxo oifname "dhv$k" jump dmxo_$k
+  fi
   nft list chain ip host_nat pre | grep -qE "jump pre_$k\$" || nft add rule ip host_nat pre jump pre_$k
   nft list chain ip host_nat post | grep -qE "jump post_$k\$" || nft add rule ip host_nat post jump post_$k
 }
@@ -172,8 +471,11 @@ leftovers() {   # RC-03: anything of slot k outside its root; empty when the slo
   [ -e "$RUN/$k" ] && out+=" run-dir"
   mountpoint -q "$RUN/share/$k" 2>/dev/null && out+=" share-tmpfs"
   [ -e "$RUN/ns/$k" ] && out+=" ns-binds"
-  for c in src_$k slot_$k ct_$k in_$k fwdin_$k est_$k; do nft list chain inet host $c >/dev/null 2>&1 && out+=" nft:$c"; done
+  for c in src_$k slot_$k ct_$k in_$k fwdin_$k est_$k dmxi_$k dmxo_$k; do nft list chain inet host $c >/dev/null 2>&1 && out+=" nft:$c"; done
   for c in pre_$k post_$k; do nft list chain ip host_nat $c >/dev/null 2>&1 && out+=" nft:$c"; done
+  [ -e "$DMX/slots/$k" ] && out+=" demux-marker"
+  systemctl is-active --quiet "desk-host-egress@$k.service" 2>/dev/null && out+=" egress"
+  [ -e "$RUN/shaper-off/$k" ] && out+=" shaper-off"
   [ -z "$(ip rule show iif dhv$k 2>/dev/null)" ] || out+=" ip-rule"
   [ "$(conntrack -L -s 10.98.$k.2 2>/dev/null | wc -l)" = 0 ] || out+=" conntrack"
   ip link show dhv$k >/dev/null 2>&1 && out+=" veth"
@@ -183,6 +485,9 @@ leftovers() {   # RC-03: anything of slot k outside its root; empty when the slo
 
 reset_slot() {   # RC-03: every per-slot state outside the root, depth first; the root and its record stay
   local k=${1:?} c f h
+  rm -f "${DMX:?}/slots/${k:?}"   # first: the demux hands this slot nothing more
+  # its desk-egress before the namespace goes: the unit's last tick counts the last minute and saves the budget (ADR 0036)
+  systemctl stop "desk-host-egress@$k.service" 2>/dev/null || true; rm -f "${RUN:?}/shaper-off/${k:?}"
   for c in $(runc list -q 2>/dev/null | grep -E "^dh-(desk|svc)-$k(-|$)" || true); do runc kill "$c" KILL 2>/dev/null || true; runc delete -f "$c" 2>/dev/null || true; done
   if [ -d "$CGR/desk-$k" ]; then
     echo 0 > "$CGR/desk-$k/cgroup.freeze" 2>/dev/null || true
@@ -197,8 +502,10 @@ reset_slot() {   # RC-03: every per-slot state outside the root, depth first; th
   for h in $(nft -a list chain inet host desk_src 2>/dev/null | grep "jump src_$k " | sed 's/.*# handle //'); do nft delete rule inet host desk_src handle "$h"; done
   for h in $(nft -a list chain inet host desk_est 2>/dev/null | grep "jump est_$k " | sed 's/.*# handle //'); do nft delete rule inet host desk_est handle "$h"; done
   for h in $(nft -a list chain inet host desk_in 2>/dev/null | grep "jump in_$k " | sed 's/.*# handle //'); do nft delete rule inet host desk_in handle "$h"; done
+  for h in $(nft -a list chain inet host desk_dmx 2>/dev/null | grep "jump dmxi_$k " | sed 's/.*# handle //'); do nft delete rule inet host desk_dmx handle "$h"; done
+  for h in $(nft -a list chain inet host desk_dmxo 2>/dev/null | grep "jump dmxo_$k " | sed 's/.*# handle //'); do nft delete rule inet host desk_dmxo handle "$h"; done
   for c in pre post; do for h in $(nft -a list chain ip host_nat $c 2>/dev/null | grep "jump ${c}_$k " | sed 's/.*# handle //'); do nft delete rule ip host_nat $c handle "$h"; done; done
-  for c in src_$k slot_$k ct_$k in_$k fwdin_$k est_$k; do nft delete chain inet host $c 2>/dev/null || true; done
+  for c in src_$k slot_$k ct_$k in_$k fwdin_$k est_$k dmxi_$k dmxo_$k; do nft delete chain inet host $c 2>/dev/null || true; done
   for c in pre_$k post_$k; do nft delete chain ip host_nat $c 2>/dev/null || true; done
   while ip rule del iif dhv$k 2>/dev/null; do :; done; ip route flush table $((1000 + k)) 2>/dev/null || true
   conntrack -D -s 10.98.$k.2 >/dev/null 2>&1 || true; conntrack -D -d 10.98.$k.2 >/dev/null 2>&1 || true
@@ -234,34 +541,56 @@ json.dump(v, open(sys.argv[1], "w"))' "$RUN/$1/class.json.tmp" "$(python3 -I $LI
 
 # slot_tag <k>: "<deskId|-> <vol|-> <class>" from Platform's DeskSlot<k> (0.1.4's 2 fields, the contract's 5, or 6 with the class);
 # nothing when there's no tag or it doesn't parse exactly
-slot_tag() { local tag; tag=$(imds "meta-data/tags/instance/DeskSlot$1" 2>/dev/null) || return 1; python3 -I $LIB/classes.py tag "$tag"; }
+# read as strictly as up reads it (slotnet.py tag: the host's SlotMode, the contract's fields, classes.conf's classes)
+slot_tag() { python3 -I $LIB/slotnet.py tag "$1"; }
 
 up_one() {
   local k=$1 desk=$2 vol=${3:-} pub=${4:-} cls=${5:-} base=$((100000 + $1 * 65536)) cg=$CGR/desk-$1 veth=dhv$1 ip dev ifc gw mac epoch tcls res state tmpl left pid svc spid refused n port memcap
-  local ty vals
+  local ty vals gen choice cur T
   [[ $desk =~ ^d-[a-z0-9]{6,40}$ ]] || { echo "bad desk ID" >&2; return 1; }
+  halting "$k" && return 1
   [ -z "$vol" ] || [[ $vol =~ ^vol-[0-9a-f]{8,17}$ ]] || { echo "bad volume ID" >&2; return 1; }
   # DeskSlot<k>, strictly: it names this desk (and this volume, if given); the slot's address and its interface; IMDS's
   # association of the slot's public address with it (PF-01). Any of them off keeps the slot down, with the fault reported.
-  res=$(python3 -I $LIB/slotnet.py resolve "$k" "$desk" "${vol:--}" "${pub:--}" "$ADDR_MODE") || {
+  res=$(python3 -I $LIB/slotnet.py resolve "$k" "$desk" "${vol:--}" "${pub:--}") || {
     [[ $res == "fault "* ]] && fault "$k" "$(cut -d' ' -f2 <<<"$res")"
     echo "slot $k: refused: $(cut -d' ' -f3- <<<"$res")" >&2; return 1; }
   read -r epoch vol ip ifc gw mac tcls <<<"$res"
+  if [ "$SLOT_MODE" = port ] && [ ! -d "$DMX/slots" ]; then   # desk-host-boot makes it under SlotMode=port: without it no ICE-TCP
+    fault "$k" demux_absent; echo "slot $k: refused: no $DMX/slots (desk-host-boot under SlotMode=port)" >&2; return 1
+  fi
   cls=${cls:-$tcls}   # the slot's size class: as given (--class, or after the volume), else the tag's (standard when it has none)
   ty=$(itype)
   vals=$(class_values "$cls" "$ty") || { echo "slot $k: class $cls refused (not in /etc/desk-host/classes.conf, or the table is bad)" >&2; return 1; }
   dev=$(dev_for_vol "$vol") || { fault "$k" volume_absent; echo "slot $k: its volume isn't attached (by its NVMe serial)" >&2; return 1; }
-  if [ "$ADDR_MODE" = port ]; then port=$((4430 + k)); else port=443; fi
+  if [ "$SLOT_MODE" = port ]; then port=$((4430 + k)); else port=443; fi
   $LIB/desk-host-check --quick >/dev/null || { echo "slot $k: the host's own checks fail (desk-host check): refused" >&2; return 1; }
   left=$(leftovers "$k"); [ -z "$left" ] || { echo "slot $k: refused, the last desk's state remains: $left" >&2; return 1; }
+  abort_reroot "$k"   # a wake starts at once on the root its record names; a re-root of it copying in the background is dropped
+  batch_cutoff "$k"   # ADR 0078 3.4: a switch or a stop path's swap cut off half way is put back by renames first
   read -r state tmpl <<<"$(record_state "$k")"
-  if [ "$state" = desk ] && [ "$(record_desk "$k")" = "$desk" ] && [ -d "$S/$k/rootfs" ]; then log "slot $k: record names $desk, its root kept (a wake)"
-  elif [ "$state" = fresh ] && [ "$tmpl" = "$(template_id)" ] && [ -d "$S/$k/rootfs" ]; then write_record "$k" desk "$desk"; log "slot $k: claimed a fresh root for $desk"
+  cur=$(cur_gen) || { echo "slot $k: no current template generation: refused" >&2; return 1; }
+  # ADR 0077 section 2: a wake on a root its record names keeps that root and its generation (its Last Version can't have moved);
+  # never a copy at a wake. A desk whose record doesn't name it gets the generation the host picks from its profile's Last Version.
+  if [ "$state" = desk ] && [ "$(record_desk "$k")" = "$desk" ] && [ -d "$S/$k/rootfs" ] && gen_ok "$tmpl" \
+      && ! python3 -I -c 'import sys; sys.path.insert(0, sys.argv[1]); import templates as T; h = T.halted_gens(T.load_state()).get(sys.argv[2]); sys.exit(0 if h and h.get("reason") == "start_failed" else 1)' "$LIB" "$tmpl"; then
+    gen=$tmpl; write_record "$k" desk "$desk" "$gen" "$epoch" "$vol"; log "slot $k: record names $desk, its root on $gen kept (a wake)"
   else
-    log "slot $k: record is $state $(record_desk "$k"), starting $desk: re-preparing from the template first"
-    prepare "$k" || { echo "slot $k: prepare failed, refused" >&2; return 1; }
-    write_record "$k" desk "$desk"; log "slot $k: claimed for $desk"
+    choice=$(python3 -I $TT choose "$k" new --vol "$vol") || choice='{"gen": "'"$cur"'", "reason": "no choice"}'
+    gen=$(json_field "$choice" gen); gen=${gen:-$cur}
+    if [ "$state" = desk ] && [ "$(record_desk "$k")" = "$desk" ] && [ -d "$S/$k/rootfs" ] && gen_ok "$tmpl" && [ "$(json_field "$choice" chromiumBehind)" = true ]; then
+      # its own generation was halted after a failed start, but its profile already ran a newer Chromium than any other here (1.6):
+      # it stays where it is, and its Browser waits (the report's chromiumBehind)
+      gen=$tmpl; write_record "$k" desk "$desk" "$gen" "$epoch" "$vol" "$choice"; log "slot $k: on the halted $gen, kept: no generation here is new enough for its profile"
+    elif [ "$state" = fresh ] && [ "$tmpl" = "$gen" ] && [ "$gen" = "$cur" ] && [ -d "$S/$k/rootfs" ]; then
+      write_record "$k" desk "$desk" "$gen" "$epoch" "$vol" "$choice"; log "slot $k: claimed a fresh root on $gen for $desk"
+    else
+      log "slot $k: record is $state $(record_desk "$k") on $tmpl, starting $desk: preparing from $gen first ($(json_field "$choice" reason))"
+      prepare "$k" "$gen" || { echo "slot $k: prepare failed, refused" >&2; return 1; }
+      write_record "$k" desk "$desk" "$gen" "$epoch" "$vol" "$choice"; log "slot $k: claimed for $desk on $gen"
+    fi
   fi
+  T=$(gen_path "$gen")
   # a wake reads the slot's release copies (and the read trace's first-open set) from the host's side, capped, beside the rest of the start
   # (preread.py): the pages end up in the host's page cache, charged to no desk, so the desk's own root-read share isn't spent on them
   local pre="" tpre; tpre=$(date +%s)
@@ -280,10 +609,14 @@ up_one() {
   echo "+cpu +memory +pids" > "$cg/cgroup.subtree_control"
   mkdir -p "$cg/desk"; chown "$base:$base" "$cg/desk" "$cg/desk/cgroup.procs" "$cg/desk/cgroup.subtree_control" "$cg/desk/cgroup.threads"
   # WALL-03: the host's own directory for this slot, read-only in the desk; RC-01: the shared /run directories, a fresh tmpfs
-  install -d -m 755 -o root -g root $RUN/$k $RUN/share; chmod 711 $RUN/share
+  install -d -m 755 -o root -g root $RUN/$k; install -d -m 711 -o root -g root $RUN/share   # never 755 between: another up's dirs check
+  install -d -m 755 -o root -g root $RUN/$k/egress   # ADR 0036's stream profile, the host's (egress.py): /run/desk-egress in desk-stream
   printf '{"slot":%s,"deskId":"%s","epoch":%s}\n' "$k" "$desk" "$epoch" > $RUN/$k/slot.json
   write_class "$k" "$cls" "$ty"
-  [ "$port" = 443 ] || printf 'port=%s\n' "$port" > $RUN/$k/desk-rtc.conf     # ADR 0072 section 6: desk-rtc's port, the host's file
+  # ADR 0072 section 6: desk-rtc's settings, the host's file (rtcserver/shared.go): under SlotMode=port UDP on the slot's
+  # port, ICE-TCP on 443 (the demux's), the ufrags tagged with the slot, and the host's public address, which slotnet.py
+  # checked is IMDS's own now. Under SlotMode=address none: 443 on the slot's address, as a desk of its own.
+  [ "$SLOT_MODE" = port ] && printf 'port=%s\ntcp_port=443\nslot=%s\npublic_ipv4=%s\n' "$port" "$k" "$pub" > $RUN/$k/desk-rtc.conf
   printf '{"bytesOut":0,"bytesIn":0,"boot":"%s"}\n' "$(cat /proc/sys/kernel/random/uuid)" > $RUN/$k/net.json
   if [ "$TEST" = 1 ]; then for f in test-cdp test-probe; do [ -e /var/lib/desk-host/test/$f.on ] && : > $RUN/$k/$f; done; fi
   install -d -m 711 $RUN/share/$k; mount -t tmpfs -o nosuid,nodev,noexec,mode=711,size=64m "dh-share-$k" $RUN/share/$k
@@ -293,6 +626,7 @@ up_one() {
   install -d -m 700 "$RUN/ns/$k"
   sed "s/@K@/$k/g" $LIB/apparmor.tmpl > /etc/apparmor.d/desk-host-$k; apparmor_parser -r -W /etc/apparmor.d/desk-host-$k
   python3 -I $LIB/desk-spec.py "$k" "$S/$k" >/dev/null
+  halting "$k" && { kill "$pre" 2>/dev/null || true; reset_slot "$k"; return 1; }   # stop-all began during the steps above
   runc create --bundle "$S/$k" dh-desk-$k >> /var/log/desk-host/desk-$k.log 2>&1 < /dev/null \
     || { echo "slot $k: runc create failed: $(tail -2 /var/log/desk-host/desk-$k.log)" >&2; reset_slot "$k"; return 1; }
   pid=$(pid_of dh-desk-$k)
@@ -314,7 +648,7 @@ up_one() {
   ip link set dhc$k netns "$pid"
   local NS="nsenter --net=$RUN/ns/$k/net"
   $NS sh -c "sysctl -q -w net.ipv6.conf.default.disable_ipv6=1; sysctl -q -w net.ipv6.conf.dhc$k.disable_ipv6=1; ip link set lo up; ip link set dhc$k name eth0; ip addr add 10.98.$k.2/30 dev eth0; ip link set eth0 up; ip route add default via 10.98.$k.1"
-  $NS nft -f $T/etc/nftables.conf      # the template's, never the slot's copy (WALL-03)
+  $NS nft -f "$T/etc/nftables.conf"    # the slot's own template generation's, never the slot's copy (WALL-03)
   $NS nft -f - <<EOF
 table inet deskhost {
   chain out { type filter hook output priority -140; policy accept;   # after conntrack (-200), so ct state is set
@@ -325,9 +659,19 @@ table inet deskhost {
   chain conns { }
 }
 EOF
-  # Address plus port (ADR 0072 P1): desk-rtc listens on 4430+k, so the template's input chain, which takes 443 only, takes that port
-  # instead, as it takes 443: the host's rule, in the host's ruleset for the desk (0.1.3 left it out, and port mode never connected)
-  [ "$port" = 443 ] || $NS nft insert rule inet ma input iifname eth0 meta l4proto '{ tcp, udp }' th dport "$port" accept
+  # SlotMode=port: desk-rtc takes UDP on 4430+k, so the template's input chain, which takes 443 only, takes that port too (TCP
+  # stays 443, the demux's): the host's rule, in the host's ruleset for the desk (0.1.3 left it out, and port mode never
+  # connected); and desk-rtc's packets from it join the shaper's class as its 443's do (ADR 0036's classify, labels only)
+  if [ "$port" != 443 ]; then
+    $NS nft insert rule inet ma input iifname eth0 udp dport "$port" accept
+    $NS nft add rule inet ma classify meta skuid 1101 udp sport "$port" meta priority set 1:10
+  fi
+  # ADR 0036 per container (ADR 0072 section 8, TD-223): the shaper's classes on the desk's end of its veth at its budget's rates,
+  # then its budgets on the host (desk-host-egress@<k>), before anything in the desk runs. Fails open, as on a desk of its own: the
+  # daemon tries again every tick, the guard's count and stop stand, and desk-host-check shaper fails until it's on.
+  python3 -I $LIB/egress.py on "$k" || log "slot $k: the shaper's classes didn't go on: its desk-egress tries again every tick"
+  systemctl reset-failed "desk-host-egress@$k.service" 2>/dev/null || true
+  systemctl start "desk-host-egress@$k.service" || log "slot $k: desk-host-egress@$k didn't start"
   [ "$TEST" = 1 ] && [ -e $RUN/$k/test-cdp ] && $NS nft insert rule inet ma input iifname eth0 ip saddr 10.98.$k.1 tcp dport 19222 accept   # a test host's CDP forward: the host's side only
   nft_slot_reset "$k"; ct_rules "$k" "$CT_DESK" "$CT_HOST"
   # the epoch the slot's counters (from 0 at this start, nft_slot_reset) belong to: the report gives them only for that epoch
@@ -340,7 +684,11 @@ EOF
     sysctl -q -w "net.ipv4.conf.$ifc.rp_filter=2"
   fi
   local lo=$((10000 + (k - 1) * 50000 / $(slots_per_host))) hi=$((10000 + k * 50000 / $(slots_per_host) - 1)) out=$ip   # its own block of ports
-  nft add rule ip host_nat pre_$k ip daddr "$ip" meta l4proto '{ tcp, udp }' th dport "$port" dnat to 10.98.$k.2
+  if [ "$SLOT_MODE" = port ]; then   # the slot's own UDP port on the host's address, from outside only; TCP 443 is the demux's
+    nft add rule ip host_nat pre_$k iifname "$ifc" ip daddr "$ip" udp dport "$port" dnat to 10.98.$k.2
+  else
+    nft add rule ip host_nat pre_$k ip daddr "$ip" meta l4proto '{ tcp, udp }' th dport "$port" dnat to 10.98.$k.2
+  fi
   # IN-03, IN-04: the slot's own metadata stand-in (desk-host-link), and nothing else of 169.254.169.254
   nft add rule ip host_nat pre_$k iifname "$veth" ip saddr 10.98.$k.2 ip daddr 169.254.169.254 tcp dport 80 dnat to "10.98.$k.1:$STANDIN_PORT"
   nft add rule ip host_nat post_$k ip saddr 10.98.$k.2 oifname "$ifc" meta l4proto '{ tcp, udp }' snat to "$out:$lo-$hi"
@@ -358,27 +706,57 @@ EOF
   nft add rule inet host fwdin_$k meta nfproto ipv6 counter drop
   nft add rule inet host est_$k iifname "dhv$k" oifname "$ifc" counter name out_$k      # the established flows' packets (desk_est): every byte, not the first
   nft add rule inet host est_$k iifname "$ifc" oifname "dhv$k" counter name rx_$k
-  nft add rule inet host fwdin_$k ip daddr 10.98.$k.2 meta l4proto '{ tcp, udp }' th dport "$port" counter name rx_$k accept
+  if [ "$SLOT_MODE" = port ]; then
+    nft add rule inet host fwdin_$k ip daddr 10.98.$k.2 udp dport "$port" counter name rx_$k accept
+    # the demux's connections to the slot's desk-rtc (TCP 443, the client's address as the source): every byte both ways
+    # (each with a counter of its own too, so the demux's share of the slot's bytes can be read apart: verify-port.sh, the lab)
+    nft add rule inet host dmxi_$k ip saddr 10.98.$k.2 tcp sport 443 counter counter name out_$k
+    nft add rule inet host dmxo_$k ip daddr 10.98.$k.2 tcp dport 443 counter counter name rx_$k
+  else
+    nft add rule inet host fwdin_$k ip daddr 10.98.$k.2 meta l4proto '{ tcp, udp }' th dport "$port" counter name rx_$k accept
+  fi
   nft add rule inet host fwdin_$k counter drop
   nft add rule inet host in_$k meta nfproto ipv6 counter drop
   nft add rule inet host in_$k ip saddr 10.98.$k.2 ip daddr 10.98.$k.1 tcp dport "$STANDIN_PORT" ct original ip daddr 169.254.169.254 accept
   [ -n "$HOST_PORTS" ] && nft add rule inet host in_$k ip saddr 10.98.$k.2 ip daddr 10.98.$k.1 tcp dport "{ ${HOST_PORTS// /, } }" accept
   nft add rule inet host in_$k counter drop
+  # the demux may hand this slot connections from now on (its own check, before each dial)
+  [ "$SLOT_MODE" = port ] && install -m 644 -o root -g root /dev/null "$DMX/slots/$k"
   install -d -m 700 $RUN/slotstate   # what the report says of a slot while it's up: the desk and epoch it was started with
   printf '{"deskId":"%s","epoch":%s,"volumeId":"%s","address":"%s","interface":"%s","class":"%s"}\n' "$desk" "$epoch" "$vol" "$ip" "$ifc" "$cls" > "$RUN/slotstate/$k.json"
   if [ -n "$pre" ]; then   # the start waits for the list's first part (deskd and the base libraries); Chromium's files are read beside the running desk
-    local w=0; while [ ! -e "$RUN/preread-$k.gate" ] && kill -0 "$pre" 2>/dev/null && [ "$w" -lt 600 ]; do sleep 0.1; w=$((w + 1)); done
+    local wt=0; while [ ! -e "$RUN/preread-$k.gate" ] && kill -0 "$pre" 2>/dev/null && [ "$wt" -lt 600 ]; do sleep 0.1; wt=$((wt + 1)); done
     log "slot $k: pre-read: $(grep -E 'stage 1|slot' /var/log/desk-host/preread-$k.log | tail -2 | tr '\n' ' ')(start waited $(( $(date +%s) - tpre )) s from its begin)"
   fi
+  # the last point a start can still be called off: nothing has run in the desk yet (created, never started), so the reset is clean
+  halting "$k" && { kill "$pre" 2>/dev/null || true; reset_slot "$k"; return 1; }
   runc start dh-desk-$k
   for svc in $SVCS; do
     if [[ " $refused " == *" $svc "* ]]; then runc delete -f dh-svc-$k-$svc; umount "$RUN/ns/$k/mnt-$svc"; log "slot $k: $svc not started (refused above)"
     else runc start dh-svc-$k-$svc; fi
   done
   log "slot $k: $desk up at $(date -u +%s.%N), desk pid $pid; sandboxes $(for svc in $SVCS; do printf '%s ' "$svc:$(runc state dh-svc-$k-$svc 2>/dev/null | python3 -I -c 'import json,sys; print(json.load(sys.stdin)["status"])' 2>/dev/null || echo none)"; done)"
-  log "slot $k: epoch $epoch, $ip:$port on $ifc$([ "$gw" != - ] && echo " (its own table)") -> 10.98.$k.2, class $cls: $(cpu_is $w), memory $((memcap / 1048576)) MiB (swap $((sw / 1048576)) MiB, zswap $((zw / 1048576)) MiB, writeback 0), pids $p, io.max root r/w $(mb $rrb)/$(mb $rwb) MB/s $rri/$rwi IOPS, volume r/w $(mb $vrb)/$(mb $vwb) MB/s $vri/$vwi IOPS, /data idmapped$([ "$TEST" = 1 ] && echo ', TEST HOST')"
+  if [ "$gen" = "$(python3 -I -c 'import sys; sys.path.insert(0, sys.argv[1]); import templates as T; print((T.load_state().get("candidate") or {}).get("gen") or "")' "$LIB")" ]; then
+    python3 -I $TT trial "$gen" "$k" start >/dev/null; log "slot $k: on the candidate $gen: its start checks are the host's trial (ADR 0077 1.6)"
+  fi
+  # ADR 0078 2.3: a batch swapped in at a stop runs for the first time now; its smoke tests run beside the start, and a failure rolls it back
+  # (the member waits through that). Outside desk-host-upd, which a pre-read freezes: a frozen smoke test mustn't fail for it.
+  if python3 -I -c 'import json,sys; v=json.load(open(sys.argv[1])).get("verify") or {}; sys.exit(0 if v.get("phase") == "swapped" else 1)' "$REC/$k.json" 2>/dev/null; then
+    setsid -f /bin/bash $LIB/desk-host switch "$k" --verify >> /var/log/desk-host/switch-$k.log 2>&1 < /dev/null 7>&- 8>&- 9>&-
+    log "slot $k: its batch swapped in at a stop: smoke tests in the background (desk-host switch $k --verify)"
+  fi
+  log "slot $k: template generation $gen, epoch $epoch, SlotMode $SLOT_MODE, $ip:$port$([ "$SLOT_MODE" = port ] && echo "/udp, 443/tcp by the demux") on $ifc$([ "$gw" != - ] && echo " (its own table)") -> 10.98.$k.2, class $cls: $(cpu_is $w), memory $((memcap / 1048576)) MiB (swap $((sw / 1048576)) MiB, zswap $((zw / 1048576)) MiB, writeback 0), pids $p, io.max root r/w $(mb $rrb)/$(mb $rwb) MB/s $rri/$rwi IOPS, volume r/w $(mb $vrb)/$(mb $vwb) MB/s $vri/$vwi IOPS, /data idmapped$([ "$TEST" = 1 ] && echo ', TEST HOST')"
 }
 
+# whole_refused <k> <class> <type> <memory.max> <root rbps> <current memory.max> <current root rbps>: under --whole (WHOLE=1, the
+# link's set_class), true when the class is a raise the host has no room for (its units, classes.conf), so set_class changes
+# nothing and exits 75: the class is never half applied (S-119). Run under the admission lock; false otherwise.
+whole_refused() {
+  [ "${WHOLE:-0}" = 1 ] || return 1
+  [ "$4" -gt "$6" ] || [ "$5" -gt "$7" ] || return 1
+  local why; why=$(python3 -I $LIB/classes.py admit "$1" "$2" "$3" "$4") && return 1
+  echo "slot $1: the host has no room for a $2 desk: $why. Refused whole: nothing changed" >&2
+}
 # set_class <k> [<class>]: a running desk's class changed in place (an upgrade, or a downgrade), from the tag if not given.
 # Nothing in the desk restarts and nothing enters it: the limits are on desk-<k>, which the host owns. cpu.weight (or cpu.idle), pids.max and
 # the memory rule's allowances (inside the desk's own cap) are written at once. memory.max and io.max follow the class when:
@@ -390,6 +768,7 @@ EOF
 set_class() {
   local k=$1 cls=${2:-} desk ty vals cur curio w m sw zw p rrb rri rwb rwi vrb vri vwb vwi dev pend="" why="" rc=0 cg=$CGR/desk-$1
   runc state dh-desk-$k >/dev/null 2>&1 && [ -d "$cg" ] && [ -f "$RUN/$k/class.json" ] || { echo "slot $k: no desk running" >&2; return 1; }
+  [ "${WHOLE:-0}" = 1 ] && [ -e "$HALT" ] && { echo "slot $k: refused, the host is stopping every desk (stop-all): nothing changed" >&2; return 1; }
   desk=$(python3 -I -c 'import json,sys; print(json.load(open(sys.argv[1]))["deskId"])' "$RUN/$k/slot.json")
   if [ -z "$cls" ]; then
     local tdesk tvol tcls; read -r tdesk tvol tcls <<<"$(slot_tag "$k")" || true
@@ -402,6 +781,7 @@ set_class() {
   dev=$(python3 -I -c 'import json,sys; print(json.load(open(sys.argv[1]))["device"])' "$RUN/$k.mounts.json")
   lock_admit
   cur=$(cat "$cg/memory.max"); curio=$(sed -n "s/^$(findmnt -no MAJ:MIN $DH) rbps=\([0-9]*\) .*/\1/p" "$cg/io.max")
+  whole_refused "$k" "$cls" "$ty" "$m" "$rrb" "$cur" "${curio:-0}" && { unlock_admit; return 75; }
   write_cpu "$cg" "$w"; echo "$p" > "$cg/pids.max"
   echo "$sw" > "$cg/memory.swap.max"; echo "$zw" > "$cg/memory.zswap.max"; echo 0 > "$cg/memory.zswap.writeback"
   if [ "$m" -gt "$cur" ] || [ "$rrb" -gt "${curio:-0}" ]; then   # a raise: only if the host has room
@@ -434,6 +814,7 @@ kill_wait() {   # kill_wait <container> <seconds>: TERM, wait for stopped, then 
 
 stop_one() {   # WALL-02: signals only. deskd's sandbox first, then the desk (its init thaws and closes the browser), then the rest
   local k=$1 t0 dev vol svc left released=yes; t0=$(date +%s)
+  rm -f "$DMX/slots/$k"   # the demux hands the stopping slot nothing new
   kill_wait dh-svc-$k-deskd 70
   kill_wait dh-desk-$k 150
   for svc in $SVCS; do kill_wait dh-svc-$k-$svc 40 & done; wait
@@ -443,6 +824,337 @@ stop_one() {   # WALL-02: signals only. deskd's sandbox first, then the desk (it
   left=$(leftovers "$k")
   log "slot $k: stopped in $(( $(date +%s) - t0 )) s; volume released: $released; slot state left: ${left:-none}; root and record kept"
   grep -E 'desk-browser-close|SIGKILL|did not stop' /var/log/desk-host/desk-$k.log | tail -2 || true
+}
+
+# ADR 0077 1.5: an idle restart, for a desk that doesn't stop: the root built beforehand beside the running one (reroot --prebuild),
+# then, under the slot's lock, the desk idle by its own idle.json (desk-batch's rule, downloads 0), a stop as section 2 closes it
+# (Chromium thawed and closed over CDP, sync), the swap and a start on the same epoch, so the gap is the swap, not the copy.
+# update.holdUntil stays 15 minutes ahead throughout, so Platform's sweep doesn't stop the slot meanwhile.
+restart_one() {   # restart_one <k> <deskId> <vol> <public> <class>: under the slot's lock
+  local k=$1 desk=$2 vol=$3 pub=$4 cls=$5 new="" d ready gen sum used inodes rel choice old rc=0 idle
+  for d in "$S"/.$k.rr.*; do [ -f "$d/.ready" ] && new=$d; done
+  [ -n "$new" ] || { echo "slot $k: no root built for a restart (desk-host reroot $k --prebuild first)" >&2; return 1; }
+  ready=$new/.ready
+  gen=$(sed -n 's/^gen=//p' "$ready"); sum=$(sed -n 's/^record=//p' "$ready"); used=$(sed -n 's/^used=//p' "$ready"); inodes=$(sed -n 's/^inodes=//p' "$ready")
+  rel=$(sed -n 's/^rel=//p' "$ready"); choice=$(sed -n 's/^choice=//p' "$ready")
+  if [ "$(record_desk "$k")" != "$desk" ] || [ "$(sha256sum "$REC/$k.json" | cut -d' ' -f1)" != "$sum" ] || ! gen_ok "$gen"; then
+    rr_drop "$k" "$new"; echo "slot $k: the record changed since the root was built: dropped, refused" >&2; return 1
+  fi
+  runc state dh-desk-$k >/dev/null 2>&1 || { echo "slot $k: no desk running to restart" >&2; return 1; }
+  if ! idle=$(python3 -I $TT idle "$k" ${URGENT_SINCE:+--urgent-since "$URGENT_SINCE"}); then
+    if [ "$TEST" = 1 ] && [ "${RESTART_FORCE:-}" = 1 ]; then log "slot $k: not idle ($idle), restarted anyway (RESTART_FORCE, a test host)"
+    else echo "slot $k: not idle ($(json_field "$idle" reason)): no restart" >&2; return 75; fi
+  fi
+  python3 -I $TT hold "$k" 900
+  local t0; t0=$(date +%s.%N)
+  op_mark "$k" stopping; stop_one "$k"
+  # the profile's Last Version, read now its volume is released: if the generation it allows isn't the prebuilt one, no swap
+  local now_choice; now_choice=$(python3 -I $TT choose "$k" reroot --trial) || now_choice=""
+  if [ "$(json_field "${now_choice:-{\}}" gen 2>/dev/null)" != "$gen" ]; then
+    log "slot $k: after the stop its profile allows $(json_field "${now_choice:-{\}}" gen 2>/dev/null || echo nothing), not $gen: no swap, started on its own root"
+    rr_drop "$k" "$new"; op_mark "$k" starting; up_one "$k" "$desk" "$vol" "$pub" "$cls"; rc=$?; python3 -I $TT unhold "$k"; return $rc
+  fi
+  choice=$now_choice
+  RR_REL=$rel old=$(rr_swap "$k" "$new" "$gen" desk "$desk" "$(rec_field "$k" epoch)" "$vol" "$used" "$inodes" "$choice") || { echo "slot $k: the swap failed; starting on the old root" >&2; rc=1; }
+  local t1; t1=$(date +%s.%N)
+  op_mark "$k" starting; up_one "$k" "$desk" "$vol" "$pub" "$cls" || rc=$?
+  [ "$rc" = 0 ] && [ "$gen" = "$(python3 -I -c 'import sys; sys.path.insert(0, sys.argv[1]); import templates as T; print((T.load_state().get("candidate") or {}).get("gen") or "")' "$LIB")" ] && python3 -I $TT trial "$gen" "$k" start >/dev/null
+  log "slot $k: idle restart onto $gen: stop and swap $(awk -v a="$t0" -v b="$t1" 'BEGIN {printf "%.1f", b - a}') s, the start after it $(awk -v a="$t1" -v b="$(date +%s.%N)" 'BEGIN {printf "%.1f", b - a}') s; rc $rc"
+  python3 -I $TT unhold "$k"
+  [ -n "${old:-}" ] && [ -d "$old" ] && rm -rf --one-file-system "${old:?}"
+  return $rc
+}
+
+# ---- ADR 0078: a slot's service batch. Live at idle (switch, 2.2), at a stop while live switches are off (relroot, 2.3), its first run
+# after a stop path's swap smoke-tested at the wake (switch --verify), and a switch cut off (3.4). The copies run outside the slot's lock in
+# desk-host-upd and take the host's copy turn; a start or stop takes the slot at once and the copy is dropped. The renames and restarts run
+# under the slot's lock. The record names every step first (switching, verify), so a cut-off is seen; every old copy stays until the slot's
+# whole batch passes, so a rollback is renames and restarts, never a copy. WALL-03: rel/ is host-owned and outside the desk's root.
+bt() { python3 -I $BT "$@"; }
+pj() { python3 -I -c 'import json,sys; o=json.loads(sys.argv[1])
+for k in sys.argv[2].split("."): o = o[int(k)] if isinstance(o, list) else o.get(k)
+print(" ".join(map(str, o)) if isinstance(o, list) else "" if o is None else json.dumps(o) if isinstance(o, dict) else o)' "$@"; }
+plan_names() { python3 -I -c 'import json,sys; print(" ".join(c["name"] for c in json.loads(sys.argv[1])["components"]))' "$1"; }
+plan_to() { python3 -I -c 'import json,sys; print({c["name"]: c["to"] for c in json.loads(sys.argv[1])["components"]}[sys.argv[2]])' "$1" "$2"; }
+svc_down() {   # svc_down <k> <svc>: its sandbox stopped as stop_one stops it (TERM, then KILL after its wait), deleted, its namespace bind gone
+  local k=$1 svc=$2 t=40; [ "$svc" = deskd ] && t=70
+  kill_wait dh-svc-$k-$svc $t
+  runc delete -f dh-svc-$k-$svc >/dev/null 2>&1 || true
+  if [ -e "$RUN/ns/$k/mnt-$svc" ]; then umount "$RUN/ns/$k/mnt-$svc" 2>/dev/null || umount -l "$RUN/ns/$k/mnt-$svc" 2>/dev/null || true; rm -f "$RUN/ns/$k/mnt-$svc"; fi
+}
+svc_up() {   # svc_up <k> <svc>: the sandbox made again exactly as up makes it (svc-spec.py, runc create, the namespace bind from the pid runc names),
+  # its /data directory from a fresh mount of the slot's volume (mounts.py svc), then runc start. desk-host-check svc-spec proves the spec is up's.
+  local k=$1 svc=$2 spid
+  python3 -I $LIB/svc-spec.py "$k" "$svc" >/dev/null || return 1
+  if [ "$TEST" = 1 ] && [ "${SWITCH_ADD_CAP:-}" = 1 ]; then   # a test host's mutation for desk-host-check svc-spec: a switch that adds a capability
+    python3 -I -c 'import json,sys; p=sys.argv[1]; d=json.load(open(p))
+for k in d["process"]["capabilities"]: d["process"]["capabilities"][k] = sorted(set(d["process"]["capabilities"][k]) | {"CAP_CHOWN"})
+json.dump(d, open(p, "w"), indent=1)' "$S/$k/svc/$svc/config.json"
+  fi
+  runc create --bundle "$S/$k/svc/$svc" dh-svc-$k-$svc >> /var/log/desk-host/svc-$k-$svc.log 2>&1 < /dev/null || { echo "slot $k: runc create $svc failed" >&2; return 1; }
+  spid=$(pid_of dh-svc-$k-$svc); bind_ns "$spid" "/desk-host/desk-$k/svc-$svc" mnt "$RUN/ns/$k/mnt-$svc" || return 1
+  python3 -I $LIB/mounts.py svc "$k" "$svc" | sed "s/^/[mounts] /"
+  [ "${PIPESTATUS[0]}" = 0 ] || { echo "slot $k: $svc's /data didn't go in" >&2; runc delete -f dh-svc-$k-$svc >/dev/null 2>&1; return 1; }
+  runc start dh-svc-$k-$svc
+}
+rel_swap_in() {   # rel_swap_in <k> <svc>: rel/<svc> to rel/.old-<svc>, rel/.new-<svc> to rel/<svc>, by rename
+  local r=$S/$1/rel; [ -d "$r/.new-$2" ] || { echo "slot $1: no copy of $2 to switch to" >&2; return 1; }
+  rm -rf --one-file-system "${r:?}/.old-$2"; mv "$r/$2" "$r/.old-$2" && mv "$r/.new-$2" "$r/$2"
+}
+rel_swap_back() {   # rel_swap_back <k> <svc>: rel/.old-<svc> back to rel/<svc> (the new one deleted, links not followed); nothing when there's no old copy
+  local r=$S/$1/rel; [ -d "$r/.old-$2" ] || return 0
+  rm -rf --one-file-system "${r:?}/.bad-$2"; mv "$r/$2" "$r/.bad-$2" 2>/dev/null; mv "$r/.old-$2" "$r/$2" && rm -rf --one-file-system "${r:?}/.bad-$2"
+}
+rel_drop_new() {   # rel_drop_new <k>: only the copies a dropped batch job made (rel/.new-*): the old copies a swap keeps for its rollback stay
+  local d; for d in "$S/$1"/rel/.new-*; do [ -d "$d" ] && rm -rf --one-file-system "${d:?}"; done; return 0
+}
+batch_job() {   # batch_job <k>: one batch job (a live switch's copies, a stop path) per slot at a time; fd 6 held until this process ends
+  install -d -m 700 $RUN/lock; exec 6>"$RUN/lock/batch-$1"; flock -n 6 || { log "slot $1: another batch job for the slot runs"; exit 0; }
+}
+rel_tidy() {   # rel_tidy <k>: the old, new and failed copies a finished (or dropped) batch leaves, deleted without following links
+  local d; for d in "$S/$1"/rel/.old-* "$S/$1"/rel/.new-* "$S/$1"/rel/.bad-*; do [ -d "$d" ] && rm -rf --one-file-system "${d:?}"; done; return 0
+}
+switching_set() {   # switching_set <k> <field> <plan> <done> <current> <phase>: the record names the step before it's taken (3.4)
+  bt record "$1" "$2" "$(python3 -I -c 'import json,sys,time; p=json.loads(sys.argv[1]); p.update(done=sys.argv[2].split(), current=sys.argv[3] or None, phase=sys.argv[4], at=time.strftime("%Y-%m-%dT%H:%M:%SZ", time.gmtime())); print(json.dumps(p))' "$3" "$4" "$5" "$6")"
+}
+# switch_back <k> <plan> <field> <svc...>: each component back to its old copy, in the order given (the failed one, then the switched ones in
+# reverse), each made again and smoke-tested (3.1). Prints what failed to come back; rc 1 if any did.
+switch_back() {
+  local k=$1 p=$2 f=$3 svc rc=0 t; shift 3
+  for svc in "$@"; do
+    switching_set "$k" "$f" "$p" "" "$svc" rollback
+    t=$(date +%s.%N)
+    runc state dh-desk-$k >/dev/null 2>&1 && svc_down "$k" "$svc"
+    rel_swap_back "$k" "$svc" || rc=1
+    if runc state dh-desk-$k >/dev/null 2>&1; then
+      svc_up "$k" "$svc" || rc=1
+      bt smoke "$k" "$svc" "$t" || { rc=1; log "slot $k: $svc's old release FAILED its smoke test too"; }
+    fi
+  done
+  return $rc
+}
+# switch_one <k> <plan> <svc> <done...>: one component switched under the slot's lock: its sandbox stopped, the record's step, the renames,
+# the sandbox made again, the smoke test. rc 0 passed, 1 its smoke test (or its start) failed.
+switch_one() {
+  local k=$1 p=$2 svc=$3 t; shift 3
+  python3 -I $TT hold "$k" 900
+  t=$(date +%s.%N)
+  svc_down "$k" "$svc"
+  if [ "$TEST" = 1 ] && [ "${SWITCH_RECORD_LATE:-}" = 1 ]; then   # a test host's mutation: the record written after the renames (3.4 can't see the cut-off)
+    rel_swap_in "$k" "$svc" || return 1; switching_set "$k" switching "$p" "$*" "$svc" swapped
+  else
+    switching_set "$k" switching "$p" "$*" "$svc" swap; rel_swap_in "$k" "$svc" || return 1
+  fi
+  [ "${CRASH_AT:-}" = switch-swap ] && { log "slot $k: CRASH_AT=switch-swap, stopping after $svc's renames"; trap - EXIT; kill -9 $$; }
+  switching_set "$k" switching "$p" "$*" "$svc" start
+  svc_up "$k" "$svc" || { log "slot $k: $svc's new sandbox didn't start"; return 1; }
+  [ "${CRASH_AT:-}" = switch-start ] && { log "slot $k: CRASH_AT=switch-start, stopping after $svc's start"; trap - EXIT; kill -9 $$; }
+  switching_set "$k" switching "$p" "$*" "$svc" smoke
+  SW_T["$svc"]=$(awk -v a="$t" -v b="$(date +%s.%N)" 'BEGIN {printf "%.1f", b - a}')
+  bt smoke "$k" "$svc" "$t" || return 1
+  SW_S["$svc"]=$(awk -v a="$t" -v b="$(date +%s.%N)" 'BEGIN {printf "%.1f", b - a}')
+}
+declare -A SW_T SW_S
+# switch_run <k> <plan> <field> <done...>: the plan's remaining components switched in order (those in done already are), then finish or roll
+# back. Under the slot's lock.
+switch_run() {
+  local k=$1 p=$2 f=$3 svc done="" rest t0; shift 3; done="$*"
+  t0=$(date +%s.%N)
+  for svc in $(plan_names "$p"); do
+    [[ " $done " == *" $svc "* ]] && continue
+    if ! switch_one "$k" "$p" "$svc" $done; then
+      log "slot $k: $svc FAILED its smoke test: rolling back $svc$([ -n "$done" ] && echo ", then $(echo $done | tr ' ' '\n' | tac | tr '\n' ' ')")"
+      local back="$svc $(echo $done | tr ' ' '\n' | tac | tr '\n' ' ')" why="$svc failed its smoke test"
+      switch_back "$k" "$p" "$f" $back || why="$why; and a component's old release failed to come back"
+      bt record "$k" rolled-back "$p" "$why"
+      bt record "$k" "$f"   # the step's record cleared
+      rel_tidy "$k"; python3 -I $TT unhold "$k"
+      log "slot $k: batch $(pj "$p" seq) ROLLED BACK in $(awk -v a="$t0" -v b="$(date +%s.%N)" 'BEGIN {printf "%.1f", b - a}') s ($why); halted on this host"
+      return 1
+    fi
+    done="$done $svc"
+  done
+  bt record "$k" finish "$p" >/dev/null
+  rel_tidy "$k"; python3 -I $TT unhold "$k"
+  local tl=""; for svc in $(plan_names "$p"); do tl+="$svc ${SW_T[$svc]:-?} s to its smoke test, ${SW_S[$svc]:-?} s with it; "; done
+  log "slot $k: batch $(pj "$p" seq) ($(pj "$p" role)) switched in $(awk -v a="$t0" -v b="$(date +%s.%N)" 'BEGIN {printf "%.1f", b - a}') s: ${tl%; }"
+  (python3 -I $BT gc >/dev/null 2>&1 &)
+}
+# switch <k>: ADR 0078 2.2, a running slot's live switch at idle, in desk-host-upd. switch <k> --verify: 2.3's wake, after a stop path's swap
+# (the new set is in place; its smoke tests, then finish or roll back). A switch cut off with the slot still running resumes here (3.4).
+switch_slot() {
+  local k=$1 mode=${2:-} p n svc rec recsum gen why
+  runc state dh-desk-$k >/dev/null 2>&1 || { log "slot $k: no desk running: no switch"; return 0; }
+  mkdir -p /var/log/desk-host; install -d -m 700 $RUN/batch $RUN/reroot $RUN/lock
+  gen=$(rec_field "$k" template)
+  rec=$(python3 -I -c 'import json,sys; r=json.load(open(sys.argv[1])); print(json.dumps({"switching": r.get("switching"), "verify": r.get("verify")}))' "$REC/$k.json")
+  if [ "$mode" = --verify ]; then   # under the slot's lock: up holds it until its start is done
+    lock_slot "$k"
+    p=$(pj "$rec" verify); [ -n "$p" ] && [ "$(pj "$p" phase)" = swapped ] || { log "slot $k: nothing to verify"; return 0; }
+    log "slot $k: the stop path's batch $(pj "$p" seq) runs for the first time: its smoke tests"
+    switching_set "$k" verify "$p" "" "" smoke
+    local t; t=$(date +%s.%N); n=""
+    for svc in $(plan_names "$p"); do
+      if ! bt smoke "$k" "$svc" "$(pj "$p" since)"; then
+        local back="$svc $(echo $n | tr ' ' '\n' | tac | tr '\n' ' ')"
+        log "slot $k: $svc FAILED its smoke test at the wake: rolling back $back"
+        switch_back "$k" "$p" verify $back || true
+        bt record "$k" rolled-back "$p" "$svc failed its smoke test at the wake"; bt record "$k" verify
+        rel_tidy "$k"; log "slot $k: batch $(pj "$p" seq) ROLLED BACK at the wake; halted on this host"; return 1
+      fi
+      n="$n $svc"
+    done
+    bt record "$k" finish "$p" >/dev/null; rel_tidy "$k"
+    log "slot $k: batch $(pj "$p" seq) passed at the wake in $(awk -v a="$t" -v b="$(date +%s.%N)" 'BEGIN {printf "%.1f", b - a}') s"
+    (python3 -I $BT gc >/dev/null 2>&1 &); return 0
+  fi
+  p=$(pj "$rec" switching)
+  if [ -n "$p" ]; then   # 3.4: cut off while the slot ran: smoke-test what's switched, then finish or roll back (desk-batch's resume)
+    lock_slot "$k"
+    local done; done=$(pj "$p" done) cur=$(pj "$p" current)
+    log "slot $k: a switch of batch $(pj "$p" seq) was cut off at $cur ($(pj "$p" phase)): resuming"
+    [ -n "$cur" ] && [ "$(pj "$p" phase)" = swap ] && [ -d "$S/$k/rel/.new-$cur" ] && rel_swap_in "$k" "$cur"   # renamed half way
+    for svc in $done $cur; do
+      runc state dh-svc-$k-$svc >/dev/null 2>&1 || svc_up "$k" "$svc" || true
+      if ! bt smoke "$k" "$svc" "$(date -d "$(pj "$p" at)" +%s 2>/dev/null || date +%s)"; then
+        local back="$svc $(echo $done | tr ' ' '\n' | tac | tr '\n' ' ')"
+        switch_back "$k" "$p" switching $back || true
+        bt record "$k" rolled-back "$p" "$svc failed its smoke test after a cut-off"; bt record "$k" switching
+        rel_tidy "$k"; log "slot $k: batch $(pj "$p" seq) ROLLED BACK after the cut-off; halted on this host"; return 1
+      fi
+    done
+    local rest=""; for svc in $(plan_names "$p"); do   # the rest's copies, if the cut-off came before them, in the host's copy turn
+      [[ " $done $cur " == *" $svc "* ]] || [ -d "$S/$k/rel/.new-$svc" ] || rest="$rest $svc"
+    done
+    if [ -n "$rest" ]; then
+      copy_turn fg
+      for svc in $rest; do bt copy "$k" "$svc" "$(plan_to "$p" "$svc")" "$gen" || { copy_done; return 1; }; done
+      copy_done
+    fi
+    switch_run "$k" "$p" switching $done $cur; return $?
+  fi
+  # a live switch: Platform's liveSwitches on, batches on (a test host may force it for its own steps)
+  local sw; sw=$(bt switches)
+  if [ "$(json_field "$sw" batches)" != true ] || { [ "$(json_field "$sw" liveSwitches)" != true ] && ! { [ "$TEST" = 1 ] && [ "${SWITCH_FORCE_LIVE:-}" = 1 ]; }; }; then
+    log "slot $k: live switches are off ($sw): batches go by the stop path"; return 0
+  fi
+  batch_job "$k"
+  why=$(bt may "$k") || { log "slot $k: not now: $(json_field "$why" reason)"; return 75; }
+  p=$(bt plan "$k") || { log "slot $k: no batch due"; return 0; }
+  bt may-copy "$k" "$p" || { log "slot $k: batch $(pj "$p" seq)'s copy failed 3 times, or less than an hour ago: not now"; return 0; }
+  recsum=$(sha256sum "$REC/$k.json" | cut -d' ' -f1)
+  local me t0; me=$(ps -o pgid= -p $$ | tr -d ' '); t0=$(date +%s.%N)
+  echo "$me" > "$RUN/reroot/$k.pgid"; : > "$RUN/batch/$k.copying"
+  trap 'rm -f "$RUN/batch/'"$k"'.copying"; [ "$(cat "$RUN/reroot/'"$k"'.pgid" 2>/dev/null)" = "'"$me"'" ] && rm -f "$RUN/reroot/'"$k"'.pgid"; [ "$(cat "$RUN/copy.holder" 2>/dev/null)" = "'"$me"'" ] && rm -f "$RUN/copy.holder"' EXIT
+  trap 'exit 143' TERM
+  # 2. copy each changed component, outside the slot's lock, in the host's copy turn
+  copy_turn "${COPY_MODE:-bg}"
+  for svc in $(plan_names "$p"); do
+    bt copy "$k" "$svc" "$(plan_to "$p" "$svc")" "$gen" || { copy_done; bt record "$k" copy-failed "$p" "copying $svc failed"; return 1; }
+  done
+  copy_done
+  rm -f "$RUN/batch/$k.copying" "$RUN/reroot/$k.pgid"
+  local tc; tc=$(awk -v a="$t0" -v b="$(date +%s.%N)" 'BEGIN {printf "%.1f", b - a}')
+  [ "${CRASH_AT:-}" = switch-copy ] && { log "slot $k: CRASH_AT=switch-copy, stopping after the copies"; trap - EXIT; kill -9 $$; }
+  # 3. idle again, then the hold and the slot's lock (a start or stop holding it: the copies wait for the next idle)
+  why=$(bt may "$k") || { log "slot $k: copied in $tc s, then not idle ($(json_field "$why" reason)): the copies wait for the next idle"; return 75; }
+  python3 -I $TT hold "$k" 900
+  exec 9>"$RUN/lock/$k"; flock -n 9 || { python3 -I $TT unhold "$k"; log "slot $k: busy (a start, stop or prepare): the copies wait"; return 75; }
+  if [ "$(sha256sum "$REC/$k.json" | cut -d' ' -f1)" != "$recsum" ] || ! runc state dh-desk-$k >/dev/null 2>&1 || [ -s "$RUN/op/$k" ]; then
+    python3 -I $TT unhold "$k"; log "slot $k: the slot changed while its copies were made: not switched"; return 0
+  fi
+  log "slot $k: batch $(pj "$p" seq) ($(pj "$p" role)): $(plan_names "$p") copied in $tc s; switching in the manifest's order"
+  # 4. and 5.: each in order, then finish or roll back
+  switch_run "$k" "$p" switching
+}
+# relroot <k>: ADR 0078 2.3, a stopped slot's rel/ onto its batch, in desk-host-upd: the changed copies made beside the old ones outside the
+# slot's lock, swapped in under it only while the slot is still stopped with the same record; the old ones stay until its wake's smoke tests
+# pass (switch --verify). A wake that comes first starts on the old releases, and the copies are dropped.
+relroot() {
+  local k=$1 p recsum gen svc rst me t0
+  read -r rst gen <<<"$(record_state "$k")"
+  case "$rst" in desk|fresh) ;; *) log "slot $k: no root (record $rst)"; return 0 ;; esac
+  if runc state dh-desk-$k >/dev/null 2>&1 || [ -s "$RUN/op/$k" ]; then log "slot $k: running or busy: no swap at a stop"; return 0; fi
+  if python3 -I -c 'import json,sys; r=json.load(open(sys.argv[1])); v=r.get("verify") or {}; sys.exit(0 if r.get("switching") or (v and v.get("phase") != "swapped") else 1)' "$REC/$k.json"; then
+    log "slot $k: a switch was cut off here: it's put back at the next start first (3.4), not swapped over"; return 0
+  fi
+  batch_job "$k"
+  p=$(bt plan "$k") || { log "slot $k: no batch due"; return 0; }
+  bt may-copy "$k" "$p" || { log "slot $k: batch $(pj "$p" seq)'s copy failed 3 times, or less than an hour ago: not now"; return 0; }
+  recsum=$(sha256sum "$REC/$k.json" | cut -d' ' -f1)
+  install -d -m 700 $RUN/batch $RUN/reroot $RUN/lock; me=$(ps -o pgid= -p $$ | tr -d ' '); t0=$(date +%s.%N)
+  echo "$me" > "$RUN/reroot/$k.pgid"; : > "$RUN/batch/$k.copying"
+  trap 'rm -f "$RUN/batch/'"$k"'.copying"; [ "$(cat "$RUN/reroot/'"$k"'.pgid" 2>/dev/null)" = "'"$me"'" ] && rm -f "$RUN/reroot/'"$k"'.pgid"; [ "$(cat "$RUN/copy.holder" 2>/dev/null)" = "'"$me"'" ] && rm -f "$RUN/copy.holder"' EXIT
+  trap 'exit 143' TERM
+  copy_turn "${COPY_MODE:-bg}"
+  for svc in $(plan_names "$p"); do
+    bt copy "$k" "$svc" "$(plan_to "$p" "$svc")" "$gen" || { copy_done; bt record "$k" copy-failed "$p" "copying $svc failed"; return 1; }
+  done
+  copy_done
+  rm -f "$RUN/batch/$k.copying" "$RUN/reroot/$k.pgid"
+  exec 9>"$RUN/lock/$k"; flock -n 9 || { log "slot $k: a start or another operation holds the slot: the copies are dropped"; rel_drop_new "$k"; return 0; }
+  if [ "$(sha256sum "$REC/$k.json" | cut -d' ' -f1)" != "$recsum" ] || runc state dh-desk-$k >/dev/null 2>&1 || [ -s "$RUN/op/$k" ]; then
+    log "slot $k: the slot changed while its copies were made: dropped"; rel_drop_new "$k"; return 0
+  fi
+  local n="" since; since=$(date +%s)
+  p=$(python3 -I -c 'import json,sys; p=json.loads(sys.argv[1]); p["since"]=int(sys.argv[2]); print(json.dumps(p))' "$p" "$since")
+  for svc in $(plan_names "$p"); do   # the record names each rename before it's made (3.4: a cut-off is put back before the next start)
+    switching_set "$k" verify "$p" "$n" "$svc" swap; rel_swap_in "$k" "$svc" || { log "slot $k: the swap of $svc failed"; return 1; }; n="$n $svc"
+  done
+  python3 -I -c 'import json,sys; sys.path.insert(0, sys.argv[1]); import batches as BT
+k, p = int(sys.argv[2]), json.loads(sys.argv[3])
+def f(r):
+    r["releases"] = dict(BT.rec_releases(r), **{c["name"]: c["to"] for c in p["components"]})
+    r["batch"] = {"seq": p["seq"], "state": "verify", "fromSeq": BT.rec_seq(r), "at": BT.utc()}
+    r["verify"] = dict(p, done=[c["name"] for c in p["components"]], current=None, phase="swapped", at=BT.utc())
+BT.record_update(k, f)' "$LIB" "$k" "$p"
+  log "slot $k: batch $(pj "$p" seq) ($(pj "$p" role)) swapped in at a stop in $(awk -v a="$t0" -v b="$(date +%s.%N)" 'BEGIN {printf "%.1f", b - a}') s ($(plan_names "$p")); its first run is the next start, smoke-tested then"
+}
+# 3.4, a stopped slot: before its next start, a switch or a stop path's swap that was cut off half way is put back by renames, and the record
+# names the old set again. A cut-off isn't the release's failure: the next idle tries again. Under the slot's lock (up's).
+batch_cutoff() {
+  local k=$1 f p cur svc
+  for f in switching verify; do
+    p=$(python3 -I -c 'import json,sys; v=json.load(open(sys.argv[1])).get(sys.argv[2]); print(json.dumps(v) if v else "")' "$REC/$k.json" "$f" 2>/dev/null)
+    [ -n "$p" ] || continue
+    [ "$f" = verify ] && [ "$(pj "$p" phase)" = swapped ] && continue   # a whole swap at a stop: its first run is this start
+    for svc in $(pj "$p" done) $(pj "$p" current); do rel_swap_back "$k" "$svc"; done
+    python3 -I -c 'import json,sys; sys.path.insert(0, sys.argv[1]); import batches as BT
+k, f, p = int(sys.argv[2]), sys.argv[3], json.loads(sys.argv[4])
+def g(r):
+    r["releases"] = dict(BT.rec_releases(r), **{c["name"]: c["from"] for c in p["components"] if c.get("from")})
+    b = r.get("batch") or {}
+    r["batch"] = {"seq": b["fromSeq"] if f == "verify" and isinstance(b.get("fromSeq"), int) else BT.rec_seq(r), "state": "behind", "at": BT.utc(), "why": "cut off; tried again"}
+    r.pop(f, None)
+BT.record_update(k, g)' "$LIB" "$k" "$f" "$p"
+    rel_tidy "$k"; python3 -I $TT unhold "$k"   # the cut-off switch's hold goes with it
+    log "slot $k: a ${f/verify/stop path swap} of batch $(pj "$p" seq) was cut off at $(pj "$p" current) ($(pj "$p" phase)): put back by renames; it's tried again"
+  done
+}
+
+# ADR 0077 section 3: the host reboots for its own packages only on Platform's reboot_host, and refuses it unless a reboot is pending,
+# no slot is starting, no slot's update.holdUntil is ahead, and every running desk is idle by its own idle.json (or the order is urgent
+# and the clock allows). A fetch or a re-root in flight is stopped and dropped first. The reboot is the existing path: the link stops,
+# desk-host-shutdown's stop-all closes every desk (section 2), and at boot desk-host resume; Platform starts the desks again.
+reboot_host() {
+  local urgent=0 order="" rp since k why="" running="" h idle
+  while [ $# -gt 0 ]; do case "$1" in --urgent) urgent=1; shift ;; --order) order=${2:-}; shift 2 ;; *) die "usage: desk-host reboot [--urgent] [--order <id>]" ;; esac; done
+  rp=$(python3 -I $TT reboot-pending) || { echo "reboot refused: no reboot pending" >&2; return 2; }
+  since=$(json_field "$rp" since)
+  for k in $(seq 1 "$(slots_per_host)"); do
+    [ "$(cat "$RUN/op/$k" 2>/dev/null)" = starting ] && why+="slot $k is starting; "
+    h=$(python3 -I $TT hold-until "$k") && why+="slot $k is held until $h; "
+    if runc state dh-desk-$k >/dev/null 2>&1; then
+      running+="$k "
+      idle=$(python3 -I $TT idle "$k" $([ $urgent = 1 ] && echo --urgent-since "$since")) || why+="slot $k isn't idle ($(json_field "$idle" reason)); "
+    fi
+  done
+  [ -z "$why" ] || { echo "reboot refused: ${why%; }" >&2; return 75; }
+  python3 -I -c 'import json,sys,time; json.dump({"order": sys.argv[1] or None, "urgent": sys.argv[2] == "1", "running": [int(x) for x in sys.argv[3].split()], "pending": json.loads(sys.argv[4]), "at": time.strftime("%Y-%m-%dT%H:%M:%SZ", time.gmtime())}, open("/var/lib/desk-host/reboot.json", "w"))' "$order" "$urgent" "$running" "$rp"
+  python3 -I $TT upd-kill
+  log "rebooting for the host's own packages ($rp); running slots: ${running:-none}"
+  if [ "$TEST" = 1 ] && [ "${REBOOT_DRY:-}" = 1 ]; then log "REBOOT_DRY (a test host): not rebooting"; return 0; fi
+  systemctl reboot
 }
 
 cmd=${1:-}; shift || true
@@ -462,16 +1174,71 @@ up)
   rm -f "$RUN/fault/$k"; op_mark "$k" starting
   trap 'rc=$?; op_clear '"$k"'; [ $rc = 0 ] || [ -s "$RUN/fault/'"$k"'" ] || fault '"$k"' start_failed' EXIT
   up_one "$k" "$desk" "$vol" "$pub" "$cls" ;;
-class) [ $# -ge 1 ] || die "usage: desk-host class <k> [<class>]"; valid_slot "$1"; lock_slot "$1"; set_class "$@" ;;
-stop) valid_slot "$1"; lock_slot "$1"; op_mark "$1" stopping; trap 'op_clear '"$1" EXIT; stop_one "$1" ;;
+class)   # --whole anywhere: the link's set_class (whole_refused)
+  WHOLE=0; a=(); for x in "$@"; do if [ "$x" = --whole ]; then WHOLE=1; else a+=("$x"); fi; done
+  [ ${#a[@]} -ge 1 ] && [ ${#a[@]} -le 2 ] || die "usage: desk-host class <k> [<class>] [--whole]"
+  valid_slot "${a[0]}"; lock_slot "${a[0]}"; set_class "${a[@]}" ;;
+stop)   # after the stop, a re-root onto the slot's generation and its batch's stop path in the background (not at a host's stop-all; --no-reroot never)
+  valid_slot "$1"; lock_slot "$1"; abort_reroot "$1"; op_mark "$1" stopping; trap 'op_clear '"$1" EXIT; stop_one "$1"; op_clear "$1"; exec 9>&-
+  [ "${2:-}" = --no-reroot ] || reroot_later "$1" ;;
+reroot) valid_slot "$1"; reroot "$1" "${2:-}" ;;
+switch) valid_slot "$1"; switch_slot "$1" "${2:-}" ;;   # ADR 0078 2.2 (in desk-host-upd), and --verify (2.3's wake)
+relroot) valid_slot "$1"; relroot "$1" ;;              # ADR 0078 2.3, in desk-host-upd
+resandbox)   # a TEST host's: one running service's sandbox made again by the switch's own steps (svc_down, svc_up), nothing else
+  # changed; verify's svc-spec mutation (SWITCH_ADD_CAP=1) and its proof that a switched sandbox is up's
+  [ "$TEST" = 1 ] || die "resandbox: a test host's only"; valid_slot "$1"; lock_slot "$1"; mkdir -p /var/log/desk-host
+  runc state dh-desk-$1 >/dev/null 2>&1 || die "slot $1: no desk running"
+  case "${2:-}" in deskd|desk-agent|desk-notebook|desk-rtc|desk-stream) ;; *) die "usage: desk-host resandbox <k> <store component>" ;; esac
+  svc_down "$1" "$2"; svc_up "$1" "$2" && log "slot $1: $2's sandbox made again by the switch's steps" ;;
+after-stop)   # a stop's background work, in desk-host-upd: the re-root onto its generation if due, then its batch's stop path if due
+  valid_slot "$1"; python3 -I $TT due "$1" && reroot "$1"; stop_path_due "$1" && relroot "$1"; true ;;
+restart)
+  usage="usage: desk-host restart <k> <deskId> [<vol-id>] --class <class> --public <the slot's public address>"
+  [ $# -ge 2 ] || die "$usage"; k=$1; desk=$2; shift 2; vol=; pub=; cls=
+  while [ $# -gt 0 ]; do case "$1" in --public) pub=${2:-}; shift 2 ;; --class) cls=${2:-}; shift 2 ;; vol-*) vol=$1; shift ;; *) die "$usage" ;; esac; done
+  valid_slot "$k"; lock_slot "$k"; mkdir -p /var/log/desk-host; rm -f "$RUN/fault/$k"
+  trap 'rc=$?; op_clear '"$k"'; python3 -I '"$TT"' unhold '"$k"'; [ $rc = 0 ] || [ $rc = 75 ] || [ -s "$RUN/fault/'"$k"'" ] || fault '"$k"' start_failed' EXIT
+  restart_one "$k" "$desk" "$vol" "$pub" "$cls" ;;
+reboot) reboot_host "$@" ;;
+template) exec python3 -I $TT "$@" ;;   # the template generations' own command (desk-host-template), for the link
+batch) exec python3 -I $BT "$@" ;;      # service batches' own command (desk-host-batch, ADR 0078), for the link
 stop-all)   # a host shutdown, the cost guard's included (IN-09): every running desk, as a stop does, at once
-  for k in $(seq 1 "$(slots_per_host)"); do runc state dh-desk-$k >/dev/null 2>&1 && { ( "$0" stop "$k" ) & }; done; wait; log "every desk stopped" ;;
-prepare) valid_slot "$1"; lock_slot "$1"; prepare "$1" ;;
+  # The mark first, then the look: a start that began before it is running or marked starting (its up holds the slot's lock;
+  # stop waits for the lock, then stops what the up left), and one that reaches halting after it is refused before runc start.
+  # $RUN at the recipe's 711 (desk-host-check dirs): install -d -m sets the mode of a directory that exists too, and 0.1.13's
+  # 755 here outlived the stop (desk-host-shutdown stopped and started, verify.sh's boot mutation), so dirs failed and every up refused
+  install -d -m 711 $RUN; : > "$HALT"
+  n=0
+  for k in $(seq 1 "$(slots_per_host)"); do
+    if runc state dh-desk-$k >/dev/null 2>&1 || [ "$(cat "$RUN/op/$k" 2>/dev/null)" = starting ]; then ( "$0" stop "$k" ) & n=$((n + 1)); fi
+  done; wait; log "every desk stopped ($n slot(s)); no desk starts until desk-host resume (desk-host-shutdown.service's start, at every boot)" ;;
+resume) install -d -m 711 $RUN; rm -f "$HALT"; log "desks may start" ;;   # $RUN put back to the recipe's 711 if it drifted
+shaper)   # shaper <k> [show|off|on]: ADR 0036's shaper for slot k (egress.py). off is test 1's R5, the shaper lost as a bug would
+          # lose it: the classes off the veth and the budgets stopped, so only the guard's count (out_<k>) and stop stand, and
+          # desk-host-check shaper fails; on, or the slot's next start, puts both back
+  [ $# -ge 1 ] || die "usage: desk-host shaper <k> [show|off|on]"; valid_slot "$1"; k=$1
+  case "${2:-show}" in
+    show) exec python3 -I $LIB/egress.py show "$k" ;;
+    off) lock_slot "$k"; runc state dh-desk-$k >/dev/null 2>&1 || die "slot $k: no desk running"
+      install -d -m 700 $RUN/shaper-off; date -u +%FT%TZ > "$RUN/shaper-off/$k"
+      systemctl stop "desk-host-egress@$k.service"; python3 -I $LIB/egress.py off "$k"
+      log "slot $k: shaper OFF: no classes on its veth and no budgets; only the guard's count and stop stand (desk-host shaper $k on puts it back)" ;;
+    on) lock_slot "$k"; runc state dh-desk-$k >/dev/null 2>&1 || die "slot $k: no desk running"
+      rm -f "$RUN/shaper-off/$k"; python3 -I $LIB/egress.py on "$k"
+      systemctl reset-failed "desk-host-egress@$k.service" 2>/dev/null || true; systemctl restart "desk-host-egress@$k.service"
+      log "slot $k: shaper on" ;;
+    *) die "usage: desk-host shaper <k> [show|off|on]" ;;
+  esac ;;
+prepare)   # Platform's prepare_slot: nobody waits, so it waits its turn, in its own process group: a start that takes the turn from it
+           # stops that group alone (prep_drop removes its tree), never the link that ran it. 75: refused for room (prep_turn)
+  valid_slot "$1"
+  [ "$(ps -o pgid= -p $$ | tr -d ' ')" = "$$" ] || exec setsid "$0" prepare "$@"
+  lock_slot "$1"; trap prep_drop EXIT; trap 'exit 143' TERM INT HUP; COPY_MODE=bg prepare "$1" ;;
 reset) valid_slot "$1"; lock_slot "$1"; reset_slot "$1"; log "slot $1: reset; left: $(leftovers "$1")" ;;
 leftovers) valid_slot "$1"; echo "slot $1: $(leftovers "$1")" ;;
 ctlimit) valid_slot "$1"; ct_rules "$1" "$2" "$3"; log "slot $1: connections at most $2 inside the desk, $3 on the host" ;;
 state) for f in $REC/*.json; do [ -f "$f" ] && echo "$f: $(cat "$f")"; done; runc list ;;
 report) exec python3 -I $LIB/report.py ;;
 check) exec $LIB/desk-host-check "$@" ;;
-*) sed -n 2,11p "$0" >&2; exit 2 ;;
+*) sed -n 2,13p "$0" >&2; exit 2 ;;
 esac

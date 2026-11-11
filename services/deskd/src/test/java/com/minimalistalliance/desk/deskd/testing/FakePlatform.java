@@ -75,6 +75,7 @@ public final class FakePlatform implements AutoCloseable {
     public final List<Request> apiRequests = new CopyOnWriteArrayList<>();
     /** In order, with what other fakes add: imds, configure, hello, config, ready, heartbeat. */
     public final List<String> timeline = new CopyOnWriteArrayList<>();
+    private final Map<String, List<Long>> arrivals = new ConcurrentHashMap<>();
     public final Map<String, String> metadata = new ConcurrentHashMap<>();
     public final Queue<Reply> helloReplies = new ConcurrentLinkedQueue<>();
     public final Queue<Reply> heartbeatReplies = new ConcurrentLinkedQueue<>();
@@ -106,6 +107,11 @@ public final class FakePlatform implements AutoCloseable {
     /** Hello's copy of the config leaves {@code ageBand} out, while the GET goes by {@link #ageBand}. */
     public volatile boolean helloOmitsAgeBand;
     public static final Object NO_AGE_BAND = new Object();
+    /** {@code tierLimits} on the config (agent.md, ADR 0090), which can be anything, a null included. {@link #NO_TIER_LIMITS} leaves it out. */
+    public volatile Object tierLimits = NO_TIER_LIMITS;
+    public static final Object NO_TIER_LIMITS = new Object();
+    /** Hello's copy of the config says this {@code configVersion} instead, as a Platform that couldn't finish it says 0. */
+    public volatile Long helloConfigVersion;
 
     private final Map<String, BlockingQueue<Request>> apiQueues = new ConcurrentHashMap<>();
     private final HttpServer server;
@@ -148,6 +154,11 @@ public final class FakePlatform implements AutoCloseable {
     /** The body of the next hello. */
     public Map<String, Object> awaitHello() throws InterruptedException {
         return awaitApi("/v1/agent/hello").json();
+    }
+
+    /** {@link System#nanoTime} as each request to this path came in, oldest first. */
+    public List<Long> arrivals(String path) {
+        return List.copyOf(arrivals.getOrDefault(path, List.of()));
     }
 
     public long countApi(String path) {
@@ -228,6 +239,7 @@ public final class FakePlatform implements AutoCloseable {
     }
 
     private void api(HttpExchange exchange, String path) throws IOException {
+        arrivals.computeIfAbsent(path, key -> new CopyOnWriteArrayList<>()).add(System.nanoTime());
         byte[] body = exchange.getRequestBody().readAllBytes();
         Map<String, String> headers = new LinkedHashMap<>();
         exchange.getRequestHeaders().forEach((name, values) -> headers.put(name.toLowerCase(Locale.ROOT), values.get(0)));
@@ -271,6 +283,9 @@ public final class FakePlatform implements AutoCloseable {
             Map<String, Object> config = config();
             if (helloOmitsAgeBand) {
                 config.remove("ageBand");
+            }
+            if (helloConfigVersion != null) {
+                config.put("configVersion", helloConfigVersion);
             }
             reply.put("config", config);
         }
@@ -319,6 +334,9 @@ public final class FakePlatform implements AutoCloseable {
         }
         if (ageBand != NO_AGE_BAND) {
             config.put("ageBand", ageBand);
+        }
+        if (tierLimits != NO_TIER_LIMITS) {
+            config.put("tierLimits", tierLimits);
         }
         config.put("aFieldFromTheFuture", 1);
         return config;

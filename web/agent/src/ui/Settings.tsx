@@ -7,7 +7,7 @@ import type { Agent, AgentCaps, KeyMeta } from '../client/types';
 import type { LookTheme } from '../look/tones';
 import { errorText } from '../model/agents';
 import { charCount } from '../model/links';
-import { useRead } from './hooks';
+import { useRead, useUnsaved } from './hooks';
 import { BindingPicker } from './Keys';
 import { LinksEditor } from './Links';
 import { LookEditor } from './Look';
@@ -32,6 +32,7 @@ function About({ client, agent, caps }: { client: AgentClient; agent: Agent; cap
     if (purpose === synced.purpose) setPurpose(agent.purpose ?? '');
   }
   const changed = name.trim() !== agent.name || purpose !== (agent.purpose ?? '');
+  useUnsaved(changed);
   const submit = async (e: FormEvent): Promise<void> => {
     e.preventDefault();
     if (!name.trim()) {
@@ -110,7 +111,7 @@ function Remove({ client, agent, onDeleted }: { client: AgentClient; agent: Agen
       {confirm ? (
         <div className="ag-confirm" role="group" aria-label={`Delete ${agent.name}`}>
           <span>
-            Delete {agent.name}? Its thread, workspace, timers, icon and links go with it, and its tile leaves the desk. The activity and agent-message logs keep their rows.
+            Delete {agent.name}? Its thread, memories, workspace, timers, icon and links go with it, and its tile leaves the desk. The activity and agent-message logs keep their rows.
           </span>
           <button type="button" className="ag-btn sm" onClick={() => setConfirm(false)} disabled={busy} autoFocus>
             Keep

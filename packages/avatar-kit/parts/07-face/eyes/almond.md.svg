@@ -1,0 +1,4 @@
+<g data-part="eyes-almond">
+  <g data-eye="left"><clipPath id="ae-l"><path d="M96.08,116.32 Q108.28,102.53 121.7,120.95 Q110.11,130.59 96.08,116.32 Z"/></clipPath><path d="M96.08,116.32 Q108.28,102.53 121.7,120.95 Q110.11,130.59 96.08,116.32 Z" fill="{{sclera}}"/><circle cx="108.52" cy="117.9" r="6.95" fill="{{eye}}" clip-path="url(#ae-l)"/></g>
+  <g data-eye="right"><clipPath id="ae-r"><path d="M159.92,116.32 Q147.72,102.53 134.3,120.95 Q145.89,130.59 159.92,116.32 Z"/></clipPath><path d="M159.92,116.32 Q147.72,102.53 134.3,120.95 Q145.89,130.59 159.92,116.32 Z" fill="{{sclera}}"/><circle cx="147.48" cy="117.9" r="6.95" fill="{{eye}}" clip-path="url(#ae-r)"/></g>
+</g>

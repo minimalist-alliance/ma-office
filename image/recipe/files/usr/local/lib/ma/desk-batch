@@ -12,13 +12,16 @@ Runs as root, outside deskd, because nothing can supervise its own replacement.
   desk-batch verify-manifest <manifest>                   check a manifest's fields only (no root needed)
   desk-batch serve                                        one request on /run/desk/batch.sock (desk-batch@.service)
 
-The manifest (format "ma-desk-batch/1") names each component's version and the sha256 of its artifact, and is signed as
+The manifest (format "ma-desk-batch/1") names each component's version and the sha256 of its artifact, and the machine
+it's built for ("arch": "arm64", the cloud desks', when it says none; "amd64" for a self-hosted desk), and is signed as
 it stands: a detached ECDSA P-256 SHA-256 signature over its exact bytes, DER, which is what the cloud's key service gives
 (ECC_NIST_P256, ECDSA_SHA_256) and what `openssl dgst -sha256 -verify` checks. The trusted public keys are
 /opt/ma/etc/batch-keys/*.pem (the image's) and /etc/ma/batch-keys.d/*.pem (an admin's drop-in): each P-256, a regular file
 root owns that nobody else can write, in a directory the same. With no key every batch is refused. URLs are never signed or
 trusted: ma-update checks every artifact against the manifest's sha256. A batch with a sequence number at or below the
 last one applied, refused or failed, or below the image's baseline, is refused, so an old signed batch can't be replayed.
+A batch for another machine's arch is refused (err arch), and so is one naming an image on a self-hosted desk (err root),
+which has no root volume for the platform to swap.
 
 A tick with a pending batch and the desk idle prepares every component first (download, check, unpack, docker load;
 nothing switched, and any failure switches nothing), looks at idle again, then activates them in the manifest's order. Once
@@ -91,6 +94,9 @@ VERSION = re.compile(r"\A[A-Za-z0-9._+-]{1,64}\Z")       # ma-update's versions
 SHA256 = re.compile(r"\A[0-9a-f]{64}\Z")
 BATCH_ID = re.compile(r"\A[A-Za-z0-9._-]{1,64}\Z")
 UTC = re.compile(r"\A(\d{4})-(\d{2})-(\d{2})T(\d{2}):(\d{2}):(\d{2})(\.\d{1,9})?Z\Z")
+# A manifest's arch, by Debian's names. None given is a cloud desk's, arm64: every batch before the field had arm64 builds.
+ARCHES = {"aarch64": "arm64", "x86_64": "amd64"}
+DEFAULT_ARCH = "arm64"
 
 IDLE_FRESH_S = 60              # idle.json older than this isn't idle
 IDLE_DEFAULT_S = 600           # required idle when deskd doesn't say the desk's idle-stop time
@@ -228,6 +234,9 @@ def check_manifest(data):
     image = m.get("image")
     if image is not None and (not isinstance(image, str) or not VERSION.match(image)):
         raise Refused("bad_request", "bad image version")
+    arch = m.get("arch", DEFAULT_ARCH)
+    if arch not in ARCHES.values():
+        raise Refused("bad_request", f"arch must be one of {', '.join(sorted(ARCHES.values()))}")
     note = m.get("note", "")
     if not isinstance(note, str) or len(note) > MAX_NOTE or any(ord(c) < 32 and c != "\n" or ord(c) == 127 for c in note):
         raise Refused("bad_request", f"note must be plain text, at most {MAX_NOTE} characters")
@@ -249,8 +258,30 @@ def check_manifest(data):
             raise Refused("bad_request", f"{name}: bad sha256")
         seen.add(name)
         out.append({"name": name, "version": ver, "sha256": sha})
-    return {"seq": seq, "id": m["id"], "created": m["created"], "urgent": m["urgent"], "image": image, "note": note,
-            "components": out}
+    return {"seq": seq, "id": m["id"], "created": m["created"], "urgent": m["urgent"], "image": image, "arch": arch,
+            "note": note, "components": out}
+
+
+def machine_arch():
+    m = os.uname().machine
+    return ARCHES.get(m, m)
+
+
+def self_hosted():
+    """A self-hosted desk's /etc/ma-release says hosting=self (selfhost/install.sh)."""
+    try:
+        with open(RELEASE_FILE) as f:
+            return any(line.strip() == "hosting=self" for line in f)
+    except OSError:
+        return False
+
+
+def fits_this_desk(m):
+    """Refused unless the batch can run here: its arch, and no image on a self-hosted desk. The signature doesn't matter."""
+    if m["arch"] != machine_arch():
+        raise Refused("arch", f"the batch is built for {m['arch']}, and this desk is {machine_arch()}")
+    if m["image"] is not None and self_hosted():
+        raise Refused("root", f"the batch names image {m['image']}, and a self-hosted desk has no image to swap")
 
 
 def decode_signature(sig):
@@ -465,6 +496,7 @@ def offer(manifest, sig, urls_obj):
     """Checks a batch and keeps it as pending. The pending summary, or Refused."""
     m = check_manifest(manifest)
     key = verify_signature(manifest, decode_signature(sig), trusted_keys())
+    fits_this_desk(m)
 
     def change(st):
         if st["phase"] in APPLYING:

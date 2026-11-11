@@ -30,6 +30,14 @@ import org.slf4j.LoggerFactory;
  * IPv4, then hello, config, the gateway link and the heartbeat. Each step retries until it works, on
  * its own virtual thread, so the admin socket answers throughout, and if a step can't finish, the
  * desk just refuses sessions. Afterwards the thread stays parked to serve what Platform asks for.
+ *
+ * <p>desk-rtc gets {@link Timing#rtcWait} to be configured. After that, hello goes with the identity desk-rtc reported on
+ * an earlier boot ({@link KnownRtcIdentity}), so the Platform hears the desk and its heartbeat says {@code rtc: failing}
+ * rather than nothing at all (audit D4); RtcClient keeps reconnecting, and sessions are refused {@code desk_not_ready}
+ * until it's configured. With none kept, as on a first boot, hello waits for desk-rtc.
+ *
+ * <p>Every wait between tries is the step, or the Platform's {@code Retry-After}, plus a random 0 to 50 % of it, so desks
+ * that failed together don't all try again together (audit D3).
  */
 public final class BootSequence implements PlatformActions {
 
@@ -38,10 +46,12 @@ public final class BootSequence implements PlatformActions {
     /**
      * @param quietRetry after a refusal that won't change soon (agent.md: "idle quietly")
      * @param readyWait how long the first heartbeat waits for the gateway link
+     * @param rtcWait how long hello waits for desk-rtc's first configured before it goes with the identity kept from an
+     *     earlier boot. desk-rtc answers in well under a second, and its first start on a new root takes a few
      */
-    public record Timing(Duration firstBackoff, Duration maxBackoff, Duration quietRetry, Duration readyWait) {
-        public static final Timing DEFAULT =
-                new Timing(Duration.ofSeconds(1), Duration.ofSeconds(30), Duration.ofSeconds(60), Duration.ofSeconds(10));
+    public record Timing(Duration firstBackoff, Duration maxBackoff, Duration quietRetry, Duration readyWait, Duration rtcWait) {
+        public static final Timing DEFAULT = new Timing(
+                Duration.ofSeconds(1), Duration.ofSeconds(30), Duration.ofSeconds(60), Duration.ofSeconds(10), Duration.ofSeconds(30));
     }
 
     private final ImdsClient imds;
@@ -55,6 +65,8 @@ public final class BootSequence implements PlatformActions {
     private final String version;
     private final String imageVersion;
     private final Timing timing;
+    /** Only the boot thread touches this. */
+    private final KnownRtcIdentity knownIdentity;
     private final ReentrantLock lock = new ReentrantLock();
     private final Condition wake = lock.newCondition();
     private HeartbeatLoop heartbeat;
@@ -94,6 +106,7 @@ public final class BootSequence implements PlatformActions {
         this.version = version;
         this.imageVersion = imageVersion;
         this.timing = timing;
+        this.knownIdentity = new KnownRtcIdentity(volume.directory(), volume::volumeRecord);
     }
 
     /** These two call back into this class through {@link PlatformActions}, so they come after it. */
@@ -167,7 +180,16 @@ public final class BootSequence implements PlatformActions {
         try {
             readIdentity();
             rtc.start(sessions);
-            awaitRtcConfigured();
+            if (!awaitRtcConfigured(timing.rtcWait().toNanos())) {
+                if (knownIdentity.read() == null) {
+                    log.warn("desk-rtc isn't configured after {} s, and no earlier boot left its identity: hello waits for it",
+                            timing.rtcWait().toSeconds());
+                    awaitRtcConfigured(Long.MAX_VALUE);
+                } else {
+                    log.warn("desk-rtc isn't configured after {} s: hello goes with the identity it had, and sessions stay refused until it is",
+                            timing.rtcWait().toSeconds());
+                }
+            }
             hello("boot");
             link.awaitReady(timing.readyWait());
             heartbeat.start();
@@ -195,21 +217,41 @@ public final class BootSequence implements PlatformActions {
             } catch (IOException | RuntimeException e) {
                 log.warn("can't read the instance's identity, so every session stays refused: {}", e.getClass().getSimpleName());
             }
-            Thread.sleep(backoff);
+            Thread.sleep(spread(backoff));
             backoff = doubled(backoff);
         }
     }
 
-    private void awaitRtcConfigured() throws InterruptedException {
+    /**
+     * @param maxNanos {@link Long#MAX_VALUE} for no limit
+     * @return true once desk-rtc has been configured, which it then keeps; false if the wait ran out first
+     */
+    private boolean awaitRtcConfigured(long maxNanos) throws InterruptedException {
+        long deadline = System.nanoTime() + maxNanos;
         lock.lockInterruptibly();
         try {
             while (!rtcConfigured) {
-                wake.await();
+                if (maxNanos == Long.MAX_VALUE) {
+                    wake.await();
+                    continue;
+                }
+                long left = deadline - System.nanoTime();
+                if (left <= 0) {
+                    return false;
+                }
+                wake.awaitNanos(left);
             }
             rtcConfigured = false;
         } finally {
             lock.unlock();
         }
+        knownIdentity.remember(rtc.fingerprints(), rtc.fingerprintsNotAfter());
+        return true;
+    }
+
+    /** The step plus a random 0 to 50 % of it: never sooner than asked, and desks that failed together drift apart. */
+    static Duration spread(Duration step) {
+        return step.plusNanos((long) (step.toNanos() * 0.5 * java.util.concurrent.ThreadLocalRandom.current().nextDouble()));
     }
 
     private void hello(String reason) throws InterruptedException {
@@ -218,7 +260,14 @@ public final class BootSequence implements PlatformActions {
             Duration wait = backoff;
             try {
                 List<String> fingerprints = rtc.fingerprints();
-                Map<String, Object> reply = agent.hello(helloBody(reason, fingerprints));
+                String notAfter = rtc.fingerprintsNotAfter();
+                KnownRtcIdentity.Identity known = fingerprints.isEmpty() ? knownIdentity.read() : null;
+                if (known != null) {
+                    // desk-rtc hasn't been configured this boot: what it had before (see the class comment).
+                    fingerprints = known.fingerprints();
+                    notAfter = known.notAfter();
+                }
+                Map<String, Object> reply = agent.hello(helloBody(reason, fingerprints, notAfter));
                 Map<String, Object> carried = Json.object(reply, "config");
                 boolean bandSaid = true;
                 if (carried != null) {
@@ -246,7 +295,7 @@ public final class BootSequence implements PlatformActions {
             } catch (IOException | RuntimeException e) {
                 log.warn("hello failed: {}", e.getClass().getSimpleName());
             }
-            Thread.sleep(wait);
+            Thread.sleep(spread(wait));
             backoff = doubled(backoff);
         }
     }
@@ -260,11 +309,11 @@ public final class BootSequence implements PlatformActions {
         }
     }
 
-    private Map<String, Object> helloBody(String reason, List<String> fingerprints) {
+    private Map<String, Object> helloBody(String reason, List<String> fingerprints, String notAfter) {
         InstanceIdentity identity = state.identity();
         Map<String, Object> dtls = new LinkedHashMap<>();
         dtls.put("fingerprintsSha256", fingerprints);
-        dtls.put("notAfter", rtc.fingerprintsNotAfter());
+        dtls.put("notAfter", notAfter);
         DataVolume.Usage usage = volume.usage();
         Map<String, Object> dataVolume = new LinkedHashMap<>();
         dataVolume.put("mounted", volume.looksWritable());
@@ -290,6 +339,7 @@ public final class BootSequence implements PlatformActions {
         while (true) {
             String reason;
             boolean config;
+            boolean configured;
             boolean fingerprintsChanged;
             lock.lockInterruptibly();
             try {
@@ -307,12 +357,16 @@ public final class BootSequence implements PlatformActions {
                 }
                 reason = helloWanted;
                 config = configWanted;
+                configured = rtcConfigured;
                 helloWanted = null;
                 configWanted = false;
                 fingerprintsChanged = rtcConfigured && !Objects.equals(helloFingerprints, rtc.fingerprints());
                 rtcConfigured = false;
             } finally {
                 lock.unlock();
+            }
+            if (configured) {
+                knownIdentity.remember(rtc.fingerprints(), rtc.fingerprintsNotAfter());
             }
             if (fingerprintsChanged) {
                 // desk-rtc came back with another certificate, so clients need the new fingerprint.
@@ -359,7 +413,7 @@ public final class BootSequence implements PlatformActions {
         try {
             configRetryArmed = wait != null;
             if (wait != null) {
-                configRetryAt = System.nanoTime() + wait.toNanos();
+                configRetryAt = System.nanoTime() + spread(wait).toNanos();
             }
         } finally {
             lock.unlock();
@@ -376,13 +430,15 @@ public final class BootSequence implements PlatformActions {
 
     /**
      * The config, its {@code streaming}, which says whether the Browser is paused at a bandwidth limit (ADR 0095), and
-     * its {@code agentDefaults}, the account's values for the desk's spending limits (ADR 0043). This throws for a body
-     * that isn't a config, so the age band, which comes after, can't take one for a missing field.
+     * its {@code agentDefaults}, the account's values for the desk's spending limits (ADR 0043), and its
+     * {@code tierLimits}, the free tier's limits, or none (ADR 0090). This throws for a body that isn't a config, so the age
+     * band and the tier's limits can't take one for a missing field.
      */
     private void applyConfig(Map<String, Object> config) {
         state.setConfig(PlatformConfig.parse(config));
         state.streamingPause().apply(Json.object(config, "streaming"));
         state.accountDefaults().apply(Json.object(config, "agentDefaults"));
+        state.tierLimits().fromConfig(config);
     }
 
     private Duration doubled(Duration backoff) {

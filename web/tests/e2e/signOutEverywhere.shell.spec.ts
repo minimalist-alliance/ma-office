@@ -2,7 +2,7 @@
 // member has ends, for a lost laptop, and then this browser signs out as Sign out does. It has to hear yes from Platform
 // first: if it doesn't, nothing ends, and the menu says so.
 import { expect, test, type APIRequestContext, type Page } from '@playwright/test';
-import { canvasPainted, harness, signIn, storedRefreshToken, watchConsole } from './helpers';
+import { canvasPainted, harness, refreshTokenPlaces, signIn, storedRefreshToken, watchConsole } from './helpers';
 
 interface Harness { log: string[]; signOuts: unknown[]; revoked: string[] }
 const read = async (request: APIRequestContext): Promise<Harness> => (await (await request.get('/__harness')).json()) as Harness;
@@ -111,4 +111,85 @@ test('Sign out after a refusal clears the line and signs out here only', async (
   await expect(page.getByTestId('sign-out-everywhere-failed')).toBeHidden();
   await expect(page.getByTestId('sign-in')).toContainText("You're signed out.");
   expect((await read(request)).signOuts).toEqual([{ everywhere: true }, { everywhere: false }]);
+});
+
+// ----- the regression set: no answer from Platform, and the member's other tab
+test.describe('with no answer from Platform', () => {
+  test('Sign out past its 3 s wait still ends the session here: the card, the revoke and the logout, the token gone', async ({ page, request }) => {
+    const errors = watchConsole(page);
+    await signIn(page);
+    await canvasPainted(page);
+    const token = await storedRefreshToken(page);
+    await harness(request, { signOutDelayMs: 20_000 }); // longer than SIGN_OUT_WAIT_MS (3 s): the call is never cancelled, only not waited for
+    await openMenu(page);
+    await page.getByRole('button', { name: 'Sign out', exact: true }).click();
+    await expect(page.getByTestId('sign-in')).toContainText("You're signed out.", { timeout: 10_000 });
+    const { log, signOuts, revoked } = await read(request);
+    expect(signOuts).toEqual([{ everywhere: false }]);
+    expect(log).toContain('POST /fake-auth/oauth2/revoke');
+    expect(log).toContain('GET /fake-auth/logout');
+    expect(revoked).toEqual([token]);
+    expect(await storedRefreshToken(page)).toBeNull();
+    expect(errors).toEqual([]);
+  });
+
+  test('Sign out everywhere past its 15 s wait ends nothing: the line says so, the office and the token stay, and a try once Platform answers works', async ({ page, request }) => {
+    test.setTimeout(60_000);
+    const errors = watchConsole(page);
+    await signIn(page);
+    await canvasPainted(page);
+    const token = await storedRefreshToken(page);
+    await harness(request, { signOutDelayMs: 17_000 }); // past EVERYWHERE_WAIT_MS (15 s): no answer is no yes
+    await openMenu(page);
+    const everywhere = page.getByTestId('sign-out-everywhere');
+    await everywhere.click();
+    await expect(everywhere).toHaveText('Signing out everywhere…');
+    const line = page.getByTestId('sign-out-everywhere-failed');
+    await expect(line).toHaveText("We couldn't sign you out everywhere. Try again.", { timeout: 20_000 });
+    await expect(everywhere).toHaveText('Sign out everywhere');
+    await expect(page.locator('.ma-shell')).toBeVisible();
+    const state = await read(request);
+    expect(state.signOuts).toEqual([{ everywhere: true }]);
+    expect(state.log).not.toContain('POST /fake-auth/oauth2/revoke');
+    expect(state.log.filter((l) => l.includes('/logout'))).toEqual([]);
+    expect(await storedRefreshToken(page)).toBe(token);
+
+    await harness(request, { signOutDelayMs: 0 });
+    await everywhere.click();
+    await expect(page.getByTestId('sign-in')).toContainText("You're signed out.");
+    const after = await read(request);
+    expect(after.signOuts).toEqual([{ everywhere: true }, { everywhere: true }]);
+    expect(after.revoked).toEqual([token]);
+    expect(await storedRefreshToken(page)).toBeNull();
+    expect(errors).toEqual([]);
+  });
+});
+
+test('a second tab on the same origin ends up signed out too: its token is gone with the first, and its next call is refused', async ({ page, context, request }) => {
+  const errors = watchConsole(page);
+  await signIn(page);
+  await canvasPainted(page);
+  const two = await context.newPage();
+  const errorsTwo = watchConsole(two);
+  await two.goto('/');
+  await expect(two.locator('.ma-shell')).toBeVisible();
+  await expect(two.getByRole('group', { name: /desk$/ }).first()).toBeAttached();
+
+  await page.bringToFront();
+  await openMenu(page);
+  await page.getByTestId('sign-out-everywhere').click();
+  await expect(page.getByTestId('sign-in')).toContainText("You're signed out.");
+  // The one refresh token this browser held is gone from the other tab's view too.
+  expect(await refreshTokenPlaces(two)).toEqual([null, null]);
+
+  // Every session has ended, so Platform refuses the other tab's access token from now on; its next look at the list
+  // finds no token to refresh with, and it shows the card rather than going round to sign-in by itself.
+  await harness(request, { desksUnauthorized: true });
+  await two.bringToFront();
+  await two.evaluate(() => document.dispatchEvent(new Event('visibilitychange')));
+  await expect(two.getByTestId('sign-in')).toContainText('Please sign in again.', { timeout: 20_000 });
+  await expect(two.getByRole('group', { name: /desk$/ })).toHaveCount(0);
+  expect(await refreshTokenPlaces(two)).toEqual([null, null]);
+  expect(errors).toEqual([]);
+  expect(errorsTwo.filter((e) => !e.includes('401'))).toEqual([]); // the refused call's own 401 is the browser's line
 });

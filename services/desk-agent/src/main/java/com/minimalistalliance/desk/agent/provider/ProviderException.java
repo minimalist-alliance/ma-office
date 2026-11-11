@@ -16,6 +16,10 @@ public final class ProviderException extends Exception {
         AUTH,
         /** The provider's rate limit or quota. */
         RATE_LIMITED,
+        /** The provider's free allowance for today is used, such as OpenRouter's free requests a day. */
+        FREE_LIMIT,
+        /** The account's privacy settings at the provider allow no endpoint for the model (OpenRouter's). */
+        DATA_POLICY,
         /** The provider is down or overloaded. */
         UNAVAILABLE,
         /** The request itself was refused, such as an unknown model or too long a context. */

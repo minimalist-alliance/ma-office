@@ -1,14 +1,20 @@
 #!/bin/bash
 # Create the /data layout (design 10.4, runtime spec section 2). Idempotent; never recursive.
+# As root, it makes only names in /data itself, which only root can change. What goes inside a service's own directory
+# (/data/browser's three, which kiosk owns, and /data/desk/volume.json, which desk owns) is made as that user, with no
+# new privileges: GNU install follows a link at the name for its chown and chmod, so as root a link the Browser planted
+# at /data/browser/home would hand it whatever the link named, /etc say, at the next boot (EXP-7). As the user, a link
+# reaches only what that user could change already. A failure there is said, and never fails this unit.
 set -euo pipefail
 mountpoint -q /data || { echo "desk-datadirs: /data is not mounted" >&2; exit 1; }
 mk() { install -d -o "$2" -g "$3" -m "$4" "$1"; }
+as() { local u=$1; shift; setpriv --reuid="$u" --regid="$u" --clear-groups --no-new-privs "$@"; }
 mk /data/desk     desk   desk   0750
 mk /data/rtc      rtc    rtc    0700
 mk /data/browser  kiosk  kiosk  0750
-mk /data/browser/profile   kiosk kiosk 0700
-mk /data/browser/downloads kiosk kiosk 0750
-mk /data/browser/home      kiosk kiosk 0700
+for d in profile:0700 downloads:0750 home:0700; do
+  as kiosk install -d -m "${d#*:}" "/data/browser/${d%%:*}" || echo "desk-datadirs: could not make /data/browser/${d%%:*} as kiosk" >&2
+done
 mk /data/desk-egress root root 0700
 mk /data/agent   agent  agent  0700
 mk /data/notebook notebook notebook 0700
@@ -17,7 +23,7 @@ mk /data/notebook notebook notebook 0700
 mk /data/files   desk   desk   0700
 # The volume's record for deskd (ADR 0035): /data/.ma-volume is written at format and only root can change it. A volume
 # formatted before image 0.2.3 has none, so it gets one saying the format time isn't known. deskd's container sees only
-# /data/desk, so it gets a copy, rewritten at every boot. Never touches /data/browser. deskd and desk-rtc require this
+# /data/desk, so it gets a copy, rewritten at every boot, as desk (above). Never touches /data/browser. deskd and desk-rtc require this
 # unit, so a record that can't be written must never fail it.
 if [ ! -e /data/.ma-volume ]; then
   dev=$(findmnt -n -o SOURCE /data) || dev=
@@ -27,6 +33,6 @@ if [ ! -e /data/.ma-volume ]; then
     || echo "desk-datadirs: could not write the volume record" >&2
 fi
 if [ -e /data/.ma-volume ]; then
-  install -o desk -g desk -m 0644 /data/.ma-volume /data/desk/volume.json || echo "desk-datadirs: could not copy the volume record" >&2
+  as desk install -m 0644 /data/.ma-volume /data/desk/volume.json || echo "desk-datadirs: could not copy the volume record" >&2
 fi
 exit 0

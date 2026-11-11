@@ -2,7 +2,9 @@
    Desk app's token names (--ma-*, from docs/assets/brand/ui/tokens.json) plus the Notebook's own
    (--ma-nb-*, src/theme/tokens.ts). No color literals: scripts/check-css-literals.mjs checks.
    Everything is under .ma-nb (or .ma-nb-portal for menus and print), so nothing leaks into the app.
-   Type follows docs/assets/brand/ui/type.txt: 600 for UI text, 700 for titles, 500 for running text. */
+   Type follows docs/assets/brand/ui/type.txt: 600 for UI text, 700 for titles, 500 for running text.
+   Surfaces and the accent go through --nb-scheme-* (color.css), the seam for the Notebook's own color scheme. */
+@import "./color.css";
 
 .ma-nb,
 .ma-nb-portal {
@@ -48,7 +50,28 @@
   flex-direction: column;
   height: 100%;
   min-height: 0;
+  background: var(--nb-scheme-ground);
+  /* It answers to its own width, not the screen's: a narrow window or an open tile on the desk (the Desk app's ADR 0053). */
+  container: ma-nb / inline-size;
+}
+/* The column's toggle, in the head: only where the column steps aside (below). */
+.nb-side-toggle {
+  display: none;
+  flex: none;
+  place-items: center;
+  width: 34px;
+  height: 34px;
+  margin-right: -4px;
+  padding: 0;
+  border: 1px solid var(--ma-border);
+  border-radius: 10px;
   background: var(--ma-surface-window);
+  color: var(--ma-text-secondary);
+}
+.nb-side-toggle:hover,
+.nb-side-toggle[aria-expanded="true"] {
+  background: var(--ma-surface-fill);
+  color: var(--ma-text-primary);
 }
 .nb-muted {
   color: var(--ma-text-tertiary);
@@ -297,7 +320,7 @@
   padding: 6px;
   border: 1px solid var(--ma-border-hairline);
   border-radius: 14px;
-  background: var(--ma-surface-overlay);
+  background: var(--nb-scheme-menu);
   box-shadow: var(--ma-elevation-menu);
   display: grid;
   gap: 1px;
@@ -349,7 +372,7 @@
   overflow: auto;
   padding: 12px 10px;
   border-right: 1px solid var(--ma-border-hairline);
-  background: var(--ma-surface-sunken);
+  background: var(--nb-scheme-side);
 }
 .nb-side-head {
   display: flex;
@@ -401,14 +424,14 @@
 }
 .nb-list-btn.on,
 .nb-page-btn.on {
-  background: var(--ma-accent-subtle);
+  background: var(--nb-scheme-accent-subtle);
 }
 .nb-spine {
   flex: none;
   width: 4px;
   height: 18px;
   border-radius: 2px;
-  background: var(--ma-accent);
+  background: var(--nb-scheme-accent);
   opacity: 0.55;
 }
 .nb-page-btn {
@@ -461,7 +484,7 @@
   min-width: 0;
   min-height: 0;
   padding: 14px 20px 18px;
-  background: var(--ma-surface-sunken);
+  background: var(--nb-scheme-desk);
 }
 /* The tablist holds only tabs. The tabs and the add button lay out together in `.nb-tabs`. */
 .nb-tablist {
@@ -488,7 +511,7 @@
   border: 1px solid var(--ma-border-hairline);
   border-bottom: 0;
   border-radius: 12px 12px 0 0;
-  background: color-mix(in srgb, var(--tab) 16%, var(--ma-surface-sunken));
+  background: color-mix(in srgb, var(--tab) 16%, var(--nb-scheme-desk));
   color: var(--ma-text-secondary);
   font-size: 13.5px;
   font-weight: 600;
@@ -505,13 +528,13 @@
 }
 .nb-tab.on {
   z-index: 1;
-  background: var(--ma-surface-tile);
+  background: var(--nb-scheme-paper);
   color: var(--ma-text-primary);
   box-shadow: inset 0 3px 0 var(--tab);
   font-weight: 700;
 }
 .nb-tab.drop {
-  background: color-mix(in srgb, var(--tab) 34%, var(--ma-surface-sunken));
+  background: color-mix(in srgb, var(--tab) 34%, var(--nb-scheme-desk));
 }
 .nb-tab.add {
   padding: 8px 10px;
@@ -538,7 +561,7 @@
   overflow: hidden;
   border: 1px solid var(--ma-border-hairline);
   border-radius: 16px;
-  background: var(--ma-surface-tile);
+  background: var(--nb-scheme-paper);
   box-shadow: var(--ma-elevation-tile);
 }
 .nb-editor {
@@ -585,7 +608,7 @@
   color: var(--ma-text-primary);
 }
 .nb-tool.on {
-  background: var(--ma-accent-subtle);
+  background: var(--nb-scheme-selected);
   color: var(--ma-text-link);
 }
 .nb-scroll {
@@ -1270,6 +1293,60 @@
   .nb-history-body {
     grid-template-columns: minmax(0, 1fr);
     grid-template-rows: minmax(0, 1fr) 30%;
+  }
+}
+
+/* A narrow Notebook on a larger screen (a window or an open tile under 640 px): the notebooks and pages column steps aside
+   behind the head's toggle, and the page takes the width; open, the column comes over the page from the left. The toolbar
+   and the head tighten as on a phone. A phone keeps its own layout, above. */
+@media (min-width: 721px) {
+  @container ma-nb (max-width: 640px) {
+    .nb-side-toggle {
+      display: inline-grid;
+    }
+    .nb-head {
+      gap: 8px;
+      padding: 8px 10px 8px 12px;
+    }
+    .nb-search-btn span,
+    .nb-search-btn kbd {
+      display: none;
+    }
+    .nb-tabview,
+    .nb-temporal {
+      position: relative;
+      grid-template-columns: minmax(0, 1fr);
+    }
+    .nb-side {
+      display: none;
+    }
+    .ma-nb[data-side="open"] .nb-side {
+      display: flex;
+      position: absolute;
+      z-index: 4;
+      top: 0;
+      bottom: 0;
+      left: 0;
+      width: min(280px, 85%);
+      box-shadow: var(--ma-elevation-menu);
+    }
+    .nb-main {
+      padding: 10px 12px 12px;
+    }
+    .nb-tabs {
+      padding: 0 8px;
+    }
+    .nb-toolbar {
+      gap: 4px 6px;
+      padding: 6px 8px;
+    }
+    .nb-tool-group {
+      padding-right: 6px;
+    }
+    .nb-history-body {
+      grid-template-columns: minmax(0, 1fr);
+      grid-template-rows: minmax(0, 1fr) 30%;
+    }
   }
 }
 

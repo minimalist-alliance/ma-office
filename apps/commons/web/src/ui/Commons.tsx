@@ -4,7 +4,8 @@ import { useCallback, useEffect, useMemo, useRef, useState, useSyncExternalStore
 import { BoardEngine, type Tool } from '../board/engine.ts';
 import { INKS, type Ink, type Size } from '../board/model.ts';
 import type { BoardMeta, Member, RoomClient, RoomState } from '../room/client.ts';
-import { ago, initials } from './names.ts';
+import { Face } from './Face.tsx';
+import { ago } from './names.ts';
 import { Channels } from './Channels.tsx';
 import { Chat } from './Chat.tsx';
 import {
@@ -75,7 +76,7 @@ function Avatar({ m, speaking, size = 28, you }: { m: Member; speaking: boolean;
       style={{ ['--ma-cm-c' as string]: `var(--ma-cm-member-${m.color})`, width: size, height: size }}
       title={you ? `${m.name} (you)` : m.name}
     >
-      {initials(m.name)}
+      <Face name={m.name} url={m.avatarUrl} recipe={m.avatarRecipe} size={size} />
       {m.muted && m.in ? (
         <span className="ma-cm-avatar-muted" aria-label="Muted">
           <IconMicOff />

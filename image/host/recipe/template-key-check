@@ -1,0 +1,149 @@
+#!/usr/bin/python3 -I
+"""template-key-check <keys dir> <anchor> [--kms-der <file>]: the template signing key's trust anchor (ADR 0077 PU-9; the Security
+Analyst's Medium on the ADR 0077/0078 read, 2026-11-11: the recipe used to pin whatever .pem was staged).
+
+The anchor is committed: image/host/recipe/template-keys.sha256, one "<sha256>  <name>.pem" line per key a host image trusts to sign
+template generations (alias/ma-host-template's public half), nothing else. It passes only when the keys directory (not a link) holds
+exactly the anchored names, each a regular file (no link, no directory, nothing else, dot files counted), each with the anchor's
+SHA-256, each a P-256 public key (desk-host-check template-sig's test). With --kms-der (bake.sh: KMS GetPublicKey's DER for
+alias/ma-host-template), that key must also be one of the anchored keys, compared as DER.
+
+recipe/build.sh runs it on the staged files/ before it makes anything and on /etc/desk-host/template-keys before it pins; bake.sh runs
+it before it launches a builder. Exit 0 with one line saying what passed; else 1, every reason on stderr.
+Tests: image/tests/test_host_template_anchor.py (no root).
+"""
+import hashlib
+import os
+import re
+import stat
+import subprocess
+import sys
+
+OPENSSL = "/usr/bin/openssl"
+LINE = re.compile(r"\A([0-9a-f]{64})  ([A-Za-z0-9._-]+\.pem)\Z")
+
+
+def sha256(path):
+    h = hashlib.sha256()
+    with open(path, "rb") as f:
+        for b in iter(lambda: f.read(65536), b""):
+            h.update(b)
+    return h.hexdigest()
+
+
+def openssl(*args):
+    try:
+        return subprocess.run([OPENSSL, *args], capture_output=True, timeout=10, stdin=subprocess.DEVNULL)
+    except (OSError, subprocess.TimeoutExpired):
+        return None
+
+
+def is_p256(path):   # desk-host-check's and templates.py's own test
+    r = openssl("pkey", "-pubin", "-in", path, "-noout", "-text")
+    out = r.stdout.decode(errors="replace") if r else ""
+    return bool(r) and r.returncode == 0 and ("prime256v1" in out or "P-256" in out)
+
+
+def der_sha256(path):
+    r = openssl("pkey", "-pubin", "-in", path, "-outform", "DER")
+    return hashlib.sha256(r.stdout).hexdigest() if r and r.returncode == 0 and r.stdout else None
+
+
+def read_anchor(path, probs):
+    want = {}
+    try:
+        st = os.lstat(path)
+        if not stat.S_ISREG(st.st_mode):
+            probs.append(f"the anchor {path} isn't a regular file")
+            return want
+        text = open(path, encoding="ascii").read()
+    except (OSError, UnicodeDecodeError) as e:
+        probs.append(f"no anchor {path} ({e.__class__.__name__})")
+        return want
+    for line in text.splitlines():
+        m = LINE.match(line)
+        if not m:
+            probs.append(f"a bad anchor line (want \"<sha256>  <name>.pem\"): {line[:80]!r}")
+        elif m.group(2) in want:
+            probs.append(f"the anchor names {m.group(2)} twice")
+        else:
+            want[m.group(2)] = m.group(1)
+    if not want and not probs:
+        probs.append(f"the anchor {path} names no key: a host image must trust exactly the committed template key")
+    return want
+
+
+def check(keys_dir, anchor, kms_der=None):
+    """(ok, message): message is the passing line, or every reason it failed."""
+    probs = []
+    want = read_anchor(anchor, probs)
+    try:
+        ds = os.lstat(keys_dir)
+        if not stat.S_ISDIR(ds.st_mode):
+            probs.append(f"{keys_dir} isn't a directory" + (" (a link)" if stat.S_ISLNK(ds.st_mode) else ""))
+            names = []
+        else:
+            names = sorted(os.listdir(keys_dir))
+    except OSError:
+        probs.append(f"no {keys_dir}: a bake needs the template key")
+        names = []
+    have = {}
+    for n in names:
+        p = os.path.join(keys_dir, n)
+        s = os.lstat(p)
+        if stat.S_ISLNK(s.st_mode):
+            probs.append(f"{n}: a link (the key must be the file itself)")
+        elif not stat.S_ISREG(s.st_mode):
+            probs.append(f"{n}: not a regular file")
+        elif n not in want:
+            probs.append(f"{n}: not in the anchor (only its keys, nothing else)")
+        else:
+            have[n] = sha256(p)
+            if have[n] != want[n]:
+                probs.append(f"{n}: SHA-256 {have[n][:12]}… isn't the anchor's {want[n][:12]}…")
+            if not is_p256(p):
+                probs.append(f"{n}: not a P-256 public key")
+    for n in sorted(set(want) - set(names)):
+        probs.append(f"{n}: missing (the anchor names it)")
+    kms = ""
+    if kms_der is not None and not probs:
+        try:
+            k = hashlib.sha256(open(kms_der, "rb").read()).hexdigest()
+        except OSError:
+            k = None
+        ders = {der_sha256(os.path.join(keys_dir, n)): n for n in want}
+        if not k or k not in ders:
+            probs.append(f"KMS's public key (DER sha256 {(k or 'unreadable')[:12]}…) isn't an anchored key: the committed key isn't "
+                         f"the KMS key's public half")
+        else:
+            kms = f"; KMS's public key is {ders[k]} (DER sha256 {k[:12]}…)"
+    if probs:
+        return False, "\n".join(probs)
+    return True, (f"template keys in {keys_dir}: {' '.join(f'{n} ({want[n][:8]}…{want[n][-4:]})' for n in sorted(want))}, exactly the "
+                  f"anchor's, P-256{kms}")
+
+
+def main(argv):
+    args = list(argv)
+    der = None
+    if "--kms-der" in args:
+        i = args.index("--kms-der")
+        if i + 1 >= len(args):
+            print("usage: template-key-check <keys dir> <anchor> [--kms-der <file>]", file=sys.stderr)
+            return 2
+        der = args[i + 1]
+        del args[i:i + 2]
+    if len(args) != 2:
+        print("usage: template-key-check <keys dir> <anchor> [--kms-der <file>]", file=sys.stderr)
+        return 2
+    ok, msg = check(args[0], args[1], der)
+    if ok:
+        print(msg)
+        return 0
+    for line in msg.splitlines():
+        print(f"template-key-check: {line}", file=sys.stderr)
+    return 1
+
+
+if __name__ == "__main__":
+    sys.exit(main(sys.argv[1:]))

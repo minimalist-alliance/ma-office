@@ -280,6 +280,24 @@ public final class SessionEvents implements SubscriptionService {
         }
     }
 
+    /** True if this client, attached now, has asked for any topic whose key this accepts. */
+    public boolean isSubscribedTo(java.util.function.Predicate<String> topicKey) {
+        lock.lock();
+        try {
+            if (sink == null) {
+                return false;
+            }
+            for (Subscription sub : subscriptions.values()) {
+                if (sub.active && topicKey.test(sub.topicKey)) {
+                    return true;
+                }
+            }
+            return false;
+        } finally {
+            lock.unlock();
+        }
+    }
+
     /** True if this client, attached now, has asked for this topic. */
     public boolean isSubscribed(String topicKey) {
         lock.lock();
@@ -313,6 +331,11 @@ public final class SessionEvents implements SubscriptionService {
         String topicKey = Json.string(request, "topic");
         if (topicKey == null || topicKey.isEmpty() || topicKey.length() > 256) {
             throw new RpcException(RpcException.BAD_REQUEST, "SUB needs a topic");
+        }
+        // No topic has a control character, and deskd keeps a guild member's own subscription under the topic, a NUL and
+        // their member id (AgentTopics.keyFor): a client's NUL must never reach a key (audit Z29).
+        if (topicKey.chars().anyMatch(Character::isISOControl)) {
+            throw new RpcException(RpcException.BAD_REQUEST, "A topic has no control characters");
         }
         Map<String, Object> params = request.get("params") == null ? Map.of() : Json.object(request, "params");
         if (params == null) {

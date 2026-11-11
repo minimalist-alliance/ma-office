@@ -394,19 +394,29 @@ func (r *Room) auditLog(c *Conn, act string, fields map[string]any) {
 
 // memberJSON is how a member appears to the others. Never anything about age.
 type memberJSON struct {
-	I     uint16 `json:"i"`
-	ID    string `json:"id"`
-	Name  string `json:"name"`
-	Badge string `json:"badge,omitempty"`
-	Role  string `json:"role"`
-	Color int    `json:"color"`
-	Ch    string `json:"ch"`
-	In    bool   `json:"in"`
-	Muted bool   `json:"muted"`
+	I         uint16 `json:"i"`
+	ID        string `json:"id"`
+	Name      string `json:"name"`
+	Badge     string `json:"badge,omitempty"`
+	AvatarURL string `json:"avatarUrl,omitempty"`
+	// AvatarRecipe is the member's checked built avatar (acct-avatar), compact JSON.
+	AvatarRecipe json.RawMessage `json:"avatarRecipe,omitempty"`
+	Role         string          `json:"role"`
+	Color        int             `json:"color"`
+	Ch           string          `json:"ch"`
+	In           bool            `json:"in"`
+	Muted        bool            `json:"muted"`
 }
 
 func (c *Conn) member() memberJSON {
-	return memberJSON{I: c.idx, ID: c.id.MemberID, Name: c.id.Name, Badge: c.id.Badge, Role: c.id.Role, Color: c.color, Ch: c.ch.Meta.ID, In: c.inRoom, Muted: c.muted}
+	return memberJSON{I: c.idx, ID: c.id.MemberID, Name: c.id.Name, Badge: c.id.Badge, AvatarURL: c.id.Avatar, AvatarRecipe: recipeJSON(c.id.AvatarRecipe), Role: c.id.Role, Color: c.color, Ch: c.ch.Meta.ID, In: c.inRoom, Muted: c.muted}
+}
+
+func recipeJSON(s string) json.RawMessage {
+	if s == "" {
+		return nil
+	}
+	return json.RawMessage(s)
 }
 
 func (c *Conn) can() map[string]bool {

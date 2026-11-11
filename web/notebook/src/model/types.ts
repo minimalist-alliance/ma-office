@@ -42,6 +42,11 @@ export interface PageRec {
   /** Set when the page is in Trash (design 5.2: kept for 30 days). */
   deletedAt: number | null;
   rowVersion: number;
+  /**
+   * The page's label (ADR 0091): a color's name, the tabs' six, for organizing. Absent or null is none; a desk sends it only
+   * when set, and a desk older than labels never does. Read it through `labelOf`, which treats a name it doesn't know as none.
+   */
+  label?: TabColor | null;
 }
 
 /** Everything the Tab view draws, in order. Built by the backend; never mutated in place. */
@@ -94,6 +99,8 @@ export interface SearchOptions {
   /** Inclusive local days. A page matches if it has activity in the range. */
   fromDay?: string;
   toDay?: string;
+  /** Only pages with one of these labels. With no words, lists them by title, as `has:checklist` alone does. */
+  labels?: TabColor[];
   limit?: number;
 }
 
@@ -107,4 +114,6 @@ export interface SearchHit {
   titleMatches: MatchRange[];
   snippet: string;
   snippetMatches: MatchRange[];
+  /** The page's label, when it has one. */
+  label?: TabColor | null;
 }

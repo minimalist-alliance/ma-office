@@ -1,0 +1,174 @@
+#!/usr/bin/env python3
+"""template-verify: checks a shared-host template artifact (ADR 0077 1.1) as a member host checks it (1.4 steps 3, 4 and,
+with --unpack, 5 and 6), with no root. Prints the header as a host reads it.
+
+  template-verify <s3://bucket/prefix/ | dir> --pubkey <public.pem> ...   with these public keys
+  template-verify <s3://...| dir> --kms-key-id <id>                         with the KMS key's public half (alias/ma-host-template)
+  template-verify <s3://...| dir> --image                                   with the keys this tree's host image pins
+                                                                            (image/host/recipe/files/etc/desk-host/template-keys)
+  Options:
+    --host-image <version>     the header must be for this host image
+    --had <g1,g2,...>          generations a host has had: the header's gen must be above all of them
+    --order-sha256 <hex>       the header's SHA-256 must be this (Platform's order)
+    --unpack <new dir>         also unpack the archive there with the host's checked extraction and walk it against the
+                               manifest (owners only as root); the directory must not exist
+    --download <dir>           with s3://, keep every file there (the archive too); without it, the archive's size and SHA-256
+                               are read from S3's own stored checksum (head-object), never downloaded
+    --unsigned                 skip the signature: the builder's round trip before signing, and tests. Never a release check.
+
+Exit 0 valid, 1 refused (the reason on stderr), 2 usage. Needs python3 and openssl; aws for s3:// and KMS; zstd to unpack.
+"""
+import base64
+import json
+import os
+import shutil
+import subprocess
+import sys
+import tempfile
+
+HERE = os.path.dirname(os.path.realpath(__file__))
+sys.path.insert(0, HERE)
+import tmpl  # noqa: E402
+
+IMAGE_KEYS = os.path.join(HERE, "..", "..", "image", "host", "recipe", "files", "etc", "desk-host", "template-keys")
+
+
+def _write(path, mode, data):
+    with open(path, mode) as f:
+        f.write(data)
+
+
+def _read(path):
+    with open(path, "rb") as f:
+        return f.read()
+
+
+def usage():
+    sys.stderr.write(__doc__)
+    sys.exit(2)
+
+
+def aws(*args, binary=False):
+    r = subprocess.run(["aws", *args], capture_output=True, timeout=600)
+    if r.returncode != 0:
+        raise tmpl.Refused(f"aws {' '.join(args[:2])}: {r.stderr.decode(errors='replace').strip()[:300]}")
+    return r.stdout if binary else r.stdout.decode()
+
+
+def split_s3(url):
+    rest = url[len("s3://"):]
+    bucket, _, prefix = rest.partition("/")
+    if not bucket or not prefix:
+        raise tmpl.Refused(f"{url}: want s3://bucket/prefix/")
+    return bucket, prefix.rstrip("/") + "/"
+
+
+def s3_get(bucket, key, out):
+    aws("s3api", "get-object", "--bucket", bucket, "--key", key, out)
+
+
+def s3_checksum(bucket, key):
+    """(size, hex SHA-256) as S3 stored them at the upload, without reading the object."""
+    out = json.loads(aws("s3api", "head-object", "--bucket", bucket, "--key", key, "--checksum-mode", "ENABLED", "--output", "json"))
+    c = out.get("ChecksumSHA256")
+    if not c or "-" in c:
+        raise tmpl.Refused(f"s3://{bucket}/{key}: S3 holds no whole-object SHA-256 for it (uploaded without x-amz-checksum-sha256?)")
+    return int(out["ContentLength"]), base64.b64decode(c).hex()
+
+
+def keys_from(args, t):
+    if args[0] == "--pubkey":
+        if len(args) < 2:
+            usage()
+        return args[1:]
+    if args[0] == "--kms-key-id" and len(args) == 2:
+        der = base64.b64decode(aws("kms", "get-public-key", "--key-id", args[1], "--query", "PublicKey", "--output", "text").strip())
+        _write(os.path.join(t, "kms.der"), "wb", der)
+        subprocess.run([tmpl.OPENSSL, "pkey", "-pubin", "-inform", "DER", "-in", os.path.join(t, "kms.der"), "-out", os.path.join(t, "kms.pem")], check=True)
+        return [os.path.join(t, "kms.pem")]
+    if args == ["--image"]:
+        d = os.path.realpath(IMAGE_KEYS)
+        ks = sorted(os.path.join(d, n) for n in os.listdir(d) if n.endswith(".pem")) if os.path.isdir(d) else []
+        if not ks:
+            raise tmpl.Refused("the host image pins no template key yet (PU-9): a host from it refuses every artifact")
+        return ks
+    usage()
+
+
+def main(argv):
+    if len(argv) < 2:
+        usage()
+    src, rest = argv[0], argv[1:]
+    opts = {"--host-image": None, "--had": None, "--order-sha256": None, "--unpack": None, "--download": None}
+    unsigned, keyargs, i = False, [], 0
+    while i < len(rest):
+        a = rest[i]
+        if a in opts:
+            if i + 1 >= len(rest):
+                usage()
+            opts[a] = rest[i + 1]
+            i += 2
+        elif a == "--unsigned":
+            unsigned = True
+            i += 1
+        else:
+            keyargs.append(a)
+            i += 1
+    if not unsigned and not keyargs:
+        usage()
+    t = tempfile.mkdtemp(prefix="template-verify-")
+    try:
+        keys = None if unsigned else keys_from(keyargs, t)
+        s3 = src.startswith("s3://")
+        if s3:
+            bucket, prefix = split_s3(src)
+            d = opts["--download"] or t
+            os.makedirs(d, exist_ok=True)
+            names = [tmpl.HEADER] + ([] if unsigned else [tmpl.SIG])
+            for n in names:
+                s3_get(bucket, prefix + n, os.path.join(d, n))
+        else:
+            d = src
+        header = _read(os.path.join(d, tmpl.HEADER))
+        if not unsigned:
+            sig = _read(os.path.join(d, tmpl.SIG))
+            key = tmpl.verify_sig(header, sig, keys)   # first: nothing else is read before the signature passes
+            print(f"template-verify: signature good ({os.path.basename(key)})", file=sys.stderr)
+        had = [g for g in (opts["--had"] or "").split(",") if g]
+        h = tmpl.parse_header(header, host_image=opts["--host-image"], gens_had=had, order_sha256=opts["--order-sha256"])
+        for n in tmpl.FILES:
+            want = (h["files"][n]["size"], h["files"][n]["sha256"])
+            if s3 and n == tmpl.ARCHIVE and not opts["--download"] and not opts["--unpack"]:
+                got = s3_checksum(bucket, prefix + n)
+                how = "S3's stored checksum"
+            else:
+                if s3:
+                    s3_get(bucket, prefix + n, os.path.join(d, n))
+                got = tmpl.sha256_file(os.path.join(d, n))
+                how = "hashed"
+            if got != want:
+                raise tmpl.Refused(f"{n}: {got[0]} bytes, sha256 {got[1][:16]}..., the header says {want[0]} bytes, {want[1][:16]}... ({how})")
+            print(f"template-verify: {n} {got[0]} bytes, sha256 {got[1][:12]} as the header says ({how})", file=sys.stderr)
+        entries, by = tmpl.parse_manifest(_read(os.path.join(d, tmpl.MANIFEST)))
+        plan = _read(os.path.join(d, tmpl.PLAN)).decode("utf-8")
+        for line in plan.splitlines():
+            if "=" not in line or not line.split("=", 1)[0] or not line.split("=", 1)[1]:
+                raise tmpl.Refused(f"plan.txt: a line that isn't name=version: {line[:80]!r}")
+        if opts["--unpack"]:
+            n = tmpl.unpack(os.path.join(d, tmpl.ARCHIVE), opts["--unpack"], entries, by)
+            diff = tmpl.compare(entries, tmpl.walk(opts["--unpack"]), owners=os.geteuid() == 0)
+            if diff:
+                raise tmpl.Refused("the unpacked tree differs from the manifest: " + "; ".join(diff))
+            print(f"template-verify: unpacked {n} entries into {opts['--unpack']}, and the walk equals the manifest"
+                  f"{'' if os.geteuid() == 0 else ' (owners from the archive: not root)'}", file=sys.stderr)
+        print(json.dumps(dict(h, manifestEntries=len(entries), planLines=len(plan.splitlines()), headerSha256=tmpl.sha256_bytes(header)), indent=1))
+        return 0
+    except tmpl.Refused as e:
+        print(f"template-verify: REFUSED: {e}", file=sys.stderr)
+        return 1
+    finally:
+        shutil.rmtree(t, ignore_errors=True)
+
+
+if __name__ == "__main__":
+    sys.exit(main(sys.argv[1:]))

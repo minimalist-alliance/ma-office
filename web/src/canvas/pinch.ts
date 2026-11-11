@@ -9,8 +9,11 @@
 // Control key held is left to the browser outside the canvas, so Ctrl and the wheel still zoom the page for those who
 // need it. A touch pinch on a phone or tablet is the canvas's own (`onTouchMove`), so its GestureEvents only stop Safari's.
 
-/** What keeps its own pinch: windows, menus, panels, the bars' own fields. Everything else in the office is the camera's. */
-const OWN_PINCH = '[role="dialog"], [role="menu"], [role="listbox"], input, textarea, select, [contenteditable=""], [contenteditable="true"]';
+/**
+ * What keeps its own pinch: windows, menus, panels, the bars' own fields, and an open tile (ADR 0053), whose app is a
+ * window's insides. Everything else in the office is the camera's.
+ */
+const OWN_PINCH = '[role="dialog"], [role="menu"], [role="listbox"], .open-tile, input, textarea, select, [contenteditable=""], [contenteditable="true"]';
 
 export type PinchTarget = 'camera' | 'stop' | 'browser';
 

@@ -1,0 +1,8 @@
+<g data-part="cap" data-hair-clip="M0,150 C30,140 56,104 76,86 H180 C200,104 226,140 256,150 V256 H0 Z">
+  <path fill="{{hw}}" d="M80,90 C80,60 101,42 128,42 C155,42 176,60 176,90 Z"/>
+  <g data-min-size="40" fill="none" stroke="{{hwShade}}" stroke-width="2.2" stroke-linecap="round" stroke-linejoin="round"><path d="M128,47 V84"/></g>
+  <circle cx="128" cy="43.5" r="3.8" fill="{{hwShade}}"/>
+  <path fill="{{hwShade}}" d="M74,91 C86,89 106,88.5 128,88.5 C150,88.5 170,89 182,91 C181,97 158,102 128,102 C98,102 75,97 74,91 Z"/>
+  <path fill="{{hwStep}}" d="M70,89.5 C84,84 106,82.5 128,82.5 C150,82.5 172,84 186,89.5 C184.5,94 158,98.5 128,98.5 C98,98.5 71.5,94 70,89.5 Z"/>
+  <g data-min-size="64" fill="none" stroke="{{hw}}" stroke-width="1.6" stroke-linecap="round" stroke-linejoin="round"><path d="M78,90.5 C94,93.5 112,95 128,95 C144,95 162,93.5 178,90.5"/></g>
+</g>

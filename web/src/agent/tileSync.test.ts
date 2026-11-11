@@ -45,7 +45,7 @@ describe('agent tiles follow agent.state', () => {
     // The look's drawing is its own chunk: blank until it's here, then the tile's own.
     await vi.waitFor(() => expect(useRosterStore.getState().lookReady).toBe(true));
     expect(glyphOf('d1', 'agent:ag-scout000001')).toBe('look:compass:teal:');
-    expect(glyphOf('d2', 'agent:ag-gone')).toBe('look:spark:graphite:');
+    expect(glyphOf('d2', 'agent:ag-gone')).toBe('look:nodes:graphite:');
 
     openWindow('d1', 'agent:ag-scout000001', 'd1:agent:ag-scout000001');
     expect(Object.keys(useWindowStore.getState().windows)).toEqual(['d1:agent:ag-scout000001']);

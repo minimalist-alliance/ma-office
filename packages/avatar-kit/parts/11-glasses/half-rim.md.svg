@@ -1,0 +1,6 @@
+<g data-part="glasses-half-rim" fill="none" stroke="{{glasses}}" stroke-linecap="round" stroke-linejoin="round">
+  <path d="M95.5,121 C95.5,103 124.5,103 124.5,121" stroke-width="6.4"/>
+  <path d="M160.5,121 C160.5,103 131.5,103 131.5,121" stroke-width="6.4"/>
+  <path d="M124,113 Q128,110.5 132,113" stroke-width="5.4"/>
+  <g data-min-size="40" stroke-width="1.1" opacity="0.55"><path d="M96,122 Q110,133 124,122"/><path d="M132,122 Q146,133 160,122"/></g>
+</g>

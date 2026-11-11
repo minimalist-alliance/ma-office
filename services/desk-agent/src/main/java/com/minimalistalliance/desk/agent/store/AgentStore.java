@@ -88,6 +88,8 @@ public final class AgentStore implements AutoCloseable {
         try {
             opened.transaction(connection -> {
                 TeamSchema.apply(connection);
+                ApprovalSchema.apply(connection);
+                ToolSchema.apply(connection);
                 return null;
             });
             interruptedAtOpen = opened.transaction(connection -> {
@@ -122,6 +124,49 @@ public final class AgentStore implements AutoCloseable {
             }
             return null;
         });
+    }
+
+    /** What a member's purge removed from this file. */
+    public record Purged(int agents, int messages, int files, int memories) {}
+
+    /**
+     * Everything of a guild member's agent in this file, in one transaction (ADR 0080's addendum of 2026-11-10): the
+     * agent's row (its name, binding, limits and unseen count), its thread and what the thread kept of attached files,
+     * its memories and the thread's summary (S-14), and any proposal, link, timer or agent message naming it, which a
+     * member's agent never has but which go too. Then the WAL is emptied, so with {@code secure_delete} nothing of them is left to read in the file. Doing it again
+     * finds nothing.
+     *
+     * @throws SQLException if it couldn't be done or the WAL couldn't be emptied; nothing or all of it was deleted
+     */
+    public Purged purgeMember(String id) throws SQLException {
+        Purged purged = db().transaction(connection -> {
+            int files = delete(connection,
+                    "DELETE FROM message_files WHERE message_id IN (SELECT id FROM messages WHERE agent_id = ?)", id);
+            int messages = delete(connection, "DELETE FROM messages WHERE agent_id = ?", id);
+            int memories = delete(connection, "DELETE FROM memories WHERE agent_id = ?", id);
+            delete(connection, "DELETE FROM thread_summaries WHERE agent_id = ?", id);
+            delete(connection, "DELETE FROM proposals WHERE agent_id = ?", id);
+            delete(connection, "DELETE FROM approvals WHERE agent_id = ?", id);
+            delete(connection, "DELETE FROM run_marks WHERE agent_id = ?", id);
+            delete(connection, "DELETE FROM run_plans WHERE agent_id = ?", id);
+            delete(connection, "DELETE FROM workspace_marks WHERE agent_id = ?", id);
+            delete(connection, "DELETE FROM timers WHERE agent_id = ?", id);
+            delete(connection, "DELETE FROM links WHERE from_id = ?1 OR to_id = ?1", id);
+            delete(connection, "DELETE FROM a2a WHERE from_id = ?1 OR to_id = ?1", id);
+            int agents = delete(connection, "DELETE FROM agents WHERE id = ?", id);
+            return new Purged(agents, messages, files, memories);
+        });
+        if (!db().checkpoint()) {
+            throw new SQLException("the WAL couldn't be emptied");
+        }
+        return purged;
+    }
+
+    private static int delete(java.sql.Connection connection, String sql, String id) throws SQLException {
+        try (PreparedStatement delete = connection.prepareStatement(sql)) {
+            delete.setString(1, id);
+            return delete.executeUpdate();
+        }
     }
 
     public boolean isOpen() {
@@ -273,6 +318,36 @@ public final class AgentStore implements AutoCloseable {
                 try (ResultSet result = select.executeQuery()) {
                     while (result.next()) {
                         rows.add(message(result));
+                    }
+                }
+                return rows;
+            }
+        });
+    }
+
+    /** A message with its place in its thread. */
+    public record Ordered(long ord, MessageRow row) {}
+
+    /**
+     * Up to {@code limit} of an agent's messages after the one at {@code afterOrd} (0 for the start), newest first, and
+     * with {@code beforeOrd} only those before it: what the thread's summary doesn't cover yet (S-14, memory).
+     */
+    public List<Ordered> newestAfter(String agentId, long afterOrd, Long beforeOrd, int limit) throws SQLException {
+        return db().call(connection -> {
+            String sql = MESSAGE_COLUMNS.replace("SELECT id,", "SELECT ord, id,") + " WHERE agent_id = ? AND ord > ?"
+                    + (beforeOrd == null ? "" : " AND ord < ?") + " ORDER BY ord DESC LIMIT ?";
+            try (PreparedStatement select = connection.prepareStatement(sql)) {
+                int at = 1;
+                select.setString(at++, agentId);
+                select.setLong(at++, afterOrd);
+                if (beforeOrd != null) {
+                    select.setLong(at++, beforeOrd);
+                }
+                select.setInt(at, limit);
+                List<Ordered> rows = new ArrayList<>();
+                try (ResultSet result = select.executeQuery()) {
+                    while (result.next()) {
+                        rows.add(new Ordered(result.getLong(1), message(result, 1)));
                     }
                 }
                 return rows;
@@ -487,11 +562,17 @@ public final class AgentStore implements AutoCloseable {
     }
 
     private static MessageRow message(ResultSet r) throws SQLException {
-        long cost = r.getLong(9);
+        return message(r, 0);
+    }
+
+    /** A message's columns as {@link #MESSAGE_COLUMNS} names them, after {@code skip} columns of something else. */
+    private static MessageRow message(ResultSet r, int skip) throws SQLException {
+        long cost = r.getLong(skip + 9);
         Long costMicroUsd = r.wasNull() ? null : cost;
-        return new MessageRow(r.getString(1), r.getString(2), r.getString(3), r.getString(4), r.getLong(5),
-                r.getString(6), r.getString(7), r.getString(8), costMicroUsd, r.getString(10), r.getString(11),
-                r.getString(12), r.getString(13), r.getString(14), r.getString(15));
+        return new MessageRow(r.getString(skip + 1), r.getString(skip + 2), r.getString(skip + 3),
+                r.getString(skip + 4), r.getLong(skip + 5), r.getString(skip + 6), r.getString(skip + 7),
+                r.getString(skip + 8), costMicroUsd, r.getString(skip + 10), r.getString(skip + 11),
+                r.getString(skip + 12), r.getString(skip + 13), r.getString(skip + 14), r.getString(skip + 15));
     }
 
     private static KeyRow key(ResultSet r) throws SQLException {

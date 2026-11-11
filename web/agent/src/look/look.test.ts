@@ -160,7 +160,7 @@ describe('icons', () => {
     expect(AGENT_ICONS.some((i) => i.id === DEFAULT_ICON)).toBe(true);
   });
   it('names the roles the brief lists', () => {
-    const want = ['spark', 'compass', 'book', 'pen', 'calendar', 'clock', 'chart', 'code', 'mail', 'person', 'search', 'leaf', 'flask', 'document', 'music', 'camera', 'plane', 'shield', 'wallet', 'bulb', 'home', 'bell', 'list', 'terminal'];
+    const want = ['nodes', 'compass', 'book', 'pen', 'calendar', 'clock', 'chart', 'code', 'mail', 'person', 'search', 'leaf', 'flask', 'document', 'music', 'camera', 'plane', 'shield', 'wallet', 'bulb', 'home', 'bell', 'list', 'terminal'];
     expect(AGENT_ICONS.map((i) => i.id)).toEqual(want);
   });
   it('has path data that parses, inside the 24 grid, with no two icons drawn the same', () => {
@@ -180,7 +180,8 @@ describe('icons', () => {
     expect(parsePath('M1 2x')).toBe(false);
   });
   it('shows a retired icon as its replacement', () => {
-    expect(RETIRED_ICONS).toEqual({ globe: 'plane', chat: 'person', heart: 'wallet', star: 'bulb', puzzle: 'terminal', briefcase: 'document' });
+    expect(RETIRED_ICONS).toEqual({ globe: 'plane', chat: 'person', heart: 'wallet', star: 'bulb', puzzle: 'terminal', briefcase: 'document', spark: 'nodes' });
+    expect(DEFAULT_ICON).toBe('nodes');
     for (const [old, now] of Object.entries(RETIRED_ICONS)) expect(iconById(old).id).toBe(now);
   });
   it('falls back to the default icon for an unknown id', () => {

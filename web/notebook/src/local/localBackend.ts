@@ -11,12 +11,15 @@ import { Node } from '@tiptap/pm/model';
 import { prosemirrorJSONToYDoc, prosemirrorToYXmlFragment, yXmlFragmentToProsemirrorJSON } from '@tiptap/y-tiptap';
 import * as Y from 'yjs';
 import type { NotebookBackend, PageSession } from '../model/backend.ts';
+import { isPaletteId, type PaletteId } from '../model/colors.ts';
+import { cleanDoc, type ImportedPage } from '../model/notebookFile.ts';
+import { copyState, docState } from '../model/ydoc.ts';
 import { dayKey, endOfDay } from '../model/days.ts';
 import { derive, type Derived } from '../model/derive.ts';
 import { SESSION_IDLE_MS, INTERVAL_MS, TRASH_KEEP_MS, versionAt, versionsToPrune } from '../model/history.ts';
 import { BLANK_PAGE, DOC_FIELD, notebookSchema, type PMNode } from '../model/schema.ts';
 import { parseQuery, SearchIndex } from '../model/search.ts';
-import { buildTree, keyAt, pagesFrom } from '../model/tree.ts';
+import { buildTree, keyAt, labelOf, pagesFrom } from '../model/tree.ts';
 import {
   TAB_COLORS,
   type ActivityRow,
@@ -275,11 +278,12 @@ export class LocalBackend implements NotebookBackend {
     notebooks?: NotebookRec[];
     tabs?: TabRec[];
     pages?: PageRec[];
-    newPage?: { rec: PageRec; update: Uint8Array };
+    /** `text` is its derived text, for search, when it isn't blank. */
+    newPage?: { rec: PageRec; update: Uint8Array; text?: string };
   }): Promise<void> {
     const db = this.mustDb();
     const newRow = opts.newPage ? this.createdRow(opts.newPage.rec) : null;
-    await write(db, [STORES.notebooks, STORES.tabs, STORES.pages, STORES.updates, STORES.activity], (tx) => {
+    await write(db, [STORES.notebooks, STORES.tabs, STORES.pages, STORES.updates, STORES.activity, STORES.texts], (tx) => {
       for (const n of opts.notebooks ?? []) tx.objectStore(STORES.notebooks).put(n);
       for (const t of opts.tabs ?? []) tx.objectStore(STORES.tabs).put(t);
       for (const p of opts.pages ?? []) tx.objectStore(STORES.pages).put(p);
@@ -287,6 +291,7 @@ export class LocalBackend implements NotebookBackend {
         tx.objectStore(STORES.pages).put(opts.newPage.rec);
         tx.objectStore(STORES.updates).add({ pageId: opts.newPage.rec.id, update: opts.newPage.update } satisfies UpdateRow);
         tx.objectStore(STORES.activity).put(newRow);
+        if (opts.newPage.text) tx.objectStore(STORES.texts).put({ id: opts.newPage.rec.id, text: opts.newPage.text } satisfies TextRow);
       }
     });
     for (const n of opts.notebooks ?? []) this.notebooks.set(n.id, n);
@@ -295,7 +300,7 @@ export class LocalBackend implements NotebookBackend {
     if (opts.newPage && newRow) {
       this.pages.set(opts.newPage.rec.id, opts.newPage.rec);
       this.activityRows.set(`${newRow.pageId}|${newRow.day}`, newRow);
-      this.index?.set(opts.newPage.rec.id, '', '');
+      this.index?.set(opts.newPage.rec.id, opts.newPage.rec.title, opts.newPage.text ?? '');
     }
     this.emit();
   }
@@ -411,6 +416,67 @@ export class LocalBackend implements NotebookBackend {
       tabId = first.id;
     }
     await this.commit({ pages: [{ ...page, tabId, deletedAt: null, rowVersion: page.rowVersion + 1 }] });
+  }
+
+  // ---------------------------------------------------------------- colors (ADR 0091)
+
+  async setPageLabel(pageId: string, label: PaletteId | null): Promise<void> {
+    if (label !== null && !isPaletteId(label)) throw new Error('setPageLabel: not one of the six colors');
+    const page = this.pages.get(pageId);
+    if (!page || labelOf(page) === label) return;
+    // As on a desk: the field is there only when set, and a label isn't an edit, so updatedAt stays.
+    const next: PageRec = { ...page, rowVersion: page.rowVersion + 1 };
+    if (label) next.label = label;
+    else delete next.label;
+    await this.commit({ pages: [next] });
+  }
+
+  async duplicatePage(pageId: string): Promise<PageRec> {
+    const page = this.pages.get(pageId);
+    if (!page || page.deletedAt != null) throw new Error('duplicatePage: no such page');
+    const o = this.open.get(pageId);
+    let copied: { state: Uint8Array };
+    let doc: PMNode;
+    if (o) {
+      await o.ready;
+      copied = copyState(o.doc);
+      doc = this.json(o);
+    } else {
+      const y = await this.stored(pageId);
+      try {
+        copied = copyState(y);
+        doc = yXmlFragmentToProsemirrorJSON(y.getXmlFragment(DOC_FIELD)) as PMNode;
+      } finally {
+        y.destroy();
+      }
+    }
+    return this.addPage(page.tabId, page.id, doc, copied.state, labelOf(page));
+  }
+
+  async importPage(tabId: string, page: ImportedPage, o: { after?: string } = {}): Promise<PageRec> {
+    if (!this.tabs.has(tabId)) throw new Error('importPage: no such tab');
+    const cleaned = cleanDoc(page.doc);
+    if (!cleaned) throw new Error('importPage: not a page the editor can show');
+    return this.addPage(tabId, o.after ?? null, cleaned.doc, docState(cleaned.doc).state, isPaletteId(page.label) ? page.label : null);
+  }
+
+  /** A new page with a body: right after `after` in the tab, or first. */
+  private async addPage(tabId: string, after: string | null, doc: PMNode, update: Uint8Array, label: PaletteId | null): Promise<PageRec> {
+    const list = this.current.pages[tabId] ?? [];
+    const afterIdx = after ? list.findIndex((p) => p.id === after) : -1;
+    const blank = this.blankPage(tabId, keyAt(list.map((p) => p.sortKey), afterIdx + 1));
+    const d = derive(doc);
+    const rec: PageRec = { ...blank.rec, title: d.title, snippet: d.snippet, wordCount: d.wordCount, hasChecklist: d.hasChecklist, ...(label ? { label } : {}) };
+    await this.commit({ newPage: { rec, update, text: d.text } });
+    return rec;
+  }
+
+  /** A page nobody has open, from storage, into a Y.Doc of the caller's. */
+  private async stored(pageId: string): Promise<Y.Doc> {
+    const rows = await getAllByIndex<UpdateRow>(this.mustDb(), STORES.updates, 'byPage', pageId);
+    const y = new Y.Doc();
+    if (rows.length) Y.applyUpdate(y, Y.mergeUpdates(rows.map((r) => r.update)));
+    return y;
   }
 
   // ---------------------------------------------------------------- text
@@ -744,6 +810,7 @@ export class LocalBackend implements NotebookBackend {
   async search(query: string, o: SearchOptions = {}): Promise<SearchHit[]> {
     const parsed = parseQuery(query);
     const index = await this.searchIndex();
+    const labels = new Set<string>((o.labels ?? []).filter(isPaletteId));
     const inRange = (pageId: string): boolean => {
       if (!o.fromDay && !o.toDay) return true;
       const from = o.fromDay ?? '0000-00-00';
@@ -751,18 +818,28 @@ export class LocalBackend implements NotebookBackend {
       for (const a of this.activityRows.values()) if (a.pageId === pageId && a.day >= from && a.day <= to) return true;
       return false;
     };
-    return index.query(
-      parsed,
-      (pageId) => {
-        const p = this.pages.get(pageId);
-        if (!p || p.deletedAt != null) return false;
-        if (o.tabId && p.tabId !== o.tabId) return false;
-        if (o.notebookId && this.tabs.get(p.tabId)?.notebookId !== o.notebookId) return false;
-        if (parsed.hasChecklist && !p.hasChecklist) return false;
-        return inRange(pageId);
-      },
-      o.limit ?? 50,
-    );
+    const accept = (pageId: string): boolean => {
+      const p = this.pages.get(pageId);
+      if (!p || p.deletedAt != null) return false;
+      if (o.tabId && p.tabId !== o.tabId) return false;
+      if (o.notebookId && this.tabs.get(p.tabId)?.notebookId !== o.notebookId) return false;
+      if (parsed.hasChecklist && !p.hasChecklist) return false;
+      if (labels.size && !labels.has(labelOf(p) ?? '')) return false;
+      return inRange(pageId);
+    };
+    const withLabel = (h: SearchHit): SearchHit => {
+      const label = labelOf(this.pages.get(h.pageId) ?? {});
+      return label ? { ...h, label } : h;
+    };
+    if (!parsed.terms.length && !parsed.hasChecklist && labels.size) {
+      // Labels alone list those pages by title, as has:checklist alone does on a desk.
+      return [...this.pages.values()]
+        .filter((p) => accept(p.id))
+        .sort((a, b) => a.title.localeCompare(b.title, undefined, { sensitivity: 'base' }))
+        .slice(0, o.limit ?? 50)
+        .map((p) => withLabel({ pageId: p.id, score: 0, title: p.title, titleMatches: [], snippet: p.snippet, snippetMatches: [] }));
+    }
+    return index.query(parsed, accept, o.limit ?? 50).map(withLabel);
   }
 
   // ---------------------------------------------------------------- fixtures

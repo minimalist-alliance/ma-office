@@ -28,6 +28,18 @@ import java.util.concurrent.TimeoutException;
  * </ol>
  * One action at a time per tab, in the order they came, and at most {@value #QUEUE} waiting. A newer fill of the same
  * field supersedes one still waiting.
+ *
+ * <p><b>For the Agent</b> ({@link AgentView}, S-14), whose tabs are hidden targets that trusted mouse and key input never
+ * reaches on a desk's Chromium: a click and a key are deskd's half's own untrusted {@code el.click()} and
+ * {@code KeyboardEvent}s from deskd's isolated world ({@code agentClick}, {@code agentPress}), never the page's world and
+ * never {@code Input.dispatch*}. Steps 1 and 3 and 5 hold as above. Step 2 isn't needed, as no input goes anywhere for a
+ * frame to take; step 4's counts become deskd's half's own checks, made again in the same call as the act. Before the
+ * act, where it would navigate (a link's address, or the form a submit control or Enter would send) is told to the
+ * caller's check ({@link Request#navCheck}), which refuses another site in the member's session, a local host and any
+ * scheme but http, https and the page's own javascript; the act refuses ({@code changed}) if it would now go elsewhere,
+ * or if a payment provider's frame is on the page and the member didn't approve it as a spend ({@link Request#spend}).
+ * Typing stays {@code Input.insertText}, which reaches a hidden tab; emptying a field is deskd's half's
+ * {@code agentClear}. Nothing else (a tick, a media verb) is the Agent's.
  */
 final class ActionProxy {
 
@@ -52,16 +64,33 @@ final class ActionProxy {
     private static final SecureRandom RANDOM = new SecureRandom();
 
     private final MinifiedModule module;
+    /** The Agent's proxy: its clicks and keys from deskd's world, never trusted input (S-14). */
+    private final boolean agent;
 
     ActionProxy(MinifiedModule module) {
-        this.module = module;
+        this(module, false);
     }
 
-    /** What the client asked, its shape already checked. */
+    ActionProxy(MinifiedModule module, boolean agent) {
+        this.module = module;
+        this.agent = agent;
+    }
+
     /**
+     * What the client asked, its shape already checked.
+     *
      * @param rev the rev of the MDoc the member acted in: one from before the tab's current document refuses
+     * @param navCheck for the Agent: where a click or Enter would navigate, as an absolute URL, to a refusal word
+     *     ({@code off_site}, {@code blocked}) or null to let it go; null for none
+     * @param spend for the Agent: the member approved this as a spend, so a payment provider's frame on the page is
+     *     what they saw
      */
-    record Request(String tabId, String nodeId, String action, Object value, String fp, String block, long rev) {}
+    record Request(String tabId, String nodeId, String action, Object value, String fp, String block, long rev,
+            java.util.function.Function<String, String> navCheck, boolean spend) {
+        Request(String tabId, String nodeId, String action, Object value, String fp, String block, long rev) {
+            this(tabId, nodeId, action, value, fp, block, rev, null, false);
+        }
+    }
 
     /** Every other frame, armed at {@code at}, and what the tab's frames were then. */
     record Armed(PageWorld.Frames frames, long at) {
@@ -186,9 +215,13 @@ final class ActionProxy {
         return switch (request.action()) {
             case "click" -> {
                 requireKind(node, MDoc.NodeKind.LINK, MDoc.NodeKind.BUTTON, MDoc.NodeKind.CHECK);
-                yield pointer(context, tab, state, node, "click", null);
+                yield agent ? agentAct(tab, state, node, request, null) : pointer(context, tab, state, node, "click", null);
             }
             case "check" -> {
+                if (agent) {
+                    // The Agent ticks a box by clicking it.
+                    throw refused("kind");
+                }
                 requireKind(node, MDoc.NodeKind.CHECK);
                 if (!(request.value() instanceof Boolean checked)) {
                     throw new RpcException(RpcException.BAD_REQUEST, "value must be true or false", Map.of("reason", "value"));
@@ -213,7 +246,7 @@ final class ActionProxy {
                 if (!(request.value() instanceof String key) || !KEYS.containsKey(key)) {
                     throw new RpcException(RpcException.BAD_REQUEST, "value must be a key this knows", Map.of("reason", "value"));
                 }
-                yield keys(context, tab, state, node, "press", key);
+                yield agent ? agentAct(tab, state, node, request, key) : keys(context, tab, state, node, "press", key);
             }
             case "select" -> select(context, tab, state, node, request.value());
             default -> scroll(context, tab, request);
@@ -345,6 +378,10 @@ final class ActionProxy {
     /** A click, or a tick, through the guard. */
     private Map<String, Object> pointer(RpcContext context, TabRef tab, MinifiedModule.TabState state, MDoc.Node node, String action, Boolean checked)
             throws RpcException, InterruptedException {
+        if (agent) {
+            // Never trusted input on an Agent path (S-14).
+            throw refused("kind");
+        }
         String id = newId();
         // T47D-1: frames born from here until the disarm wait for it, held at their start.
         module.beginActing(state);
@@ -427,6 +464,100 @@ final class ActionProxy {
         return event;
     }
 
+    // ---- the Agent's click and key (S-14)
+
+    /**
+     * The Agent's click ({@code key} null) or key on {@code node}: a look in deskd's half, the caller's check of where it
+     * would go, and the act, both in the document the look was in, the act refusing anything that changed since.
+     */
+    private Map<String, Object> agentAct(TabRef tab, MinifiedModule.TabState state, MDoc.Node node, Request request, String key)
+            throws RpcException, InterruptedException {
+        Map<String, Object> args = new LinkedHashMap<>();
+        args.put("op", key == null ? "agentClick" : "agentPress");
+        args.put("node", node.id());
+        args.put("fp", node.fp());
+        if (key != null) {
+            args.put("key", key);
+        }
+        args.put("payHosts", module.lists.payment);
+        args.put("look", true);
+        // The look and the act go to one document's world: if the page navigated in between, the act's call fails.
+        Number world = pinned(tab);
+        Map<String, Object> look;
+        try {
+            look = watchingDialogs(state, tab, world, Map.copyOf(args));
+        } catch (DialogOpened e) {
+            return outcome(false, "dialog");
+        } catch (CdpFailure e) {
+            throw e.kind() == CdpFailure.Kind.REMOTE ? refused("changed") : MinifiedModule.unavailable();
+        }
+        refuseIf(state, node, look);
+        String url = look.get("url") instanceof String u ? u : null;
+        if (url != null && request.navCheck() != null) {
+            String refusal = request.navCheck().apply(url);
+            if (refusal != null) {
+                throw "off_site".equals(refusal) ? refused("off_site")
+                        : new RpcException(RpcException.FORBIDDEN, "Not a site the agent may open", Map.of("reason", "blocked"));
+            }
+        }
+        boolean submits = key == null || "submit".equals(look.get("nav"));
+        if (submits && !request.spend() && !Boolean.FALSE.equals(look.get("pay"))) {
+            // A payment provider's frame on the page makes any click or submit a spend (Security, S-14): one the member
+            // didn't approve as a spend isn't done, and the model reads the page again.
+            throw refused("changed");
+        }
+        args.put("look", false);
+        args.put("spend", request.spend());
+        if (url != null) {
+            args.put("url", url);
+        }
+        Map<String, Object> done;
+        try {
+            done = watchingDialogs(state, tab, world, args);
+        } catch (DialogOpened e) {
+            // The page is held by its dialog, which deskd never answers.
+            return outcome(false, "dialog");
+        } catch (CdpFailure e) {
+            // The page went before it could say: it may have been done.
+            return outcome(false, "unknown");
+        }
+        refuseIf(state, node, done);
+        Map<String, Object> outcome = outcome(true, null);
+        if (Boolean.TRUE.equals(done.get("submitted"))) {
+            outcome.put("submitted", true);
+        }
+        return outcome;
+    }
+
+    /**
+     * One op in the pinned world, waited for until it answers or a dialog opens: a click handler's {@code alert()} holds
+     * the page, and with it the call's answer, until someone answers it.
+     */
+    private Map<String, Object> watchingDialogs(MinifiedModule.TabState state, TabRef tab, Number world, Map<String, Object> args)
+            throws CdpFailure, InterruptedException, DialogOpened {
+        CompletableFuture<Map<String, Object>> answer = new CompletableFuture<>();
+        Thread.ofVirtual().name("minified-agent-act").start(() -> {
+            try {
+                answer.complete(module.world.runIn(tab, world, args, module.timing.request()));
+            } catch (CdpFailure e) {
+                answer.completeExceptionally(e);
+            } catch (InterruptedException | RuntimeException e) {
+                answer.completeExceptionally(new CdpFailure(CdpFailure.Kind.NOT_SENT, 0));
+            }
+        });
+        while (true) {
+            try {
+                return answer.get(25, TimeUnit.MILLISECONDS);
+            } catch (TimeoutException e) {
+                if (module.dialogOpen(state)) {
+                    throw new DialogOpened();
+                }
+            } catch (ExecutionException e) {
+                throw e.getCause() instanceof CdpFailure failure ? failure : new CdpFailure(CdpFailure.Kind.REMOTE, 0);
+            }
+        }
+    }
+
     // ---- typing
 
     private Map<String, Object> keys(RpcContext context, TabRef tab, MinifiedModule.TabState state, MDoc.Node node, String action, String text)
@@ -458,6 +589,18 @@ final class ActionProxy {
             try {
                 if ("press".equals(action)) {
                     pressKey(tab, state, text);
+                } else if (text.isEmpty() && agent) {
+                    // No key reaches an Agent tab: deskd's half empties the field it armed, as Delete would (S-14).
+                    Map<String, Object> cleared = module.world.runIn(tab, world, Map.of("op", "agentClear", "id", id), module.timing.request());
+                    if ("sensitive".equals(cleared.get("refused"))) {
+                        module.lock.lock();
+                        try {
+                            state.sensitiveRefs.add(node.id());
+                        } finally {
+                            module.lock.unlock();
+                        }
+                        return outcome(false, "sensitive");
+                    }
                 } else if (text.isEmpty()) {
                     // The field's text is selected, so Delete empties it.
                     pressKey(tab, state, "Delete");
@@ -529,6 +672,10 @@ final class ActionProxy {
     }
 
     private void pressKey(TabRef tab, MinifiedModule.TabState state, String key) throws CdpFailure, InterruptedException, DialogOpened {
+        if (agent) {
+            // Never trusted input on an Agent path (S-14).
+            throw new CdpFailure(CdpFailure.Kind.NOT_SENT, 0);
+        }
         Object[] spec = "Delete".equals(key) ? new Object[] {"Delete", 46, null} : KEYS.get(key);
         Map<String, Object> down = new LinkedHashMap<>();
         down.put("type", spec[2] != null ? "keyDown" : "rawKeyDown");
@@ -565,7 +712,7 @@ final class ActionProxy {
                 sent.complete(null);
             } catch (CdpFailure e) {
                 sent.completeExceptionally(e);
-            } catch (InterruptedException e) {
+            } catch (InterruptedException | RuntimeException e) {
                 sent.completeExceptionally(new CdpFailure(CdpFailure.Kind.NOT_SENT, 0));
             }
         });

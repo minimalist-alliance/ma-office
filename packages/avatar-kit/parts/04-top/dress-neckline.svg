@@ -1,0 +1,4 @@
+<g data-part="top-dress-neckline">
+  <path fill="{{top}}" d="M30,256 C30,222 60,201 98,196 C104,222 117,232 128,232 C139,232 152,222 158,196 C196,201 226,222 226,256 Z"/>
+  <path fill="none" stroke="{{topShade}}" stroke-width="3.2" stroke-linecap="round" d="M99,198 C105,223 117,234 128,234 C139,234 151,223 157,198"/>
+</g>

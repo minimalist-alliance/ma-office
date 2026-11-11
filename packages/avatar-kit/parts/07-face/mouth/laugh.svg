@@ -1,0 +1,5 @@
+<g data-part="mouth-laugh">
+  <path d="M110,143.5 Q128,148 146,143.5 Q146,169 128,169.5 Q110,169 110,143.5 Z" fill="{{feature}}" stroke="{{feature}}" stroke-width="2" stroke-linejoin="round"/>
+  <path d="M113.4,145.4 Q128,149 142.6,145.4 Q142,153 128,153.6 Q114,153 113.4,145.4 Z" fill="{{teeth}}"/>
+  <path d="M117.5,164.6 Q128,154.5 138.5,164.6 Q128,169.6 117.5,164.6 Z" fill="{{blush}}"/>
+</g>

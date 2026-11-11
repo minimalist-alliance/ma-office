@@ -1,0 +1,35 @@
+{
+  "_about": "Facial hair takes the hair color ({{facial}} = the recipe's hair color). Stubble is the hair color at opacity 0.3 and is left out below 32 px.",
+  "category": "facial",
+  "layer": "08-facial-hair",
+  "colorSlot": "hairColor",
+  "default": "none",
+  "parts": [
+    {
+      "id": "none",
+      "name": "None",
+      "layers": []
+    },
+    {
+      "id": "stubble",
+      "name": "Stubble",
+      "minSize": 32
+    },
+    {
+      "id": "mustache",
+      "name": "Mustache"
+    },
+    {
+      "id": "goatee",
+      "name": "Goatee"
+    },
+    {
+      "id": "short-beard",
+      "name": "Short beard"
+    },
+    {
+      "id": "full-beard",
+      "name": "Full beard"
+    }
+  ]
+}

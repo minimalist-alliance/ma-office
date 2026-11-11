@@ -1,8 +1,9 @@
 # 0020. Agent runs and usage limits enforced on the desk
 
-**Status:** Proposed (pending the owner's approval of design v1)
+**Status:** Proposed, amended 
+by [0026](0026-idle-24-hour-rule.md) and [0043](0043-agent-limits-local-time-and-platform-prices.md); enforced by `desk-agent`, Java, per [0040](0040-desk-services-spring-boot-docker.md). Pending the owner's approval of design v1
 **Date:** 2026-11-04
-**Amended:** 2026-11-04 by [0026](0026-idle-24-hour-rule.md) (keep-awake); 2026-11-07 by [0043](0043-agent-limits-local-time-and-platform-prices.md) (local time, desk over account, Platform prices; noted 2026-11-09)
+**Amended:** 2026-11-04 by [0026](0026-idle-24-hour-rule.md) (keep-awake); 2026-11-07 by [0043](0043-agent-limits-local-time-and-platform-prices.md) (local time, desk over account, Platform prices; noted 2026-11-09); 2026-11-05 by [0040](0040-desk-services-spring-boot-docker.md) (enforced in `desk-agent`, Java; noted 2026-11-11)
 
 ## Context
 - Members want token and dollar caps per agent, desk and period on their own keys. Agents run long tasks that must survive crashes and stops.

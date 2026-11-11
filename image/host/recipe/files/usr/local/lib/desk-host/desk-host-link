@@ -5,13 +5,19 @@ ADR 0072 section 7 and Platform's side P5, IN-03). Root, as desk-host-link.servi
 - POST /v1/host/hello at every boot, and again whenever a report's reply says hello_required: this instance's ID, the
   boot's ID, DesksPerHost and HostingVersion (the first boot's, hosting.json). The reply's slots name each slot's private
   and public address, fixed for the host's life (PF-01); they stay in /run/desk-host/link/hello.json (no secrets).
-- POST /v1/host/report every reportSeconds and at once on any change, from `desk-host report` (polled every 5 s), with
+  Under SlotMode=port (one public IPv4 for the host, choice B; contract 0.3.57) the reply says "slotMode": "port" and the
+  host's "publicIp" as EC2 has it now at its top (it changes at a host stop and start, which is a new boot and so a new
+  hello), and each slot names its udpPort, 4430 + k, and no private address or allocation ("-" or absent). A reply of the
+  other mode is refused as a whole.
+- POST /v1/host/report every reportSeconds and at once on any change (a slot's class included), from `desk-host report` (polled every 5 s), with
   the boot's ID and a sequence number. Orders ride the reply and each runs once per order ID, until another order for
   the slot is done (a wake after a stop at the same epoch repeats the first start's ID), in a worker per slot:
     prepare_slot {k, epoch}           desk-host prepare k   (only when DeskSlot<k> is empty at that epoch)
     start_slot   {k, deskId, epoch}   slot-session, the slot's stand-in, then desk-host up k deskId --class <the tag's>
                                       --public <hello's> (the class is the tag's sixth field, standard when it has none)
     stop_slot    {k, deskId, epoch}   desk-host stop k      (only when the slot runs that desk at that epoch), stand-in off
+    set_class    {k, deskId, epoch, class}  desk-host class k --whole: the running desk's class changed in place, never a
+                                      restart (S-119, contract 0.3.46; do_set_class below). The report's class is its result.
   A start is refused unless the slot's tag names that desk at that epoch and its addresses are the hello's; desk-host up
   then checks the volume's serial and IMDS's association of the public address too. An order that failed is tried again
   no sooner than its backoff; one that succeeded never again.
@@ -22,9 +28,33 @@ ADR 0072 section 7 and Platform's side P5, IN-03). Root, as desk-host-link.servi
 - Signed SigV4 (service execute-api) with the instance role's credentials from IMDS (sigv4.py). The API's base URL is the
   env's: LINK_API_staging or LINK_API_prod in desk-host.conf, chosen by the instance's Env tag. LINK_API overrides it for a
   test host's fake Platform on the loopback only (http://127.0.0.1:<port>), never anywhere else.
+- The region it signs for is the API's, never the instance's: LINK_API_REGION_staging or LINK_API_REGION_prod (us-east-1: the
+  host-api. names are REGIONAL API Gateway domains there only). A host in us-west-2 that signed for its own region was refused
+  (403 signature, S-120). LINK_API_REGION overrides both with LINK_API (a test fake) only; a test fake on a host with no Env tag
+  (verify's) is signed as staging's API is. The stand-in still tells a desk the region it runs in: the instance's.
 - Errors back off (5 s doubling to 5 minutes; a host Platform doesn't know, 5 minutes). It logs slot numbers, epochs,
   operations and HTTP statuses: never a desk ID, a member's ID, a credential or a reply's body. desk-host's own output for
   each operation goes to /var/log/desk-host/link-<k>.log (root only).
+
+- ADR 0077 (template generations, PU-1 and PU-2): the report carries each slot's template, chromium, lastVersion, behind,
+  chromiumBehind and update.holdUntil, and the host's templates, fetch and hostApt (desk-host report). Host orders ride the same
+  reply, each once per ID: template_target {targetId, gen, hostImage, sha256, urls, expiresAt, urgent} runs desk-host-template
+  fetch in desk-host-upd (a re-issue with later URLs runs again after urlsWanted); template_promote {gen}; template_rollback {gen};
+  reboot_host {urgent, restart} runs desk-host reboot, refused (and tried again) unless every desk is idle. The reply's
+  updates {fetches, restarts, reboots} is the kill switch, each true unless turned off. The link also tends the updates: a
+  candidate's trial (the slot on it alive 120 s after its start, else halted and the slot started again from the current
+  generation), fresh slots prepared again onto the current generation, idle restarts of desks that never stop (desk-host reroot
+  --prebuild, then desk-host restart, while idle by their idle.json) and a gc of generations nothing uses.
+
+- ADR 0078 (service batches, PB-1 and PB-2): the hello says updates.batches 1 (this host takes batch_target) and its batchBaseline
+  (/etc/desk-host/batch-baseline); every report carries each slot's batch {seq, state} and releases, and the host's batches, batchFetch,
+  templatePending and imagePending (desk-host report). Host orders, each once per ID: batch_target {targetId, seq, sha256, manifest,
+  signature, urls, expiresAt, urgent} runs desk-host-batch fetch in desk-host-upd (a re-issue with later URLs runs again after
+  urlsWanted; never beside a template fetch); batch_promote {seq}; batch_halt {seq}. The reply's updates gains two kill switches:
+  batches (fetches and switches; true unless turned off) and liveSwitches (2.2's live switch; OFF unless Platform says true, until the
+  Security Analyst has read 2.2), written to /run/desk-host/link/updates.json for desk-host. The link tends batches: a running slot
+  behind its batch is switched live at its idle (desk-host switch, in desk-host-upd) while liveSwitches is on; with it off, a stopped
+  slot behind takes the stop path (desk-host relroot, as a stop starts it); a fresh root is copied again after a promote either way.
 
 Python 3 standard library only. DESK_HOST_LINK_* variables move its files, commands and addresses for the tests
 (image/host/tests/test_link.py); the unit sets none.
@@ -60,8 +90,22 @@ BACKOFF_MIN, BACKOFF_MAX = float(E("DESK_HOST_LINK_BACKOFF_MIN", "5")), float(E(
 ORDER_RETRY = float(E("DESK_HOST_LINK_ORDER_RETRY", "60"))
 REFRESH_MIN = float(E("DESK_HOST_LINK_REFRESH_MIN", "30"))   # the shortest refreshAfterSeconds the link honours
 REPORT_MIN = float(E("DESK_HOST_LINK_REPORT_MIN", "5"))       # and the shortest reportSeconds
-TIMEOUTS = {"prepare": 900, "up": 1200, "stop": 400, "report": 60}
-OPS = ("prepare_slot", "start_slot", "stop_slot")
+TIMEOUTS = {"prepare": 900, "up": 1200, "stop": 400, "report": 60, "template": 600, "reroot": 3600, "restart": 1500, "reboot": 300,
+            "class": 1200, "batch": 600, "switch": 3600, "relroot": 3600}   # class: the slot's lock (900 s) and the host's (120 s)
+OPS = ("prepare_slot", "start_slot", "stop_slot", "set_class")
+CLASS_NAME = re.compile(r"[a-z][a-z0-9-]{0,31}")   # classes.conf's names; which ones this host has is hostmeta.class_names()
+HOST_OPS = ("template_target", "template_promote", "template_rollback", "reboot_host", "batch_target", "batch_promote", "batch_halt")
+BATCH_COMP = re.compile(r"\A[a-z][a-z0-9-]{0,40}\Z")   # desk-batch's component names
+MAX_SEQ = 2 ** 53
+GEN = re.compile(r"\Ag[1-9][0-9]{0,5}\Z")
+SHA256 = re.compile(r"\A[0-9a-f]{64}\Z")
+UTC = re.compile(r"\A\d{4}-\d{2}-\d{2}T\d{2}:\d{2}:\d{2}(\.\d{1,9})?Z\Z")
+TARGET_ID = re.compile(r"\A[A-Za-z0-9._:-]{1,96}\Z")
+REGION = re.compile(r"\A[a-z]{2}(-[a-z]+)+-[0-9]{1,2}\Z")
+FETCH_RETRY = float(E("DESK_HOST_LINK_FETCH_RETRY", "600"))        # a failed fetch is tried again after this, at most 3 times a target
+RESTART_AFTER = float(E("DESK_HOST_LINK_RESTART_AFTER", str(3 * 86400)))   # idle restarts start this long after a generation is current
+RESTART_AFTER_URGENT = float(E("DESK_HOST_LINK_RESTART_AFTER_URGENT", "3600"))
+TEND_EVERY = float(E("DESK_HOST_LINK_TEND", "15"))
 UP = ("starting", "running", "stopping")
 LOCAL_TEST_API = re.compile(r"http://127\.0\.0\.1:\d{2,5}")
 # A test host's fake Platform on the loopback, when the instance has no role: a fixed, public, useless key, so the fake can
@@ -145,23 +189,65 @@ class Api:
 
 
 def valid_order(o, n):
-    """The order, or None for anything that isn't exactly one of the contract's three."""
+    """The order, or None for anything that isn't exactly one of the contract's (OPS)."""
     if not isinstance(o, dict) or o.get("op") not in OPS:
         return None
     k, epoch = o.get("k"), o.get("epoch")
     if not (isinstance(k, int) and not isinstance(k, bool) and 1 <= k <= n and isinstance(epoch, int) and not isinstance(epoch, bool) and 0 <= epoch <= 999_999_999):
         return None
-    if o.get("id") != f"{o['op']}:{k}:{epoch}":
+    if o["op"] == "set_class":   # set_class:<k>:<epoch>:<class> (contract 0.3.46)
+        if not (isinstance(o.get("class"), str) and CLASS_NAME.fullmatch(o["class"]) and o.get("id") == f"set_class:{k}:{epoch}:{o['class']}"):
+            return None
+    elif o.get("id") != f"{o['op']}:{k}:{epoch}":
         return None
     if o["op"] != "prepare_slot" and not hostmeta.is_desk_id(o.get("deskId")):
         return None
     return o
 
 
-def valid_session(r, k, epoch, desk, public):
-    """slot-session's 200, checked against what the link asked for and the hello said; None if anything is off."""
+def valid_host_order(o):
+    """A host order (ADR 0077 PU-2), or None for anything that isn't exactly one."""
+    op = o.get("op")
+    oid = o.get("id")
+    if not isinstance(oid, str) or len(oid) > 160:
+        return None
+    if op == "template_target":
+        u = o.get("urls")
+        ok = (isinstance(o.get("targetId"), str) and TARGET_ID.fullmatch(o["targetId"]) and oid == f"template_target:{o['targetId']}"
+              and isinstance(o.get("gen"), str) and GEN.fullmatch(o["gen"]) and isinstance(o.get("hostImage"), str) and 0 < len(o["hostImage"]) <= 64
+              and isinstance(o.get("sha256"), str) and SHA256.fullmatch(o["sha256"]) and isinstance(o.get("expiresAt"), str) and UTC.fullmatch(o["expiresAt"])
+              and type(o.get("urgent")) is bool and isinstance(u, dict) and set(u) == {"header", "signature", "manifest", "plan", "archive"}
+              and all(isinstance(v, str) and len(v) <= 8192 for v in u.values()))
+        return o if ok else None
+    if op in ("template_promote", "template_rollback"):
+        return o if isinstance(o.get("gen"), str) and GEN.fullmatch(o["gen"]) and oid == f"{op}:{o['gen']}" else None
+    if op == "batch_target":   # ADR 0078 PB-2
+        u, seq = o.get("urls"), o.get("seq")
+        ok = (isinstance(o.get("targetId"), str) and TARGET_ID.fullmatch(o["targetId"]) and oid == f"batch_target:{o['targetId']}"
+              and type(seq) is int and 1 <= seq <= MAX_SEQ and isinstance(o.get("sha256"), str) and SHA256.fullmatch(o["sha256"])
+              and isinstance(o.get("manifest"), str) and 0 < len(o["manifest"]) <= 96 * 1024
+              and isinstance(o.get("signature"), str) and 0 < len(o["signature"]) <= 1024
+              and isinstance(o.get("expiresAt"), str) and UTC.fullmatch(o["expiresAt"]) and type(o.get("urgent", False)) is bool
+              and isinstance(u, dict) and len(u) <= 16 and all(isinstance(k, str) and BATCH_COMP.fullmatch(k) and isinstance(v, str) and len(v) <= 8192 for k, v in u.items()))
+        return o if ok else None
+    if op in ("batch_promote", "batch_halt"):
+        seq = o.get("seq")
+        return o if type(seq) is int and 1 <= seq <= MAX_SEQ and oid == f"{op}:{seq}" else None
+    if op == "reboot_host":
+        r = o.get("restart", [])
+        ok = (oid.startswith("reboot_host:") and TARGET_ID.fullmatch(oid[12:] or "-") and type(o.get("urgent", False)) is bool
+              and isinstance(r, list) and all(isinstance(x, int) and not isinstance(x, bool) and 1 <= x <= 29 for x in r))
+        return o if ok else None
+    return None
+
+
+def valid_session(r, k, epoch, desk, public, port=None):
+    """slot-session's 200, checked against what the link asked for and the hello said; None if anything is off. Under
+    SlotMode=port (port given) its udpPort must be the slot's too."""
     try:
         c = r["credentials"]
+        if port is not None and (r.get("udpPort") != port or isinstance(r.get("udpPort"), bool)):
+            return None
         ok = (r["deskId"] == desk and r["epoch"] == epoch and r["publicIp"] == public and isinstance(r["userId"], str) and r["userId"]
               and isinstance(r["deskKind"], str) and r["deskKind"] and r["env"] in ("staging", "prod")
               and all(isinstance(c[x], str) and c[x] for x in ("accessKeyId", "secretAccessKey", "sessionToken", "expiration")))
@@ -173,19 +259,37 @@ def valid_session(r, k, epoch, desk, public):
         return None
 
 
+def api_region(c, env, test):
+    """The region the link's calls are signed for: the API's (LINK_API_REGION_<env>), never the instance's. LINK_API_REGION
+    overrides it for a test fake (LINK_API) only; a test fake on a host with no Env tag is signed as staging's API."""
+    over = c.get("LINK_API_REGION", "")
+    if over and not test:
+        raise SystemExit("desk-host-link: LINK_API_REGION may only go with a test fake's LINK_API")
+    name = f"LINK_API_REGION_{env if env in ('staging', 'prod') else 'staging'}"
+    r = over or c.get(name, "")
+    if not REGION.fullmatch(r):
+        raise SystemExit(f"desk-host-link: no region for the API ({'LINK_API_REGION' if over else name} in desk-host.conf)")
+    return r
+
+
 class Link:
     def __init__(self, imds=None):
         self.c = conf()
         self.imds = imds or hostmeta.Imds()
         self.units = hostmeta.desks_per_host()   # the host's size in standard desks: the hello's desksPerHost
         self.n = hostmeta.slots_per_host()       # its slots, DeskSlot1 to DeskSlot<n> (SlotsPerHost; DesksPerHost when there's none)
+        try:
+            self.mode = hostmeta.slot_mode()     # address (A) or port (B), the first boot's SlotMode
+        except (ValueError, KeyError):
+            self.mode = None                     # neither: the link reports, and starts nothing
+
         h = json.load(open(hostmeta.HOSTING))
         hv = str(h.get("hostingVersion", ""))
         self.hosting_version = int(hv) if hv.isdigit() else None
         self.instance_id = (self.imds.get("meta-data/instance-id") or "").strip()
         if not hostmeta.INSTANCE_ID.fullmatch(self.instance_id):
             raise SystemExit("desk-host-link: no instance ID from IMDS")
-        self.region = (self.imds.get("meta-data/placement/region") or "us-east-1").strip()
+        self.region = (self.imds.get("meta-data/placement/region") or "us-east-1").strip()   # the instance's: the stand-in's only
         env = (self.imds.get("meta-data/tags/instance/Env") or "").strip()
         base, test = self.c.get("LINK_API", ""), False
         if base:
@@ -198,7 +302,8 @@ class Link:
             base = self.c.get(f"LINK_API_{env}", "")
             if not re.fullmatch(r"https://[a-z0-9.-]+", base):
                 raise SystemExit(f"desk-host-link: no https LINK_API_{env} in desk-host.conf")
-        self.api = Api(base, Credentials(self.imds, test_key=test), self.region)
+        self.api_region = api_region(self.c, env, test)
+        self.api = Api(base, Credentials(self.imds, test_key=test), self.api_region)
         self.port = int(self.c.get("STANDIN_PORT", "9254"))
         self.prepare_empty = self.c.get("LINK_PREPARE_EMPTY", "1") == "1"
         self.boot_id = open(BOOT_ID_FILE).read().strip()
@@ -214,20 +319,31 @@ class Link:
         self.boot_prepare_tried = set()
         self.boot_preparing = False
         self.bad_seen = set()
+        # ADR 0077: the host's updates
+        self.updates = {"fetches": True, "restarts": True, "reboots": True, "batches": True, "liveSwitches": False}   # the reply's kill switches
+        self.batch_fetch = None        # ADR 0078: {"order", "proc", "tries", "next"} for the batch being fetched
+        self.switching = False         # one live switch, stop path or fresh copy at a time (they take the copy turn anyway)
+        self.host_busy = False
+        self.fetch = None              # {"order", "proc", "tries", "next"} for the target being fetched
+        self.next_tend = 0.0
+        self.tend_tried = {}           # (what, k) -> monotonic time it may run again
+        self.restarting = False
         os.makedirs(RUN, mode=0o700, exist_ok=True)
         os.makedirs(LOGDIR, mode=0o755, exist_ok=True)
-        log(f"for {env or 'a test fake'}, {self.n} slots")
+        self.write_updates()   # until Platform's first reply: batches on, live switches off
+        log(f"for {env or 'a test fake'}, {self.n} slots, SlotMode {self.mode or 'NEITHER: no slot starts'}")
 
     # ---------- desk-host ----------
 
     def desk_host(self, k, op, *args):
         t0 = time.monotonic()
-        with open(os.path.join(LOGDIR, f"link-{k}.log"), "a") as out:
+        with open(os.path.join(LOGDIR, f"link-{k}.log" if isinstance(k, int) else "link-host.log"), "a") as out:
             os.fchmod(out.fileno(), 0o600)
             out.write(f"--- {datetime.datetime.now(datetime.timezone.utc):%FT%TZ} desk-host {op} {k}\n")
             out.flush()
             try:
-                r = subprocess.run([*DESK_HOST, op, str(k), *args], stdin=subprocess.DEVNULL, stdout=out, stderr=out, timeout=TIMEOUTS[op])
+                argv = [*DESK_HOST, op, *([str(k)] if isinstance(k, int) else []), *args]
+                r = subprocess.run(argv, stdin=subprocess.DEVNULL, stdout=out, stderr=out, timeout=TIMEOUTS[op])
                 rc = r.returncode
             except subprocess.TimeoutExpired:
                 rc = 124
@@ -251,16 +367,48 @@ class Link:
 
     # ---------- hello ----------
 
+    def write_updates(self):
+        """The kill switches where desk-host reads them (ADR 0078: liveSwitches decides a stop's path)."""
+        try:
+            tmp = os.path.join(RUN, "updates.json.tmp")
+            with open(tmp, "w") as f:
+                os.fchmod(f.fileno(), 0o644)
+                json.dump({"batches": self.updates["batches"], "liveSwitches": self.updates["liveSwitches"],
+                           "at": datetime.datetime.now(datetime.timezone.utc).strftime("%Y-%m-%dT%H:%M:%SZ")}, f)
+            os.replace(tmp, os.path.join(RUN, "updates.json"))
+        except OSError as e:
+            log(f"updates.json: {type(e).__name__}")
+
     def hello(self):
-        body = {"instanceId": self.instance_id, "bootId": self.boot_id, "desksPerHost": self.units}
+        body = {"instanceId": self.instance_id, "bootId": self.boot_id, "desksPerHost": self.units,
+                "updates": {"batches": 1}, "batchBaseline": batch_baseline()}   # ADR 0078 PB-1
         if self.hosting_version is not None:
             body["hostingVersion"] = self.hosting_version
         r = self.api.post("/v1/host/hello", body)
         slots = {}
-        for s in r.get("slots") or []:
-            if isinstance(s, dict) and isinstance(s.get("k"), int) and 1 <= s["k"] <= self.n:
-                if hostmeta.is_ipv4(s.get("privateIp")) and hostmeta.is_ipv4(s.get("publicIp")) and hostmeta.ALLOCATION_ID.fullmatch(str(s.get("allocationId"))):
-                    slots[s["k"]] = {"privateIp": s["privateIp"], "publicIp": s["publicIp"], "allocationId": s["allocationId"]}
+        if self.mode == "port":
+            # B (contract 0.3.57, section 3): the reply names the mode and the host's one public address at its top, as EC2
+            # has it now, and each slot's UDP port; no per-slot address. A per-slot publicIp, if any, must be the host's.
+            host_pub = r.get("publicIp")
+            if r.get("slotMode") != "port" or not hostmeta.is_ipv4(host_pub):
+                raise ApiError(200, "hello_not_slot_mode_port")
+            for s in r.get("slots") or []:
+                if isinstance(s, dict) and isinstance(s.get("k"), int) and not isinstance(s.get("k"), bool) and 1 <= s["k"] <= self.n:
+                    port = s.get("udpPort")
+                    if s.get("publicIp", host_pub) != host_pub:
+                        log("hello: a slot names another public address than the host's: none taken")
+                        slots = {}
+                        break
+                    if (isinstance(port, int) and not isinstance(port, bool) and port == hostmeta.udp_port(s["k"])
+                            and s.get("privateIp", "-") in ("-", None) and s.get("allocationId", "-") in ("-", None)):
+                        slots[s["k"]] = {"privateIp": None, "publicIp": host_pub, "allocationId": None, "udpPort": port}
+        else:
+            if r.get("slotMode", "address") != "address":
+                raise ApiError(200, "hello_not_slot_mode_address")
+            for s in r.get("slots") or []:
+                if isinstance(s, dict) and isinstance(s.get("k"), int) and 1 <= s["k"] <= self.n:
+                    if hostmeta.is_ipv4(s.get("privateIp")) and hostmeta.is_ipv4(s.get("publicIp")) and hostmeta.ALLOCATION_ID.fullmatch(str(s.get("allocationId"))):
+                        slots[s["k"]] = {"privateIp": s["privateIp"], "publicIp": s["publicIp"], "allocationId": s["allocationId"]}
         if r.get("hostId") != self.instance_id:
             raise ApiError(200, "hello_for_another_host")
         if r.get("desksPerHost") != self.units:
@@ -285,7 +433,20 @@ class Link:
         body = {"bootId": self.boot_id, "seq": seq, "slots": rep["slots"]}
         if isinstance(rep.get("conntrack"), dict):
             body["conntrack"] = rep["conntrack"]
+        for key in ("templates", "fetch", "hostApt", "batches", "batchFetch", "imagePending"):   # ADR 0077 PU-1 and 0078 PB-1, additive
+            if isinstance(rep.get(key), dict):
+                body[key] = rep[key]
+        if isinstance(rep.get("templatePending"), list):
+            body["templatePending"] = rep["templatePending"]
         r = self.api.post("/v1/host/report", body)
+        u = r.get("updates")
+        if isinstance(u, dict):   # the kill switches: each true unless turned off, but liveSwitches only when Platform says true
+            new = {x: u.get(x) is not False for x in ("fetches", "restarts", "reboots", "batches")}
+            new["liveSwitches"] = u.get("liveSwitches") is True
+            if new != self.updates:
+                log("updates: " + " ".join(f"{x} {'on' if v else 'off'}" for x, v in new.items()))
+                self.updates = new
+                self.write_updates()
         rs = r.get("reportSeconds")
         if isinstance(rs, int) and REPORT_MIN <= rs <= 600:
             self.report_seconds = rs
@@ -298,6 +459,8 @@ class Link:
             self.dispatch(o)
 
     def dispatch(self, raw):
+        if isinstance(raw, dict) and raw.get("op") in HOST_OPS:
+            return self.dispatch_host(raw)
         o = valid_order(raw, self.n)
         if o is None:
             seen = json.dumps(raw, sort_keys=True, default=str)[:512]
@@ -315,7 +478,7 @@ class Link:
     def work(self, o):
         k, oid, ok = o["k"], o["id"], False
         try:
-            ok = {"prepare_slot": self.do_prepare, "start_slot": self.do_start, "stop_slot": self.do_stop}[o["op"]](o)
+            ok = {"prepare_slot": self.do_prepare, "start_slot": self.do_start, "stop_slot": self.do_stop, "set_class": self.do_set_class}[o["op"]](o)
         except Exception as e:  # noqa: BLE001 - one order's failure never stops the link
             log(f"slot {k}: {o['op']} epoch {o['epoch']}: {type(e).__name__}")
         with self.lock:
@@ -329,9 +492,388 @@ class Link:
                 self.failed[oid] = time.monotonic() + ORDER_RETRY
         self.wake.set()
 
+    # ---------- ADR 0077: host orders ----------
+
+    def dispatch_host(self, raw):
+        o = valid_host_order(raw)
+        if o is None:
+            seen = json.dumps(raw, sort_keys=True, default=str)[:512]
+            if seen not in self.bad_seen and len(self.bad_seen) < 256:
+                self.bad_seen.add(seen)
+                log("report: a host order that isn't one of the contract's, ignored")
+            return
+        key = o["id"] + ("@" + o["expiresAt"] if o["op"] in ("template_target", "batch_target") else "")   # later URLs for a target are a new order
+        with self.lock:
+            if key in self.done or self.host_busy or self.failed.get(key, 0) > time.monotonic():
+                return
+            self.host_busy = True
+        threading.Thread(target=self.work_host, args=(o, key), daemon=True).start()
+
+    def work_host(self, o, key):
+        ok = False
+        try:
+            ok = {"template_target": self.do_target, "template_promote": self.do_promote, "template_rollback": self.do_rollback,
+                  "reboot_host": self.do_reboot, "batch_target": self.do_batch_target, "batch_promote": self.do_batch_promote,
+                  "batch_halt": self.do_batch_halt}[o["op"]](o)
+        except Exception as e:  # noqa: BLE001
+            log(f"host: {o['op']}: {type(e).__name__}")
+        with self.lock:
+            self.host_busy = False
+            if ok:
+                self.done.add(key)
+                self.failed.pop(key, None)
+            else:
+                self.failed[key] = time.monotonic() + ORDER_RETRY
+        self.wake.set()
+
+    def do_target(self, o):
+        tpl = (self.last or {}).get("templates") or {}
+        have = {(tpl.get(x) or {}).get("gen") for x in ("current", "previous", "candidate")} | {h.get("gen") for h in tpl.get("halted") or []}
+        if o["gen"] in have:   # a generation this host has had (a link restarted under Platform's standing order): done, never fetched again
+            log(f"host: template_target {o['gen']}: this host has it already")
+            return True
+        if not self.updates["fetches"]:
+            log(f"host: template_target {o['gen']}: fetches are turned off; not now")
+            return False
+        bf = getattr(self, "batch_fetch", None)
+        if bf and bf.get("proc") and bf["proc"].poll() is None:   # ADR 0078 section 5: a batch and a template download take turns
+            log(f"host: template_target {o['gen']}: a batch fetch is in flight; not now")
+            return False
+        f = self.fetch
+        if f and f.get("proc") and f["proc"].poll() is None:
+            if f["order"]["targetId"] == o["targetId"]:
+                f["order"] = o   # later URLs for the fetch in flight, used if it asks for them
+                return True
+            log(f"host: template_target {o['gen']}: another fetch is in flight; not now")
+            return False
+        path = os.path.join(RUN, f"target-{o['gen']}.json")
+        with open(path + ".tmp", "w") as fh:
+            os.fchmod(fh.fileno(), 0o600)
+            json.dump(o, fh)
+        os.replace(path + ".tmp", path)
+        self.fetch = {"order": o, "path": path, "proc": None, "tries": 0 if not f or f["order"]["targetId"] != o["targetId"] else f["tries"], "next": 0.0}
+        log(f"host: template_target {o['gen']} taken ({'urgent' if o['urgent'] else 'routine'})")
+        return True
+
+    def do_promote(self, o):
+        rc, _ = self.desk_host("host", "template", "promote", o["gen"])
+        log(f"host: template_promote {o['gen']}: {'done' if rc == 0 else f'refused ({rc})'}")
+        return rc == 0
+
+    def do_rollback(self, o):
+        rc, _ = self.desk_host("host", "template", "rollback", o["gen"])
+        log(f"host: template_rollback {o['gen']}: {'done' if rc == 0 else f'refused ({rc})'}")
+        return rc == 0
+
+    def do_reboot(self, o):
+        if not self.updates["reboots"]:
+            log("host: reboot_host: reboots are turned off; not now")
+            return False
+        rc, _ = self.desk_host("host", "reboot", "--order", o["id"], *(["--urgent"] if o.get("urgent") else []))
+        log(f"host: reboot_host: {'rebooting' if rc == 0 else f'refused ({rc}); tried again'}")
+        return rc == 0
+
+    # ---------- ADR 0078: batch orders ----------
+
+    def do_batch_target(self, o):
+        b = (self.last or {}).get("batches") or {}
+        have = {(b.get(x) or {}).get("seq") for x in ("current", "previous", "candidate")} | {h.get("seq") for h in b.get("halted") or []}
+        fl = (b.get("floor") or {}).get("seq") or 0
+        if o["seq"] in have or o["seq"] <= fl:   # a batch this host has had, or one at its floor: done, never fetched again
+            log(f"host: batch_target {o['seq']}: this host has it already, or it's at its floor")
+            return True
+        if not self.updates["batches"]:
+            log(f"host: batch_target {o['seq']}: batches are turned off; not now")
+            return False
+        tf = self.fetch
+        if tf and tf.get("proc") and tf["proc"].poll() is None:   # a batch and a template download take turns on the host's root (5)
+            log(f"host: batch_target {o['seq']}: a template fetch is in flight; not now")
+            return False
+        f = self.batch_fetch
+        if f and f.get("proc") and f["proc"].poll() is None:
+            if f["order"]["targetId"] == o["targetId"]:
+                f["order"] = o
+                return True
+            log(f"host: batch_target {o['seq']}: another batch fetch is in flight; not now")
+            return False
+        path = os.path.join(RUN, f"batch-{o['seq']}.json")
+        with open(path + ".tmp", "w") as fh:
+            os.fchmod(fh.fileno(), 0o600)
+            json.dump(o, fh)
+        os.replace(path + ".tmp", path)
+        self.batch_fetch = {"order": o, "path": path, "proc": None, "tries": 0 if not f or f["order"]["targetId"] != o["targetId"] else f["tries"], "next": 0.0}
+        log(f"host: batch_target {o['seq']} taken ({'urgent' if o.get('urgent') else 'routine'})")
+        return True
+
+    def do_batch_promote(self, o):
+        rc, _ = self.desk_host("host", "batch", "promote", str(o["seq"]))
+        log(f"host: batch_promote {o['seq']}: {'done' if rc == 0 else f'refused ({rc})'}")
+        return rc == 0
+
+    def do_batch_halt(self, o):
+        rc, _ = self.desk_host("host", "batch", "halt", str(o["seq"]), "batch_halt")
+        log(f"host: batch_halt {o['seq']}: {'done' if rc == 0 else f'failed ({rc})'}")
+        return rc == 0
+
+    def tend_batch_fetch(self):
+        f = self.batch_fetch
+        if not f:
+            return
+        p = f.get("proc")
+        if p is None:
+            tf = self.fetch
+            if time.monotonic() < f["next"] or not self.updates["batches"] or (tf and tf.get("proc") and tf["proc"].poll() is None):
+                return
+            with open(f["path"] + ".tmp", "w") as fh:
+                os.fchmod(fh.fileno(), 0o600)
+                json.dump(f["order"], fh)
+            os.replace(f["path"] + ".tmp", f["path"])
+            out = open(os.path.join(LOGDIR, "batch.log"), "a")
+            f["proc"] = subprocess.Popen([*DESK_HOST, "template", "upd", "--", os.path.join(LIB_DIR, "desk-host-batch"), "fetch", f["path"]],
+                                         stdin=subprocess.DEVNULL, stdout=out, stderr=out, start_new_session=True)
+            f["tries"] += 1
+            f["started"] = f["order"]["expiresAt"]
+            log(f"host: fetching batch {f['order']['seq']} (try {f['tries']})")
+            return
+        rc = p.poll()
+        if rc is None:
+            return
+        f["proc"] = None
+        seq = f["order"]["seq"]
+        if rc == 0:
+            log(f"host: batch {seq} fetched, verified and installed: the candidate")
+            self.batch_fetch = None
+        elif rc == 3:
+            log(f"host: batch {seq} REFUSED (signature, floor, hash or version); not tried again")
+            self.batch_fetch = None
+        elif rc == 4:
+            if f["order"]["expiresAt"] != f.get("started"):
+                f["next"] = 0.0
+            else:
+                f["next"] = time.monotonic() + 30
+                log(f"host: batch {seq}: the URLs expire soon; asking for new ones (urlsWanted)")
+        elif f["tries"] >= 3:
+            log(f"host: batch {seq}: failed {f['tries']} times; waiting for a new target")
+            self.batch_fetch = None
+        else:
+            f["next"] = time.monotonic() + FETCH_RETRY
+            log(f"host: batch {seq}: failed ({rc}); tried again in {FETCH_RETRY:.0f} s")
+        self.wake.set()
+
+    def tend_batches(self):
+        """ADR 0078: one slot at a time. A running slot behind its batch, idle, switched live (liveSwitches on); a stopped one behind takes the
+        stop path (liveSwitches off); a fresh root behind is copied again (after a promote)."""
+        if not self.updates["batches"] or self.switching or not self.last:
+            return
+        live = self.updates["liveSwitches"]
+        for s in self.last["slots"]:
+            k, b = s.get("k"), s.get("batch") or {}
+            if b.get("state") != "behind":
+                continue
+            with self.lock:
+                if k in self.busy:
+                    continue
+            st = s.get("state")
+            if st == "running" and live and not (s.get("update") or {}).get("holdUntil"):
+                if not self.may("switch", k, 60):
+                    continue
+                rc, _ = self.desk_host("host", "batch", "may", str(k))
+                if rc != 0:
+                    continue
+                what = "switch"
+            elif st in ("prepared", "empty") or (st in ("stopped", "unmounted") and not live):
+                if not self.may("relroot", k, 600):
+                    continue
+                what = "relroot"
+            else:
+                continue
+            with self.lock:
+                if k in self.busy:
+                    continue
+                self.busy.add(k)
+                self.switching = True
+            threading.Thread(target=self.batch_one, args=(k, what), daemon=True).start()
+            return
+
+    def batch_one(self, k, what):
+        try:
+            rc, dt = self.desk_host("host", "template", "upd", "--", "/bin/bash", os.path.join(LIB_DIR, "desk-host"), what, str(k))
+            log(f"slot {k}: {'a live switch' if what == 'switch' else 'its batch at a stop (rel/ only)'}: "
+                f"{'done' if rc == 0 else 'not now' if rc == 75 else f'failed ({rc})'} in {dt:.0f} s")
+        finally:
+            with self.lock:
+                self.busy.discard(k)
+                self.switching = False
+            self.wake.set()
+
+    # ---------- ADR 0077: tending the updates ----------
+
+    def tend_fetch(self):
+        f = self.fetch
+        if not f:
+            return
+        p = f.get("proc")
+        if p is None:
+            if time.monotonic() < f["next"] or not self.updates["fetches"]:
+                return
+            with open(f["path"] + ".tmp", "w") as fh:
+                os.fchmod(fh.fileno(), 0o600)
+                json.dump(f["order"], fh)
+            os.replace(f["path"] + ".tmp", f["path"])
+            out = open(os.path.join(LOGDIR, "fetch.log"), "a")
+            f["proc"] = subprocess.Popen([*DESK_HOST, "template", "upd", "--", os.path.join(LIB_DIR, "desk-host-template"), "fetch", f["path"]],
+                                         stdin=subprocess.DEVNULL, stdout=out, stderr=out, start_new_session=True)
+            f["tries"] += 1
+            f["started"] = f["order"]["expiresAt"]
+            log(f"host: fetching {f['order']['gen']} (try {f['tries']})")
+            return
+        rc = p.poll()
+        if rc is None:
+            return
+        f["proc"] = None
+        gen = f["order"]["gen"]
+        if rc == 0:
+            log(f"host: {gen} fetched, checked and sealed: the candidate")
+            self.fetch = None
+        elif rc == 3:
+            log(f"host: {gen} REFUSED (signature, hash or header); not tried again")
+            self.fetch = None
+        elif rc == 4:
+            if f["order"]["expiresAt"] != f.get("started"):
+                f["next"] = 0.0   # later URLs came meanwhile
+            else:
+                f["next"] = time.monotonic() + 30
+                log(f"host: {gen}: the URLs expire soon; asking for new ones (urlsWanted)")
+        if rc not in (0, 3, 4):
+            self.desk_host("host", "template", "fetch-ended", str(rc))   # killed with no verdict of its own: failed, leftovers removed
+        if rc in (0, 3, 4):
+            pass
+        elif f["tries"] >= 3:
+            log(f"host: {gen}: failed {f['tries']} times; waiting for a new target")
+            self.fetch = None
+        else:
+            f["next"] = time.monotonic() + FETCH_RETRY
+            log(f"host: {gen}: failed ({rc}); tried again in {FETCH_RETRY:.0f} s")
+        self.wake.set()
+
+    def may(self, what, k, every):
+        now = time.monotonic()
+        if self.tend_tried.get((what, k), 0) > now:
+            return False
+        self.tend_tried[(what, k)] = now + every
+        return True
+
+    def tend_updates(self):
+        """The candidate's trial, fresh slots onto the current generation, idle restarts, the gc. One step at a time. ADR 0078's batches."""
+        self.tend_fetch()
+        self.tend_batch_fetch()
+        now = time.monotonic()
+        if now < self.next_tend or not self.last or self.hello_slots is None:
+            return
+        self.next_tend = now + TEND_EVERY
+        tpl = self.last.get("templates") or {}
+        cand = tpl.get("candidate") or {}
+        cur = tpl.get("current") or {}
+        for s in self.last["slots"]:
+            k = s.get("k")
+            with self.lock:
+                if k in self.busy:
+                    continue
+            # the candidate's trial: its slot alive STARTUP_S after its start (desk-host-template trial-check decides)
+            if cand.get("gen") and s.get("template") == cand["gen"] and s.get("state") == "running" and self.may("trial", k, 30):
+                rc, _ = self.desk_host("host", "template", "trial-check", str(k))
+                if rc == 1:
+                    log(f"slot {k}: the candidate {cand['gen']} failed its start checks: halted; the slot starts again from the current generation")
+                    self.recover(s)
+                continue
+            # a fresh root on an older generation: prepared again in the background, before any start claims it
+            if s.get("state") == "empty" and s.get("template") and s.get("behind") and self.may("fresh", k, 600):
+                self.spawn(k, "reroot")
+                return
+        if self.updates["restarts"] and not self.restarting and not self.switching:
+            self.idle_restart(cur, cand)
+        if not self.restarting:
+            self.tend_batches()
+        if (tpl.get("previous") or tpl.get("halted")) and self.may("gc", 0, 600):   # a generation only goes once one is behind
+            self.spawn(None, "gc")
+
+    def spawn(self, k, what):
+        argv = ([*DESK_HOST, "template", "upd", "--", "/bin/bash", os.path.join(LIB_DIR, "desk-host"), "reroot", str(k)] if what == "reroot"
+                else [*DESK_HOST, "template", "gc"])
+        out = open(os.path.join(LOGDIR, f"link-{k}.log" if k else "link-host.log"), "a")
+        subprocess.Popen(argv, stdin=subprocess.DEVNULL, stdout=out, stderr=out, start_new_session=True)
+        if k:
+            log(f"slot {k}: a fresh root on an older generation is prepared again in the background")
+
+    def idle_restart(self, cur, cand):
+        """One desk that doesn't stop, moved at its idle: onto the candidate for its trial at once, onto the current generation once
+        it has been current RESTART_AFTER (an hour when urgent)."""
+        want_trial = cand.get("gen") and not self.last.get("templates", {}).get("candidate", {}).get("trialSlot")
+        since = cur.get("currentSince") or cur.get("sealedAt")
+        for s in self.last["slots"]:
+            k = s.get("k")
+            if s.get("state") != "running" or (s.get("update") or {}).get("holdUntil"):
+                continue
+            trial = bool(want_trial and s.get("template") != cand.get("gen"))
+            if not trial and not s.get("behind"):
+                continue
+            if not trial:
+                t = templates_utc(since)
+                if t is None or time.time() - t < (RESTART_AFTER_URGENT if cur.get("urgent") else RESTART_AFTER):
+                    continue
+            with self.lock:
+                if k in self.busy or self.tend_tried.get(("restart", k), 0) > time.monotonic():
+                    continue
+            rc, _ = self.desk_host("host", "template", "idle", str(k))
+            if rc != 0:
+                continue
+            with self.lock:
+                if k in self.busy or not self.may("restart", k, 1800):   # an attempt: the next one for this slot in 30 minutes
+                    continue
+                self.busy.add(k)
+                self.restarting = True
+            threading.Thread(target=self.restart_one, args=(s, trial), daemon=True).start()
+            return
+
+    def restart_one(self, s, trial):
+        k, desk, epoch = s["k"], s.get("deskId"), s.get("epoch")
+        try:
+            t = self.tag(k)
+            with self.lock:
+                h = (self.hello_slots or {}).get(k)
+            if t is None or t["deskId"] != desk or t["epoch"] != epoch or h is None:
+                return
+            rc, dt = self.desk_host("host", "template", "upd", "--", "/bin/bash", os.path.join(LIB_DIR, "desk-host"), "reroot", str(k), "--prebuild")
+            if rc != 0:
+                log(f"slot {k}: building a root for an idle restart failed ({rc})")
+                return
+            rc, dt2 = self.desk_host(k, "restart", desk, *([t["volumeId"]] if t.get("volumeId") else []), "--class", t["class"], "--public", h["publicIp"])
+            log(f"slot {k}: idle restart{' (the candidate trial)' if trial else ''}: {'done' if rc == 0 else f'not done ({rc})'} in {dt + dt2:.0f} s")
+        finally:
+            with self.lock:
+                self.busy.discard(k)
+                self.restarting = False
+            self.wake.set()
+
+    def recover(self, s):
+        """A slot whose start on the candidate failed: stopped (no re-root), then started again; desk-host up prepares it from the
+        current generation when its profile allows (ADR 0077 1.6), else it stays and its Browser waits."""
+        k = s["k"]
+        with self.lock:
+            if k in self.busy:
+                return
+            self.busy.add(k)
+        try:
+            self.desk_host(k, "stop", "--no-reroot")
+            o = {"k": k, "epoch": s.get("epoch"), "deskId": s.get("deskId")}
+            self.do_start(o)
+        finally:
+            with self.lock:
+                self.busy.discard(k)
+
     def tag(self, k):
         try:
-            return hostmeta.parse_slot_tag(self.imds.get(f"meta-data/tags/instance/DeskSlot{k}"))
+            return hostmeta.parse_slot_tag(self.imds.get(f"meta-data/tags/instance/DeskSlot{k}"), self.mode) if self.mode else None
         except hostmeta.ImdsError:
             return None
 
@@ -367,13 +909,22 @@ class Link:
         if t is None or t["deskId"] != desk or t["epoch"] != epoch:
             log(f"slot {k}: start_slot epoch {epoch} refused: DeskSlot{k} doesn't name that desk at that epoch")
             return False
-        if h is None or h["privateIp"] != t["privateIp"] or h["allocationId"] != t["allocationId"]:
+        if self.mode is None:
+            log(f"slot {k}: start_slot epoch {epoch} refused: the host's SlotMode is neither address nor port")
+            self.write_fault(k, "slot_mode")
+            return False
+        if h is None or h["privateIp"] != t["privateIp"] or h["allocationId"] != t["allocationId"] \
+                or (self.mode == "port" and h.get("udpPort") != hostmeta.udp_port(k)):
             log(f"slot {k}: start_slot epoch {epoch} refused: the slot's addresses aren't the hello's")
             self.write_fault(k, "address_mismatch")
             return False
         if not self.fetch_session(k, epoch, desk):
             return False
         rc, dt = self.desk_host(k, "up", desk, "--class", t["class"], "--public", h["publicIp"])
+        if rc != 0 and self.desk_host("host", "template", "start-failed", str(k))[0] == 0:
+            # ADR 0077 1.6: a failed start on the candidate halts it here; the slot is prepared again from the current generation
+            log(f"slot {k}: start_slot epoch {epoch}: the start failed on the candidate, now halted; starting again")
+            rc, dt = self.desk_host(k, "up", desk, "--class", t["class"], "--public", h["publicIp"])
         if rc != 0:
             try:   # an up the link didn't see finish (a restart under it) may have started the very desk: then keep serving it
                 now = next((x for x in self.report_now()["slots"] if x.get("k") == k), {})
@@ -400,6 +951,49 @@ class Link:
         self.drop_standin(k)
         return True
 
+    # ---------- set_class: a running desk's size class, in place (S-119) ----------
+
+    def class_refusal(self, o):
+        """Why set_class can't run now (a code for the log), or None. Nothing is changed by any of these; the slot's report
+        keeps its class, so Platform sends the order again and it runs once the reason is gone (contract section 4)."""
+        k, epoch, desk, cls = o["k"], o["epoch"], o["deskId"], o["class"]
+        if os.path.exists(os.path.join(os.path.dirname(RUN.rstrip("/")), "halt")):
+            return "host_stopping"                 # desk-host stop-all's mark (a host stop): nothing changes on a stopping host
+        if cls not in hostmeta.class_names():
+            return "class_unknown"                 # not in this host's classes.conf
+        s = self.slot(k) or {}
+        if s.get("deskId") != desk or s.get("epoch") != epoch:
+            return "not_this_desk"                 # the slot isn't that desk's at that epoch
+        if s.get("state") != "running":
+            return f"slot_{s.get('state')}"        # slot_starting (mid-start: it runs once the desk is up), slot_stopping, ...
+        t = self.tag(k)
+        if t is None or t["deskId"] != desk or t["epoch"] != epoch or t["class"] != cls:
+            return "tag_mismatch"                  # DeskSlot<k> must already say the new class (Platform writes it first)
+        return None
+
+    def do_set_class(self, o):
+        """set_class {k, deskId, epoch, class} (contract 0.3.46): `desk-host class <k> --whole`, which reads DeskSlot<k> again
+        under the slot's lock and rewrites the running container's cgroup in place: nothing in the desk restarts or is entered.
+        --whole: a raise the host has no room for (its units, classes.conf) changes nothing and exits 75, so the class is never
+        half applied; a lower memory cap the desk doesn't fit yet waits for its next start ("+pending" in the report, which the
+        contract counts as done). Done once the report says the order's class."""
+        k, epoch, cls = o["k"], o["epoch"], o["class"]
+        s = self.slot(k) or {}
+        if s.get("state") == "running" and s.get("deskId") == o["deskId"] and s.get("epoch") == epoch \
+                and str(s.get("class", "")).split("+")[0] == cls:
+            return True                            # already (a repeat after a restart of the link, or a start that took it)
+        why = self.class_refusal(o)
+        if why is None:
+            rc, dt = self.desk_host(k, "class", "--whole")
+            if rc == 0:
+                log(f"slot {k}: set_class epoch {epoch} to {cls}: in place in {dt:.1f} s")
+                return True
+            # 75: no room for the raise, nothing changed; otherwise desk-host's own refusal under the slot's lock, which changes
+            # nothing either (named here when the link sees it now: a stop-all begun meanwhile, the tag rewritten), or a failure
+            why = "host_full" if rc == 75 else (self.class_refusal(o) or f"desk-host class exited {rc}")
+        log(f"slot {k}: set_class epoch {epoch} to {cls} refused: {why}")
+        return False
+
     # ---------- slot sessions and the stand-ins ----------
 
     def fetch_session(self, k, epoch, desk):
@@ -414,7 +1008,7 @@ class Link:
             if e.status in (403, 409):
                 self.drop_standin(k)
             return False
-        refresh = valid_session(r, k, epoch, desk, h["publicIp"])
+        refresh = valid_session(r, k, epoch, desk, h["publicIp"], hostmeta.udp_port(k) if self.mode == "port" else None)
         if refresh is None:
             log(f"slot {k}: slot-session epoch {epoch}: the reply isn't this slot's placement; nothing served")
             self.drop_standin(k)
@@ -502,13 +1096,16 @@ class Link:
                     rep = self.report_now()
                     self.last = rep
                     next_poll = now + POLL
-                    key = [(s.get("k"), s.get("state"), s.get("deskId"), s.get("epoch"), s.get("fault")) for s in rep["slots"]]
+                    key = [(s.get("k"), s.get("state"), s.get("deskId"), s.get("epoch"), s.get("fault"), s.get("class"), s.get("template"),
+                            (s.get("update") or {}).get("holdUntil"), json.dumps(s.get("batch"), sort_keys=True)) for s in rep["slots"]] + [
+                        json.dumps({x: rep.get(x) for x in ("templates", "fetch", "batches", "batchFetch")}, sort_keys=True, default=str)]
                     if key != self.last_sent or now >= next_report:
                         self.send_report(rep)
                         self.last_sent = key
                         next_report = now + self.report_seconds
                 self.tend_sessions()
                 self.boot_prepare()
+                self.tend_updates()
                 backoff = BACKOFF_MIN
             except ApiError as e:
                 wait = BACKOFF_MAX if (e.status == 403 and e.code == "host_mismatch") else backoff
@@ -522,6 +1119,26 @@ class Link:
                 backoff = min(backoff * 2, BACKOFF_MAX)
                 continue
             self.wake.wait(max(0.05, min(next_poll, next_report) - time.monotonic()))
+
+
+def batch_baseline():
+    """The host image's batch-baseline (ADR 0078 PB-1's hello field), as desk-batch reads its own: 0 for none."""
+    try:
+        sys.path.insert(0, LIB_DIR)
+        import batchsig
+        return batchsig.baseline()
+    except Exception:  # noqa: BLE001 - the hello never fails for it
+        return 0
+
+
+def templates_utc(s):
+    if not isinstance(s, str) or not UTC.fullmatch(s):
+        return None
+    import calendar
+    return calendar.timegm(time.strptime(s[:19], "%Y-%m-%dT%H:%M:%S"))
+
+
+LIB_DIR = E("DESK_HOST_LINK_LIB", os.path.dirname(os.path.abspath(__file__)))
 
 
 def main():

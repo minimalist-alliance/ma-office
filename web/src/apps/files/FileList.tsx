@@ -2,11 +2,12 @@
 // Backspace, F2, Delete). The keys act only while this list has focus, so nothing a member dictates or types elsewhere
 // moves a file (WCAG 2.1.4). Each row is one option with its whole meaning in its name, since an option holds no controls;
 // the actions are the toolbar's, and the same keys. Drag is one way to move, never the only one ("Move to…" is the other).
-import { memo, useEffect, useId, useRef, useState, type DragEvent, type KeyboardEvent, type MouseEvent } from 'react';
+import { memo, useEffect, useId, useRef, useState, type DragEvent, type KeyboardEvent, type MouseEvent, type PointerEvent } from 'react';
 import { formatBytes } from '../../export/format';
 import { daysUntil, longDate, shortDate } from './dates';
 import { FileIcon, kindOf, kindWords } from './FileIcon';
 import { baseName, parent } from './paths';
+import { selectForMenu } from './menu';
 import { click as clickSel, move as moveSel, selectAll, toggleActive, typeAhead, type Sel } from './selection';
 import type { Row } from './useFilesModel';
 
@@ -19,6 +20,8 @@ export interface ListActions {
   restore?(rows: Row[]): void;
   /** Rows dragged onto a folder (its path), from inside the window. */
   dropOn?(rows: Row[], folderPath: string): void;
+  /** The context menu: at a point (the window's client pixels), on these rows' keys, or on the list's empty space (`keys` null). */
+  menu?(req: { x: number; y: number; keys: string[] | null; fromKeyboard: boolean }): void;
 }
 
 interface Props {
@@ -33,6 +36,8 @@ interface Props {
 }
 
 const DRAG_TYPE = 'application/x-ma-files';
+const LONG_PRESS_MS = 500;
+const LONG_PRESS_SLOP = 10;
 
 export const FileList = memo(function FileList({ rows, sel, setSel, actions, mode, label, readOnly }: Props) {
   const id = useId();
@@ -40,6 +45,10 @@ export const FileList = memo(function FileList({ rows, sel, setSel, actions, mod
   const typed = useRef({ text: '', at: 0 });
   const [over, setOver] = useState<string | null>(null);
   const selected = new Set(sel.keys);
+  const press = useRef<{ timer: number; x: number; y: number } | null>(null);
+  // A long press opens the menu, and the click that lets go of it must not select; one menu, not also the system's.
+  const pressed = useRef({ fired: false, at: -1e9 });
+  const keyed = useRef(-1e9);
 
   // Keep the keyboard's row in view.
   useEffect(() => {
@@ -49,7 +58,64 @@ export const FileList = memo(function FileList({ rows, sel, setSel, actions, mod
 
   const rowsAt = (keys: string[]): Row[] => rows.filter((r) => keys.includes(r.key));
 
+  /** Opens the menu on the row under `el` (selecting it as a file manager does), or on the empty space. */
+  const openMenu = (el: Element | null, x: number, y: number, fromKeyboard: boolean): void => {
+    const rowEl = el?.closest<HTMLElement>('[data-index]');
+    const i = rowEl ? Number(rowEl.dataset['index']) : -1;
+    if (i >= 0 && rows[i]) {
+      const next = selectForMenu(rows, sel, i);
+      if (next !== sel) setSel(next);
+      actions.menu?.({ x, y, keys: next.keys, fromKeyboard });
+    } else actions.menu?.({ x, y, keys: null, fromKeyboard });
+  };
+
+  const stopPress = (): void => {
+    if (press.current) window.clearTimeout(press.current.timer);
+    press.current = null;
+  };
+  useEffect(() => stopPress, []);
+
+  const onPointerDown = (e: PointerEvent<HTMLDivElement>): void => {
+    pressed.current.fired = false;
+    stopPress();
+    if (e.pointerType !== 'touch' || !e.isPrimary) return;
+    const { clientX: x, clientY: y } = e;
+    const target = e.target as Element;
+    press.current = {
+      x,
+      y,
+      timer: window.setTimeout(() => {
+        press.current = null;
+        pressed.current = { fired: true, at: performance.now() };
+        openMenu(target, x, y, false);
+      }, LONG_PRESS_MS),
+    };
+  };
+  const onPointerMove = (e: PointerEvent<HTMLDivElement>): void => {
+    const p = press.current;
+    if (p && Math.hypot(e.clientX - p.x, e.clientY - p.y) > LONG_PRESS_SLOP) stopPress();
+  };
+
+  /** A right click (or the system's long press, or a key the system turns into one): ours, and never the browser's own. */
+  const onContextMenu = (e: MouseEvent<HTMLDivElement>): void => {
+    e.preventDefault();
+    const now = performance.now();
+    // A key we have already answered, or a long press we have: the system says it again as a context menu.
+    if (now - keyed.current < 400 || now - pressed.current.at < 800) return;
+    stopPress();
+    openMenu(e.target as Element, e.clientX, e.clientY, false);
+  };
+
   const onKeyDown = (e: KeyboardEvent<HTMLDivElement>): void => {
+    if ((e.key === 'F10' && e.shiftKey && !e.ctrlKey && !e.altKey) || (e.key === 'ContextMenu' && !e.shiftKey)) {
+      e.preventDefault();
+      keyed.current = performance.now();
+      const rowEl = box.current?.querySelector<HTMLElement>(`[data-index="${sel.active}"]`) ?? null;
+      const r = (rowEl ?? box.current)?.getBoundingClientRect();
+      if (!r) return;
+      // On the keyboard's row, just inside its name; with none, at the list's top left.
+      return openMenu(rowEl, r.left + (rowEl ? 28 : 12), r.top + (rowEl ? r.height - 6 : 36), true);
+    }
     if (e.altKey && e.key === 'ArrowUp') {
       e.preventDefault();
       return actions.up();
@@ -126,6 +192,10 @@ export const FileList = memo(function FileList({ rows, sel, setSel, actions, mod
   };
 
   const onRowClick = (i: number) => (e: MouseEvent): void => {
+    if (pressed.current.fired) {
+      pressed.current.fired = false;
+      return;
+    }
     setSel(clickSel(rows, sel, i, { shift: e.shiftKey, ctrl: e.ctrlKey || e.metaKey }));
     box.current?.focus({ preventScroll: true });
   };
@@ -155,13 +225,18 @@ export const FileList = memo(function FileList({ rows, sel, setSel, actions, mod
   return (
     <div
       ref={box}
-      className="files-list"
+      className={sel.active >= 0 && rows[sel.active] ? 'files-list has-active' : 'files-list'}
       role="listbox"
       aria-multiselectable="true"
       aria-label={label}
       aria-activedescendant={sel.active >= 0 && rows[sel.active] ? `${id}-${sel.active}` : undefined}
       tabIndex={0}
       onKeyDown={onKeyDown}
+      onContextMenu={onContextMenu}
+      onPointerDown={onPointerDown}
+      onPointerMove={onPointerMove}
+      onPointerUp={stopPress}
+      onPointerCancel={stopPress}
       data-testid="files-list"
     >
       <div className="files-head" aria-hidden="true">

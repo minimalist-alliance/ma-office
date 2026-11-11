@@ -7,6 +7,7 @@ import { canUndoCleanup, cleanUpDesk, needsCleanup, restack, undoCleanup } from 
 import { appLabel, focusBack, focusProxy } from '../shell/actions';
 import { announce } from '../shell/announce';
 import { kindTipFor, mayRename } from './rename';
+import { stopsOnLine } from '../platform/billingNote';
 import { deskStyles } from '../theme/deskStyles';
 import { DeskStylePicker } from './DeskStylePicker';
 import { useMyTier } from '../platform/useTiers';
@@ -20,6 +21,7 @@ import { setView, useViewStore, type DeskMenuAt } from '../state/viewStore';
 const WIDTH = 220; // matches .desk-menu; wide enough for five swatches on one row
 const ITEM_H = 40;
 const HEAD_H = 28; // .desk-menu-head
+const STOPS_H = 24; // .desk-menu-stops
 const STYLE_H = 84; // .desk-style, with a row of swatches
 const EDGE = 8;
 
@@ -116,7 +118,9 @@ function MenuBody({ at }: { at: DeskMenuAt }) {
   const styled = !at.itemId && deskStyles().length > 1;
   // The desk's kind, whatever its name: "Personal desk", once it's been named something else.
   const kind = at.itemId || !info ? null : kindTipFor(info.name, info.kind);
-  const head = kind ? HEAD_H : 0;
+  // A desk a step down ends at renewal (the billing launch features, still 14): a second head line, said with the first.
+  const stops = at.itemId || !info ? null : stopsOnLine(info.endsAt);
+  const head = (kind ? HEAD_H : 0) + (stops ? STOPS_H : 0);
   const style = {
     left: Math.max(EDGE, Math.min(at.x, window.innerWidth - WIDTH - EDGE)),
     top: Math.max(EDGE, Math.min(at.y, window.innerHeight - count * ITEM_H - head - (styled ? STYLE_H : 0) - 2 * EDGE)),
@@ -126,15 +130,18 @@ function MenuBody({ at }: { at: DeskMenuAt }) {
     setView({ renaming: { deskId: at.deskId, fromKeyboard: at.fromKeyboard } });
   };
   const headId = `desk-menu-kind-${at.deskId}`;
+  const stopsId = `desk-menu-stops-${at.deskId}`;
+  const described = [kind ? headId : null, stops ? stopsId : null].filter(Boolean).join(' ');
 
   return (
     <>
       {/* A click away only dismisses: this takes it, so the canvas and the chrome under it never hear of it.
           It closes on the click, not the press, or the rest of the click would land on what's underneath. */}
       <div className="desk-menu-away" onClick={dismiss} onWheel={dismiss} onContextMenu={(e) => { e.preventDefault(); dismiss(); }} />
-      <div ref={ref} className="menu desk-menu" role="menu" tabIndex={-1} aria-label={at.itemId ? 'App' : 'Desk'} {...(kind ? { 'aria-describedby': headId } : {})} style={style}>
+      <div ref={ref} className="menu desk-menu" role="menu" tabIndex={-1} aria-label={at.itemId ? 'App' : 'Desk'} {...(described ? { 'aria-describedby': described } : {})} style={style}>
         {/* Said as the menu's description, so it isn't a stray item among the menu's own. */}
         {kind && <p id={headId} className="desk-menu-head" aria-hidden="true" title={kind}>{kind}</p>}
+        {stops && <p id={stopsId} className="desk-menu-stops" aria-hidden="true" data-testid="desk-menu-stops">{stops}</p>}
         {!at.itemId && (
           <button type="button" role="menuitem" className="menu-item" disabled={!needsCleanup(desk)} onClick={() => run(() => cleanUpDesk(at.deskId))}>Clean up</button>
         )}

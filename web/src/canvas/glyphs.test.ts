@@ -1,7 +1,7 @@
 // The canvas glyphs, drawn into a context that records what it was asked to do.
 import { describe, expect, it } from 'vitest';
 import { THEMES } from '../theme/tokens';
-import { drawGlyph } from './glyphs';
+import { drawEtchIcon, drawGlyph } from './glyphs';
 
 interface Mark {
   op: string;
@@ -41,4 +41,21 @@ describe('the Commons glyph', () => {
       expect(fills.filter((f) => f.fill === t.glyph.soft).length).toBeGreaterThanOrEqual(7);
     });
   }
+});
+
+describe('the carousel switch\'s glyph', () => {
+  it('is a landscape card between two thin, short slivers with a clear gap to each, spanning 4.5 to 14.5', () => {
+    const { ctx, marks } = recorder();
+    drawEtchIcon(ctx, 'carousel', '#000');
+    const [mid, left, right] = marks.filter((m) => m.op === 'roundRect').map((m) => ({ x: m.args[0]!, y: m.args[1]!, w: m.args[2]!, h: m.args[3]! }));
+    expect(mid!.w).toBeGreaterThan(mid!.h * 1.05); // wider than tall: a card, never a bar
+    for (const side of [left!, right!]) {
+      expect(side.w).toBeLessThanOrEqual(1.5); // thin
+      expect(side.h).toBeLessThan(mid!.h); // and short
+    }
+    expect(mid!.x - (left!.x + left!.w)).toBeGreaterThanOrEqual(1);
+    expect(right!.x - (mid!.x + mid!.w)).toBeGreaterThanOrEqual(1);
+    expect(left!.x).toBe(4.5);
+    expect(right!.x + right!.w).toBeCloseTo(14.5, 5);
+  });
 });

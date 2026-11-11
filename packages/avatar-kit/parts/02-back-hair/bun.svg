@@ -1,0 +1,4 @@
+<g data-part="bun">
+  <circle cx="128" cy="45" r="16.5" fill="{{hair}}"/>
+  <g data-min-size="40" fill="none" stroke="{{hairStep}}" stroke-width="2.4" stroke-linecap="round" stroke-linejoin="round"><path d="M115.5,41 C120,33.5 135,33 140,40.5"/><path d="M114,49 C121,55.5 136,54.5 141.5,46.5"/><path d="M121,44.5 C124,41 132,41 135,44"/></g>
+</g>

@@ -1,7 +1,7 @@
 import { describe, expect, it } from 'vitest';
 import {
   clampMove, clampResize, cornerInset, defaultDesk, deskBounds, deskFromGrid, deskGeometry, detailLevel, ETCH_BASELINE, ETCH_DEPTH, ETCH_ICON, ETCH_SIZE, fitDeskSize, fitNameText, fittedLevel, fitToWidth, G, HIDDEN_MIN, hiddenItems, iconGlyphSize, iconsFit, iconsLeft, isPlaced, levelSize, minDeskSize, MIN_NAME_CHARS, nameRoom, nearestFree, nudgeMove, nudgeResize, overlaps, overOthers, packItems,
-  panelH, panelW, placeNewDesk, restacked, roundUnit, settleDesk, slotRight, countSlotW, span, stackOrder, statusClear, statusRoom, STRIP, stripTarget, tidyDesk, tidyOrder, tidyPack, unionBounds, withStack, workArea,
+  panelH, panelW, placeNewDesk, restacked, roundUnit, settleDesk, slotRight, countSlotW, span, stackOrder, statusClear, statusRoom, STRIP, stripTarget, STATUS_LONGEST, switchFits, tidyDesk, tidyOrder, tidyPack, unionBounds, withStack, workArea,
   type AppId, type DetailLevel, type LayoutDesk,
 } from './layout';
 
@@ -34,7 +34,10 @@ describe('detail levels (ADR 0062)', () => {
     [352, 168, 'wide'],
     [352, 351.99, 'wide'],
     [352, 352, 'large'],
-    [900, 900, 'large'],
+    [535.99, 900, 'large'],
+    [900, 443.99, 'large'],
+    [536, 444, 'open'],
+    [900, 900, 'open'],
   ])('%f x %f is %s', (w, h, level) => {
     expect(detailLevel(w, h)).toBe(level);
   });
@@ -45,7 +48,7 @@ describe('detail levels (ADR 0062)', () => {
   });
 
   it('each grid level has the size that level starts at', () => {
-    for (const level of ['icon', 'small', 'wide', 'large'] as const) {
+    for (const level of ['icon', 'small', 'wide', 'large', 'open'] as const) {
       const { w, h } = levelSize(level);
       expect(detailLevel(w, h)).toBe(level);
     }
@@ -709,6 +712,39 @@ describe('the strip', () => {
     expect(statusRoom(584, STRIP.textX, 0.5, 28)).toBe(584 - 40 - 56);
     expect(statusRoom(584, STRIP.textX, 2, 28)).toBe(584 - 40 - 14);
     expect(statusRoom(584, STRIP.textX + STRIP.markW, 1, 28)).toBe(584 - 60 - 28);
+  });
+
+  it('the carousel\'s switch is next to the grip, a gap apart, and the rest of the row moves along one slot for it', () => {
+    expect(slotRight('carousel', false)).toBe(42);
+    expect(slotRight('cleanup', false, 0, true)).toBe(78);
+    expect(slotRight('count', false, 28, true)).toBe(114);
+    expect(slotRight('count', false, 0, true)).toBe(78);
+    expect(slotRight('carousel', true)).toBe(44);
+    expect(slotRight('cleanup', true, 0, true)).toBe(88);
+    // Its slot is held at rest, like the grip's, so it's in the same place in both modes and the name never moves for it.
+    expect(iconsLeft(false, 0, 0, false, true)).toBe(42 + 28);
+    expect(iconsLeft(false, 0, 28, true, true)).toBe(114 + 46);
+    expect(statusClear(false, 0, 0, false, true)).toBe(42 + 22);
+    for (const touch of [false, true]) {
+      const gap = touch ? 0 : STRIP.gap;
+      expect(slotRight('carousel', touch) - (slotRight('grip', touch) + stripTarget(touch))).toBe(gap);
+      expect(slotRight('cleanup', touch, 0, true) - (slotRight('carousel', touch) + stripTarget(touch))).toBe(gap);
+    }
+  });
+
+  it('the switch is in the row only from 300 units wide, where the icons show, whatever the zoom', () => {
+    expect(switchFits(300, 72)).toBe(true);
+    expect(switchFits(299.9, 236)).toBe(false);
+    expect(switchFits(1000, 71.9)).toBe(false);
+  });
+
+  it('and only where the longest status line still fits beside it, so the smallest desks keep the line before the switch', () => {
+    for (const w of [G.minDeskW, 300, 584, 1200]) {
+      if (!switchFits(w, 236)) continue;
+      expect(statusRoom(w, STRIP.textX, 1, statusClear(false, 0, 0, false, true)), `${w}`).toBeGreaterThanOrEqual(STATUS_LONGEST);
+    }
+    expect(switchFits(584, 236)).toBe(true); // a new desk has it
+    expect(switchFits(G.minDeskW, 124)).toBe(false); // the smallest keeps its status line
   });
 
   it('the longest status line fits the smallest desk at the smallest zoom where the icons show', () => {

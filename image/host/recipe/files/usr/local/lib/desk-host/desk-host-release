@@ -1,25 +1,31 @@
 #!/usr/bin/python3 -I
-"""desk-host-release: the host's release store, filled only from verified artifacts (ADR 0072 sections 2 and 13, RC-01).
+"""desk-host-release: the host's release store, filled only from verified artifacts (ADR 0072 sections 2 and 13, RC-01; ADR 0078 1.3, 1.4).
 
-  desk-host-release install <component>-<version>.tgz   check, unpack, make current
-  desk-host-release verify                              every pinned release is in the store, as installed
+  desk-host-release install <component>-<version>.tgz   the bake's: by releases.pin's hash, unpacked, made current
+  desk-host-release install --manifest <manifest> --signature <sig> <component>-<version>.tgz
+                                                        a batch's (desk-host-batch fetch): the signature checked again against the
+                                                        host's batch keys, the hash the manifest's; installed beside current, no
+                                                        link moved (the candidate is batches.py's)
+  desk-host-release verify                              the store's links are the host's batch state's (releases.pin's before any
+                                                        batch), each linked release as installed (artifact and tree hashes)
   desk-host-release list
 
-A host takes each desk component only by the hash in its own releases.pin (/etc/desk-host/releases.pin, the desk image's
-recipe/releases.pin baked into the host image), the same rule the desk image uses: the artifact's sha256 must be the one
-pinned for its component and version, or nothing is unpacked. deskd, desk-agent and desk-notebook ship a Docker image
-(image.tar, `docker save`'s OCI layout); the host has no Docker, so this unpacks the layers itself, in order, with their
-whiteouts, each layer blob checked against its own digest and the image ID taken from the config blob's digest. Each
-member goes through tarfile's 'tar' filter: nothing outside the release's root, no device files, no set-id bits. The tree
-is host root's (the image's own owners don't matter: a sandbox runs it read-only, joined to its desk's user namespace).
-desk-rtc and desk-stream ship a native release directory, kept as it is. A release goes in under a new name and is renamed
-into place, then `current` is swapped by rename, so a crash leaves the old one or none. desk-host copies `current` into
-each slot at prepare; nothing a desk writes is ever read here (the desk's ma-update never names a path to the host).
-Each release keeps artifact.sha256 (the pin's) and tree.sha256 (a hash of every path, mode, owner and content), which
-`verify` recomputes.
+A host takes a desk component only by a hash it trusts: its own releases.pin (/etc/desk-host/releases.pin, the desk image's
+recipe/releases.pin baked into the host image), or a batch manifest signed by a key in /etc/desk-host/batch-keys (ADR 0078). The
+artifact's sha256 must be that one, or nothing is unpacked; a version already in the store from another artifact is refused and
+never replaced (exit 3); the same artifact again is left as it is. deskd, desk-agent and desk-notebook ship a Docker image (image.tar,
+`docker save`'s layout); the host has no Docker, so this unpacks the layers itself, in order, with their whiteouts, each layer
+checked against its own digest and the image ID taken from the config blob's digest. STREAMED (ADR 0078 finding 1): the .tgz's
+image.tar goes to the host's root beside the download, then each layer is read in 1 MiB pieces, hashed as it's extracted (its
+whiteouts in a pass of their headers first), and every write is paced for desk-host-upd's io.max (templates.Pacer): no layer is
+ever read whole into memory. Each member goes through tarfile's 'tar' filter: nothing outside the release's root, no device files,
+no set-id bits. The tree is host root's (the image's own owners don't matter: a sandbox runs it read-only, joined to its desk's user
+namespace). desk-rtc and desk-stream ship a native release directory, kept as it is. A release goes in under a new name and is
+renamed into place, so a crash leaves the old one or none. desk-host copies a release into each slot's rel/; nothing a desk writes
+is ever read here. Each release keeps artifact.sha256 and tree.sha256 (a hash of every path, mode, owner and content), which
+`verify` recomputes. Exit 3 refused (a hash, a signature, a version from another artifact), 1 failed.
 """
 import hashlib
-import io
 import json
 import os
 import shutil
@@ -28,17 +34,27 @@ import sys
 import tarfile
 import time
 
-STORE = "/srv/desk-host/releases"
-PIN = "/etc/desk-host/releases.pin"
+sys.dont_write_bytecode = True
+sys.path.insert(0, os.path.dirname(os.path.abspath(__file__)))
+import batchsig  # noqa: E402
+import templates  # noqa: E402
+
+E = os.environ.get
+STORE = E("DESK_HOST_RELEASES", "/srv/desk-host/releases")
+PIN = E("DESK_HOST_RELEASE_PIN", "/etc/desk-host/releases.pin")
+STAGE = E("DESK_HOST_RELEASE_STAGE", "/var/lib/desk-host/dl")      # the host's root: an image tar never lands on the store
 IMAGE_COMPONENTS = {"deskd", "desk-agent", "desk-notebook"}
 NATIVE_COMPONENTS = {"desk-rtc", "desk-stream"}
 ENV_KEYS = ("JAVA_HOME", "PATH", "LANG", "LANGUAGE", "LC_ALL", "JAVA_VERSION", "NODE_VERSION", "DESK_NOTEBOOK_VERSION")
 MOUNTPOINTS = ("data", "run", "tmp", "desk-host", "proc", "sys", "dev")   # a read-only root needs them to exist
+CHUNK = 1 << 20
+WHOLE = E("DESK_HOST_RELEASE_WHOLE_READ") == "1" and templates.test_mode()   # verify's memory mutation: the whole-layer read put back
+ROOT = os.geteuid() == 0   # always on a host; the unit tests' temporary stores (never root) keep their own owner
 
 
 def die(msg):
     print(f"desk-host-release: REFUSED: {msg}", file=sys.stderr)
-    sys.exit(1)
+    sys.exit(3)
 
 
 def pins():
@@ -56,7 +72,7 @@ def pins():
 def sha256_file(path):
     h = hashlib.sha256()
     with open(path, "rb") as fh:
-        for b in iter(lambda: fh.read(1 << 20), b""):
+        for b in iter(lambda: fh.read(CHUNK), b""):
             h.update(b)
     return h.hexdigest()
 
@@ -97,63 +113,212 @@ def remove(path):
         shutil.rmtree(path)
 
 
-def unpack_image(image_tar, rootfs):
+class HashingReader:
+    """A layer's raw bytes, hashed as tarfile reads them (1 MiB at most at a time)."""
+
+    def __init__(self, f):
+        self.f, self.h, self.n = f, hashlib.sha256(), 0
+
+    def read(self, n=-1):
+        b = self.f.read(CHUNK if n is None or n < 0 or n > CHUNK else n)
+        self.h.update(b)
+        self.n += len(b)
+        return b
+
+    def drain(self):
+        while self.read(CHUNK):
+            pass
+        return self.h.hexdigest()
+
+
+def write_member(src, path, size, mode, pace):
+    """A regular file written in 1 MiB pieces, paced, never through a link."""
+    fd = os.open(path, os.O_WRONLY | os.O_CREAT | os.O_EXCL | os.O_NOFOLLOW | os.O_CLOEXEC, 0o600)
+    try:
+        left = size
+        while left > 0:
+            b = src.read(min(CHUNK, left))
+            if not b:
+                raise OSError("a member ended early")
+            os.write(fd, b)
+            left -= len(b)
+            pace.wrote(len(b))
+        os.fchmod(fd, mode)
+    finally:
+        os.close(fd)
+
+
+def stream_files(tf, dest, pace, name, stage=None):
+    """Every member of an open stream tarfile into dest through the 'tar' filter, paced; a member named stage[0] goes to stage[1]
+    instead, paced by stage[2] (the image tar, to the host's root)."""
+    dirs = []
+    while True:
+        m = tf.next()
+        if m is None:
+            break
+        tf.members.clear()   # a stream's headers aren't kept: a layer of 50,000 paths isn't held whole
+        nm = m.name.lstrip("./") if m.name not in (".", "./") else "."
+        if stage and nm == stage[0]:
+            if not m.isfile():
+                die(f"{name}: {nm} isn't a file")
+            write_member(tf.extractfile(m), stage[1], m.size, 0o600, stage[2])
+            continue
+        if not (m.isfile() or m.isdir() or m.issym()):
+            die(f"{name}: unexpected member {m.name}")   # the artifact itself: files, directories and links only
+        try:
+            m = tarfile.tar_filter(m, dest)
+        except tarfile.FilterError as e:
+            die(f"{name}: {m.name}: {type(e).__name__}")
+        t = safe_target(dest, m.name) if m.name not in (".", "./", "") else dest
+        if t is None:
+            die(f"{name}: {m.name} outside the root")
+        if t == dest:
+            continue
+        if os.path.lexists(t) and not (m.isdir() and os.path.isdir(t) and not os.path.islink(t)):
+            remove(t)   # a later layer replaces what's there
+        parent = os.path.dirname(t)
+        if not os.path.isdir(parent):
+            os.makedirs(parent, mode=0o755)
+        if safe_target(dest, os.path.relpath(parent, dest)) is None:
+            die(f"{name}: {m.name}'s directory leaves the root")
+        if m.isdir():
+            if not os.path.isdir(t):
+                os.mkdir(t, 0o700)
+            dirs.append((t, m.mode & 0o7777))
+        elif m.isfile():
+            write_member(tf.extractfile(m), t, m.size, m.mode & 0o7777, pace)
+        elif m.issym():
+            os.symlink(m.linkname, t)
+        elif m.islnk():
+            src = safe_target(dest, m.linkname)
+            if src is None or not os.path.lexists(src):
+                die(f"{name}: {m.name} links to {m.linkname}, outside the root or missing")
+            os.link(src, t, follow_symlinks=False)
+    for t, mode in reversed(dirs):
+        os.chmod(t, mode)
+    pace.flush()
+
+
+def whiteouts(fileobj, rootfs, name):
+    """A layer's whiteouts applied first: they remove what lower layers put there (only their headers are read)."""
+    with tarfile.open(fileobj=fileobj, mode="r|*") as lt:
+        while True:
+            m = lt.next()
+            if m is None:
+                break
+            lt.members.clear()
+            base = os.path.basename(m.name)
+            if not base.startswith(".wh."):
+                continue
+            parent = safe_target(rootfs, os.path.dirname(m.name))
+            if parent is None:
+                die(f"{name}: whiteout {m.name} outside the root")
+            if base == ".wh..wh..opq":
+                if os.path.isdir(parent) and not os.path.islink(parent):
+                    for c in os.listdir(parent):
+                        remove(os.path.join(parent, c))
+            else:
+                t = os.path.join(parent, base[4:])
+                if os.path.lexists(t):
+                    remove(t)
+
+
+def unpack_image(image_tar, rootfs, pace):
     """docker save's layout: manifest.json names the config and the layers in order. Returns (image id, env lines)."""
-    with tarfile.open(image_tar) as outer:
+    with tarfile.open(image_tar) as outer:   # the uncompressed image tar on the host's root: seekable, its index is a few entries
         members = {m.name.lstrip("./"): m for m in outer.getmembers()}
-        manifest = json.load(outer.extractfile(members["manifest.json"]))
+
+        def small(path, limit=4 << 20):
+            m = members.get(path.lstrip("./"))
+            if m is None or not m.isfile() or m.size > limit:
+                die(f"{image_tar}: {path} missing or too big")
+            return outer.extractfile(m).read()
+
+        manifest = json.loads(small("manifest.json"))
         if len(manifest) != 1:
             die(f"{image_tar}: {len(manifest)} images in one release")
         man = manifest[0]
-
-        def blob(path):
-            data = outer.extractfile(members[path.lstrip("./")]).read()
-            want = path.rsplit("/", 1)[-1]
-            if hashlib.sha256(data).hexdigest() != want:
-                die(f"{image_tar}: {path} doesn't hash to its own name")
-            return data
-
-        config = blob(man["Config"])
+        config = small(man["Config"])
+        if hashlib.sha256(config).hexdigest() != man["Config"].rsplit("/", 1)[-1]:
+            die(f"{image_tar}: {man['Config']} doesn't hash to its own name")
         image_id = "sha256:" + hashlib.sha256(config).hexdigest()
         env = [e for e in json.loads(config)["config"].get("Env", []) if e.split("=", 1)[0] in ENV_KEYS]
         os.makedirs(rootfs, mode=0o755)
         for layer_path in man["Layers"]:
-            data = blob(layer_path)
-            if data[:2] == b"\x1f\x8b":
-                import gzip
-                data = gzip.decompress(data)
-            with tarfile.open(fileobj=io.BytesIO(data)) as layer:
-                ms = layer.getmembers()
-                for m in ms:   # whiteouts first: they remove what lower layers put there
-                    base = os.path.basename(m.name)
-                    if not base.startswith(".wh."):
-                        continue
-                    parent = safe_target(rootfs, os.path.dirname(m.name))
-                    if parent is None:
-                        die(f"{layer_path}: whiteout {m.name} outside the root")
-                    if base == ".wh..wh..opq":
-                        if os.path.isdir(parent) and not os.path.islink(parent):
-                            for c in os.listdir(parent):
-                                remove(os.path.join(parent, c))
-                    else:
-                        t = os.path.join(parent, base[4:])
-                        if os.path.lexists(t):
-                            remove(t)
-                rest = [m for m in ms if not os.path.basename(m.name).startswith(".wh.")]
-                for m in rest:
-                    if m.isdev():
-                        continue   # no device files in a release root
-                    t = safe_target(rootfs, m.name)
-                    if t is None:
-                        die(f"{layer_path}: {m.name} outside the root")
-                    if os.path.lexists(t) and not (m.isdir() and os.path.isdir(t) and not os.path.islink(t)):
-                        remove(t)   # a later layer replaces what's there
-                layer.extractall(rootfs, members=rest, numeric_owner=True, filter="tar")
+            lm = members.get(layer_path.lstrip("./"))
+            if lm is None or not lm.isfile():
+                die(f"{image_tar}: no layer {layer_path}")
+            want = layer_path.rsplit("/", 1)[-1]
+            if WHOLE:   # the old way, read whole (a test host's mutation only): it can't fit desk-host-upd's memory.max
+                data = outer.extractfile(lm).read()
+                if hashlib.sha256(data).hexdigest() != want:
+                    die(f"{image_tar}: {layer_path} doesn't hash to its own name")
+                import io
+                src = lambda: io.BytesIO(data)   # noqa: E731
+            else:
+                src = lambda: outer.extractfile(lm)   # noqa: E731
+            whiteouts(src(), rootfs, layer_path)
+            hr = HashingReader(src())
+            with tarfile.open(fileobj=hr, mode="r|*") as lt:
+                stream_layer(lt, rootfs, pace, layer_path)
+            if hr.drain() != want:
+                die(f"{image_tar}: {layer_path} doesn't hash to its own name")
+    return image_id, env
+
+
+def stream_layer(lt, rootfs, pace, name):
+    """One layer's members, whiteouts left out, through stream_files' rules."""
+    dirs = []
+    while True:
+        m = lt.next()
+        if m is None:
+            break
+        lt.members.clear()
+        if os.path.basename(m.name).startswith(".wh."):
+            continue
+        if m.isdev() or m.isfifo():
+            continue
+        try:
+            m = tarfile.tar_filter(m, rootfs)
+        except tarfile.FilterError as e:
+            die(f"{name}: {m.name}: {type(e).__name__}")
+        t = safe_target(rootfs, m.name) if m.name.strip("./") else rootfs
+        if t is None:
+            die(f"{name}: {m.name} outside the root")
+        if t == rootfs:
+            continue
+        if os.path.lexists(t) and not (m.isdir() and os.path.isdir(t) and not os.path.islink(t)):
+            remove(t)
+        parent = os.path.dirname(t)
+        if not os.path.isdir(parent):
+            os.makedirs(parent, mode=0o755)
+        if m.isdir():
+            if not os.path.isdir(t):
+                os.mkdir(t, 0o700)
+            dirs.append((t, m.mode & 0o7777))
+        elif m.isfile():
+            write_member(lt.extractfile(m), t, m.size, m.mode & 0o7777, pace)
+        elif m.issym():
+            os.symlink(m.linkname, t)
+        elif m.islnk():
+            src = safe_target(rootfs, m.linkname)
+            if src is None or not os.path.lexists(src):
+                die(f"{name}: {m.name} links to {m.linkname}, outside the root or missing")
+            if os.path.lexists(t):
+                remove(t)
+            os.link(src, t, follow_symlinks=False)
+    for t, mode in reversed(dirs):
+        os.chmod(t, mode)
+    pace.flush()
+
+
+def finish_tree(rootfs):
     for dirpath, dirnames, filenames in os.walk(rootfs):   # host root's, no set-id bits, no write for others
         for name in dirnames + filenames + ["."]:
             p = os.path.normpath(os.path.join(dirpath, name))
             st = os.lstat(p)
-            os.lchown(p, 0, 0)
+            if ROOT:
+                os.lchown(p, 0, 0)
             if not stat.S_ISLNK(st.st_mode):
                 os.chmod(p, stat.S_IMODE(st.st_mode) & ~(stat.S_ISUID | stat.S_ISGID | stat.S_IWOTH))
     for d in MOUNTPOINTS:
@@ -161,100 +326,198 @@ def unpack_image(image_tar, rootfs):
         if os.path.islink(p):
             os.unlink(p)
         os.makedirs(p, exist_ok=True)
-    return image_id, env
 
 
-def install(tgz):
-    name = os.path.basename(tgz)
+def component_of(name, names):
     if not name.endswith(".tgz"):
         die(f"{name}: not <component>-<version>.tgz")
-    pinned = pins()
-    comp = next((c for c in sorted(pinned, key=len, reverse=True) if name.startswith(c + "-")), None)
+    comp = next((c for c in sorted(names, key=len, reverse=True) if name.startswith(c + "-")), None)
     if comp is None or comp not in IMAGE_COMPONENTS | NATIVE_COMPONENTS:
-        die(f"{name}: no component of the store's in {PIN}")
-    ver = name[len(comp) + 1:-4]
-    if pinned[comp][0] != ver:
-        die(f"{comp} {ver} isn't pinned ({PIN} pins {comp} {pinned[comp][0]})")
-    got = sha256_file(tgz)
-    if got != pinned[comp][1]:
-        die(f"{name} hashes to {got[:16]}..., {PIN} pins {pinned[comp][1][:16]}...")
+        die(f"{name}: not a component of the store's")
+    return comp, name[len(comp) + 1:-4]
+
+
+def install(tgz, want_sha, comp, ver, make_current, how):
+    name = os.path.basename(tgz)
     os.makedirs(f"{STORE}/{comp}", mode=0o755, exist_ok=True)
     final = f"{STORE}/{comp}/{ver}"
+    if os.path.lexists(final):   # ADR 0078 1.3 step 3: never replaced
+        have = (open(f"{final}/artifact.sha256").read().strip() if os.path.isfile(f"{final}/artifact.sha256") else None)
+        if have != want_sha:
+            die(f"{comp} {ver} is in the store from another artifact ({str(have)[:12]}...); {how} says {want_sha[:12]}...: never replaced")
+        if make_current:
+            link = f"{STORE}/{comp}/current"
+            if os.path.lexists(link + ".new"):
+                os.unlink(link + ".new")
+            os.symlink(ver, link + ".new")
+            os.rename(link + ".new", link)
+        print(f"desk-host-release: {comp} {ver} is in the store already, from the same artifact ({want_sha[:12]}): left as it is")
+        return
+    got = sha256_file(tgz)
+    if got != want_sha:
+        die(f"{name} hashes to {got[:16]}..., {how} says {want_sha[:16]}...")
     new = f"{final}.new.{os.getpid()}"
     for stale in os.listdir(f"{STORE}/{comp}"):
         if ".new." in stale:
             shutil.rmtree(f"{STORE}/{comp}/{stale}")
     os.mkdir(new, 0o755)
+    os.makedirs(STAGE, mode=0o700, exist_ok=True)
+    for stale in os.listdir(STAGE):   # an unpack killed part way (an OOM, a reboot) left its image tar here
+        if stale.startswith(f"release-{comp}-"):
+            templates.rm_tree(f"{STAGE}/{stale}")
+    stage = f"{STAGE}/release-{comp}-{os.getpid()}"
+    templates.rm_tree(stage)
+    os.mkdir(stage, 0o700)
     t0 = time.time()
-    with tarfile.open(tgz) as tf:
-        ms = tf.getmembers()
-        for m in ms:
-            if not (m.isfile() or m.isdir() or m.issym()) or safe_target(new, m.name) is None:
-                die(f"{name}: unexpected member {m.name}")
-        tf.extractall(new, members=ms, numeric_owner=True, filter="tar")
-    image_id = None
-    if comp in IMAGE_COMPONENTS:
-        if not os.path.isfile(f"{new}/image.tar"):
-            die(f"{name}: no image.tar")
-        image_id, env = unpack_image(f"{new}/image.tar", f"{new}/rootfs")
-        os.unlink(f"{new}/image.tar")
-        with open(f"{new}/image-id", "w") as fh:
-            fh.write(image_id + "\n")
-        with open(f"{new}/image.env", "w") as fh:
-            fh.write("\n".join(env) + "\n")
+    fsfd = os.open(new, os.O_RDONLY | os.O_DIRECTORY | os.O_CLOEXEC)
+    rootfd = os.open(stage, os.O_RDONLY | os.O_DIRECTORY | os.O_CLOEXEC)
+    try:
+        pace = templates.Pacer(fs_fd=fsfd)
+        pace_root = templates.Pacer(fs_fd=rootfd)
+        image_tar = f"{stage}/image.tar"
+        with tarfile.open(tgz, mode="r|gz") as tf:   # a stream: the .tgz is read once, in pieces
+            stream_files(tf, new, pace, name, stage=("image.tar", image_tar, pace_root) if comp in IMAGE_COMPONENTS else None)
+            pace_root.flush()
+        image_id = None
+        if comp in IMAGE_COMPONENTS:
+            if not os.path.isfile(image_tar):
+                die(f"{name}: no image.tar")
+            image_id, env = unpack_image(image_tar, f"{new}/rootfs", pace)
+            os.unlink(image_tar)
+            with open(f"{new}/image-id", "w") as fh:
+                fh.write(image_id + "\n")
+            with open(f"{new}/image.env", "w") as fh:
+                fh.write("\n".join(env) + "\n")
+            finish_tree(f"{new}/rootfs")
+    finally:
+        os.close(fsfd)
+        os.close(rootfd)
+        templates.rm_tree(stage)
     for dirpath, dirnames, filenames in os.walk(new):   # the release's own files: host root's, nobody else may write
         if os.path.join(new, "rootfs") in (dirpath, os.path.dirname(dirpath)) or dirpath.startswith(os.path.join(new, "rootfs") + os.sep):
             continue
-        for q in [os.path.join(dirpath, x) for x in dirnames + filenames]:
+        for q in [os.path.join(dirpath, x) for x in dirnames + filenames] + ([new] if dirpath == new else []):
             if q == os.path.join(new, "rootfs"):
                 continue
             st = os.lstat(q)
-            os.lchown(q, 0, 0)
+            if ROOT:
+                os.lchown(q, 0, 0)
             if not stat.S_ISLNK(st.st_mode):
                 os.chmod(q, stat.S_IMODE(st.st_mode) & ~(stat.S_ISUID | stat.S_ISGID | stat.S_IWGRP | stat.S_IWOTH))
+    os.chmod(new, 0o755)
     with open(f"{new}/artifact.sha256", "w") as fh:
         fh.write(got + "\n")
     th = tree_hash(new)
     with open(f"{new}/tree.sha256", "w") as fh:
         fh.write(th + "\n")
-    if os.path.lexists(final):
-        shutil.rmtree(final)
     os.rename(new, final)
-    link = f"{STORE}/{comp}/current"
-    os.symlink(ver, link + ".new")
-    os.rename(link + ".new", link)
-    print(f"desk-host-release: {comp} {ver} in the store (sha256 {got[:12]} as pinned{', image ' + image_id[:19] if image_id else ''}, tree {th[:12]}) in {time.time() - t0:.0f} s")
+    if make_current:
+        link = f"{STORE}/{comp}/current"
+        if os.path.lexists(link + ".new"):
+            os.unlink(link + ".new")
+        os.symlink(ver, link + ".new")
+        os.rename(link + ".new", link)
+    peak = None
+    try:
+        peak = int(open("/sys/fs/cgroup" + open("/proc/self/cgroup").read().split("::", 1)[1].strip() + "/memory.peak").read())
+    except (OSError, ValueError, IndexError):
+        pass
+    print(f"desk-host-release: {comp} {ver} in the store (sha256 {got[:12]} as {how}{', image ' + image_id[:19] if image_id else ''}, "
+          f"tree {th[:12]}{', current' if make_current else ''}) in {time.time() - t0:.0f} s{f'; memory.peak {peak >> 20} MiB' if peak else ''}")
+
+
+def install_pinned(tgz):
+    pinned = pins()
+    comp, ver = component_of(os.path.basename(tgz), pinned)
+    if pinned[comp][0] != ver:
+        die(f"{comp} {ver} isn't pinned ({PIN} pins {comp} {pinned[comp][0]})")
+    install(tgz, pinned[comp][1], comp, ver, True, "pinned")
+
+
+def install_manifest(tgz, mpath, spath):
+    """ADR 0078 1.3 step 6: the hash from the verified manifest. The signature is checked here again, against the host's batch keys."""
+    try:
+        mb = batchsig.read_limited(mpath, batchsig.MAX_MANIFEST)
+        m, key = batchsig.verify(mb, batchsig.read_limited(spath, 4096))
+    except (batchsig.Refused, OSError) as e:
+        die(f"the batch manifest: {e}")
+    comps = {c["name"]: c for c in m["components"]}
+    comp, ver = component_of(os.path.basename(tgz), comps)
+    c = comps[comp]
+    if c["version"] != ver:
+        die(f"{comp} {ver} isn't the manifest's ({c['version']})")
+    install(tgz, c["sha256"], comp, ver, False, f"batch {m['seq']} says ({os.path.basename(key)})")
+
+
+def expected():
+    """{comp: {link: (version, sha256)}} the store's links must be: the host's batch state, or releases.pin before any batch."""
+    import batches
+    st = batches.load_state()
+    out = {}
+    for comp in sorted(IMAGE_COMPONENTS | NATIVE_COMPONENTS):
+        e = {}
+        cur = batches.current_map(st).get(comp)
+        if cur:
+            e["current"] = (cur["version"], cur["sha256"])
+        for name in ("previous", "candidate"):
+            x = ((st.get(name) or {}).get("components") or {}).get(comp)
+            if x and (name != "previous" or x["version"] != (cur or {}).get("version")):
+                e[name] = (x["version"], x["sha256"])
+        out[comp] = e
+    return out, st
 
 
 def verify():
     bad = 0
-    for comp, (ver, sha) in sorted(pins().items()):
-        if comp not in IMAGE_COMPONENTS | NATIVE_COMPONENTS:
+    want, st = expected()
+    for comp, links in want.items():
+        if "current" not in links:
+            if comp in ("deskd", "desk-agent", "desk-notebook", "desk-rtc", "desk-stream") and os.path.lexists(f"{STORE}/{comp}"):
+                print(f"FAIL release {comp}: the store has it, and neither the pin nor the host's batch names it")
+                bad = 1
             continue
-        d = f"{STORE}/{comp}/current"
-        try:
-            cur = os.readlink(d)
-            a = open(f"{d}/artifact.sha256").read().strip()
-            t = open(f"{d}/tree.sha256").read().strip()
-        except OSError as e:
-            print(f"FAIL release {comp}: {e}")
-            bad = 1
-            continue
-        now = tree_hash(os.path.realpath(d))
-        ok = cur == ver and a == sha and t == now
-        print(f"{'PASS' if ok else 'FAIL'} release {comp}: current {cur} (pinned {ver}), artifact {a[:12]} (pinned {sha[:12]}), tree {now[:12]} (recorded {t[:12]})")
-        bad |= not ok
+        for name in ("current", "previous", "candidate"):
+            d = f"{STORE}/{comp}/{name}"
+            got = os.readlink(d) if os.path.islink(d) else None
+            if name not in links:
+                if name == "candidate" and got is not None:
+                    print(f"FAIL release {comp}: a candidate link ({got}) the host's state doesn't name")
+                    bad = 1
+                continue
+            ver, sha = links[name]
+            if got is None and name == "previous":
+                print(f"FAIL release {comp}: no previous link (the state says {ver})")
+                bad = 1
+                continue
+            try:
+                a = open(f"{d}/artifact.sha256").read().strip()
+                t = open(f"{d}/tree.sha256").read().strip()
+            except OSError as e:
+                print(f"FAIL release {comp} {name}: {e}")
+                bad = 1
+                continue
+            now = tree_hash(os.path.realpath(d))
+            ok = got == ver and a == sha and t == now
+            print(f"{'PASS' if ok else 'FAIL'} release {comp} {name}: {got} (wanted {ver}), artifact {a[:12]} (wanted {str(sha)[:12]}), "
+                  f"tree {now[:12]} (recorded {t[:12]})")
+            bad |= not ok
+    print(f"state: {'batch ' + str(st['current']['seq']) if st.get('current') else 'the pin (no batch applied)'}"
+          f"{', candidate ' + str(st['candidate']['seq']) if st.get('candidate') else ''}")
     return bad
 
 
 def main():
-    if len(sys.argv) == 3 and sys.argv[1] == "install":
-        install(sys.argv[2])
-    elif sys.argv[1:] == ["verify"]:
+    a = sys.argv[1:]
+    if len(a) == 2 and a[0] == "install":
+        install_pinned(a[1])
+    elif len(a) == 6 and a[0] == "install" and a[1] == "--manifest" and a[3] == "--signature":
+        install_manifest(a[5], a[2], a[4])
+    elif a == ["verify"]:
         sys.exit(verify())
-    elif sys.argv[1:] == ["list"]:
+    elif a == ["list"]:
         for comp in sorted(os.listdir(STORE)):
-            print(comp, os.readlink(f"{STORE}/{comp}/current") if os.path.islink(f"{STORE}/{comp}/current") else "-")
+            links = {n: os.readlink(f"{STORE}/{comp}/{n}") for n in ("current", "previous", "candidate") if os.path.islink(f"{STORE}/{comp}/{n}")}
+            print(comp, " ".join(f"{n}={v}" for n, v in links.items()) or "-")
     else:
         raise SystemExit(__doc__)
 

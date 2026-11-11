@@ -1,0 +1,4 @@
+<g data-part="eyes-soft">
+  <g data-eye="left"><ellipse cx="110" cy="119" rx="10.5" ry="6.6" fill="{{sclera}}"/><circle cx="110" cy="119.4" r="6.2" fill="{{eye}}"/><circle cx="112.1" cy="116.8" r="1.6" fill="{{catch}}"/><path d="M99.5,117 Q110,108 120.5,117" fill="none" stroke="{{skinShade}}" stroke-width="2.6" stroke-linecap="round"/></g>
+  <g data-eye="right"><ellipse cx="146" cy="119" rx="10.5" ry="6.6" fill="{{sclera}}"/><circle cx="146" cy="119.4" r="6.2" fill="{{eye}}"/><circle cx="148.1" cy="116.8" r="1.6" fill="{{catch}}"/><path d="M135.5,117 Q146,108 156.5,117" fill="none" stroke="{{skinShade}}" stroke-width="2.6" stroke-linecap="round"/></g>
+</g>

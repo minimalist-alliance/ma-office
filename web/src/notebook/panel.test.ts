@@ -4,7 +4,7 @@ import { browserUrl } from './openLink.url';
 import { deskPanel, isClosed, notebookLine, type DeskInput } from './panel';
 
 const desk = (p: Partial<DeskInput> = {}): DeskInput => ({ vm: 'running', phase: null, queuePosition: null, link: 'open', unreachable: false, refusal: null, ...p });
-const line = (panel: BrowserPanel, p: { unsaved?: boolean; hasUnsavedText?: boolean; full?: boolean; tooLarge?: boolean; problem?: boolean } = {}) =>
+const line = (panel: BrowserPanel, p: { unsaved?: boolean; hasUnsavedText?: boolean; full?: boolean; outdated?: boolean; tooLarge?: boolean; problem?: boolean } = {}) =>
   notebookLine({ panel, unsaved: false, hasUnsavedText: false, full: false, tooLarge: false, problem: false, ...p });
 
 describe('deskPanel', () => {
@@ -65,6 +65,11 @@ describe('the quiet line', () => {
     expect(line({ kind: 'resting' })?.text).toBe('Paused. Click to pick it back up.');
   });
 
+  it('an app older than the page says reload, before anything else (ADR 0091)', () => {
+    expect(line({ kind: 'playing' }, { outdated: true })?.text).toBe('Notebook was updated. Reload to keep editing.');
+    expect(line({ kind: 'reconnecting' }, { outdated: true, full: true, hasUnsavedText: true })?.text).toBe("Notebook was updated, so what you typed last isn't saved. Copy it, then reload to keep editing.");
+  });
+
   it('a full page says so first, plainly, and whether its last words are saved', () => {
     expect(line({ kind: 'playing' }, { full: true })?.text).toBe('This page is full. Start a new page to keep writing.');
     expect(line({ kind: 'reconnecting' }, { full: true, hasUnsavedText: true })?.text).toBe("This page is full, so what you typed last isn't saved. Copy it to a new page.");
@@ -85,5 +90,16 @@ describe('links go to the desk\'s Browser', () => {
     expect(browserUrl('https://example.org/a')).toBe('https://example.org/a');
     expect(browserUrl('http://example.org')).toBe('http://example.org/');
     for (const bad of ['mailto:a@example.org', 'javascript:alert(1)', 'file:///etc/passwd', 'data:text/html,x', 'not a url', '']) expect(browserUrl(bad)).toBeNull();
+  });
+});
+
+describe('mayManageSpaces', () => {
+  it('the Founder and anyone holding manage_spaces; a plain member and a moderator do not', async () => {
+    const { mayManageSpaces } = await import('../guild/panel');
+    expect(mayManageSpaces('lead', [])).toBe(true);
+    expect(mayManageSpaces('officer', ['manage_spaces'])).toBe(true);
+    expect(mayManageSpaces('officer', ['moderate', 'invite'])).toBe(false);
+    expect(mayManageSpaces('member', [])).toBe(false);
+    expect(mayManageSpaces(null, undefined)).toBe(false);
   });
 });

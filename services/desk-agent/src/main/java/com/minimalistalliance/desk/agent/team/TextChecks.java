@@ -9,7 +9,7 @@ import java.util.Map;
  * Two checks on text the member or an agent writes ({@code docs/multi-agent.md}, the task 49 fix pass): characters a
  * card can't show, and the key that makes two agent names the same name.
  */
-final class TextChecks {
+public final class TextChecks {
 
     private TextChecks() {}
 
@@ -19,7 +19,7 @@ final class TextChecks {
      * the soft hyphen), and the Hangul fillers, which are letters that draw nothing. A zero-width joiner between two
      * pictographs is an emoji's own glue, so it stays.
      */
-    static boolean hidden(String text) {
+    public static boolean hidden(String text) {
         for (int i = 0; i < text.length(); ) {
             int cp = text.codePointAt(i);
             if (cp == 0x200D ? !joinsEmoji(text, i) : hiddenCodePoint(cp)) {
@@ -62,7 +62,7 @@ final class TextChecks {
     }
 
     /** Refuses hidden characters as {@code bad_request} with this field and {@code reason: "hidden_chars"}. */
-    static void refuseHidden(String text, String field) throws RpcError {
+    public static void refuseHidden(String text, String field) throws RpcError {
         if (text != null && hidden(text)) {
             throw RpcError.of("bad_request", "detail", field, "reason", "hidden_chars");
         }

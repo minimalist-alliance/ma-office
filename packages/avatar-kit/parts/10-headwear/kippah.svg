@@ -1,0 +1,4 @@
+<g data-part="kippah" data-anchor="crown">
+  <path fill="{{hw}}" d="M108,67 C108.5,58.5 116.5,53 128,53 C139.5,53 147.5,58.5 148,67 Q128,57 108,67 Z"/>
+  <g data-min-size="40" fill="none" stroke="{{hwStep}}" stroke-width="2" stroke-linecap="round" stroke-linejoin="round"><path d="M111,63 Q128,55.8 145,63"/></g>
+</g>

@@ -47,6 +47,9 @@ type streamHub struct {
 	path string
 	uid  int
 	ln   *net.UnixListener
+	// profileFile is where desk-egress names the allowance profile (quality.go), read at start and on each desk-stream
+	// connection. Empty means none: every level as asked, as before.
+	profileFile string
 
 	mu      sync.Mutex
 	conn    *net.UnixConn
@@ -73,9 +76,14 @@ func newStreamHub(s *Server) *streamHub {
 		viewers: map[*session]*viewer{},
 		state:   streamDown,
 		q:       newQualityState(),
+
+		profileFile: s.cfg.ProfileFile,
 	}
 	empty := []*viewer{}
 	h.current.Store(&empty)
+	h.mu.Lock()
+	h.readProfileLocked() // no viewers and no desk-stream yet: this only sets the level a first connection hears
+	h.mu.Unlock()
 	if h.path != "" {
 		if err := h.listen(); err != nil {
 			// A desk on an older image has no /run/desk-media. Sessions and data channels still work.
@@ -170,6 +178,11 @@ func (h *streamHub) attach(c *net.UnixConn) {
 		h.log.Info("replacing the desk-stream connection")
 		_ = h.conn.Close()
 	}
+	// A profile change restarts desk-stream after desk-egress has named the new one, so this connection runs that
+	// profile's conf. Read it with no connection set: viewers hear the new level and ceiling, and the line below is the
+	// only one desk-stream gets.
+	h.conn = nil
+	h.readProfileLocked()
 	h.conn = c
 	// Always first, before resume, with or without viewers, asks or a limit: a new process starts at the level in
 	// effect. An older desk-stream logs "unknown command: level ..." and carries on as High.
@@ -388,6 +401,11 @@ func (h *streamHub) stats() *rtcsock.StreamStats {
 	h.mu.Lock()
 	state, viewers := h.state, len(h.viewers)
 	lvl, limit := h.q.level.String(), h.q.limit.name()
+	var profile *string
+	if h.q.profile != "" {
+		p := h.q.profile
+		profile = &p
+	}
 	h.mu.Unlock()
 
 	st := &rtcsock.StreamStats{
@@ -399,6 +417,7 @@ func (h *streamHub) stats() *rtcsock.StreamStats {
 		KeyframeRequests: h.keyRequests.Load(),
 		Level:            lvl,
 		Limit:            limit,
+		Profile:          profile,
 	}
 	h.cropStats(st)
 

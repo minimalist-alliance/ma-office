@@ -5,9 +5,11 @@ import Konva from 'konva/lib/Core.js';
 import 'konva/lib/shapes/Rect.js';
 import 'konva/lib/shapes/Text.js';
 import 'konva/lib/shapes/Circle.js';
-import { Layer, Stage } from 'react-konva/lib/ReactKonvaCore.js';
+import { Group, Layer, Stage } from 'react-konva/lib/ReactKonvaCore.js';
 import { clamp, onContrastChange } from '../lib/util';
+import { onBackdropChange } from '../theme/backdropMirror';
 import { onThemeApplied } from '../theme/themeStore';
+import { useFree } from '../free/door';
 import { useDeskStore } from '../state/deskStore';
 import { useLayoutStore } from '../state/layoutStore';
 import { getView, setView, useViewStore } from '../state/viewStore';
@@ -19,7 +21,9 @@ import { onEtchFont } from './etch';
 import { onTextureReady } from './textureHub';
 import { listenForPinches } from './pinch';
 import { isPhone, useIsPhone, useIsTouch } from './phone';
-import { invalidateSprites } from './sprites';
+import { awayOnPhone } from './awayOnPhone';
+import { desksOpacity, useDesksStopped } from './stopped';
+import { invalidateSprites, syncHalo } from './sprites';
 
 Konva.dragDistance = 4; // small jitter is a click, not a drag
 
@@ -33,6 +37,10 @@ export function WorldStage({ onFirstPaint }: { onFirstPaint?: () => void }) {
   const scope = useViewStore((s) => s.scope);
   const touchUI = useIsTouch();
   const phone = useIsPhone();
+  const mode = useViewStore((s) => s.mode);
+  const activeDesk = useViewStore((s) => s.activeDesk);
+  // The free tier's empty desk spot (`free/door.ts`; unset today), drawn after the desks.
+  const FreeSpot = useFree((s) => s.Canvas);
 
   const wrapRef = useRef<HTMLDivElement>(null);
   const stageRef = useRef<Konva.Stage>(null);
@@ -111,6 +119,22 @@ export function WorldStage({ onFirstPaint }: { onFirstPaint?: () => void }) {
   // A desk style's texture arrived: the desks wearing it draw it on the next frame, in a new bitmap each.
   useEffect(() => onTextureReady(() => layerRef.current?.batchDraw()), []);
   useEffect(() => onContrastChange(() => layerRef.current?.batchDraw()), []);
+  // A background came or went: the active desk's ring gains or loses its halo (ADR 0094), at rest, so a zoom under way
+  // rasters nothing for it; the camera's settle then draws it once.
+  useEffect(() => {
+    const sync = (): void => {
+      syncHalo();
+      layerRef.current?.batchDraw();
+    };
+    sync();
+    return onBackdropChange(() => {
+      if (!camera.isMoving()) return sync();
+      const off = camera.onSettle(() => {
+        off();
+        sync();
+      });
+    });
+  }, []);
 
   // Stacking: applied imperatively. React keeps the children in a fixed order and never has to
   // re-parent a Konva node, which would cancel a drag in progress.
@@ -261,6 +285,12 @@ export function WorldStage({ onFirstPaint }: { onFirstPaint?: () => void }) {
     if (e.target === stageRef.current && emptyPress.current) emptyCanvasClicked();
   }, []);
 
+  // Behind card C or D the desks are dimmed together: one opacity on one group (`stopped.ts`).
+  const stopped = useDesksStopped();
+  useEffect(() => {
+    layerRef.current?.batchDraw();
+  }, [stopped]);
+
   const inScopeIds = useMemo(() => new Set(inScopeDesks(scope).map((d) => d.id)), [scope, desks]); // eslint-disable-line react-hooks/exhaustive-deps
 
   return (
@@ -286,10 +316,20 @@ export function WorldStage({ onFirstPaint }: { onFirstPaint?: () => void }) {
         onDragEnd={onStageDragEnd}
       >
         <Layer ref={layerRef}>
+          <Group name="desks" opacity={desksOpacity(stopped)}>
           {desks.map((d) => {
             const l = layout[d.id];
-            return l ? <DeskPanel key={d.id} desk={d} layout={l} hidden={!inScopeIds.has(d.id)} touchUI={touchUI} phone={phone} /> : null;
+            // A phone in desk mode draws only the desk it shows: a neighbour peeking in at the screen edge reads as a glitch,
+            // and "2 of 3" already says there are more. A hidden group neither draws nor takes a touch.
+            const away = awayOnPhone(phone, mode, activeDesk, d.id);
+            return l ? (
+              <Group key={d.id} visible={!away}>
+                <DeskPanel desk={d} layout={l} hidden={!inScopeIds.has(d.id)} touchUI={touchUI} phone={phone} />
+              </Group>
+            ) : null;
           })}
+          </Group>
+          {FreeSpot && <FreeSpot />}
         </Layer>
       </Stage>
     </div>

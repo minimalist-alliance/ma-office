@@ -111,6 +111,7 @@ class Base(unittest.TestCase):
         (t / "opt-ma").mkdir()
         db.RELEASE_FILE = str(t / "ma-release")
         (t / "ma-release").write_text("version=0.3.2\n")
+        db.machine_arch = lambda: "arm64"   # a cloud desk's, whatever runs the tests
         self.fake = t / "fake"
         self.fake.mkdir()
         bin_ = t / "bin"
@@ -310,6 +311,27 @@ class OfferTest(Base):
                 self.refused("bad_request", self.db.offer, data, sign(self.key, data), self.urls(comps))
         data = json.dumps({**good, "later": {"field": 1}}).encode()   # unknown fields are ignored
         self.db.offer(data, sign(self.key, data), self.urls(comps))
+
+    def test_a_batch_for_another_machine_is_refused(self):
+        self.refused("arch", self.offer, 5, [("desk-rtc", "0.4.0")], arch="amd64")       # an amd64 batch on a cloud desk
+        self.refused("bad_request", self.offer, 5, [("desk-rtc", "0.4.0")], arch="riscv64")
+        self.refused("bad_request", self.offer, 5, [("desk-rtc", "0.4.0")], arch=None)
+        self.offer(5, [("desk-rtc", "0.4.0")], arch="arm64")
+        self.db.machine_arch = lambda: "amd64"                                            # a self-hosted desk
+        self.refused("arch", self.offer, 6, [("desk-rtc", "0.4.1")])                      # none said is arm64
+        self.refused("arch", self.offer, 6, [("desk-rtc", "0.4.1")], arch="arm64")
+        self.offer(6, [("desk-rtc", "0.4.1")], arch="amd64")
+        self.assertEqual(self.state()["pending"]["seq"], 6)
+        self.assertEqual(self.db.ARCHES.get(os.uname().machine), {"x86_64": "amd64", "aarch64": "arm64"}.get(os.uname().machine))
+
+    def test_a_self_hosted_desk_takes_no_image(self):
+        pathlib.Path(self.db.RELEASE_FILE).write_text("version=selfhost-abc1234\nbuilt=2026-11-11T00:00:00Z\nhosting=self\n")
+        self.db.machine_arch = lambda: "amd64"
+        self.refused("root", self.offer, 5, [("desk-rtc", "0.4.0")], arch="amd64", image="0.3.4")
+        self.offer(5, [("desk-rtc", "0.4.0")], arch="amd64")
+        pathlib.Path(self.db.RELEASE_FILE).write_text("version=0.3.3\n")                 # a cloud desk takes one
+        self.db.machine_arch = lambda: "arm64"
+        self.offer(6, [("desk-rtc", "0.4.0")], image="0.3.4")
 
     def test_urls_that_are_refused(self):
         comps = [("desk-rtc", "0.4.0"), ("deskd", "d2")]

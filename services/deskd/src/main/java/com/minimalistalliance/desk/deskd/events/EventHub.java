@@ -54,6 +54,16 @@ public final class EventHub {
         return false;
     }
 
+    /** True if any attached session is subscribed to any topic whose key this accepts, as {@link #hasSubscribers}. */
+    public boolean hasSubscribersTo(Predicate<String> topicKey) {
+        for (SessionEvents session : sessions) {
+            if (session.isSubscribedTo(topicKey)) {
+                return true;
+            }
+        }
+        return false;
+    }
+
     /**
      * Ends every session's subscriptions to these topics, each with an {@code error} event carrying this code, for a reason
      * that isn't one session's token. A topic's {@link Topic#authorize} must already refuse them, so none comes back.

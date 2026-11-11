@@ -5,6 +5,7 @@
 // alone (task 48), and every window on a Guild Desk goes through `guildWindow`, which gives it the guild's words.
 import { lazy, Suspense, type ComponentType } from 'react';
 import { AgentWindow } from '../agent/AgentWindow';
+import { loadBrowser } from './chunks';
 import { FilesWindow } from './files/FilesWindow';
 import { pausable } from '../bandwidth/StreamPause';
 import { agentAppName } from '../agent/roster';
@@ -36,7 +37,6 @@ export interface AppDef {
 function EmptyApp({ def, deskId }: { def: Omit<AppDef, 'Window'>; deskId: string }) {
   const live = useLive(deskId);
   const vm = useDeskStore((s) => s.desks.find((d) => d.id === deskId)?.vm);
-  const connected = live.linkAvailable && live.link === 'open';
   if (vm === 'held' || live.refusal?.kind === 'unavailable') {
     return <div className="empty-app" data-testid={`empty-${def.id}`}><p><SupportAddress /></p></div>;
   }
@@ -53,9 +53,9 @@ function EmptyApp({ def, deskId }: { def: Omit<AppDef, 'Window'>; deskId: string
   }
   return (
     <div className="empty-app" data-testid={`empty-${def.id}`}>
-      <h3>{connected ? `${def.name} isn't built yet` : `${def.name} isn't connected yet`}</h3>
+      <h3>{`${def.name} is on its way`}</h3>
       <p>{def.blurb}</p>
-      <p className="empty-note">Nothing can be saved here yet, so there's nothing to lose.</p>
+      <p className="empty-note">Nothing's kept here yet.</p>
     </div>
   );
 }
@@ -69,12 +69,8 @@ const defs: Omit<AppDef, 'Window'>[] = [
   { id: 'commons', name: 'Commons', blurb: "The guild's room: voice, a live whiteboard and its saved boards." },
 ];
 
-/** The Browser's code is fetched once the office is idle (`prefetchBrowser`), so opening it doesn't wait. */
-const loadBrowser = (): Promise<typeof import('../browser/BrowserApp')> => import('../browser/BrowserApp');
+/** The Browser's code is fetched once the office is idle (`prefetchBrowser` in `chunks.ts`), so opening it doesn't wait. */
 const BrowserApp = lazy(loadBrowser);
-export function prefetchBrowser(): void {
-  void loadBrowser().catch(() => undefined);
-}
 function BrowserWindow(props: AppWindowProps) {
   return (
     <Suspense fallback={null}>

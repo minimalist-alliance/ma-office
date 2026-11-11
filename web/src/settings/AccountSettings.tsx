@@ -7,8 +7,10 @@ import { Avatar } from '../chrome/Avatar';
 import { Icon } from '../chrome/icons';
 import { accountUrl } from '../platform/clientConfig';
 import { useSession } from '../platform/session';
+import { useFree } from '../free/door';
 import { useMyBadge, useMyTier, useTierNames } from '../platform/useTiers';
 import { embedUrl, FRAME_WAIT_MS, frameRefused, frameState } from './accountFrame';
+import { holdOffice, releaseOffice } from './officeInert';
 import { closeSettings, setHolding, showSection, useSettingsStore, type SettingsSection } from './settingsStore';
 import './settings.css';
 
@@ -25,6 +27,8 @@ function Who() {
   const names = useTierNames();
   const tier = useMyTier();
   const badge = useMyBadge();
+  // A free member's line comes from the free chunk (`readTier('free')` is null, so nothing wrong is said; free code read #19 said nothing at all).
+  const FreeTier = useFree((s) => s.Account);
   const who = me?.displayName || me?.email;
   if (!me || !who) return null;
   const tierName = tier && names[tier];
@@ -34,7 +38,7 @@ function Who() {
       <div className="settings-who-text">
         <p className="settings-who-name">{who}</p>
         {me.displayName && me.email && <p className="settings-who-sub">{me.email}</p>}
-        {tierName && <p className="settings-who-sub">{tierName}</p>}
+        {tierName ? <p className="settings-who-sub">{tierName}</p> : FreeTier && <FreeTier className="settings-who-sub" testId="settings-tier" />}
       </div>
     </div>
   );
@@ -136,6 +140,15 @@ export default function AccountSettings() {
   const ref = useRef<HTMLDivElement>(null);
   const onHolding = useCallback((h: boolean) => setHolding(h), []);
 
+  // Modal for the keyboard as well: the rest of the office is inert while it's open (`officeInert.ts`), so Tab stays in
+  // here, the frame included. Before the focus below, which an inert office would otherwise still take back.
+  const away = useRef<HTMLDivElement>(null);
+  useLayoutEffect(() => {
+    if (!open || !away.current) return undefined;
+    holdOffice(away.current);
+    return releaseOffice;
+  }, [open]);
+
   useEffect(() => {
     if (open) ref.current?.focus({ preventScroll: true });
   }, [open]);
@@ -159,7 +172,7 @@ export default function AccountSettings() {
   }, [open, section]);
 
   return (
-    <div className="settings-away" hidden={!open} data-testid="account-settings-layer">
+    <div ref={away} className="settings-away" hidden={!open} data-testid="account-settings-layer">
       <div ref={ref} tabIndex={-1} className="settings-modal" role="dialog" aria-modal="true" aria-labelledby="settings-title" data-testid="account-settings" data-section={section ?? undefined}>
         <div className="settings-head">
           <h2 id="settings-title">Account settings</h2>

@@ -467,6 +467,13 @@
 .ma-cm-stack:empty {
   display: none;
 }
+.ma-cm-avatar-img {
+  width: 100%;
+  height: 100%;
+  border-radius: 50%;
+  object-fit: cover;
+  display: block;
+}
 .ma-cm-avatar {
   position: relative;
   display: inline-grid;

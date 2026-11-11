@@ -222,11 +222,13 @@ export function drawSizeToggle(ctx: Ctx, toSmall: boolean, color: string): void 
   ctx.restore();
 }
 
-export type EtchIcon = 'grip' | 'sparkle';
+export type EtchIcon = 'grip' | 'sparkle' | 'carousel' | 'desk';
 
 /**
  * The strip's icons, as solid shapes in a 16-unit box, since each is cut in a color at a time and a thin line
- * has nothing left once the cut takes its top. The grip is a corner, and the sparkle a four-pointed star.
+ * has nothing left once the cut takes its top. The grip is a corner, and the sparkle a four-pointed star. The
+ * carousel's switch shows where it leads: one app large between the edges of its neighbours (to the carousel), or
+ * four apps in a square (back to the desk).
  */
 export function drawEtchIcon(ctx: Ctx, icon: EtchIcon, color: string): void {
   ctx.fillStyle = color;
@@ -236,6 +238,19 @@ export function drawEtchIcon(ctx: Ctx, icon: EtchIcon, color: string): void {
     ctx.lineTo(12.5, 14);
     ctx.lineTo(3.5, 14);
     ctx.closePath();
+  } else if (icon === 'carousel') {
+    // It runs 4.5 to 14.5 across, so the row's gaps, ink to ink, stay even between the sparkle and the grip, whose ink sits
+    // right of its box's middle (`hidden.shell.spec.ts` measures them).
+    // The middle card is clearly landscape and the slivers thin and short, with a clear gap to each, so at 16 px it reads
+    // as "one app, more either side" and never as a pause's bars (the Product Designer's review).
+    ctx.roundRect(6.7, 5.7, 5.6, 4.6, 1);
+    ctx.roundRect(4.5, 6.6, 1.2, 2.8, 0.6);
+    ctx.roundRect(13.3, 6.6, 1.2, 2.8, 0.6);
+  } else if (icon === 'desk') {
+    ctx.roundRect(4.5, 3, 4, 4, 1);
+    ctx.roundRect(10.5, 3, 4, 4, 1);
+    ctx.roundRect(4.5, 9, 4, 4, 1);
+    ctx.roundRect(10.5, 9, 4, 4, 1);
   } else {
     const r = 7;
     const k = 1.1; // the waist

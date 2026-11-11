@@ -23,6 +23,12 @@ public final class PlatformHttp implements AutoCloseable {
 
     private static final Duration CONNECT_TIMEOUT = Duration.ofSeconds(5);
 
+    /**
+     * The longest deskd honours a {@code Retry-After} from the Platform or the gateway: past it, it asks again anyway. A
+     * slip on the other side (an hour, a year) mustn't silence a desk; 5 minutes is the fleet's unhealthy mark (agent.md).
+     */
+    public static final Duration MAX_RETRY_AFTER = Duration.ofMinutes(5);
+
     private final ReentrantLock lock = new ReentrantLock();
     private HttpClient client;
     private ExecutorService executor;
@@ -67,6 +73,20 @@ public final class PlatformHttp implements AutoCloseable {
         } catch (ExecutionException e) {
             throw e.getCause() instanceof IOException cause ? cause : new IOException("request failed", e.getCause());
         }
+    }
+
+    /**
+     * {@code Retry-After} in whole seconds, the form the Platform and the gateway send, held to {@link #MAX_RETRY_AFTER}.
+     *
+     * @return null if there's none, or it isn't a whole number of seconds (an HTTP date is read as none)
+     */
+    public static Duration retryAfter(java.net.http.HttpHeaders headers) {
+        String value = headers.firstValue("retry-after").map(String::trim).orElse("");
+        if (value.isEmpty() || !value.chars().allMatch(c -> c >= '0' && c <= '9')) {
+            return null;
+        }
+        long seconds = value.length() > 18 ? Long.MAX_VALUE : Long.parseLong(value);
+        return seconds >= MAX_RETRY_AFTER.toSeconds() ? MAX_RETRY_AFTER : Duration.ofSeconds(seconds);
     }
 
     @Override

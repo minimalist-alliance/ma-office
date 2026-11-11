@@ -2,6 +2,7 @@ package com.minimalistalliance.desk.deskd;
 
 import com.minimalistalliance.desk.deskd.admin.AdminServer;
 import com.minimalistalliance.desk.deskd.agent.AgentModule;
+import com.minimalistalliance.desk.deskd.apps.AppsModule;
 import com.minimalistalliance.desk.deskd.auth.Revocations;
 import com.minimalistalliance.desk.deskd.boot.BootSequence;
 import com.minimalistalliance.desk.deskd.boot.ControlPlaneObserver;
@@ -47,6 +48,7 @@ final class DeskdLifecycle implements SmartLifecycle {
     private final CommonsRelay commons;
     private final GuildModule guild;
     private final IdleFile idle;
+    private final AppsModule apps;
     private volatile boolean running;
 
     DeskdLifecycle(
@@ -64,7 +66,8 @@ final class DeskdLifecycle implements SmartLifecycle {
             DataModule data,
             CommonsRelay commons,
             GuildModule guild,
-            IdleFile idle) {
+            IdleFile idle,
+            AppsModule apps) {
         this.admin = admin;
         this.rtc = rtc;
         this.sessions = sessions;
@@ -80,6 +83,7 @@ final class DeskdLifecycle implements SmartLifecycle {
         this.commons = commons;
         this.guild = guild;
         this.idle = idle;
+        this.apps = apps;
     }
 
     @Override
@@ -99,6 +103,8 @@ final class DeskdLifecycle implements SmartLifecycle {
             idle.poke();
         });
         agent.start();
+        // The apps' registry and links: a desk with none reads one missing directory and is done.
+        apps.start();
         idle.start();
         // On a thread of its own, and nothing waits for it. The API base comes once boot has read the instance's identity.
         prices.start();
@@ -115,6 +121,8 @@ final class DeskdLifecycle implements SmartLifecycle {
         // The sessions' transfers have ended with them, so this is the count desk-egress keeps.
         data.close();
         browser.close();
+        // deskd's links to apps close; the apps run on, and the next deskd connects to them again.
+        apps.close();
         prices.close();
         agent.close();
         // The sessions' ends closed their links already. This waits for nothing, however stalled desk-notebook is.

@@ -2,7 +2,7 @@
 import { readdirSync, readFileSync } from 'node:fs';
 import { join } from 'node:path';
 import { describe, expect, it } from 'vitest';
-import { GUILD_WORDS, REMOVED_LINE } from './words';
+import { DESK_WORDS, GUILD_WORDS, REMOVED_LINE } from './words';
 
 const WEB = join(import.meta.dirname, '..', '..');
 const sources = [
@@ -16,6 +16,11 @@ describe('the Guild Desk’s name', () => {
   it('the windows say "the Guild Desk"', () => {
     for (const line of Object.values(GUILD_WORDS)) expect(line).toMatch(/the Guild Desk/i);
     expect(REMOVED_LINE).toContain('Guild Desk');
+  });
+
+  it('the wake button matches the asleep line', () => {
+    expect(DESK_WORDS.wake).toBe('Wake this desk');
+    expect(GUILD_WORDS.wake).toBe('Wake the Guild Desk');
   });
 
   it('no screen of it says "your guild’s desk", nor "the guild’s desk"', () => {

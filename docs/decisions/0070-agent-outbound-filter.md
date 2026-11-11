@@ -119,3 +119,6 @@ The filter's traffic on `ens5` is in the default class 1:20, as the agent's was,
 - **Older self-hosted desks:** `install.sh` takes `desk-agent-egress` off when it updates one. A new `install.sh` refuses a bundle with no `desk-agent-filter`.
 - **Each of the numbers above is one run on one box.** Nothing has run on a member's traffic or with a real key, because no real key has touched `desk-agent` yet.
 - **`verify.sh` makes 42 checks** with this section, 3e1, and image 0.2.8's. 3e1 adds about 2 minutes and needs the internet.
+
+## Addendum, 2026-11-11: a fourth name, `openrouter.ai` (image 0.3.5)
+desk-agent's fourth provider, OpenRouter, calls `https://openrouter.ai/api/v1/...`, so the list gains `openrouter.ai` and nothing under it (`sub/image-035-asks`, the Desk Engineer's ask; the Security Analyst cleared the name on Nov 11 as a scoped single-host add). It's on Cloudflare, like OpenAI and xAI, so "What it can't stop" applies to it the same way. Its fronting wasn't measured: the rules since this ADR allow no probes, so the 403s above are for the first three only. `verify-agent-filter.sh` checks it as the others (`F-PROV` 401 with no key on `/api/v1/key`, `F-PLACE`, `F-CF` with its own control), and `F-UNIT` now holds the file to exactly the four names, where it counted `api.` lines. Lab proof and mutations: `docs/sub-status/image-035-asks.md`.

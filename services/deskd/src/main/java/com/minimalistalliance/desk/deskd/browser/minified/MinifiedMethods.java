@@ -4,6 +4,7 @@ import com.minimalistalliance.desk.deskd.protocol.Json;
 import com.minimalistalliance.desk.deskd.rpc.RpcContext;
 import com.minimalistalliance.desk.deskd.rpc.RpcDispatcher;
 import com.minimalistalliance.desk.deskd.rpc.RpcException;
+import java.time.Instant;
 import java.util.ArrayList;
 import java.util.Base64;
 import java.util.LinkedHashMap;
@@ -50,6 +51,7 @@ final class MinifiedMethods {
     private Object get(RpcContext context, Map<String, Object> params) throws Exception {
         requireOn();
         requireVideo(context);
+        module.requireTime();
         Object since = params.get("since");
         if (since != null && !(since instanceof Number)) {
             throw badRequest("since");
@@ -58,12 +60,15 @@ final class MinifiedMethods {
         if (retry != null && !(retry instanceof Boolean)) {
             throw badRequest("retry");
         }
-        return module.get(optionalId(params, "tabId"), since == null ? null : ((Number) since).longValue(), Boolean.TRUE.equals(retry));
+        Object reply = module.get(optionalId(params, "tabId"), since == null ? null : ((Number) since).longValue(), Boolean.TRUE.equals(retry));
+        module.used();
+        return reply;
     }
 
     private Object act(RpcContext context, Map<String, Object> params) throws Exception {
         requireOn();
         requireInput(context);
+        module.requireTime();
         ActionProxy.Request request = new ActionProxy.Request(
                 requiredId(params, "tabId"),
                 requiredId(params, "nodeId"),
@@ -72,7 +77,9 @@ final class MinifiedMethods {
                 requiredString(params, "fp", 32),
                 requiredString(params, "block", 32),
                 requiredRev(params));
-        return proxy.act(context, request);
+        Object reply = proxy.act(context, request);
+        module.used();
+        return reply;
     }
 
     /**
@@ -82,11 +89,14 @@ final class MinifiedMethods {
     private Object image(RpcContext context, Map<String, Object> params) throws Exception {
         requireOn();
         requireVideo(context);
+        module.requireTime();
         String imageId = requiredId(params, "imageId");
         String tabId = requiredId(params, "tabId");
         // Work: Chromium is thawed for it first (ADR 0045).
         try (AutoCloseable use = module.access.use()) {
-            return image(tabId, imageId);
+            Map<String, Object> reply = image(tabId, imageId);
+            module.used();
+            return reply;
         } catch (RpcException | InterruptedException e) {
             throw e;
         } catch (Exception e) {
@@ -156,11 +166,14 @@ final class MinifiedMethods {
     private Object island(RpcContext context, Map<String, Object> params) throws Exception {
         requireOn();
         requireInput(context);
+        module.requireTime();
         String islandId = requiredId(params, "islandId");
         String tabId = requiredId(params, "tabId");
         // Work: Chromium is thawed for it first (ADR 0045).
         try (AutoCloseable use = module.access.use()) {
-            return island(tabId, islandId);
+            Map<String, Object> reply = island(tabId, islandId);
+            module.used();
+            return reply;
         } catch (RpcException | InterruptedException e) {
             throw e;
         } catch (Exception e) {
@@ -394,6 +407,18 @@ final class MinifiedMethods {
 
     static RpcException disabled() {
         return new RpcException(RpcException.UNAVAILABLE, "The simplified view is off on this desk", Map.of("reason", "disabled"));
+    }
+
+    /**
+     * Today's Browser time on a free desk is used up (ADR 0090): the live refusal's own shape, so every Desk app pauses
+     * as it does for that. {@code resumesAt} is the member's next midnight.
+     */
+    static RpcException timeUsed(Instant resumesAt) {
+        Map<String, Object> details = new LinkedHashMap<>();
+        details.put("reason", "bandwidth_limit");
+        details.put("resumesAt", resumesAt.toString());
+        details.put("limit", "browser_time");
+        return new RpcException(RpcException.UNAVAILABLE, "Today's Browser time is used up", details);
     }
 
     static RpcException forbidden() {

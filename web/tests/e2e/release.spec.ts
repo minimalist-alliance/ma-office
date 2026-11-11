@@ -1347,3 +1347,22 @@ test('ma-release.json is what the Platform loader needs', () => {
   const css = readFileSync(`dist/release/${rel.css[0]}`, 'utf8');
   expect(css).toContain(`/v/${rel.version}/assets/inter-latin`);
 });
+
+test('Sign out everywhere from the shipping bundle under the default CSP: Platform hears everywhere, then this browser signs out as Sign out does', async ({ page, request }) => {
+  const errors = watchConsole(page);
+  await signIn(page);
+  await canvasPainted(page);
+  const token = await storedRefreshToken(page);
+  await page.getByRole('button', { name: 'Account', exact: true }).click();
+  await page.getByTestId('sign-out-everywhere').click();
+  await expect(page.getByTestId('sign-in')).toContainText("You're signed out.");
+  const { log, signOuts, revoked } = (await (await request.get('/__harness')).json()) as { log: string[]; signOuts: unknown[]; revoked: string[] };
+  expect(signOuts).toEqual([{ everywhere: true }]);
+  const at = (line: string): number => log.indexOf(line);
+  expect(at('POST /v1/me/sign-out')).toBeGreaterThan(-1);
+  expect(at('POST /fake-auth/oauth2/revoke')).toBeGreaterThan(at('POST /v1/me/sign-out'));
+  expect(at('GET /fake-auth/logout')).toBeGreaterThan(at('POST /fake-auth/oauth2/revoke'));
+  expect(revoked).toEqual([token]);
+  expect(await storedRefreshToken(page)).toBeNull();
+  expect(errors).toEqual([]);
+});

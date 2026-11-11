@@ -41,7 +41,7 @@ export class GatewayError extends Error {
 }
 
 export interface GatewayListener {
-  /** Every message that isn't the reply to a `request`. Filter on your own deskId and sessionId. */
+  /** Every message that isn't the reply to a `request`, and replies with `iceServers`. Filter on your own deskId and sessionId. */
   onMessage(m: GatewayMessage): void;
   /** The WebSocket is up, the first time or again. */
   onUp(): void;
@@ -181,7 +181,8 @@ class Gateway {
       window.clearTimeout(waiter.timer);
       if (m.type === 'error') waiter.reject(new GatewayError(m.code ?? 'error', m.message ?? 'gateway error', m.retryable));
       else waiter.resolve(m);
-      return;
+      // New TURN servers (`session.opened`, `session.refreshed`; gateway.md 2.4) go on to the links too, for that session's connection.
+      if (m.type === 'error' || !Array.isArray(m.iceServers)) return;
     }
     if (m.type === 'pong') return;
     for (const l of this.listeners) l.onMessage(m);

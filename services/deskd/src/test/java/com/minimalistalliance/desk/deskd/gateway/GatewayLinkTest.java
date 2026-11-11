@@ -123,7 +123,7 @@ class GatewayLinkTest {
     void itSendsPingsAndGetsOnWithIt() throws Exception {
         rig(new GatewayLink.Timing(
                 Duration.ofMillis(20), Duration.ofMillis(200), Duration.ofMillis(50), Duration.ofSeconds(5),
-                Duration.ofMillis(100), Duration.ofHours(1), Duration.ZERO)).bootToReady();
+                Duration.ofMillis(100), Duration.ofHours(1), Duration.ZERO, Duration.ofMillis(200))).bootToReady();
         rig.gateway.await("ping");
         rig.gateway.await("ping");
         rig.gateway.await("ping");
@@ -135,7 +135,7 @@ class GatewayLinkTest {
     void aPingNobodyAnswersMeansReconnecting() throws Exception {
         rig(new GatewayLink.Timing(
                 Duration.ofMillis(20), Duration.ofMillis(200), Duration.ofMillis(50), Duration.ofMillis(100),
-                Duration.ofMillis(100), Duration.ofHours(1), Duration.ZERO)).bootToReady();
+                Duration.ofMillis(100), Duration.ofHours(1), Duration.ZERO, Duration.ofMillis(200))).bootToReady();
         rig.gateway.answerPing = false;
         await().atMost(Duration.ofSeconds(5)).until(() -> rig.gateway.connections.get() >= 2);
     }
@@ -195,7 +195,7 @@ class GatewayLinkTest {
     void whenBlockedItAsksForAHelloAfterAWhileSoItCantStayStuck() throws Exception {
         rig(new GatewayLink.Timing(
                 Duration.ofMillis(20), Duration.ofMillis(200), Duration.ofHours(1), Duration.ofSeconds(5),
-                Duration.ofMillis(100), Duration.ofMillis(200), Duration.ZERO)).bootToReady();
+                Duration.ofMillis(100), Duration.ofMillis(200), Duration.ZERO, Duration.ofMillis(200))).bootToReady();
         rig.platform.awaitApi("/v1/agent/hello");
         rig.gateway.closeConnection(4403);
         assertThat(rig.platform.awaitApi("/v1/agent/hello").json()).containsEntry("reason", "requested");
@@ -224,6 +224,91 @@ class GatewayLinkTest {
             Thread.sleep(300);
             assertThat(refusing.attempts).hasValue(1);
         }
+    }
+
+    /** Gaps between attempts, in milliseconds. */
+    private static List<Long> gapsMillis(List<Long> nanos) {
+        List<Long> gaps = new ArrayList<>();
+        for (int i = 1; i < nanos.size(); i++) {
+            gaps.add(TimeUnit.NANOSECONDS.toMillis(nanos.get(i) - nanos.get(i - 1)));
+        }
+        return gaps;
+    }
+
+    private static long range(List<Long> values) {
+        return values.stream().mapToLong(Long::longValue).max().orElse(0) - values.stream().mapToLong(Long::longValue).min().orElse(0);
+    }
+
+    @Test
+    void a429AtTheUpgradeComesBackSpreadOutNotInLockstep() throws Exception {
+        // Audit D1: the floor alone brought every rate-limited desk back at exactly +30 s, to be limited again.
+        try (RefusingServer refusing = new RefusingServer(429)) {
+            rig(ControlPlaneRig.FAST_LINK);
+            rig.platform.gatewayUrl = "ws://127.0.0.1:" + refusing.port() + "/v1";
+            rig.boot.start();
+            await().atMost(Duration.ofSeconds(20)).until(() -> refusing.times.size() >= 9);
+            List<Long> gaps = gapsMillis(List.copyOf(refusing.times).subList(0, 9));
+            // The rig's floor is 300 ms: each wait is that plus 0 to 100 % of it, with room for a loaded machine.
+            assertThat(gaps).allSatisfy(gap -> assertThat(gap).isBetween(290L, 1000L));
+            // Eight draws of 0 to 300 ms all inside 75 ms of each other: about 1 in 2,000.
+            assertThat(range(gaps)).isGreaterThan(75L);
+        }
+    }
+
+    @Test
+    void aRetryAfterOnA429AtTheUpgradeIsHonoured() throws Exception {
+        try (RefusingServer refusing = new RefusingServer(429, "Retry-After: 1\r\n")) {
+            rig(ControlPlaneRig.FAST_LINK);
+            rig.platform.gatewayUrl = "ws://127.0.0.1:" + refusing.port() + "/v1";
+            rig.boot.start();
+            await().atMost(Duration.ofSeconds(15)).until(() -> refusing.times.size() >= 3);
+            assertThat(gapsMillis(List.copyOf(refusing.times).subList(0, 3)))
+                    .allSatisfy(gap -> assertThat(gap).isBetween(990L, 2700L));
+        }
+    }
+
+    @Test
+    void aHealthyLinkThatDropsComesBackSpreadOverTheWindowNotAtOnce() throws Exception {
+        // Audit D2: after a gateway deploy every desk came back inside 0.8 to 1.2 s. Here the window is 1 s.
+        rig(new GatewayLink.Timing(
+                Duration.ofMillis(20), Duration.ofMillis(200), Duration.ofHours(1), Duration.ofSeconds(30),
+                Duration.ofMillis(300), Duration.ofHours(1), Duration.ZERO, Duration.ofSeconds(1))).bootToReady();
+        List<Long> waits = new ArrayList<>();
+        for (int i = 0; i < 8; i++) {
+            int before = rig.gateway.connections.get();
+            long dropped = System.nanoTime();
+            rig.gateway.closeConnection(1001);
+            await().atMost(Duration.ofSeconds(5)).until(() -> rig.gateway.connections.get() > before);
+            waits.add(TimeUnit.NANOSECONDS.toMillis(System.nanoTime() - dropped));
+            await().atMost(Duration.ofSeconds(5)).until(rig.link::isReady);
+        }
+        assertThat(waits).allSatisfy(wait -> assertThat(wait).isLessThan(2000L));
+        // Eight draws of 0 to 1,000 ms all inside 250 ms of each other: about 1 in 2,000.
+        assertThat(range(waits)).isGreaterThan(250L);
+    }
+
+    @Test
+    void theWaitsSpreadAsTheContractWants() {
+        GatewayLink.Timing timing = GatewayLink.Timing.DEFAULT;
+        java.util.Random random = new java.util.Random(7);
+        List<Duration> limited = new ArrayList<>();
+        List<Duration> dropped = new ArrayList<>();
+        List<Duration> failed = new ArrayList<>();
+        for (int i = 0; i < 2000; i++) {
+            limited.add(GatewayLink.retryDelay(timing, Duration.ofSeconds(4), false, timing.rateLimitedDelay(), random));
+            dropped.add(GatewayLink.retryDelay(timing, timing.minBackoff(), true, Duration.ZERO, random));
+            failed.add(GatewayLink.retryDelay(timing, timing.minBackoff(), false, Duration.ZERO, random));
+        }
+        // 429 or 4429: 30 to 60 s, spread over the whole window.
+        assertThat(limited).allSatisfy(d -> assertThat(d).isBetween(Duration.ofSeconds(30), Duration.ofSeconds(60)));
+        assertThat(java.util.Collections.min(limited)).isLessThan(Duration.ofSeconds(31));
+        assertThat(java.util.Collections.max(limited)).isGreaterThan(Duration.ofSeconds(59));
+        // A healthy link dropped: 0 to 5 s.
+        assertThat(dropped).allSatisfy(d -> assertThat(d).isBetween(Duration.ZERO, Duration.ofSeconds(5)));
+        assertThat(java.util.Collections.min(dropped)).isLessThan(Duration.ofMillis(100));
+        assertThat(java.util.Collections.max(dropped)).isGreaterThan(Duration.ofMillis(4900));
+        // A link that never came up: still fast, 0.8 to 1.2 s.
+        assertThat(failed).allSatisfy(d -> assertThat(d).isBetween(Duration.ofMillis(800), Duration.ofMillis(1200)));
     }
 
     // ---- sessions
@@ -594,11 +679,20 @@ class GatewayLinkTest {
     /** Answers every upgrade with an HTTP status, which the WebSocket test server can't do. */
     private static final class RefusingServer implements AutoCloseable {
         final AtomicInteger attempts = new AtomicInteger();
+        /** {@link System#nanoTime} at each upgrade. */
+        final List<Long> times = new java.util.concurrent.CopyOnWriteArrayList<>();
         private final ServerSocket server;
         private final int status;
+        private final String headers;
 
         RefusingServer(int status) throws IOException {
+            this(status, "");
+        }
+
+        /** @param headers extra header lines, each ending in CRLF */
+        RefusingServer(int status, String headers) throws IOException {
             this.status = status;
+            this.headers = headers;
             server = new ServerSocket(0, 16, InetAddress.getLoopbackAddress());
             Thread.ofVirtual().start(this::serve);
         }
@@ -610,8 +704,9 @@ class GatewayLinkTest {
         private void serve() {
             while (true) {
                 try (Socket socket = server.accept()) {
+                    times.add(System.nanoTime());
                     attempts.incrementAndGet();
-                    socket.getOutputStream().write(("HTTP/1.1 " + status + " Refused\r\nContent-Length: 0\r\nConnection: close\r\n\r\n")
+                    socket.getOutputStream().write(("HTTP/1.1 " + status + " Refused\r\n" + headers + "Content-Length: 0\r\nConnection: close\r\n\r\n")
                             .getBytes(StandardCharsets.ISO_8859_1));
                     socket.getOutputStream().flush();
                 } catch (IOException e) {

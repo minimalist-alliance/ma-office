@@ -83,7 +83,7 @@ public final class HttpTransport {
     public Stream open(HttpRequest request) throws ProviderException {
         try {
             HttpResponse<InputStream> response = client.send(request, HttpResponse.BodyHandlers.ofInputStream());
-            return new Stream(response.statusCode(), response.body(), timeouts.idle());
+            return new Stream(response.statusCode(), response.body(), timeouts.idle(), response.headers());
         } catch (InterruptedException e) {
             Thread.currentThread().interrupt();
             throw new ProviderException(ProviderException.Kind.CANCELLED, true);
@@ -100,6 +100,7 @@ public final class HttpTransport {
     public static final class Stream extends InputStream {
         private final int status;
         private final InputStream body;
+        private final java.net.http.HttpHeaders headers;
         private volatile Duration idle;
         private final Thread reader = Thread.currentThread();
         private final AtomicLong lastProgress = new AtomicLong(System.nanoTime());
@@ -107,15 +108,21 @@ public final class HttpTransport {
         private final AtomicBoolean closed = new AtomicBoolean();
         private final Thread watchdog;
 
-        Stream(int status, InputStream body, Duration idle) {
+        Stream(int status, InputStream body, Duration idle, java.net.http.HttpHeaders headers) {
             this.status = status;
             this.body = body;
+            this.headers = headers;
             this.idle = idle;
             watchdog = Thread.ofVirtual().name("http-idle").start(this::watch);
         }
 
         public int status() {
             return status;
+        }
+
+        /** A response header's first value, or null: OpenRouter's rate-limit headers say which limit a 429 is. */
+        public String header(String name) {
+            return headers == null ? null : headers.firstValue(name).orElse(null);
         }
 
         /**

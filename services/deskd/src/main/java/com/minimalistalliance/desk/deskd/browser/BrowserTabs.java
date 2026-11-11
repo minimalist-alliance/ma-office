@@ -14,9 +14,12 @@ import com.minimalistalliance.desk.deskd.rpc.RpcPrincipal;
 import java.io.IOException;
 import java.nio.charset.StandardCharsets;
 import java.time.Duration;
+import java.time.Instant;
+import java.time.temporal.ChronoUnit;
 import java.util.ArrayList;
 import java.util.Arrays;
 import java.util.HashMap;
+import java.util.HashSet;
 import java.util.LinkedHashMap;
 import java.util.List;
 import java.util.Locale;
@@ -66,8 +69,9 @@ import org.slf4j.LoggerFactory;
  * tabs are asked, from the top down, for {@code document.visibilityState} in an isolated world, where a
  * page can't redefine it. That's a constant, and no client can reach it. The only other scripts deskd runs are the two
  * constants of {@link FilteredSites}, on a teen's desk and only on Chromium's own error page, in the same kind of world,
- * and the simplified view's constants ({@code browser/minified}), in a world of its own, on a tab a client asked to see
- * simplified.
+ * the simplified view's constants ({@code browser/minified}), in a world of its own, on a tab a client asked to see
+ * simplified, and {@link ProtectedMedia}'s two, which tell deskd that a page was refused protected playback: one in the
+ * top frame's own world of every member tab, and one in the same isolated world.
  * A call with no tabId acts only on a tab known that way: if the list can't be read, no tab can answer, or
  * the member is on a page deskd doesn't list, it fails with unavailable rather than guess, because a guess
  * can put a member's text in the wrong page.
@@ -95,6 +99,9 @@ final class BrowserTabs implements CdpClient.Events, Topic {
     private static final int MAX_ID_CHARS = 128;
     private static final String BLOCKED = "net::ERR_BLOCKED_BY_ADMINISTRATOR";
     private static final String BLANK = "about:blank";
+    /** The desk's own start page, a local file. Members see it as a new tab, never as this path. */
+    private static final String HOME_PAGE = "file:///usr/local/share/ma/home.html";
+    private static final String NEW_TAB_TITLE = "New tab";
     private static final String ISOLATED_WORLD = "ma-deskd";
     private static final String VISIBILITY_STATE = "document.visibilityState";
     private static final List<Map<String, Object>> PAGES_ONLY = List.of(Map.of("type", "page"));
@@ -155,6 +162,31 @@ final class BrowserTabs implements CdpClient.Events, Topic {
                 CdpClient.Timing.DEFAULT);
     }
 
+    /**
+     * What the Browser tells the phone view ({@link BrowserView}) of. Each runs on the read path or on an attach's own
+     * thread, so none may block or call Chromium.
+     */
+    interface ViewHooks {
+        /** A member's tab has a new session of deskd's: nothing set on an earlier one is on it, as Chromium drops a session's emulation with it. */
+        void onAttached(String tabId, String sessionId);
+
+        /** A member's tab's main frame committed a new document, so what deskd put in the last one's world is gone. */
+        void onMainFrameCommitted(String tabId, String sessionId);
+
+        /** {@code Runtime.bindingCalled} on a member's tab's own session. */
+        void onBinding(String tabId, String sessionId, Map<String, Object> params);
+
+        /** The connection to Chromium is gone, and every session with it. */
+        void onDisconnected();
+    }
+
+    /**
+     * One of the member's tabs that has deskd's session, as the phone view needs it.
+     *
+     * @param onScreen it's the tab on screen, as last known; never a guess
+     */
+    record ViewTab(String tabId, String sessionId, String mainFrameId, boolean onScreen) {}
+
     private static final class Tab {
         final String id;
         String mainFrameId;
@@ -172,6 +204,17 @@ final class BrowserTabs implements CdpClient.Events, Topic {
         String sessionId;
         CompletableFuture<String> attaching;
         Thread attachThread;
+        /** The main frame's document was refused protected playback ({@link ProtectedMedia}), or null. */
+        ProtectedMedia.Seen protectedMedia;
+        /** A thread is setting up {@link ProtectedMedia}'s listener, and whether a commit since wants it done again. */
+        boolean arming;
+        boolean armAgain;
+        /** {@link ProtectedMedia}'s page script is registered in this tab's session, or a thread is registering it. */
+        boolean watched;
+        /** Chromium's identifier of that registration, to remove it with; null until known, or if none came. */
+        String protectedScriptId;
+        /** Left unwatched because the switch said off, so turning it on again has this tab to do. */
+        boolean unwatchedByOff;
 
         Tab(String id) {
             this.id = id;
@@ -197,6 +240,8 @@ final class BrowserTabs implements CdpClient.Events, Topic {
     /** The simplified view, once it listens: told of events after the lock is let go. */
     private volatile TabEvents minifiedEvents;
     private volatile BooleanSupplier minifiedWanted = () -> false;
+    /** The phone view ({@link BrowserView}), once it listens: told of events after the lock is let go. */
+    private volatile ViewHooks viewHooks;
     private boolean ready;
     private long readySinceNanos;
     private long attemptFailures;
@@ -226,6 +271,60 @@ final class BrowserTabs implements CdpClient.Events, Topic {
     private long lastTickNanos;
     /** When the last read of the tabs began, for whatever reason. A read finds what the next would have looked for. */
     private long lastListNanos;
+    /** Where each tab goes in the list, kept across a stop and a wake (LS-36). With the lock held, but its write. */
+    private final TabOrder order;
+    /** The ids in a new connection's first read, while it's taken, so that no tab there takes another's place. */
+    private Set<String> firstRead = Set.of();
+    /** Saves the order one at a time: the ticker, and the stop. */
+    private final ReentrantLock saving = new ReentrantLock();
+    /** Downloads, which Chromium tells of on this connection (LS-31). */
+    private final BrowserDownloads downloads;
+    /** Its names are new with each deskd, so a page can't guess them. */
+    private final ProtectedMedia protectedMedia = new ProtectedMedia();
+    /** The kill switch (API.md section 10): on unless it says off. Never blocks, as the read path asks it. */
+    private volatile BooleanSupplier protectedMediaOn = () -> true;
+    /** The Agent's own targets ({@link AgentBrowsing}): never a member's tab. Set once, before the Agent opens any. */
+    private volatile AgentTargets agentTargets = AgentTargets.NONE;
+
+    /**
+     * What the tab model asks of the Agent's browsing (draft ADR "the Agent's tools and approvals", section 5). An Agent
+     * target is never a member's tab: never listed, never the tab on screen, never activated, never in the kept order or a
+     * crash's handling, and none of its events reach the member's model or the simplified view. Every method runs on the
+     * read path or with {@code lock} held, so none may block, take a lock that waits on this one, or call Chromium.
+     */
+    interface AgentTargets {
+        AgentTargets NONE = new AgentTargets() {
+            @Override
+            public boolean owns(Map<String, Object> targetInfo) {
+                return false;
+            }
+
+            @Override
+            public boolean onEvent(String method, String sessionId, Map<String, Object> params) {
+                return false;
+            }
+
+            @Override
+            public void onDisconnected() {}
+
+            @Override
+            public boolean wanted() {
+                return false;
+            }
+        };
+
+        /** Whether this target is the Agent's: one of its tabs, in one of its contexts, or opened by one of its tabs. */
+        boolean owns(Map<String, Object> targetInfo);
+
+        /** @return true if the event was the Agent's, which then goes no further here */
+        boolean onEvent(String method, String sessionId, Map<String, Object> params);
+
+        /** The connection went, and the Agent's hidden targets and contexts with it. */
+        void onDisconnected();
+
+        /** The Agent has tabs open, so the connection is wanted while Chromium may be asked. */
+        boolean wanted();
+    }
 
     BrowserTabs(
             PlatformHttp http,
@@ -238,6 +337,22 @@ final class BrowserTabs implements CdpClient.Events, Topic {
             FilteredSites filtered,
             BrowserFreeze freeze,
             Timing timing) {
+        this(http, port, listener, hub, viewer, browserLost, browserDisplaced, filtered, freeze, timing, TabOrder.onDataVolume());
+    }
+
+    /** @param order where the tab order is kept; {@link TabOrder#onDataVolume} on a desk */
+    BrowserTabs(
+            PlatformHttp http,
+            int port,
+            Supplier<CdpListener.Verdict> listener,
+            EventHub hub,
+            BooleanSupplier viewer,
+            Runnable browserLost,
+            Runnable browserDisplaced,
+            FilteredSites filtered,
+            BrowserFreeze freeze,
+            Timing timing,
+            TabOrder order) {
         this.freeze = freeze;
         this.hub = hub;
         this.viewer = viewer;
@@ -249,6 +364,16 @@ final class BrowserTabs implements CdpClient.Events, Topic {
         long now = System.nanoTime();
         this.lastCallNanos = now - timing.recentCall().toNanos() - 1;
         this.lastFailureNanos = now - TimeUnit.HOURS.toNanos(1);
+        this.order = order;
+        // Its own topic, as the tab list's events are whole lists and a download's progress shouldn't resend them. It's
+        // registered here, beside the CDP connection it comes from, rather than where the tab topic is.
+        this.downloads = new BrowserDownloads(hub, System::nanoTime);
+        hub.topics().register(BrowserDownloads.TOPIC, downloads);
+    }
+
+    /** Where the protected-media kill switch is read from; call before the first tab. */
+    void protectedMediaSwitch(BooleanSupplier on) {
+        this.protectedMediaOn = on;
     }
 
     /** What wants the connection, or the list read, may have changed. Never blocks. */
@@ -267,6 +392,8 @@ final class BrowserTabs implements CdpClient.Events, Topic {
     }
 
     void close() {
+        // The order as it is now, as deskd stops before desk-browser on a desk's stop: up to a tick's changes would be lost.
+        saveOrder();
         closed = true;
         cdp.close();
         lock.lock();
@@ -351,6 +478,7 @@ final class BrowserTabs implements CdpClient.Events, Topic {
         } finally {
             lock.unlock();
         }
+        health.put("downloads", downloads.count());
         return health;
     }
 
@@ -360,6 +488,7 @@ final class BrowserTabs implements CdpClient.Events, Topic {
                 && (viewer.getAsBoolean()
                         || hub.hasSubscribers(TOPIC)
                         || minifiedWanted.getAsBoolean()
+                        || agentTargets.wanted()
                         || System.nanoTime() - lastCallNanos < timing.recentCall().toNanos());
     }
 
@@ -425,7 +554,7 @@ final class BrowserTabs implements CdpClient.Events, Topic {
 
     // ---- the methods
 
-    /** @return the tabs, in the order deskd first saw them */
+    /** @return the tabs, in the order kept for them ({@link TabOrder}), and then in the order deskd first saw them */
     List<Map<String, Object>> list() throws RpcException, InterruptedException {
         requireReady();
         refreshList();
@@ -769,6 +898,20 @@ final class BrowserTabs implements CdpClient.Events, Topic {
         }
     }
 
+    /**
+     * The member's tab the last read found on screen, for what names a tab without acting on it ({@link BrowserLinks}).
+     * Null when that isn't known, or there's no connection. Never a guess, and never a call to Chromium.
+     */
+    String knownTabOnScreen() {
+        lock.lock();
+        try {
+            Tab tab = ready && activeKnown && activeId != null ? tabs.get(activeId) : null;
+            return tab != null && tab.member ? tab.id : null;
+        } finally {
+            lock.unlock();
+        }
+    }
+
     /** With the lock held. Never the guess {@link #activeTab} can make. */
     private Tab tabOnScreen() throws RpcException {
         if (!activeKnown) {
@@ -871,10 +1014,12 @@ final class BrowserTabs implements CdpClient.Events, Topic {
         lock.lock();
         try {
             clearModel();
+            order.connected();
         } finally {
             lock.unlock();
         }
         cdp.call(null, "Target.setDiscoverTargets", Map.of("discover", true, "filter", PAGES_ONLY), timing.request());
+        hearDownloads();
         cdp.call("Target.getTargets", Map.of("filter", PAGES_ONLY), timing.request(), this::takeTargets);
         List<Thread> attaching = new ArrayList<>();
         lock.lock();
@@ -924,12 +1069,23 @@ final class BrowserTabs implements CdpClient.Events, Topic {
             if (!(targets.get("targetInfos") instanceof List<?> infos)) {
                 return;
             }
+            Set<String> ids = new HashSet<>();
             for (Object info : infos) {
-                if (info instanceof Map<?, ?>) {
-                    @SuppressWarnings("unchecked")
-                    Map<String, Object> fields = (Map<String, Object>) info;
-                    upsert(fields);
+                if (info instanceof Map<?, ?> fields && fields.get("targetId") instanceof String id) {
+                    ids.add(id);
                 }
+            }
+            firstRead = ids;
+            try {
+                for (Object info : infos) {
+                    if (info instanceof Map<?, ?>) {
+                        @SuppressWarnings("unchecked")
+                        Map<String, Object> fields = (Map<String, Object>) info;
+                        upsert(fields);
+                    }
+                }
+            } finally {
+                firstRead = Set.of();
             }
             now = Set.copyOf(tabs.keySet());
         } finally {
@@ -952,9 +1108,15 @@ final class BrowserTabs implements CdpClient.Events, Topic {
         } finally {
             lock.unlock();
         }
+        downloads.connectionLost();
+        agentTargets.onDisconnected();
         TabEvents minified = minifiedEvents;
         if (minified != null) {
             minified.onDisconnected();
+        }
+        ViewHooks view = viewHooks;
+        if (view != null) {
+            view.onDisconnected();
         }
         // Ready or still settling: either way Chromium was there, and may have gone for good.
         if (unexpected) {
@@ -982,8 +1144,17 @@ final class BrowserTabs implements CdpClient.Events, Topic {
 
     @Override
     public void onEvent(String method, String sessionId, Map<String, Object> params) {
+        // The Agent's events go to the Agent alone: never the member's model, downloads or simplified view.
+        if (agentTargets.onEvent(method, sessionId, params)) {
+            return;
+        }
+        if (sessionId == null && method.startsWith("Browser.download")) {
+            downloads.onEvent(method, params);
+            return;
+        }
         String sessionTab = null;
         String gone = null;
+        String refused = null;
         lock.lock();
         try {
             Tab onSession = sessionId == null ? null : bySession.get(sessionId);
@@ -1016,12 +1187,17 @@ final class BrowserTabs implements CdpClient.Events, Topic {
                 case "Page.frameNavigated" -> onFrameNavigated(sessionId, Json.object(params, "frame"));
                 case "Page.navigatedWithinDocument" -> onWithinDocument(sessionId, Json.string(params, "frameId"));
                 case "Page.domContentEventFired", "Page.loadEventFired" -> onTitleLikelyNew(sessionId);
+                case "Runtime.bindingCalled" -> refused = onProtectedMediaRefused(onSession, params);
                 default -> {
                     // Page.enable sends much more, and none of it matters here.
                 }
             }
         } finally {
             lock.unlock();
+        }
+        if (refused != null) {
+            // The tab, and nothing of the page: no URL, no title, not even the key system.
+            log.info("a protected video couldn't play in tab {}", refused);
         }
         TabEvents minified = minifiedEvents;
         if (minified != null) {
@@ -1031,6 +1207,266 @@ final class BrowserTabs implements CdpClient.Events, Topic {
                 minified.onEvent(method, sessionId, sessionTab, params);
             }
         }
+        ViewHooks view = viewHooks;
+        if (view != null && sessionTab != null) {
+            if ("Runtime.bindingCalled".equals(method)) {
+                view.onBinding(sessionTab, sessionId, params);
+            } else if ("Page.frameNavigated".equals(method)) {
+                Map<String, Object> frame = Json.object(params, "frame");
+                if (frame != null && frame.get("parentId") == null) {
+                    view.onMainFrameCommitted(sessionTab, sessionId);
+                }
+            }
+        }
+    }
+
+    // ---- what the phone view may do
+
+    /** The phone view listens from now on. Call once, before anything can happen. */
+    void listenForView(ViewHooks hooks) {
+        viewHooks = hooks;
+    }
+
+    /**
+     * Waits up to {@code wait} for a new connection to have read its tabs, so which is on screen is known, without asking
+     * for a thaw. False if it isn't ready by then.
+     */
+    boolean viewReady(Duration wait) throws InterruptedException {
+        // Not a call: it doesn't keep the connection wanted, or bring one.
+        long remaining = wait.toNanos();
+        lock.lock();
+        try {
+            while (!ready && remaining > 0 && !closed) {
+                remaining = readyChanged.awaitNanos(remaining);
+            }
+            return ready;
+        } finally {
+            lock.unlock();
+        }
+    }
+
+    /** The member's tabs that have deskd's session now, the one on screen first if it's known. Never blocks for long. */
+    List<ViewTab> viewTabs() {
+        lock.lock();
+        try {
+            List<ViewTab> out = new ArrayList<>(tabs.size());
+            for (Tab tab : tabs.values()) {
+                if (!tab.member || tab.sessionId == null) {
+                    continue;
+                }
+                boolean onScreen = activeKnown && tab.id.equals(activeId);
+                ViewTab entry = new ViewTab(tab.id, tab.sessionId, tab.mainFrameId, onScreen);
+                if (onScreen) {
+                    out.add(0, entry);
+                } else {
+                    out.add(entry);
+                }
+            }
+            return out;
+        } finally {
+            lock.unlock();
+        }
+    }
+
+    /**
+     * One command on a member's tab's session, for the phone view: only on the session the model has for that tab now,
+     * and only Emulation, Page.createIsolatedWorld and Runtime calls in deskd's own world, which {@link BrowserView} keeps
+     * to its constants.
+     */
+    Map<String, Object> viewCall(ViewTab tab, String method, Map<String, Object> params, Duration timeout)
+            throws CdpException, InterruptedException {
+        lock.lock();
+        try {
+            Tab known = tabs.get(tab.tabId());
+            if (known == null || !known.member || !tab.sessionId().equals(known.sessionId)) {
+                throw CdpException.notSent();
+            }
+        } finally {
+            lock.unlock();
+        }
+        return cdp.call(tab.sessionId(), method, params, timeout);
+    }
+
+    /** Where Chromium's window is, in screen pixels: {@code Browser.getWindowForTarget}'s bounds, or null if it doesn't say. */
+    int[] windowSize(ViewTab tab, Duration timeout) throws CdpException, InterruptedException {
+        Map<String, Object> window = cdp.call(null, "Browser.getWindowForTarget", Map.of("targetId", tab.tabId()), timeout);
+        Map<String, Object> bounds = Json.object(window, "bounds");
+        if (bounds == null || !(bounds.get("width") instanceof Number width) || !(bounds.get("height") instanceof Number height)) {
+            return null;
+        }
+        return new int[] {width.intValue(), height.intValue()};
+    }
+
+    /** The tab on screen with deskd's session to it, for a client's call to the phone view. Never a guess. */
+    ViewTab viewOnScreen() throws RpcException, InterruptedException {
+        requireReady();
+        Tab tab = resolve(null);
+        String session;
+        try {
+            session = sessionFor(tab, timing.sessionWait());
+        } catch (CdpException e) {
+            throw toRpc(e, tab);
+        }
+        lock.lock();
+        try {
+            if (tabs.get(tab.id) != tab) {
+                throw notFound();
+            }
+            return new ViewTab(tab.id, session, tab.mainFrameId, true);
+        } finally {
+            lock.unlock();
+        }
+    }
+
+    /**
+     * The tab on screen as last known, without reading the list again: for a question that has to be answered within a
+     * tap, and that only reads. While someone views, the list is read every second. Never a guess either.
+     */
+    ViewTab viewKnownOnScreen() throws RpcException, InterruptedException {
+        requireReady();
+        lock.lock();
+        try {
+            Tab tab = tabOnScreen();
+            if (tab.sessionId == null) {
+                throw unavailable();
+            }
+            return new ViewTab(tab.id, tab.sessionId, tab.mainFrameId, true);
+        } finally {
+            lock.unlock();
+        }
+    }
+
+    /**
+     * A client's command on {@link #viewOnScreen}'s tab, as the Browser's own calls fail: {@code unavailable} or
+     * {@code not_found}. With {@code context}, it changes the page, and the token is checked for input right before.
+     */
+    Map<String, Object> viewClientCall(RpcContext context, ViewTab tab, String method, Map<String, Object> params, Duration timeout)
+            throws RpcException, InterruptedException {
+        Tab known;
+        lock.lock();
+        try {
+            known = tabs.get(tab.tabId());
+        } finally {
+            lock.unlock();
+        }
+        try {
+            if (context != null) {
+                aboutToApply(context);
+            }
+            return viewCall(tab, method, params, timeout);
+        } catch (CdpException e) {
+            throw known == null ? notFound() : toRpc(e, known);
+        }
+    }
+
+    // ---- what the sign-ins may do
+
+    /**
+     * {@link SignIns}' way to Chromium: commands on the browser itself and on the hidden pages it opens, and what the model
+     * knows of tabs. An extension's page is never a member's tab here ({@link #isMemberUrl}), so it's never attached to.
+     */
+    SignIns.Chromium signInAccess() {
+        return new SignInAccess();
+    }
+
+    private final class SignInAccess implements SignIns.Chromium {
+        @Override
+        public void requireReady() throws RpcException, InterruptedException {
+            BrowserTabs.this.requireReady();
+        }
+
+        @Override
+        public Map<String, Object> call(String sessionId, String method, Map<String, Object> params, Duration timeout)
+                throws CdpException, InterruptedException {
+            return cdp.call(sessionId, method, params, timeout);
+        }
+
+        @Override
+        public Duration request() {
+            return timing.request();
+        }
+
+        @Override
+        public List<String> pagesOf(String origin) {
+            List<String> ids = new ArrayList<>();
+            lock.lock();
+            try {
+                for (Tab tab : tabs.values()) {
+                    if (!tab.member && tab.url.startsWith(origin)) {
+                        ids.add(tab.id);
+                    }
+                }
+            } finally {
+                lock.unlock();
+            }
+            return ids;
+        }
+
+        @Override
+        public String activeTabId() {
+            lock.lock();
+            try {
+                Tab tab = activeKnown && activeId != null ? tabs.get(activeId) : null;
+                return tab != null && tab.member ? tab.id : null;
+            } finally {
+                lock.unlock();
+            }
+        }
+
+        @Override
+        public boolean isMemberTab(String tabId) {
+            lock.lock();
+            try {
+                Tab tab = tabs.get(tabId);
+                return tab != null && tab.member;
+            } finally {
+                lock.unlock();
+            }
+        }
+
+        @Override
+        public int memberTabs() {
+            lock.lock();
+            try {
+                return memberCount();
+            } finally {
+                lock.unlock();
+            }
+        }
+
+        @Override
+        public String open(RpcContext context, String url) throws RpcException, InterruptedException {
+            return BrowserTabs.this.open(context, url);
+        }
+
+        @Override
+        public void openBlank() throws CdpException, InterruptedException {
+            createTab(BLANK);
+        }
+    }
+
+    // ---- what the Agent's browsing may do
+
+    /**
+     * The Agent's way to Chromium ({@link AgentBrowsing}): its hook here, so its targets are never a member's tab, and the
+     * one connection, which it reaches only through {@link AgentCdp}'s allow-list. Once, before the Agent opens anything.
+     */
+    CdpClient agentHook(AgentTargets targets) {
+        this.agentTargets = targets;
+        return cdp;
+    }
+
+    /**
+     * As a call of the member's: the connection wanted, and up with the tabs known, or false. Never asks for a thaw: the
+     * Agent's work does, through {@link BrowserFreeze#use} first.
+     */
+    boolean awaitAgentReady() throws InterruptedException {
+        lastCallNanos = System.nanoTime();
+        return awaitReady(timing.callWait(), false);
+    }
+
+    Timing timing() {
+        return timing;
     }
 
     // ---- what the simplified view may do
@@ -1159,25 +1595,119 @@ final class BrowserTabs implements CdpClient.Events, Topic {
 
     private void upsert(Map<String, Object> info) {
         String id = Json.string(info, "targetId");
-        if (!isPlainId(id) || !isTab(info)) {
+        if (!isPlainId(id) || !isTab(info) || agentTargets.owns(info)) {
             return;
         }
         Tab tab = tabs.get(id);
+        String url = TabText.clean(Json.string(info, "url"), URL_CHARS);
         if (tab == null) {
             if (tabs.size() >= MAX_TABS) {
                 return;
             }
             tab = new Tab(id);
-            tabs.put(id, tab);
+            place(tab, order.place(id, url, live()));
             listDue = true;
+        } else if (!url.equals(tab.url) && order.rank(id) == null) {
+            // A restored tab that came before its address did finds its place once the address comes (LS-36).
+            Integer rank = order.place(id, url, live());
+            if (rank != null) {
+                tabs.remove(id);
+                place(tab, rank);
+                listDue = true;
+            }
         }
-        tab.url = TabText.clean(Json.string(info, "url"), URL_CHARS);
+        tab.url = url;
         tab.title = TabText.clean(Json.string(info, "title"), TITLE_CHARS);
         tab.member = isMemberUrl(tab.url);
         if (tab.member && tab.sessionId == null) {
             startAttach(tab);
         }
         scheduleTick();
+    }
+
+    /**
+     * With the lock held. A tab with a place in the kept order goes before the first tab with a later place or none, so
+     * tabs restored after a wake line up as they were, ahead of any opened since. One with no place goes at the end, as
+     * every tab did before the order was kept.
+     */
+    private void place(Tab tab, Integer rank) {
+        if (rank == null) {
+            tabs.put(tab.id, tab);
+            return;
+        }
+        List<Tab> all = new ArrayList<>(tabs.values());
+        int at = all.size();
+        for (int i = 0; i < all.size(); i++) {
+            Integer other = order.rank(all.get(i).id);
+            if (other == null || other > rank) {
+                at = i;
+                break;
+            }
+        }
+        if (at == all.size()) {
+            tabs.put(tab.id, tab);
+            return;
+        }
+        all.add(at, tab);
+        tabs.clear();
+        for (Tab each : all) {
+            tabs.put(each.id, each);
+        }
+    }
+
+    /** With the lock held: every tab Chromium has as far as deskd knows, a new connection's first read included. */
+    private Set<String> live() {
+        if (firstRead.isEmpty()) {
+            return tabs.keySet();
+        }
+        Set<String> all = new HashSet<>(tabs.keySet());
+        all.addAll(firstRead);
+        return all;
+    }
+
+    /**
+     * The order as it is now, kept if it changed and no restore may still be under way (LS-36). Never with the lock
+     * held: the write is outside it.
+     */
+    private void saveOrder() {
+        saving.lock();
+        try {
+            List<TabOrder.Entry> toWrite;
+            lock.lock();
+            try {
+                if (!ready) {
+                    return;
+                }
+                List<TabOrder.Entry> now = new ArrayList<>(tabs.size());
+                for (Tab tab : tabs.values()) {
+                    now.add(new TabOrder.Entry(tab.id, TabOrder.key(tab.url)));
+                }
+                toWrite = order.adopt(now);
+            } finally {
+                lock.unlock();
+            }
+            if (toWrite != null) {
+                order.write(toWrite);
+            }
+        } finally {
+            saving.unlock();
+        }
+    }
+
+    /**
+     * Chromium's download events on this connection, with its own handling left as it is: {@code default} keeps the
+     * desk's policy on where files go (LS-31). It lasts as long as the connection, and Chromium drops it with it.
+     */
+    private void hearDownloads() throws CdpException, InterruptedException {
+        try {
+            cdp.call(null, "Browser.setDownloadBehavior", Map.of("behavior", "default", "eventsEnabled", true), timing.request());
+        } catch (CdpException e) {
+            if (e.kind() != CdpException.Kind.REMOTE) {
+                throw e;
+            }
+            // A Chromium that refuses it works as before, with no word of downloads.
+            log.info("chromium refused download events");
+        }
     }
 
     /** Only pages, and no prerendered page: that one isn't anything the member opened. */
@@ -1245,10 +1775,119 @@ final class BrowserTabs implements CdpClient.Events, Topic {
         }
         String loaderId = Json.string(frame, "loaderId");
         tab.mainLoaderId = isPlainId(loaderId) ? loaderId : null;
+        // A new document: what the last one was refused is its own, and this one is watched afresh.
+        tab.protectedMedia = null;
         markHistoryDirty(tab);
         String unreachable = Json.string(frame, "unreachableUrl");
         if (unreachable != null) {
             errorPageCommitted(tab, sessionId, unreachable);
+        } else {
+            armSoon(tab);
+        }
+    }
+
+    /**
+     * With the lock held, on the read path: deskd's isolated world in the tab's main document says the page was refused
+     * protected playback. Once per document, which a commit starts. A same-document navigation, as a single-page site
+     * makes between its own pages, isn't a new one.
+     *
+     * @return the tab's id if this is news, to be logged once the lock is let go
+     */
+    private String onProtectedMediaRefused(Tab tab, Map<String, Object> params) {
+        String keySystem = protectedMedia.keySystem(params);
+        if (tab == null || keySystem == null || !tab.member || tab.protectedMedia != null || !protectedMediaOn.getAsBoolean()) {
+            return null;
+        }
+        tab.protectedMedia = new ProtectedMedia.Seen(Instant.now().truncatedTo(ChronoUnit.SECONDS).toString(), keySystem);
+        scheduleTick();
+        return tab.id;
+    }
+
+    /** With the lock held: sets up {@link ProtectedMedia}'s listener in the tab's main document, on a thread of its own. */
+    private void armSoon(Tab tab) {
+        if (!tab.member || tab.sessionId == null || closed || !protectedMediaOn.getAsBoolean()) {
+            return;
+        }
+        if (tab.arming) {
+            tab.armAgain = true;
+            return;
+        }
+        tab.arming = true;
+        Thread.ofVirtual().name("cdp-protected-media").start(() -> {
+            try {
+                armLoop(tab);
+            } catch (InterruptedException e) {
+                Thread.currentThread().interrupt();
+            }
+        });
+    }
+
+    /** {@link #armSoon} on this thread, for an attach, which goes on with its own work after. */
+    private void armNow(Tab tab) throws InterruptedException {
+        lock.lock();
+        try {
+            if (!protectedMediaOn.getAsBoolean()) {
+                return;
+            }
+            if (tab.arming) {
+                tab.armAgain = true;
+                return;
+            }
+            tab.arming = true;
+        } finally {
+            lock.unlock();
+        }
+        armLoop(tab);
+    }
+
+    /**
+     * Arms the document the main frame holds, and again for as long as a commit came during the last try, so a tab that
+     * keeps navigating has one of these at a time. One that fails is left: the next commit tries its own.
+     */
+    private void armLoop(Tab tab) throws InterruptedException {
+        boolean released = false;
+        try {
+            while (true) {
+                String session;
+                String frame;
+                lock.lock();
+                try {
+                    if (closed || tabs.get(tab.id) != tab || tab.sessionId == null || !tab.member || !protectedMediaOn.getAsBoolean()) {
+                        tab.arming = false;
+                        released = true;
+                        return;
+                    }
+                    session = tab.sessionId;
+                    frame = tab.mainFrameId;
+                    tab.armAgain = false;
+                } finally {
+                    lock.unlock();
+                }
+                try {
+                    protectedMedia.arm(cdp, session, frame, ISOLATED_WORLD, timing.request());
+                } catch (CdpException e) {
+                    log.debug("couldn't listen for protected media in a tab: {}", e.kind());
+                }
+                lock.lock();
+                try {
+                    if (!tab.armAgain) {
+                        tab.arming = false;
+                        released = true;
+                        return;
+                    }
+                } finally {
+                    lock.unlock();
+                }
+            }
+        } finally {
+            if (!released) {
+                lock.lock();
+                try {
+                    tab.arming = false;
+                } finally {
+                    lock.unlock();
+                }
+            }
         }
     }
 
@@ -1408,6 +2047,9 @@ final class BrowserTabs implements CdpClient.Events, Topic {
     }
 
     private void forgetSession(Tab tab) {
+        tab.watched = false;
+        tab.protectedScriptId = null;
+        tab.unwatchedByOff = false;
         if (tab.sessionId != null) {
             bySession.remove(tab.sessionId);
             tab.sessionId = null;
@@ -1448,14 +2090,23 @@ final class BrowserTabs implements CdpClient.Events, Topic {
                 if (tabs.get(tab.id) == tab) {
                     tab.sessionId = sessionId;
                     bySession.put(sessionId, tab);
+                    // A session of its own has none of the last one's scripts.
+                    tab.watched = false;
+                    tab.protectedScriptId = null;
+                    tab.unwatchedByOff = false;
                 }
                 tab.attaching = null;
             } finally {
                 lock.unlock();
             }
             result.complete(sessionId);
+            ViewHooks view = viewHooks;
+            if (view != null) {
+                view.onAttached(tab.id, sessionId);
+            }
             // A hung page can leave these unanswered. Calls on the tab don't wait for them.
             cdp.call(sessionId, "Page.enable", Map.of(), timing.request());
+            watchProtectedMedia(tab, sessionId);
             readHistory(tab, sessionId);
             if (filtered.active()) {
                 lookForErrorPage(tab, sessionId);
@@ -1477,6 +2128,120 @@ final class BrowserTabs implements CdpClient.Events, Topic {
                 tab.attachThread = null;
             } finally {
                 lock.unlock();
+            }
+        }
+    }
+
+    /**
+     * {@link ProtectedMedia}'s page script in the tab from now on, and its listener in the document there now. Page is
+     * enabled first, or the script wouldn't run at the start of the next document. A failure here is the tab's loss alone,
+     * and never stops the attach's other work; a script that didn't go in leaves nothing to arm.
+     */
+    private void watchProtectedMedia(Tab tab, String sessionId) throws InterruptedException {
+        lock.lock();
+        try {
+            if (tab.watched || !sessionId.equals(tab.sessionId)) {
+                return;
+            }
+            if (!protectedMediaOn.getAsBoolean()) {
+                tab.unwatchedByOff = true;
+                return;
+            }
+            tab.unwatchedByOff = false;
+            tab.watched = true;
+        } finally {
+            lock.unlock();
+        }
+        String identifier;
+        try {
+            identifier = protectedMedia.install(cdp, sessionId, timing.request());
+        } catch (CdpException e) {
+            log.debug("couldn't watch a tab for protected media: {}", e.kind());
+            lock.lock();
+            try {
+                if (sessionId.equals(tab.sessionId)) {
+                    tab.watched = false;
+                }
+            } finally {
+                lock.unlock();
+            }
+            return;
+        }
+        lock.lock();
+        try {
+            if (!sessionId.equals(tab.sessionId)) {
+                return;
+            }
+            tab.protectedScriptId = identifier;
+        } finally {
+            lock.unlock();
+        }
+        if (!protectedMediaOn.getAsBoolean()) {
+            // Switched off while the call was out.
+            unwatchProtectedMedia(tab);
+            return;
+        }
+        armNow(tab);
+    }
+
+    /**
+     * The switch turned off: takes {@link ProtectedMedia}'s script out of the tab's next documents and forgets what the
+     * tab was marked with. The copy in the document there now stays, and deskd no longer listens.
+     */
+    private void unwatchProtectedMedia(Tab tab) throws InterruptedException {
+        String session;
+        String identifier;
+        lock.lock();
+        try {
+            session = tab.sessionId;
+            identifier = tab.protectedScriptId;
+            tab.protectedScriptId = null;
+            tab.watched = false;
+            tab.unwatchedByOff = true;
+            if (tab.protectedMedia != null) {
+                tab.protectedMedia = null;
+                scheduleTick();
+            }
+        } finally {
+            lock.unlock();
+        }
+        if (session == null || identifier == null) {
+            return;
+        }
+        try {
+            protectedMedia.remove(cdp, session, identifier, timing.request());
+        } catch (CdpException e) {
+            log.debug("couldn't stop watching a tab for protected media: {}", e.kind());
+        }
+    }
+
+    /**
+     * Brings every attached tab in line with the switch. Runs at the start of a tick, so it follows a change within the
+     * switch's own second while anyone looks at the tabs; a tab attached or navigated meanwhile asks the switch itself.
+     */
+    private void syncProtectedMedia() throws InterruptedException {
+        boolean on = protectedMediaOn.getAsBoolean();
+        List<Tab> todo = new ArrayList<>();
+        List<String> sessions = new ArrayList<>();
+        lock.lock();
+        try {
+            for (Tab tab : tabs.values()) {
+                if (tab.sessionId == null) {
+                    continue;
+                }
+                if (on ? tab.unwatchedByOff : tab.watched || tab.protectedMedia != null) {
+                    todo.add(tab);
+                    sessions.add(tab.sessionId);
+                }
+            }
+        } finally {
+            lock.unlock();
+        }
+        for (int i = 0; i < todo.size(); i++) {
+            if (on) {
+                watchProtectedMedia(todo.get(i), sessions.get(i));
+            } else {
+                unwatchProtectedMedia(todo.get(i));
             }
         }
     }
@@ -1536,7 +2301,7 @@ final class BrowserTabs implements CdpClient.Events, Topic {
             int bytes = 0;
             for (Tab tab : tabs.values()) {
                 if (tab.member) {
-                    Map<String, Object> entry = entry(tab, tab == active, tab.url, tab.title);
+                    Map<String, Object> entry = entry(tab, tab == active, shownUrl(tab.url), shownTitle(tab.url, tab.title));
                     bytes += Json.bytes(entry).length + 1;
                     list.add(entry);
                 }
@@ -1570,11 +2335,30 @@ final class BrowserTabs implements CdpClient.Events, Topic {
         return list;
     }
 
-    private static Map<String, Object> tightEntry(Tab tab, boolean active) {
-        return entry(tab, active, TabText.clean(tab.url, TIGHT_URL_CHARS), TabText.clean(tab.title, TIGHT_TITLE_CHARS));
+    private Map<String, Object> tightEntry(Tab tab, boolean active) {
+        return entry(tab, active, TabText.clean(shownUrl(tab.url), TIGHT_URL_CHARS),
+                TabText.clean(shownTitle(tab.url, tab.title), TIGHT_TITLE_CHARS));
     }
 
-    private static Map<String, Object> entry(Tab tab, boolean active, String url, String title) {
+    /** Whether this is the desk's start page, on its own or with a query or fragment. */
+    static boolean isHomePage(String url) {
+        if (url == null || !url.startsWith(HOME_PAGE)) {
+            return false;
+        }
+        return url.length() == HOME_PAGE.length() || url.charAt(HOME_PAGE.length()) == '#' || url.charAt(HOME_PAGE.length()) == '?';
+    }
+
+    /** What a client is told a tab's address is: empty for the start page, which is the address bar's placeholder. */
+    static String shownUrl(String url) {
+        return isHomePage(url) ? "" : url;
+    }
+
+    /** The start page's own title may be the path where the page set none, so it's always a plain new tab. */
+    static String shownTitle(String url, String title) {
+        return isHomePage(url) ? NEW_TAB_TITLE : title;
+    }
+
+    private Map<String, Object> entry(Tab tab, boolean active, String url, String title) {
         Map<String, Object> entry = new LinkedHashMap<>();
         entry.put("tabId", tab.id);
         entry.put("url", url);
@@ -1583,6 +2367,9 @@ final class BrowserTabs implements CdpClient.Events, Topic {
         entry.put("active", active);
         entry.put("canGoBack", tab.canGoBack);
         entry.put("canGoForward", tab.canGoForward);
+        if (tab.protectedMedia != null && protectedMediaOn.getAsBoolean()) {
+            entry.put("protectedMedia", tab.protectedMedia.toMap());
+        }
         return entry;
     }
 
@@ -1687,6 +2474,9 @@ final class BrowserTabs implements CdpClient.Events, Topic {
     }
 
     private void tick() throws InterruptedException {
+        syncProtectedMedia();
+        // Whoever is subscribed: a tab can change with nobody watching the list, as a link opening one does.
+        saveOrder();
         boolean readList;
         lock.lock();
         try {
@@ -1842,7 +2632,7 @@ final class BrowserTabs implements CdpClient.Events, Topic {
         Tab tab = tabs.get(Json.string(info, "targetId"));
         String rawUrl = Json.string(info, "url");
         String rawTitle = Json.string(info, "title");
-        if (tab == null || !isTab(info) || rawUrl == null || rawTitle == null) {
+        if (tab == null || !isTab(info) || rawUrl == null || rawTitle == null || agentTargets.owns(info)) {
             return false;
         }
         String url = TabText.clean(rawUrl, URL_CHARS);

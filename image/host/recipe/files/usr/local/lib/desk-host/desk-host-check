@@ -18,14 +18,26 @@ import urllib.request
 
 LIB = "/usr/local/lib/desk-host"
 DH = "/srv/desk-host"
-T = f"{DH}/template"
+sys.path.insert(0, LIB)
+sys.dont_write_bytecode = True
+import templates  # noqa: E402  (ADR 0077: the template generations)
+import batches  # noqa: E402  (ADR 0078: service batches)
+import batchsig  # noqa: E402
+
+TREE = sys.argv[sys.argv.index("--tree") + 1] if "--tree" in sys.argv else None   # a tree being sealed (templates.fetch)
+BUILDING = "--building" in sys.argv                                                # no .complete yet: it's written last
+QUICK_MODE = "--quick" in sys.argv
+T = TREE or (templates.gen_dir(templates.current_gen()) if templates.current_gen() else f"{DH}/templates/none")
 SLOTS_MAX = 29
+SLOT_MODES = ("address", "port")
+DMX = "/run/desk-dmx"
+DMX_MARK = "0x00004430"
 RUNC = "/usr/local/sbin/runc"
 DESK_UNITS = ("desk-firstboot.service data.mount desk-units@.service desk-data@.service desk-datadirs.service desk-rtc.service deskd.service "
               "desk-agent.service desk-agent-filter.service desk-notebook.service desk-egress.service desk-units.socket desk-data.socket "
               "desk-preread.service desk-xorg.service desk-audio.service desk-browser.service desk-stream.service desk-browser-thaw.service "
               "desk-adblock.service desk-kind.service desk-guild-net.service desk-guild-rtc.service commons-data.service "
-              "commons-server-address.service commons-server.service docker.service docker.socket containerd.service zramswap.service").split()
+              "commons-server-address.service commons-server.service desk-restart-reset.service desk-restart-reset.timer docker.service docker.socket containerd.service zramswap.service").split()
 DESK_UIDS = range(1100, 1113)
 
 
@@ -117,7 +129,8 @@ def c_swap():
 
 SYSCTL = {"kernel.yama.ptrace_scope": "2", "dev.tty.ldisc_autoload": "0", "net.ipv4.ip_forward": "1", "net.ipv6.conf.all.forwarding": "0",
           "kernel.core_pattern": "|/bin/false", "fs.suid_dumpable": "0", "net.core.rmem_max": "4194304", "net.core.wmem_max": "4194304",
-          "kernel.unprivileged_bpf_disabled": "1", "kernel.dmesg_restrict": "1", "kernel.kptr_restrict": "2"}
+          "kernel.unprivileged_bpf_disabled": "1", "kernel.dmesg_restrict": "1", "kernel.kptr_restrict": "2",
+          "net.ipv4.ip_local_port_range": "60000\t64999"}
 
 
 def c_sysctl():
@@ -244,23 +257,66 @@ def c_counters():
             probs.append(f"est_{k} doesn't count rx_{k}")
         if f'iifname "dhv{k}" jump est_{k}' not in de or f'oifname "dhv{k}" jump est_{k}' not in de:
             probs.append(f"desk_est doesn't jump to est_{k} both ways")
-    return not probs, (f"established flows counted before their accept; {len(slots)} slot(s) count out and rx" if not probs else f"{probs[:4]}")
+    # SlotMode=port: the demux's connections to a slot (TCP 443 from the client's address) never pass forward, so the input
+    # chain counts the desk's side before its established accept (desk_dmx, dmxi_<k>: out_<k>) and the output chain the
+    # demux's side (desk_dmxo, dmxo_<k>: rx_<k>)
+    if slot_mode() == "port":
+        inp = [l.strip() for l in sh("nft", "list", "chain", "inet", "host", "input").stdout.splitlines()]
+        outc = [l.strip() for l in sh("nft", "list", "chain", "inet", "host", "output").stdout.splitlines()]
+        jd = next((i for i, l in enumerate(inp) if l == f"meta mark {DMX_MARK} jump desk_dmx"), None)
+        ia = next((i for i, l in enumerate(inp) if est.search(l) and l.endswith("accept")), None)
+        if jd is None or ia is None or jd > ia:
+            probs.append("input doesn't count the demux's connections before its established accept")
+        if 'oifname "dhv*" jump desk_dmxo' not in outc:
+            probs.append("output doesn't count the demux's bytes to the desks")
+        dd, ddo = sh("nft", "list", "chain", "inet", "host", "desk_dmx").stdout, sh("nft", "list", "chain", "inet", "host", "desk_dmxo").stdout
+        for k in slots:
+            di, do = sh("nft", "list", "chain", "inet", "host", f"dmxi_{k}").stdout, sh("nft", "list", "chain", "inet", "host", f"dmxo_{k}").stdout
+            if not re.search(rf'ip saddr 10\.98\.{k}\.2 tcp sport 443 counter packets \d+ bytes \d+ counter name "?out_{k}"?(\s|$)', di) \
+                    or f'iifname "dhv{k}" jump dmxi_{k}' not in dd:
+                probs.append(f"dmxi_{k} doesn't count out_{k}")
+            if not re.search(rf'ip daddr 10\.98\.{k}\.2 tcp dport 443 counter packets \d+ bytes \d+ counter name "?rx_{k}"?(\s|$)', do) \
+                    or f'oifname "dhv{k}" jump dmxo_{k}' not in ddo:
+                probs.append(f"dmxo_{k} doesn't count rx_{k}")
+    return not probs, (f"established flows counted before their accept; {len(slots)} slot(s) count out and rx"
+                       f"{', the demux both ways' if slot_mode() == 'port' else ''}" if not probs else f"{probs[:4]}")
 
 
 def c_store():
-    m = [l.split() for l in open("/proc/self/mounts") if l.split()[1] in (DH, T)]
+    m = [l.split() for l in open("/proc/self/mounts")]
     store = [x for x in m if x[1] == DH]
-    tmpl = [x for x in m if x[1] == T]
-    try:
-        ro = "read-only" if os.statvfs(T).f_flag & os.ST_RDONLY else "WRITABLE"
-    except OSError as e:
-        ro = os.strerror(e.errno)
-    ok = bool(store) and "prjquota" in store[0][3] and "nosuid" in store[0][3] and "nodev" in store[0][3] and bool(tmpl) and "ro" in tmpl[-1][3].split(",") \
-        and ro == "read-only"
-    return ok, f"slot store {store[0][0] + ' ' + store[0][3] if store else 'NOT MOUNTED'}; template {'bound' if tmpl else 'not bound'}, {ro}"
+    gens = templates.gens_on_store()
+    bad = []
+    for g in gens:
+        d = templates.gen_dir(g)
+        b = [x for x in m if x[1] == d]
+        try:
+            ro = os.statvfs(d).f_flag & os.ST_RDONLY
+        except OSError:
+            ro = 0
+        if not b or "ro" not in b[-1][3].split(",") or "nosuid" not in b[-1][3].split(",") or "nodev" not in b[-1][3].split(",") or not ro:
+            bad.append(g)
+    ok = bool(store) and "prjquota" in store[0][3] and "nosuid" in store[0][3] and "nodev" in store[0][3] and gens and not bad \
+        and not os.path.exists(f"{DH}/template")
+    return ok, f"slot store {store[0][0] + ' ' + store[0][3] if store else 'NOT MOUNTED'}; template generations {' '.join(gens) or 'NONE'}, " \
+        f"{'each bound read-only' if not bad else 'NOT read-only: ' + ' '.join(bad)}{'; an old single template is still there' if os.path.exists(f'{DH}/template') else ''}"
 
 
 def c_template():
+    if TREE:
+        return template_tree(TREE, building=BUILDING)
+    out = []
+    ok = True
+    for g in templates.gens_on_store() or ["none"]:
+        if g == "none":
+            return False, "no template generation on the store"
+        o, d = template_tree(templates.gen_dir(g))
+        ok &= o
+        out.append(f"{g}: {d}")
+    return ok, "; ".join(out)
+
+
+def template_tree(T, building=False):
     probs = []
     if os.path.exists(f"{T}/var/lib/cloud"):
         probs.append("cloud-init state")
@@ -291,10 +347,11 @@ def c_template():
             probs.append("NativeMessagingUserLevelHosts not false")
     except (OSError, ValueError):
         probs.append("no managed policy")
-    if not os.path.isfile(f"{T}/.complete"):
+    if not building and not os.path.isfile(f"{T}/.complete"):
         probs.append("not complete")
-    return not probs, f"template {(rd(f'{T}/.complete') or '').splitlines()[0] if rd(f'{T}/.complete') else '-'}: " + ("12 of 12 (no cloud-init, host keys, logs, authorized keys or machine-id; no desk-host state; root's; "
-                                                            "desk-x, desk-snd, desk-dns, desk-data, desk-audio; desk-rtc.conf link; native messaging off; complete)" if not probs else f"{probs}")
+    return not probs, ("12 of 12 (no cloud-init, host keys, logs, authorized keys or machine-id; no desk-host state; root's; "
+                       "desk-x, desk-snd, desk-dns, desk-data, desk-audio; desk-rtc.conf link; native messaging off; "
+                       f"{'complete' if not building else 'being sealed'})" if not probs else f"{probs}")
 
 
 def in_template(path):
@@ -312,19 +369,50 @@ def in_template(path):
 
 
 def c_releases():
+    """ADR 0078 1.4 and 3.4: the store's current, previous and candidate links are the host's batch state's (releases.pin's before any
+    batch), each linked release as installed (desk-host-release verify: artifact and tree hashes). Every slot's rel/<svc> equals, by tree
+    hash, the store's release its record names (a slot mid-switch is said, not judged). Every running sandbox roots in its slot's rel/<svc>
+    (deskd, desk-agent and desk-notebook on rel/<svc>/rootfs; desk-rtc and desk-stream with rel/<svc> bound at /opt/ma-host/release)."""
     r = sh(f"{LIB}/desk-host-release", "verify")
-    lines = [l for l in r.stdout.splitlines() if l]
-    same = []
-    for comp in ("deskd", "desk-agent", "desk-notebook"):
-        a, b = rd(f"{DH}/releases/{comp}/current/image-id"), rd(in_template(f"/opt/ma/{comp}/current/image-id"))
-        if a != b:
-            same.append(f"{comp} store {str(a)[:19]} template {str(b)[:19]}")
-    for comp in ("desk-rtc", "desk-stream"):
-        a, b = rd(f"{DH}/releases/{comp}/current/artifact.sha256"), rd(in_template(f"/opt/ma/{comp}/current/artifact.sha256"))
-        if a != b:
-            same.append(f"{comp} store {str(a)[:12]} template {str(b)[:12]}")
-    return r.returncode == 0 and len(lines) == 5 and not same, f"{sum(l.startswith('PASS') for l in lines)} of {len(lines)} releases as pinned, " \
-        f"tree hashes as installed; same images as the template: {'yes' if not same else same}"
+    lines = [l for l in r.stdout.splitlines() if l.startswith(("PASS", "FAIL"))]
+    probs = [l[5:120] for l in lines if l.startswith("FAIL")]
+    if r.returncode != 0 and not probs:
+        probs.append(f"desk-host-release verify exited {r.returncode}: {(r.stderr or r.stdout).strip()[-120:]}")
+    st = batches.load_state()
+    slots, busy = 0, []
+    for k, rec in sorted(templates.records().items()):
+        if rec.get("state") not in ("desk", "fresh") or not os.path.isdir(f"{DH}/slots/{k}/rel"):
+            continue
+        if rec.get("switching") or (rec.get("verify") and rec["verify"].get("phase") != "swapped"):
+            busy.append(k)
+            continue
+        slots += 1
+        for svc, ver in sorted(batches.rec_releases(rec, st).items()):
+            want = rd(f"{DH}/releases/{svc}/{ver}/tree.sha256")
+            if not want:
+                probs.append(f"slot {k}: its record names {svc} {ver}, which the store doesn't have")
+                continue
+            got = batches.rel_tree_hash(f"{DH}/slots/{k}/rel/{svc}") if os.path.isdir(f"{DH}/slots/{k}/rel/{svc}") else None
+            if got != want:
+                probs.append(f"slot {k}: rel/{svc} isn't {svc} {ver} (tree {str(got)[:12]}, the store's {want[:12]})")
+    for k in sorted(running_slots()):
+        for svc in batches.STORE_COMPS:
+            st_ = sh(RUNC, "state", f"dh-svc-{k}-{svc}")
+            try:
+                b = json.loads(st_.stdout)["bundle"]
+                cfg = json.load(open(f"{b}/config.json"))
+            except (ValueError, KeyError, OSError):
+                continue   # not running (refused or on demand): nothing roots anywhere
+            rel = f"{DH}/slots/{k}/rel/{svc}"
+            if svc in ("desk-rtc", "desk-stream"):
+                ok = any(m.get("destination") == "/opt/ma-host/release" and m.get("source") == rel for m in cfg.get("mounts", []))
+            else:
+                ok = cfg.get("root", {}).get("path") == f"{rel}/rootfs"
+            if not ok:
+                probs.append(f"slot {k} {svc}: its sandbox doesn't root in {rel}")
+    return not probs, (f"{sum(l.startswith('PASS') for l in lines)} store link(s) as the host's state says ({'batch ' + str(st['current']['seq']) if st.get('current') else 'the pin'}"
+                       f"{', candidate ' + str(st['candidate']['seq']) if st.get('candidate') else ''}), tree hashes as installed; {slots} slot(s)' rel/ "
+                       f"as their records name{f'; slot(s) {busy} mid-switch' if busy else ''}; running sandboxes root in their rel/" if not probs else f"{probs[:4]}")
 
 
 def c_desk_svc():
@@ -354,9 +442,12 @@ def c_cgroup():
 
 
 def c_boot():
+    """Both units up, and no stop-all's halt left while the host is up (desk-host resume, desk-host-shutdown's start, ends it):
+    a halted host refuses every start (host_stopping)."""
     s = sh("systemctl", "show", "-p", "ActiveState", "-p", "Result", "desk-host-boot.service", "desk-host-shutdown.service").stdout.split()
-    ok = s.count("ActiveState=active") == 2 and s.count("Result=success") == 2
-    return ok, f"desk-host-boot and desk-host-shutdown: {' '.join(s)}"
+    halted = os.path.exists("/run/desk-host/halt")
+    ok = s.count("ActiveState=active") == 2 and s.count("Result=success") == 2 and not halted
+    return ok, f"desk-host-boot and desk-host-shutdown: {' '.join(s)}{'; HALTED: a stop-all ran, every start refused' if halted else ''}"
 
 
 def c_hosting():
@@ -365,7 +456,7 @@ def c_hosting():
     except (OSError, ValueError):
         return False, "no /var/lib/desk-host/hosting.json"
     n, s = h.get("desksPerHost"), h.get("slotsPerHost", h.get("desksPerHost"))
-    return isinstance(n, int) and isinstance(s, int) and 1 <= n <= s <= SLOTS_MAX, f"hosting {h}"
+    return isinstance(n, int) and isinstance(s, int) and 1 <= n <= s <= SLOTS_MAX and h.get("slotMode", "address") in SLOT_MODES, f"hosting {h}"
 
 
 def c_classes():
@@ -407,12 +498,18 @@ def c_link():
         except (OSError, AttributeError):
             pass
     urls = C.get("LINK_API_staging") == "https://host-api.staging.minimalistalliance.com" and C.get("LINK_API_prod") == "https://host-api.minimalistalliance.com"
+    # the region the link signs for is the API's (us-east-1 for both envs), never the instance's (S-120: a us-west-2 host was refused)
+    regions = C.get("LINK_API_REGION_staging") == "us-east-1" and C.get("LINK_API_REGION_prod") == "us-east-1"
     override = C.get("LINK_API", "")
     override_ok = not override or (TEST_ACCESS and re.fullmatch(r"http://127\.0\.0\.1:\d{2,5}", override) is not None)
+    region_over = C.get("LINK_API_REGION", "")
+    region_over_ok = not region_over or (bool(override) and override_ok and re.fullmatch(r"[a-z]{2}(-[a-z]+)+-[0-9]{1,2}", region_over) is not None)
     ok = show.get("ActiveState") == "active" and show.get("SubState") == "running" and show.get("UnitFileState") == "enabled" and uid == 0 \
-        and cmd is not None and f"{LIB}/desk-host-link" in cmd and urls and override_ok
+        and cmd is not None and f"{LIB}/desk-host-link" in cmd and urls and regions and override_ok and region_over_ok
     return ok, f"desk-host-link {show.get('ActiveState')}/{show.get('SubState')}, {show.get('UnitFileState')}, pid {pid} uid {uid}; " \
-        f"the envs' APIs {'as built' if urls else 'NOT as built'}; override {'none' if not override else ('a test fake on the loopback' if override_ok else 'REFUSED')}"
+        f"the envs' APIs {'as built' if urls else 'NOT as built'}, signed for {'us-east-1 as built' if regions else 'NOT us-east-1'}; " \
+        f"override {'none' if not override else ('a test fake on the loopback' if override_ok else 'REFUSED')}" \
+        f"{'' if not region_over else (', its region ' + region_over if region_over_ok else ', a region override REFUSED')}"
 
 
 IN_ALLOWED = (r'iif "lo" accept', r"ct state established,related accept", r"icmpv6 type \{ (nd-[a-z-]+(, )?)+ \}( ip6 hoplimit 255)? accept",
@@ -434,12 +531,14 @@ def c_inbound():
             continue
         extra.append(l)
     pol = "policy drop" in inp
+    il = [x.strip() for x in inp.splitlines()]
     try:
-        order = fwd.index('iifname "dhv*" jump desk_src') < fwd.index("ct state established,related accept")
+        order = fwd.index('iifname "dhv*" jump desk_src') < fwd.index("ct state established,related accept") \
+            and il.index('iifname "dhv*" jump desk_src') < il.index("ct state established,related accept")
     except ValueError:
         order = False
     return pol and not extra and order, f"input: policy {'drop' if pol else 'NOT drop'}, accepts beyond lo, flows, DHCP and ND: {extra or 'none'}; " \
-        f"forward: desks' source check before flows {'yes' if order else 'NO'}"
+        f"forward and input: desks' source check before flows {'yes' if order else 'NO'}"
 
 
 def c_standin():
@@ -498,11 +597,874 @@ def c_standin():
         + (f"; {probs[:6]}" if probs else "")
 
 
+# ---------- SlotMode=port: one public IPv4 for the host (ADR 0072 section 6's 2026-11-10 note) ----------
+
+def slot_mode():
+    try:
+        return json.load(open("/var/lib/desk-host/hosting.json")).get("slotMode", "address")
+    except (OSError, ValueError):
+        return None
+
+
+def imds(path):
+    try:
+        t = urllib.request.urlopen(urllib.request.Request("http://169.254.169.254/latest/api/token", method="PUT",
+                                                          headers={"X-aws-ec2-metadata-token-ttl-seconds": "60"}), timeout=3).read().decode()
+        return urllib.request.urlopen(urllib.request.Request("http://169.254.169.254/latest/meta-data/" + path,
+                                                             headers={"X-aws-ec2-metadata-token": t}), timeout=3).read().decode()
+    except OSError:
+        return None
+
+
+def own_address():
+    """(interface, address) of the default route's interface, the host's own (lowest metric)."""
+    try:
+        routes = [r for r in json.loads(sh("ip", "-4", "-j", "route", "show", "default").stdout or "[]") if r.get("dev")]
+        dev = min(routes, key=lambda r: r.get("metric", 0))["dev"] if routes else None
+        addrs = [a["local"] for l in json.loads(sh("ip", "-4", "-j", "addr", "show", "dev", dev).stdout or "[]")
+                 for a in l.get("addr_info", []) if a.get("family") == "inet"] if dev else []
+    except (ValueError, KeyError):
+        return None, None
+    return dev, (addrs[0] if addrs else None)
+
+
+def chain_rules(table, chain, family="inet"):
+    r = sh("nft", "list", "chain", family, table, chain)
+    if r.returncode != 0:
+        return None
+    out = []
+    for l in r.stdout.splitlines():
+        l = re.sub(r" counter packets \d+ bytes \d+", " counter", l.strip())
+        if l and not l.startswith(("table ", "chain ", "type ", "}")):
+            out.append(l)
+    return out
+
+
+def running_slots():
+    return {int(m.group(1)) for c in sh(RUNC, "list", "-q").stdout.split() if (m := re.fullmatch(r"dh-desk-(\d+)", c))}
+
+
+def c_slotmode():
+    """The host's SlotMode and what it puts on the host's own side: under port, the demux's divert and its routing (a slot's
+    replies to a transparent socket's connection come to the host, never through forward), the slot's source check ahead of
+    the established accept in input too, the demux's one accept on the host's own address and interface (host_in, after
+    desk_in), its env; under address, none of them."""
+    mode = slot_mode()
+    if mode not in SLOT_MODES:
+        return False, f"SlotMode {mode!r}: neither address nor port, so no slot starts"
+    probs = []
+    inp = chain_rules("host", "input") or []
+    div = chain_rules("host", "divert")
+    hin = chain_rules("host", "host_in")
+    want_div = [f'iifname "dhv*" tcp sport 443 socket transparent 1 meta mark set {DMX_MARK}']
+    if div != want_div:
+        probs.append(f"divert {div}")
+    try:
+        est = inp.index("ct state established,related accept")
+        if not (inp.index('iifname "dhv*" jump desk_src') < est and inp.index(f"meta mark {DMX_MARK} jump desk_dmx") < est):
+            probs.append("input: the source check or the demux's count after the established accept")
+        if not inp.index('iifname "dhv*" jump desk_in') < inp.index("jump host_in"):
+            probs.append("input: host_in before desk_in")
+    except ValueError:
+        probs.append(f"input lacks a jump: {inp}")
+    rules = sh("ip", "rule", "show").stdout
+    fw = [l for l in rules.splitlines() if "fwmark 0x4430" in l]
+    table = [l.strip() for l in sh("ip", "route", "show", "table", "4430").stdout.splitlines() if l.strip()]
+    env = rd(f"{DMX}/env")
+    if mode == "port":
+        dev, addr = own_address()
+        if hin != [f'iifname "{dev}" ip daddr {addr} tcp dport 443 accept']:
+            probs.append(f"host_in {hin}, want only TCP 443 on {dev}'s own address")
+        if len(fw) != 1 or not re.search(r"fwmark 0x4430 lookup 4430\b", fw[0]) or table != ["local default dev lo scope host"]:
+            probs.append(f"the demux's routing: rules {fw}, table 4430 {table}")
+        if env != f"DMX_LISTEN={addr}:443\nDMX_SLOTS={slots()}":
+            probs.append(f"{DMX}/env {env!r}")
+    else:
+        if hin or fw or table or env is not None:
+            probs.append(f"SlotMode=address with the demux's ground: host_in {hin}, rules {fw}, table {table}, env {env is not None}")
+    return not probs, f"SlotMode {mode}: " + ("the demux's divert, routing, accept and env as built" if mode == "port" and not probs
+                                                 else "no demux ground" if not probs else f"{probs[:4]}")
+
+
+def c_addresses():
+    """Under SlotMode=port the host has one address of its own and nothing beyond it: one interface with one private IPv4 (the
+    default route's), one public IPv4 associated with it (EC2's auto-assigned one), no secondary private address and no
+    Elastic IP, as IMDS and the OS both say. The slots' veths (dhv*, 10.98.<k>.1/30) are the host's side of each desk."""
+    mode = slot_mode()
+    if mode != "port":
+        return mode == "address", f"SlotMode {mode}: each slot's address is its tag's (PF-01)"
+    probs = []
+    dev, addr = own_address()
+    seen = []
+    for l in json.loads(sh("ip", "-4", "-j", "addr", "show").stdout or "[]"):
+        for a in l.get("addr_info", []):
+            if a.get("family") != "inet" or l["ifname"] == "lo":
+                continue
+            if l["ifname"].startswith("dhv") and re.fullmatch(r"10\.98\.(\d+)\.1", a["local"]) and a.get("prefixlen") == 30:
+                continue
+            seen.append(f"{l['ifname']} {a['local']}")
+    if seen != [f"{dev} {addr}"]:
+        probs.append(f"OS addresses {seen}")
+    macs = [m.strip().rstrip("/") for m in (imds("network/interfaces/macs/") or "").splitlines() if m.strip()]
+    local, public = (imds("local-ipv4") or "").strip(), (imds("public-ipv4") or "").strip()
+    if len(macs) != 1:
+        probs.append(f"{len(macs)} interfaces in IMDS")
+    else:
+        ips = (imds(f"network/interfaces/macs/{macs[0]}/local-ipv4s") or "").split()
+        assoc = [x.strip().rstrip("/") for x in (imds(f"network/interfaces/macs/{macs[0]}/ipv4-associations/") or "").splitlines() if x.strip()]
+        to = (imds(f"network/interfaces/macs/{macs[0]}/ipv4-associations/{public}") or "").strip() if public else ""
+        if ips != [addr] or local != addr:
+            probs.append(f"{len(ips)} private address(es) in IMDS, the OS's {'is' if addr in ips else 'NOT'} one")
+        if len(assoc) != 1 or assoc[0] != public or to != addr:
+            probs.append(f"{len(assoc)} public association(s), the instance's public IPv4 {'on' if to == addr else 'NOT on'} its address")
+    return not probs, ("one interface, one private IPv4 and its one public IPv4, nothing beyond" if not probs else f"{probs[:4]}")
+
+
+def c_demux():
+    """Under SlotMode=port, desk-ice-demux runs as built: its own user with exactly CAP_NET_BIND_SERVICE and CAP_NET_RAW,
+    no new privileges, its own seccomp filter, the binary bake.sh built, and it alone listens on TCP 443, on the host's own
+    address only (never 0.0.0.0, never a slot's side). Under address, it doesn't run and nothing holds the host's 443."""
+    mode = slot_mode()
+    show = dict(l.split("=", 1) for l in sh("systemctl", "show", "-p", "ActiveState", "-p", "MainPID", "desk-ice-demux.service").stdout.split("\n") if "=" in l)
+    pid = show.get("MainPID", "0")
+    listen = []
+    for l in sh("ss", "-Hltnp").stdout.splitlines():
+        f = l.split()
+        if len(f) > 3 and re.search(r":443$", f[3]):
+            listen.append((f[3], "desk-ice-demux" in l))
+    want_sha = (rd(f"{LIB}/desk-ice-demux.sha256") or "").split()
+    got_sha = hashlib.sha256(open(f"{LIB}/desk-ice-demux", "rb").read()).hexdigest() if os.path.exists(f"{LIB}/desk-ice-demux") else None
+    binary_ok = bool(want_sha) and got_sha == want_sha[0]
+    if mode != "port":
+        ok = show.get("ActiveState") != "active" and not listen and binary_ok
+        return ok, f"SlotMode {mode}: desk-ice-demux {show.get('ActiveState')}, TCP 443 listeners {[a for a, _ in listen] or 'none'}, binary {'as built' if binary_ok else 'NOT as built'}"
+    probs = []
+    st = rd(f"/proc/{pid}/status") if pid != "0" else None
+    if st is None:
+        probs.append("not running")
+    else:
+        f = dict(re.findall(r"^(\w+):\s+(.*)$", st, re.M))
+        uid = f.get("Uid", "").split()
+        try:
+            dmx = int(sh("id", "-u", "desk-dmx").stdout.strip())
+        except ValueError:
+            dmx = None
+        caps = int(f.get("CapEff", "0"), 16)
+        want_caps = (1 << 10) | (1 << 13)   # CAP_NET_BIND_SERVICE, CAP_NET_RAW
+        if dmx is None or not uid or any(int(u) != dmx for u in uid):
+            probs.append(f"uid {uid}, not desk-dmx's")
+        if caps != want_caps or int(f.get("CapBnd", "0"), 16) != want_caps:
+            probs.append(f"capabilities {f.get('CapEff')}/{f.get('CapBnd')}")
+        if f.get("NoNewPrivs") != "1" or f.get("Seccomp") != "2" or int(f.get("Seccomp_filters", "0")) < 2:
+            probs.append(f"NoNewPrivs {f.get('NoNewPrivs')}, Seccomp {f.get('Seccomp')} filters {f.get('Seccomp_filters')} (systemd's and its own)")
+    dev, addr = own_address()
+    if listen != [(f"{addr}:443", True)]:
+        probs.append(f"TCP 443 listeners {listen}, want the demux on {addr} alone")
+    if not binary_ok:
+        probs.append("the binary isn't bake.sh's")
+    return not probs, (f"desk-ice-demux pid {pid}: desk-dmx, NET_BIND_SERVICE and NET_RAW only, seccomp, alone on {addr}:443" if not probs else f"{probs[:4]}")
+
+
+def c_ports():
+    """Under SlotMode=port each running slot is reached only by its own UDP port on the host's own address, from the host's
+    interface (pre_<k>: one DNAT, no TCP), let in by that port alone (fwdin_<k>), SNATed from the host's address with its own
+    block of ports, inside 10000 to 59999 and no other slot's (post_<k>), and marked live for the demux; no slot that isn't
+    running is marked. Under address there is nothing to check here (the slots' 443 on their own addresses)."""
+    mode = slot_mode()
+    if mode != "port":
+        return mode == "address", f"SlotMode {mode}: no ports"
+    probs = []
+    dev, addr = own_address()
+    run = running_slots()
+    marked = {int(f) for f in os.listdir(f"{DMX}/slots") if f.isdigit()} if os.path.isdir(f"{DMX}/slots") else set()
+    if marked - run:
+        probs.append(f"slots marked live for the demux but not running: {sorted(marked - run)}")
+    blocks = []
+    for k in sorted(run):
+        port = 4430 + k
+        pre = [r for r in (chain_rules("host_nat", f"pre_{k}", "ip") or []) if "169.254.169.254" not in r]
+        if pre != [f'iifname "{dev}" ip daddr {addr} udp dport {port} dnat to 10.98.{k}.2']:
+            probs.append(f"pre_{k} {pre}")
+        fin = chain_rules("host", f"fwdin_{k}") or []
+        acc = [r for r in fin if r.endswith("accept")]
+        if acc != [f'ip daddr 10.98.{k}.2 udp dport {port} counter name "rx_{k}" accept'] and acc != [f"ip daddr 10.98.{k}.2 udp dport {port} counter name rx_{k} accept"]:
+            probs.append(f"fwdin_{k} accepts {acc}")
+        post = chain_rules("host_nat", f"post_{k}", "ip") or []
+        m = re.search(rf'ip saddr 10\.98\.{k}\.2 oifname "{re.escape(str(dev))}" meta l4proto \{{ tcp, udp \}} snat to {re.escape(str(addr))}:(\d+)-(\d+)', " ".join(post))
+        if not m:
+            probs.append(f"post_{k} {post}")
+        else:
+            blocks.append((int(m.group(1)), int(m.group(2)), k))
+        if k not in marked:
+            probs.append(f"slot {k} runs but isn't marked for the demux")
+    blocks.sort()
+    for (a1, b1, k1), (a2, b2, k2) in zip(blocks, blocks[1:]):
+        if a2 <= b1:
+            probs.append(f"slots {k1} and {k2} share ports {a2}-{b1}")
+    if blocks and (blocks[0][0] < 10000 or max(b for _, b, _ in blocks) > 59999):
+        probs.append("a port block outside 10000 to 59999")
+    return not probs, (f"{len(run)} running slot(s), each on UDP 4430+k of {addr} alone, its own SNAT block, marked for the demux" if not probs else f"{probs[:4]}")
+
+
+SVC_ALL = ("desk-rtc", "deskd", "desk-agent", "desk-notebook", "desk-stream", "desk-data")
+SVC_NET = ("desk-rtc", "deskd", "desk-agent")   # the sandboxes in the desk's network namespace: the ones that can look a name up
+PLACEHOLDER = "192.0.2.1"                       # the only address desk-agent-filter's DNS gives uid 1103 (desk-agent-filter/dns.go)
+
+
+def slot_tree(k):
+    """The template generation slot k's record names (its sandboxes' root and resolver), or the current one."""
+    g = (templates.record(k) or {}).get("template")
+    return templates.gen_dir(g) if templates.gen_n(g) else T
+
+
+def c_svc_dns():
+    """Bug 8 (the staging soak): a release's own root ships an empty /etc/resolv.conf, so deskd's sandbox could not look up
+    the Platform API and no shared desk ever said hello. For each running slot, in each service sandbox: /etc/resolv.conf as
+    the sandbox sees it is the desk's (the template's, a nameserver), and from inside the three sandboxes in the desk's
+    network namespace, as the service's own uid, an ordinary lookup of a real public name (the region's STS endpoint)
+    resolves. desk-agent's lookup lands on desk-agent-filter whatever the file says (ADR 0070): it must still get no real
+    address, only the filter's placeholder or nothing. Nothing running is nothing to check."""
+    want0 = rd(f"{T}/etc/resolv.conf")
+    if not want0 or "nameserver" not in want0:
+        return False, f"the template's resolv.conf is {want0!r}"
+    region = imds("placement/region")
+    if not region:
+        return False, "no region from IMDS, so no public name to look up"
+    name = f"sts.{region}.amazonaws.com"
+    probs, seen, looked = [], 0, 0
+    for k in sorted(running_slots()):
+        base = 100000 + k * 65536
+        want = rd(f"{slot_tree(k)}/etc/resolv.conf")
+        for svc in SVC_ALL:
+            st = sh(RUNC, "state", f"dh-svc-{k}-{svc}")
+            try:
+                pid = json.loads(st.stdout)["pid"]
+            except (ValueError, KeyError):
+                probs.append(f"slot {k} {svc}: no sandbox")
+                continue
+            seen += 1
+            got = rd(f"/proc/{pid}/root/etc/resolv.conf")
+            if got != want:
+                probs.append(f"slot {k} {svc}: its /etc/resolv.conf is {got!r}, not the desk's")
+            if svc not in SVC_NET:
+                continue
+            uid = next((int(l.split()[1]) for l in open(f"/proc/{pid}/status") if l.startswith("Uid:")), 0) - base
+            try:
+                r = sh("nsenter", "-t", str(pid), "-a", "-S", str(uid), "-G", str(uid), "getent", "ahostsv4", name, timeout=15)
+                addrs = sorted({l.split()[0] for l in r.stdout.splitlines() if l.split()})
+            except subprocess.TimeoutExpired:
+                addrs = []
+            looked += 1
+            if svc == "desk-agent":
+                if set(addrs) - {PLACEHOLDER}:
+                    probs.append(f"slot {k} desk-agent: {name} resolved to {addrs}, not through the filter")
+            elif not addrs or addrs == [PLACEHOLDER]:
+                probs.append(f"slot {k} {svc}: {name} did not resolve")
+    return not probs, (f"{len(running_slots())} running slot(s), {seen} sandbox(es) with the desk's resolver, {looked} lookups of {name} from inside"
+                       if not probs else f"{probs[:4]}")
+
+
+OOM = {"deskd": -500, "desk-rtc": -500, "desk-notebook": -200, "desk-agent": 200, "desk-stream": 100, "desk-data": 0}
+HOST_OWN = ("desk-host-link.service", "desk-ice-demux.service", "ssh.service")   # well below any desk's lowest, -500
+
+
+def cgroup_pids(pid):
+    cg = (re.search(r"^0::(.*)$", rd(f"/proc/{pid}/cgroup") or "", re.M) or [None, None])[1]
+    return [int(p) for p in (rd(f"/sys/fs/cgroup{cg}/cgroup.procs") or "").split()] if cg else []
+
+
+def c_oom():
+    """Reliability audit S2: the kernel's choice under memory pressure is the order docs/interfaces/desk-runtime.md "Restarts
+    and memory pressure" sets, from first killed to last: Chromium's renderers (300), desk-agent (+200), desk-stream (+100),
+    the Chromium browser process (0), desk-notebook (-200), desk-rtc and deskd (-500). For each running slot, every process of
+    each service sandbox has its service's value (runc applied it to desk-svc, which its service inherits), and in the desk's
+    own cgroup (desk-init and what it supervises: Xorg, the audio server, desk-agent-filter, desk-dns, Chromium) the browser
+    process is 0, every renderer 300 or more, and nothing else is above 200 or below 0. No process of any desk is under -500,
+    and the host's own (desk-host-link, desk-ice-demux, sshd) are under -900. Nothing running is nothing to check there."""
+    probs, procs, lowest = [], 0, 0
+    for k in sorted(running_slots()):
+        for svc, want in OOM.items():
+            try:
+                pid = json.loads(sh(RUNC, "state", f"dh-svc-{k}-{svc}").stdout)["pid"]
+            except (ValueError, KeyError):
+                probs.append(f"slot {k} {svc}: no sandbox")
+                continue
+            for p in cgroup_pids(pid) or [pid]:
+                a = rd(f"/proc/{p}/oom_score_adj")
+                procs += 1
+                lowest = min(lowest, int(a or 0))
+                if a != str(want):
+                    probs.append(f"slot {k} {svc} pid {p}: oom_score_adj {a}, not {want}")
+        try:
+            dpid = json.loads(sh(RUNC, "state", f"dh-desk-{k}").stdout)["pid"]
+        except (ValueError, KeyError):
+            probs.append(f"slot {k}: no desk container")
+            continue
+        for p in cgroup_pids(dpid):
+            a = rd(f"/proc/{p}/oom_score_adj")
+            if a is None:
+                continue
+            cmd = (rd(f"/proc/{p}/cmdline") or "").replace("\0", " ")
+            procs += 1
+            lowest = min(lowest, int(a))
+            if "--type=renderer" in cmd:
+                if int(a) < 300:
+                    probs.append(f"slot {k} renderer {p}: oom_score_adj {a}, under 300")
+            elif "chromium" in cmd and "--type=" not in cmd:
+                if a != "0":
+                    probs.append(f"slot {k} the browser process {p}: oom_score_adj {a}, not 0")
+            elif not (0 <= int(a) <= 200):
+                probs.append(f"slot {k} pid {p} ({cmd[:40].strip()}): oom_score_adj {a}, outside 0 to 200")
+    if lowest < -500:
+        probs.append(f"a desk process is at {lowest}, under -500")
+    for u in HOST_OWN:
+        pid = sh("systemctl", "show", "-p", "MainPID", "--value", u).stdout.strip()
+        if pid and pid != "0":
+            a = rd(f"/proc/{pid}/oom_score_adj")
+            if a is None or int(a) > -900:
+                probs.append(f"{u} (pid {pid}): oom_score_adj {a}, not under -900")
+    return not probs, (f"{len(running_slots())} running slot(s), {procs} desk process(es) as the order says, lowest {lowest}, the host's own under -900"
+                       if not probs else f"{probs[:5]}")
+
+
+SLOT_LOGS = "/var/log/desk-host"   # each sandbox's output: svc-<k>-<service>.log (desk-host up's runc create)
+FILES_BROKEN = "the Files tree can't be used"   # deskd's FilesModule, once at its start, when /data/files can't be its tree
+
+
+def deskd_log_since_start(k):
+    """deskd's log in slot k since desk-svc last started it ("[desk-svc hh:mm:ss] started <java> pid N"), or None if none."""
+    try:
+        with open(f"{SLOT_LOGS}/svc-{k}-deskd.log", "rb") as f:
+            f.seek(0, 2)
+            f.seek(max(0, f.tell() - (4 << 20)))
+            text = f.read().decode("utf-8", "replace")
+    except OSError:
+        return None
+    i = text.rfind("] started ")
+    return text[text.rfind("\n", 0, i) + 1:] if i >= 0 else None
+
+
+def c_files():
+    """Free walk H5 (0.1.10 and before: no shared desk had Files). Each running slot's deskd has its Files tree: /data/files in
+    deskd's sandbox is the volume's own directory (on the volume's filesystem, not the placeholder tmpfs), the desk's 1100:1100
+    with mode 0700, and deskd hasn't logged "the Files tree can't be used" since desk-svc last started it. A slot whose volume
+    had no files directory at this start (a volume from before 0.1.11: its desk makes it, the next start mounts it), or a link
+    or a file there (never followed), is said, not failed: mounts.py skipped it on purpose. Nothing running is nothing to check."""
+    probs, good, said = [], 0, []
+    for k in sorted(running_slots()):
+        base = 100000 + k * 65536
+        try:
+            m = json.loads(rd(f"/run/desk-host/{k}.mounts.json") or "")
+        except ValueError:
+            probs.append(f"slot {k}: no mounts.json")
+            continue
+        if "deskd" in (m.get("refused") or []):
+            said.append(f"slot {k}: deskd refused (its /data/desk)")
+            continue
+        skipped = ((m.get("skipped") or {}).get("deskd") or {}).get("files")
+        if skipped:
+            said.append(f"slot {k}: no Files this run, the volume's files {skipped} (skipped, never followed)")
+            continue
+        try:
+            pid = json.loads(sh(RUNC, "state", f"dh-svc-{k}-deskd").stdout)["pid"]
+        except (ValueError, KeyError):
+            probs.append(f"slot {k}: no deskd sandbox")
+            continue
+        try:
+            st = os.lstat(f"/proc/{pid}/root/data/files")
+            vol = os.stat(m.get("device") or "/nonexistent").st_rdev
+        except OSError as e:
+            probs.append(f"slot {k}: deskd's /data/files: {type(e).__name__}")
+            continue
+        got = f"{st.st_uid - base}:{st.st_gid - base} {stat.S_IMODE(st.st_mode):04o}"
+        if not stat.S_ISDIR(st.st_mode) or (st.st_uid, st.st_gid, stat.S_IMODE(st.st_mode)) != (base + 1100, base + 1100, 0o700):
+            probs.append(f"slot {k}: deskd's /data/files is {got}{'' if stat.S_ISDIR(st.st_mode) else ' (not a directory)'}, not 1100:1100 0700")
+        elif st.st_dev != vol:
+            probs.append(f"slot {k}: deskd's /data/files isn't on its volume (device {os.major(st.st_dev)}:{os.minor(st.st_dev)}, a placeholder?)")
+        log = deskd_log_since_start(k)
+        if log and FILES_BROKEN in log:
+            probs.append(f"slot {k}: deskd says {FILES_BROKEN!r} since its start")
+        if not any(p.startswith(f"slot {k}:") for p in probs):
+            good += 1
+    if probs:
+        return False, f"{probs[:4]}"
+    return True, (f"{len(running_slots())} running slot(s), {good} with deskd's /data/files its volume's, 1100:1100 0700, no "
+                  f"{FILES_BROKEN!r} since its start" + (f"; {'; '.join(said[:4])}" if said else ""))
+
+
+def egress():
+    """egress.py (ADR 0036's shaper per slot), loaded by path: -I keeps this directory off sys.path."""
+    sys.dont_write_bytecode = True
+    spec = importlib.util.spec_from_file_location("desk_host_egress", f"{LIB}/egress.py")
+    m = importlib.util.module_from_spec(spec)
+    spec.loader.exec_module(m)
+    return m
+
+
+def c_shaper():
+    """ADR 0036 per container (ADR 0072 section 8, TD-223): every running slot has its outbound shaper and its budgets. On its veth
+    (eth0 in its network namespace) an HTB 1: with 1:10, 1:15 and 1:20 and their leaves, each rate equal to its ceiling and none above
+    its class's normal rate; the template's classify chain there (and the slot's UDP port's rule under SlotMode=port); its
+    desk-host-egress@<k> active, with the desk's state for this start saved within three ticks. A slot whose shaper desk-host shaper
+    <k> off took off fails (test 1's R5). Nothing running is nothing to check."""
+    eg, probs, n, over = egress(), [], 0, []
+    mode = slot_mode()
+    for k in sorted(running_slots()):
+        n += 1
+        probs += eg.problems(k, mode, run=subprocess.run)
+        if eg.conf_for(k, eg.egress_multiple(k))["slot_override"]:
+            over.append(k)
+    return not probs, (f"{n} running slot(s) shaped on their veth (1:10, 1:15, 1:20 at their class's rates), each with its desk-egress ticking"
+                       + (f"; [slot<k>] settings in {eg.CONF} for slot(s) {over}" if over else "") if not probs else f"{probs[:4]}")
+
+
+# ---------- ADR 0077: template generations and the host's own updates ----------
+
+def c_templates():
+    """Every sealed generation is read-only, with .complete written last and its manifest's hash; at most two (three with room);
+    state.json consistent; every slot record names a sealed generation, and every template sandbox of a running slot roots in its
+    slot's generation. In full mode (not --quick) each generation is walked against its manifest: every path's type, mode, owner,
+    size and link target, none added or missing, and none changed since the seal (its ctime), which a write through the store's
+    writable path can't avoid."""
+    st = templates.load_state()
+    probs = []
+    gens = templates.gens_on_store()
+    named = {x: (st.get(x) or {}).get("gen") for x in ("current", "previous", "candidate")}
+    halted = templates.halted_gens(st)
+    if not named["current"]:
+        probs.append("no current generation")
+    vals = [g for g in named.values() if g]
+    if len(set(vals)) != len(vals):
+        probs.append(f"one generation named twice: {named}")
+    for x, g in named.items():
+        if g and g not in gens:
+            probs.append(f"{x} {g} isn't on the store")
+        if g and g in halted:
+            probs.append(f"{x} {g} is halted")
+    if (st.get("maxGen") or 0) < max((templates.gen_n(g) for g in gens), default=0):
+        probs.append(f"maxGen {st.get('maxGen')} is below a generation on the store")
+    mounts = [l.split() for l in open("/proc/self/mounts")]
+    sealed_at = {}
+    for g in gens:
+        d = templates.gen_dir(g)
+        c = templates.read_complete(f"{d}/.complete") or {}
+        if not templates.sealed(g):
+            probs.append(f"{g} isn't sealed (.complete's gen and manifest against /var/lib/desk-host/templates/{g}.json)")
+            continue
+        if not all(c.get(k) for k in ("gen", "chromium", "manifest", "host-version")):
+            probs.append(f"{g}: .complete lacks a field")
+        b = [x for x in mounts if x[1] == d]
+        try:
+            ro = os.statvfs(d).f_flag & os.ST_RDONLY
+        except OSError:
+            ro = 0
+        if not b or "ro" not in b[-1][3].split(",") or not ro:
+            probs.append(f"{g} isn't bound read-only")
+        sealed_at[g] = templates.parse_utc(c.get("host-template"))
+    if len(gens) > 3:
+        probs.append(f"{len(gens)} generations on the store")
+    elif len(gens) == 3:
+        s = templates.sizes()
+        v = os.statvfs(DH)
+        if v.f_bavail * v.f_frsize - templates.store_headroom() < s["template"] + s["releases"]:
+            probs.append("three generations and no room left for a prepare")
+    recs = templates.records()
+    for k, r in sorted(recs.items()):
+        if r.get("template") not in gens or not templates.sealed(r.get("template")):
+            probs.append(f"slot {k}'s record names {r.get('template')!r}, not a sealed generation")
+    for k in sorted(running_slots()):
+        want = templates.gen_dir((recs.get(k) or {}).get("template") or "g0") if templates.gen_n((recs.get(k) or {}).get("template")) else None
+        for svc in ("desk-rtc", "desk-stream", "desk-data"):
+            try:
+                b = json.loads(sh(RUNC, "state", f"dh-svc-{k}-{svc}").stdout)["bundle"]
+                root = json.load(open(f"{b}/config.json"))["root"]["path"]
+            except (ValueError, KeyError, OSError):
+                continue
+            if root.rstrip("/") != want:
+                probs.append(f"slot {k} {svc} roots in {root}, not its generation's {want}")
+    walked = 0
+    if not QUICK_MODE:
+        for g in gens:
+            if g not in sealed_at:
+                continue
+            try:
+                man = templates.parse_manifest(open(f"{templates.VAR}/{g}.json", "rb").read(), refused=templates.Failed)
+            except (OSError, templates.Failed) as e:
+                probs.append(f"{g}: its manifest: {e}")
+                continue
+            p = templates.walk_check(templates.gen_dir(g), man, sealed_at=sealed_at[g])
+            walked += len(man)
+            probs += [f"{g}: {x}" for x in p[:4]]
+    return not probs, (f"generations {' '.join(gens)} (current {named['current']}, previous {named['previous']}, candidate {named['candidate']}, "
+                       f"halted {' '.join(halted) or 'none'}), each sealed and read-only; {len(recs)} record(s) on sealed generations"
+                       + (f"; {walked} paths as their manifests say, none changed since the seal" if not QUICK_MODE else "")
+                       if not probs else f"{probs[:6]}")
+
+
+def c_template_sig():
+    """/etc/desk-host/template-keys holds exactly the keys the host recipe pins (template-keys.sha256, by name and SHA-256): P-256,
+    root's, not group- or world-writable, no drop-in directory, nothing else in it. The fetch's verifier refuses a bad signature and,
+    with no key, every artifact; it runs on the header's exact bytes before anything reads them (templates.fetch, step 3)."""
+    probs = []
+    pins = {}
+    try:
+        ps = os.lstat(templates.PINS)
+        if not stat.S_ISREG(ps.st_mode) or ps.st_uid != 0 or ps.st_mode & 0o022:
+            probs.append(f"{templates.PINS} isn't root's alone")
+        for line in open(templates.PINS):
+            f = line.split()
+            if len(f) == 2 and re.fullmatch(r"[0-9a-f]{64}", f[0]) and re.fullmatch(r"[A-Za-z0-9._-]+\.pem", f[1]):
+                pins[f[1]] = f[0]
+            elif line.strip() and not line.startswith("#"):
+                probs.append(f"a bad pin line: {line.strip()[:60]}")
+    except OSError:
+        probs.append(f"no {templates.PINS}")
+    d = templates.KEYS
+    if not templates.safe_dir(d):
+        probs.append(f"{d} isn't a directory root alone can write")
+        have = {}
+    else:
+        have = {}
+        for n in sorted(os.listdir(d)):
+            q = os.path.join(d, n)
+            s_ = os.lstat(q)
+            if not stat.S_ISREG(s_.st_mode) or not n.endswith(".pem"):
+                probs.append(f"{n}: not a .pem file (no drop-in, nothing else)")
+                continue
+            if s_.st_uid != 0 or s_.st_mode & 0o022:
+                probs.append(f"{n}: not root's alone")
+            if not templates.is_p256(q):
+                probs.append(f"{n}: not a P-256 public key")
+            have[n] = templates.sha256_file(q)
+    if have != pins:
+        probs.append(f"keys {sorted(have)} aren't the pinned {sorted(pins)}" if set(have) != set(pins) else "a key's SHA-256 isn't its pin")
+    if os.path.lexists(templates.KEYS_DROPIN):
+        probs.append(f"a drop-in directory {templates.KEYS_DROPIN}")
+    for keys in ([], templates.trusted_keys([d])):
+        try:
+            templates.verify_signature(b'{"format":"ma-host-template/1"}', bytes.fromhex("3006020101020101"), keys)
+            probs.append("the verifier took a bad signature")
+        except templates.Refused:
+            pass
+    tk = len(templates.trusted_keys([templates.TEST_KEYS])) if templates.test_mode() and os.path.isdir(templates.TEST_KEYS) else 0
+    return not probs, (f"{len(have)} pinned key(s) ({' '.join(sorted(have)) or 'none yet: every artifact is refused'}), P-256, root's; no drop-in; "
+                       f"the verifier refuses a bad signature{f'; a TEST host trusts {tk} test key(s) too' if tk else ''}" if not probs else f"{probs[:5]}")
+
+
+UPD_WORKERS = {("desk-host-template", "fetch"), ("desk-host-template", "host-apt"), ("desk-host", "reroot"),
+               # ADR 0078: a batch's fetch and unpack, a slot's copies, its live switch and its stop path
+               ("desk-host-batch", "fetch"), ("desk-host-batch", "copy"), ("desk-host-release", "install"), ("desk-host", "switch"),
+               ("desk-host", "relroot"), ("desk-host", "after-stop")}
+
+
+def upd_workers():
+    """[(pid, what, cgroup)] for every fetch, re-root and host apt process (not desk-host-template upd, their launcher)."""
+    out = []
+    for p in glob.glob("/proc/[0-9]*"):
+        try:
+            a = open(f"{p}/cmdline", "rb").read().split(b"\0")
+            cg = (re.search(r"^0::(.*)$", open(f"{p}/cgroup").read(), re.M) or [None, ""])[1]
+        except (OSError, AttributeError):
+            continue
+        args = [x.decode(errors="replace") for x in a if x]
+        what = None
+        for i, x in enumerate(args[:-1]):
+            if os.path.basename(x) == "desk-host-template" and args[i + 1] == "upd":
+                break   # the launcher (templates.upd_launch): it stays in its unit's cgroup and waits; what it runs is in desk-host-upd
+            if (os.path.basename(x), args[i + 1]) in UPD_WORKERS:
+                what = f"{os.path.basename(x)} {args[i + 1]}"
+                break
+        if what is None and any(os.path.basename(x) == "unattended-upgrade" for x in args[:2]):
+            what = "unattended-upgrade"
+        if what:
+            out.append((int(p[6:]), what, cg))
+    return out
+
+
+def c_update_cgroup():
+    """desk-host-upd, beside desk-host-pre and outside desk-host and every desk's share: cpu.idle 1, cpu.max one CPU, memory.max
+    192 MiB, io.max on the store's disk and the host root's (0.1 of the EBS baseline's bytes each way, 300 IOPS each way). Every
+    fetch, re-root and host apt process is in it, and every batch fetch, unpack, copy, live switch and stop path (ADR 0078, widened:
+    a live switch's smoke test after a wake runs outside it, since a pre-read freezes it), and it's frozen while a pre-read runs and only then."""
+    probs = []
+    U = templates.UPD
+    if not os.path.isdir(U):
+        return False, f"no {U}"
+    lim = templates.upd_limits()
+    for f in ("cpu.idle", "cpu.max", "memory.max"):
+        if rd(f"{U}/{f}") != lim[f]:
+            probs.append(f"{f} {rd(f'{U}/{f}')!r}, not {lim[f]!r}")
+    io = {l.split()[0]: l for l in (rd(f"{U}/io.max") or "").splitlines() if l.split()}
+    for want in lim["io.max"]:
+        if io.get(want.split()[0]) != want:
+            probs.append(f"io.max {io.get(want.split()[0])!r}, not {want!r}")
+    if len(lim["io.max"]) < 1:
+        probs.append("no device for io.max")
+    ws = upd_workers()
+    out = [f"{w} (pid {p}, {cg})" for p, w, cg in ws if cg != "/desk-host-upd"]
+    if out:
+        probs.append(f"outside desk-host-upd: {out[:3]}")
+    pre = (rd(f"{templates.PRE}/cgroup.procs") or "").split()
+    frozen = rd(f"{U}/cgroup.freeze")
+    if bool(pre) != (frozen == "1"):
+        probs.append(f"cgroup.freeze {frozen} with {len(pre)} pre-read process(es)")
+    return not probs, (f"cpu.idle, one CPU, {templates.UPD_MEMORY >> 20} MiB, io.max on {len(lim['io.max'])} disk(s) at {lim['io.max'][0].split()[1] if lim['io.max'] else '-'}; "
+                       f"{len(ws)} update process(es), all in it; {'frozen for a pre-read' if pre else 'not frozen'}" if not probs else f"{probs[:4]}")
+
+
+def c_batch_sig():
+    """ADR 0078 1.1 and section 7: /etc/desk-host/batch-keys holds exactly the key the host recipe pins (batch-keys.sha256, by name and
+    SHA-256): P-256, root's, not group- or world-writable, no drop-in directory, nothing else in it. batch-baseline is readable (or absent:
+    0). Every kept manifest (/var/lib/desk-host/batch/<seq>.json) still verifies against its signature, and the verifier refuses a bad one."""
+    probs = []
+    pins = {}
+    try:
+        ps = os.lstat(batchsig.PINS)
+        if not stat.S_ISREG(ps.st_mode) or ps.st_uid != 0 or ps.st_mode & 0o022:
+            probs.append(f"{batchsig.PINS} isn't root's alone")
+        for line in open(batchsig.PINS):
+            f = line.split()
+            if len(f) == 2 and re.fullmatch(r"[0-9a-f]{64}", f[0]) and re.fullmatch(r"[A-Za-z0-9._-]+\.pem", f[1]):
+                pins[f[1]] = f[0]
+            elif line.strip() and not line.startswith("#"):
+                probs.append(f"a bad pin line: {line.strip()[:60]}")
+    except OSError:
+        probs.append(f"no {batchsig.PINS}")
+    d = batchsig.KEY_DIR
+    have = {}
+    if not batchsig.safe_dir(d):
+        probs.append(f"{d} isn't a directory root alone can write")
+    else:
+        for n in sorted(os.listdir(d)):
+            q = os.path.join(d, n)
+            s_ = os.lstat(q)
+            if not stat.S_ISREG(s_.st_mode) or not n.endswith(".pem"):
+                probs.append(f"{n}: not a .pem file (no drop-in, nothing else)")
+                continue
+            if s_.st_uid != 0 or s_.st_mode & 0o022:
+                probs.append(f"{n}: not root's alone")
+            if not batchsig.is_p256(q):
+                probs.append(f"{n}: not a P-256 public key")
+            have[n] = templates.sha256_file(q)
+    if not pins:
+        probs.append("no batch key is pinned")
+    if have != pins:
+        probs.append(f"keys {sorted(have)} aren't the pinned {sorted(pins)}" if set(have) != set(pins) else "a key's SHA-256 isn't its pin")
+    if os.path.lexists(batchsig.KEY_DROPIN):
+        probs.append(f"a drop-in directory {batchsig.KEY_DROPIN}")
+    base = batchsig.baseline()
+    if base == batchsig.MAX_SEQ:
+        probs.append(f"{batchsig.BASELINE} is unreadable (every batch would be refused)")
+    keys = batchsig.trusted_keys()
+    kept = 0
+    for f in sorted(os.listdir(batches.BVAR)) if os.path.isdir(batches.BVAR) else []:
+        m = re.fullmatch(r"(\d+)\.json", f)
+        if not m:
+            continue
+        kept += 1
+        try:
+            batchsig.verify(batchsig.read_limited(f"{batches.BVAR}/{f}", batchsig.MAX_MANIFEST), batchsig.read_limited(f"{batches.BVAR}/{m.group(1)}.sig", 4096), keys)
+        except (batchsig.Refused, OSError) as e:
+            probs.append(f"the kept batch {m.group(1)} doesn't verify: {e}")
+    for ks in ([], keys):
+        try:
+            batchsig.verify_signature(b'{"format":"ma-desk-batch/1"}', bytes.fromhex("3006020101020101"), ks)
+            probs.append("the verifier took a bad signature")
+        except batchsig.Refused:
+            pass
+    tk = len(batchsig.trusted_keys([batchsig.TEST_KEY_DIR])) if batchsig.test_mode() and os.path.isdir(batchsig.TEST_KEY_DIR) else 0
+    return not probs, (f"{len(have)} pinned key(s) ({' '.join(sorted(have))}), P-256, root's; no drop-in; baseline {base}; {kept} kept batch(es) verify; "
+                       f"the verifier refuses a bad signature{f'; a TEST host trusts {tk} test key(s) too' if tk else ''}" if not probs else f"{probs[:5]}")
+
+
+CAPS = ("CHOWN DAC_OVERRIDE DAC_READ_SEARCH FOWNER FSETID KILL SETGID SETUID SETPCAP LINUX_IMMUTABLE NET_BIND_SERVICE NET_BROADCAST NET_ADMIN "
+        "NET_RAW IPC_LOCK IPC_OWNER SYS_MODULE SYS_RAWIO SYS_CHROOT SYS_PTRACE SYS_PACCT SYS_ADMIN SYS_BOOT SYS_NICE SYS_RESOURCE SYS_TIME "
+        "SYS_TTY_CONFIG MKNOD LEASE AUDIT_WRITE AUDIT_CONTROL SETFCAP MAC_OVERRIDE MAC_ADMIN SYSLOG WAKE_ALARM BLOCK_SUSPEND AUDIT_READ "
+        "PERFMON BPF CHECKPOINT_RESTORE").split()
+SPEC_FIELDS = (("process", "capabilities"), ("process", "noNewPrivileges"), ("process", "apparmorProfile"), ("process", "user"),
+               ("process", "args"), ("process", "rlimits"), ("root",), ("mounts",), ("linux", "namespaces"), ("linux", "seccomp"),
+               ("linux", "cgroupsPath"), ("linux", "resources"), ("linux", "maskedPaths"), ("linux", "readonlyPaths"))
+
+
+def svc_spec_mod():
+    spec = importlib.util.spec_from_file_location("desk_host_svc_spec", f"{LIB}/svc-spec.py")
+    m = importlib.util.module_from_spec(spec)
+    spec.loader.exec_module(m)
+    return m
+
+
+def c_svc_spec():
+    """ADR 0078 section 7: every running sandbox's config.json is what svc-spec.py makes for its slot now, field by field (namespaces by
+    path, capabilities, seccomp, AppArmor profile, mounts, cgroup), whether up or a live switch made it; and its process holds that:
+    the bounding set, no_new_privs, seccomp filtering and the slot's AppArmor profile, read from the host's /proc. S-29: desk-rtc and
+    desk-stream have the slot's stream profile (/run/desk-host/<k>/egress) read-only at /run/desk-egress. Nothing running is nothing to check."""
+    probs, seen = [], 0
+    mod = svc_spec_mod()
+    for k in sorted(running_slots()):
+        refused = set((json.load(open(f"/run/desk-host/{k}.mounts.json")) or {}).get("refused") or []) if os.path.exists(f"/run/desk-host/{k}.mounts.json") else set()
+        for svc in SVC_ALL:
+            st_ = sh(RUNC, "state", f"dh-svc-{k}-{svc}")
+            try:
+                j = json.loads(st_.stdout)
+                b, pid = j["bundle"], j["pid"]
+                cfg = json.load(open(f"{b}/config.json"))
+            except (ValueError, KeyError, OSError):
+                if svc not in refused:
+                    probs.append(f"slot {k} {svc}: no sandbox")
+                continue
+            seen += 1
+            want = mod.spec(k, svc)
+            for path in SPEC_FIELDS:
+                a, w = cfg, want
+                for x in path:
+                    a, w = (a or {}).get(x), (w or {}).get(x)
+                if json.dumps(a, sort_keys=True) != json.dumps(w, sort_keys=True):
+                    probs.append(f"slot {k} {svc}: {'.'.join(path)} isn't svc-spec.py's")
+            if b != f"{DH}/slots/{k}/svc/{svc}":
+                probs.append(f"slot {k} {svc}: its bundle is {b}")
+            stat_ = {l.split(":")[0]: l.split(":", 1)[1].strip() for l in open(f"/proc/{pid}/status") if ":" in l}
+            bnd = sum(1 << CAPS.index(c[4:]) for c in want["process"]["capabilities"]["bounding"])
+            if int(stat_.get("CapBnd", "0"), 16) != bnd:
+                probs.append(f"slot {k} {svc}: its process's bounding set {stat_.get('CapBnd')} isn't the spec's {bnd:016x}")
+            if stat_.get("NoNewPrivs") != "1" or stat_.get("Seccomp") != "2":
+                probs.append(f"slot {k} {svc}: no_new_privs {stat_.get('NoNewPrivs')}, seccomp {stat_.get('Seccomp')}")
+            lab = rd(f"/proc/{pid}/attr/current") or ""
+            if not lab.startswith(f"desk-host-{k} "):
+                probs.append(f"slot {k} {svc}: AppArmor {lab!r}")
+            if svc in ("desk-rtc", "desk-stream"):
+                hits = [m for m in cfg.get("mounts", []) if m.get("destination") == "/run/desk-egress"]
+                mi = [l.split() for l in open(f"/proc/{pid}/mountinfo") if l.split()[4] == "/run/desk-egress"]
+                if len(hits) != 1 or hits[0].get("source") != f"/run/desk-host/{k}/egress" or "ro" not in hits[0].get("options", []) \
+                        or not mi or "ro" not in mi[-1][5].split(","):
+                    probs.append(f"slot {k} {svc}: the stream profile isn't read-only at /run/desk-egress")
+    return not probs, (f"{len(running_slots())} running slot(s), {seen} sandbox(es) as svc-spec.py makes them now (spec and process); "
+                       f"desk-rtc and desk-stream see the stream profile read-only" if not probs else f"{probs[:4]}")
+
+
+APT_CONF = "/etc/apt/apt.conf.d/51desk-host-unattended"
+
+
+def c_host_apt():
+    """The host's own unattended-upgrade takes the security archive only and never reboots (51desk-host-unattended, read back as apt
+    sees it), nftables and apparmor are held, policy-rc.d exits 101 while a run is on, the run is desk-host-apt.timer's through
+    desk-host-upd's launcher, and Debian's own apt timers stay masked."""
+    probs = []
+    try:
+        s_ = os.lstat(APT_CONF)
+        if s_.st_uid != 0 or s_.st_mode & 0o022:
+            probs.append(f"{APT_CONF} isn't root's alone")
+    except OSError:
+        probs.append(f"no {APT_CONF}")
+    dump = sh("apt-config", "dump").stdout
+    pats = re.findall(r'^Unattended-Upgrade::Origins-Pattern:: "([^"]*)";', dump, re.M)
+    allowed = re.findall(r'^Unattended-Upgrade::Allowed-Origins:: "([^"]*)";', dump, re.M)
+    if not pats or any("label=Debian-Security" not in x for x in pats) or allowed:
+        probs.append(f"origins {pats + allowed}")
+    if not re.search(r'^Unattended-Upgrade::Automatic-Reboot "false";', dump, re.M):
+        probs.append("Automatic-Reboot isn't false")
+    held = set(sh("apt-mark", "showhold").stdout.split())
+    if not {"nftables", "apparmor"} <= held:
+        probs.append(f"held {sorted(held)}, not nftables and apparmor")
+    running = any(w in ("desk-host-template host-apt", "unattended-upgrade") for _, w, _ in upd_workers())
+    if running or os.path.lexists("/usr/sbin/policy-rc.d"):
+        r = subprocess.run(["/usr/sbin/policy-rc.d", "x", "start"], capture_output=True) if os.path.exists("/usr/sbin/policy-rc.d") else None
+        if r is None or r.returncode != 101:
+            probs.append(f"policy-rc.d {'missing' if r is None else 'exits ' + str(r.returncode)}{' during a run' if running else ''}")
+    t = sh("systemctl", "show", "-p", "UnitFileState", "-p", "ActiveState", "desk-host-apt.timer").stdout
+    if "UnitFileState=enabled" not in t or "ActiveState=active" not in t:
+        probs.append(f"desk-host-apt.timer {' '.join(t.split())}")
+    ex = sh("systemctl", "show", "-p", "ExecStart", "desk-host-apt.service").stdout
+    if not re.search(r"desk-host-template upd -- \S*desk-host-template host-apt", ex.replace(" ;", "")):
+        probs.append("desk-host-apt.service doesn't run through desk-host-upd's launcher")
+    m = sh("systemctl", "is-enabled", "apt-daily.timer", "apt-daily-upgrade.timer").stdout.split()
+    if any(x != "masked" for x in m):
+        probs.append(f"Debian's apt timers {m}")
+    if not os.path.exists("/usr/bin/unattended-upgrade"):
+        probs.append("no unattended-upgrade")
+    return not probs, ("security archive only, no reboot, nftables and apparmor held, policy-rc.d 101 during runs, desk-host-apt.timer through "
+                       f"desk-host-upd, Debian's timers masked{'; a run is on' if running else ''}" if not probs else f"{probs[:5]}")
+
+
+# ---------- the host's own directories: owner, group and mode (sub/host-dir-modes) ----------
+# Each value is the recipe's. A mode 700 on /srv/desk-host (a verify mutation left it so) refused every runc create on the host: no desk's
+# root could reach its sandbox's root under it. Columns: path, mode, group (None: root's), whether it must exist (False: made on demand,
+# judged only where it is), and the recipe line that sets it. image/tests/test_host_dirs.py holds every recipe line that sets one of
+# these to its mode here, and desk-host-boot to setting each required one (install -d -m changes a mode that drifted).
+DIRS_PREFIX = ""     # a test's temporary tree
+DIRS_UID = DIRS_GID = 0   # root; a test runs as itself
+DIRS = [
+    (f"{DH}", 0o711, None, True, "recipe/build.sh and desk-host-boot: install -d -m 711 + chmod 711"),
+    (f"{DH}/slots", 0o711, None, True, "build.sh, desk-host-boot: install -d -m 711"),
+    (f"{DH}/releases", 0o711, None, True, "build.sh, desk-host-boot: install -d -m 711"),
+    (f"{DH}/templates", 0o711, None, True, "build.sh, desk-host-boot: install -d -m 711"),
+    ("/var/lib/desk-host", 0o711, None, True, "desk-host-boot: install -d -m 711"),
+    ("/var/lib/desk-host/slots", 0o700, None, True, "desk-host-boot: install -d -m 700 (the slot records)"),
+    ("/var/lib/desk-host/batch", 0o755, None, True, "build.sh, desk-host-boot and batches.py: install -d -m 755"),
+    ("/var/lib/desk-host/egress", 0o700, None, False, "egress.py: makedirs 0o700"),
+    ("/var/log/desk-host", 0o755, None, True, "desk-host-boot: install -d -m 755"),
+    ("/run/desk-host", 0o711, None, True, "desk-host-boot, desk-host stop-all and resume: install -d -m 711"),
+    ("/run/desk-host/lock", 0o700, None, True, "desk-host-boot: install -d -m 700"),
+    ("/run/desk-host/share", 0o711, None, False, "desk-host up: install -d -m 711"),
+    ("/run/desk-host/ns", 0o700, None, False, "desk-host up: install -d -m 700"),
+    ("/run/desk-host/net", 0o700, None, False, "desk-host up: install -d -m 700"),
+    ("/run/desk-host/slotstate", 0o700, None, False, "desk-host up: install -d -m 700"),
+    ("/run/desk-host/batch", 0o700, None, False, "desk-host: install -d -m 700"),
+    ("/run/desk-host/reroot", 0o700, None, False, "desk-host: install -d -m 700"),
+    (DMX, 0o755, None, False, "desk-host-boot (SlotMode=port): install -d -m 755 -o root -g root"),
+    (f"{DMX}/slots", 0o750, "desk-dmx", False, "desk-host-boot (SlotMode=port): install -d -m 750 -g desk-dmx"),
+]
+DIRS_SLOT = [   # per slot k, where the slot is made
+    (f"{DH}/slots/{{k}}", 0o711, "desk-host: mkdir -m 711 (prepare and re-root)"),
+    (f"{DH}/slots/{{k}}/svc", 0o711, "desk-host: chmod 711"),
+    ("/run/desk-host/{k}", 0o755, "desk-host up: install -d -m 755 -o root -g root"),
+    ("/run/desk-host/share/{k}", 0o711, "desk-host up: the tmpfs's mode=711"),
+]
+
+
+def gid_of(name):
+    import grp
+    return grp.getgrnam(name).gr_gid
+
+
+def c_dirs():
+    """Every directory desk-host and runc need has the owner, group and mode the recipe sets (DIRS, each with the line that sets it)."""
+    probs, n = [], 0
+    want = [(p, m, g, req) for p, m, g, req, _ in DIRS]
+    sd = f"{DIRS_PREFIX}{DH}/slots"
+    for k in sorted(os.listdir(sd)) if os.path.isdir(sd) else []:
+        if k.isdigit():   # the dot-named trees are a crashed prepare's, removed at the next start
+            want += [(p.format(k=k), m, None, False) for p, m, _ in DIRS_SLOT]
+    for p, mode, grp_name, req in want:
+        path = DIRS_PREFIX + p
+        try:
+            st = os.lstat(path)
+        except FileNotFoundError:
+            if req:
+                probs.append(f"{p} is missing")
+            continue
+        n += 1
+        try:
+            gid = gid_of(grp_name) if grp_name else DIRS_GID
+        except KeyError:
+            probs.append(f"{p}: no group {grp_name}")
+            continue
+        if not stat.S_ISDIR(st.st_mode):
+            probs.append(f"{p} isn't a directory")
+        elif stat.S_IMODE(st.st_mode) != mode or st.st_uid != DIRS_UID or st.st_gid != gid:
+            probs.append(f"{p} is {st.st_uid}:{st.st_gid} mode {stat.S_IMODE(st.st_mode):o}, not {DIRS_UID}:{gid} mode {mode:o}")
+    return not probs, (f"{n} directories (the store, its slots/releases/templates, /var/lib/desk-host, /run/desk-host and what a slot adds) "
+                       "have the recipe's owner, group and mode" if not probs else f"{probs[:6]}")
+
+
 CHECKS = {"runc": c_runc, "kernel": c_kernel, "zswap": c_zswap, "swap": c_swap, "sysctl": c_sysctl, "modules": c_modules, "units": c_units,
           "uids": c_uids, "nft": c_nft, "store": c_store, "template": c_template, "releases": c_releases, "desk-svc": c_desk_svc,
           "no-test": c_no_test, "apparmor": c_apparmor, "cgroup": c_cgroup, "boot": c_boot, "hosting": c_hosting, "ssh": c_ssh,
-          "classes": c_classes, "class-applied": c_class_applied, "counters": c_counters, "link": c_link, "inbound": c_inbound, "standin": c_standin}
-QUICK = ("runc", "zswap", "swap", "sysctl", "store", "cgroup", "classes")
+          "classes": c_classes, "class-applied": c_class_applied, "counters": c_counters, "link": c_link, "inbound": c_inbound, "standin": c_standin,
+          "slotmode": c_slotmode, "addresses": c_addresses, "demux": c_demux, "ports": c_ports, "svc-dns": c_svc_dns, "oom": c_oom,
+          "files": c_files, "shaper": c_shaper,
+          "templates": c_templates, "template-sig": c_template_sig, "update-cgroup": c_update_cgroup, "host-apt": c_host_apt,
+          "batch-sig": c_batch_sig, "svc-spec": c_svc_spec, "dirs": c_dirs}
+QUICK = ("runc", "zswap", "swap", "sysctl", "store", "cgroup", "classes", "slotmode", "templates", "dirs")
 
 
 def main():

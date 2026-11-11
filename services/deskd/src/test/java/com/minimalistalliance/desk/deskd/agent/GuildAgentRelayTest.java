@@ -91,6 +91,28 @@ class GuildAgentRelayTest {
     }
 
     @Test
+    void aMemberSeesAndDeletesTheirOwnAgentsMemory() throws Exception {
+        rig.agent.handlers.put("agent.memory.list", p -> Map.of("memories", List.of()));
+        rig.agent.handlers.put("agent.memory.delete", p -> Map.of("deleted", true));
+        rig.agent.handlers.put("agent.memory.clear", p -> Map.of("deleted", 0));
+        assertThat(AgentMethods.TEAM_OWNER_ONLY).doesNotContain("agent.memory.list", "agent.memory.delete",
+                "agent.memory.clear");
+        assertThat(AgentMethods.MANAGERS_ONLY).doesNotContain("agent.memory.list", "agent.memory.delete",
+                "agent.memory.clear");
+        TestClient member = rig.connect("cs-1", rig.member("gm-aaaa0001", "member", List.of(), false));
+        for (String method : List.of("agent.memory.list", "agent.memory.delete", "agent.memory.clear")) {
+            Map<String, Object> reply = rig.call(member, method, Map.of("agentId", "gm-aaaa0001", "memoryId", "mem-x"));
+            assertThat(reply).as(method).containsEntry("_kind", "RES");
+            assertThat(Json.object(nextRequest(method), "caller")).as(method)
+                    .containsEntry("kind", "guild_member").containsEntry("memberId", "gm-aaaa0001");
+        }
+        TestClient teen = rig.connect("cs-2", rig.member("gm-bbbb0001", "member", List.of(), true));
+        Map<String, Object> refused = rig.call(teen, "agent.memory.list", Map.of("agentId", "gm-bbbb0001"));
+        assertThat(refused).containsEntry("code", "forbidden");
+        assertThat(Json.object(refused, "details")).containsEntry("reason", "age_band");
+    }
+
+    @Test
     void theGuildsKeysLimitsAndAuditNeedManageAgents() throws Exception {
         TestClient member = rig.connect("cs-1", rig.member("gm-aaaa0001", "member", List.of(), false));
         TestClient officer = rig.connect("cs-2", rig.member("gm-bbbb0001", "officer", List.of("moderate"), false));

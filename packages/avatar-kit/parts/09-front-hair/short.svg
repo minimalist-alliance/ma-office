@@ -1,0 +1,4 @@
+<g data-part="short" data-crown="51">
+  <path fill="{{hair}}" d="M79,121 C76,84 97,51 128,51 C160,51 181,82 177,121 C175,111 173,105 170,100 C158,92 142,89 127,89.5 C113,90 101,93 93,98.5 C88,102 84,107 82,112 C81,115 80,118 79,121 Z"/>
+  <g data-min-size="40" fill="none" stroke="{{hairStep}}" stroke-width="2.6" stroke-linecap="round" stroke-linejoin="round"><path d="M152,60 C134,62 116,70 104,84"/><path d="M168,76 C152,72 134,78 121,88"/></g>
+</g>

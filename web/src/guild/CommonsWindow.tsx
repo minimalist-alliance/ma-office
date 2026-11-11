@@ -4,13 +4,14 @@
 // opened it stays mounted through a dropped link, so a stroke in progress or a note being typed is never taken away.
 // Rendering wakes nothing: opening the window has already asked (`shell/actions.ts`), and Wake and Retry are the member's.
 import { Component, lazy, Suspense, useEffect, useState, type ReactNode } from 'react';
+import { loadCommonsBody } from '../apps/chunks';
 import type { AppWindowProps } from '../apps/registry';
 import { PanelBody, WakeBar } from '../browser/BrowserWindow';
 import { browserPanel, type BrowserPanel } from '../browser/panel';
 import { noteDeskInput, useDeskLink, useLive } from '../desk/liveStore';
 import { useDeskStore } from '../state/deskStore';
 
-const loadBody = (): Promise<typeof import('./CommonsBody')> => import('./CommonsBody');
+const loadBody = loadCommonsBody;
 const CommonsBody = lazy(loadBody);
 
 /** Only a blip: Commons stays on screen, with a line over it, and catches up by itself. */

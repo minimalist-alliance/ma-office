@@ -1,0 +1,16 @@
+[Unit]
+Description=desk-host-apt: the shared host's own security updates (ADR 0077 section 3), in desk-host-upd, never a reboot
+Requires=desk-host-boot.service
+After=desk-host-boot.service network-online.target
+Wants=network-online.target
+# not while the host is stopping every desk
+ConditionPathExists=!/run/desk-host/halt
+
+[Service]
+Type=oneshot
+# The launcher stays in this unit; the run itself goes into desk-host-upd (cpu.idle, one CPU, 192 MiB, 0.1 of the EBS baseline each
+# way), frozen while a pre-read runs. policy-rc.d exits 101 for the whole run; nftables and apparmor are held (templates.host_apt).
+ExecStart=/usr/local/lib/desk-host/desk-host-template upd -- /usr/local/lib/desk-host/desk-host-template host-apt
+TimeoutStartSec=2h
+Nice=19
+IOSchedulingClass=idle

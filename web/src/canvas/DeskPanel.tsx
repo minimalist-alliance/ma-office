@@ -2,7 +2,7 @@
 // name and icons, at a constant size whatever the zoom, and a status line only when there's a problem. Live
 // drag and resize state stays local, so only the desk being changed re-renders while the pointer moves. Neighbours
 // it pushes aside move on their Konva nodes (deskPushLive.ts), and nothing renders until the drop.
-import { memo, useCallback, useEffect, useLayoutEffect, useMemo, useRef, useState } from 'react';
+import { memo, useCallback, useEffect, useLayoutEffect, useMemo, useRef, useState, type ReactNode } from 'react';
 import type Konva from 'konva/lib/Core.js';
 import type { Circle as KCircle } from 'konva/lib/shapes/Circle.js';
 import type { Text as KonvaText } from 'konva/lib/shapes/Text.js';
@@ -13,14 +13,18 @@ import { moreContrast, moveBefore, reducedMotion } from '../lib/util';
 import { statusLine, type StatusDot } from '../desk/agentStatus';
 import { liveStatusInput, useLive } from '../desk/liveStore';
 import type { DeskInfo } from '../state/deskStore';
-import { moveDesk, raiseDesk, reorderItems, resizeDesk, setItemLevel } from '../state/layoutStore';
+import { moveDesk, raiseDesk, reorderItems, resizeDesk, setItemLevel, useLayoutStore } from '../state/layoutStore';
 import { beginPush, cancelPush, dropPush, pushTo } from './deskPushLive';
 import { useViewStore } from '../state/viewStore';
 import { useWindowStore, windowKey } from '../state/windowStore';
-import { focusDesk, refit, tileActivated } from '../shell/actions';
+import { appLabel, focusDesk, refit, tileActivated } from '../shell/actions';
 import { CLEANUP_MS, cleanUpDesk, isTidying, needsCleanup, undoCleanup, useCleanup } from '../shell/cleanup';
 import { hiddenOn, openHiddenList } from '../shell/hidden';
+import { useDesksStopped } from './stopped';
 import { kindTipFor } from '../chrome/rename';
+import { useGlyph } from '../agent/roster';
+import { switchLabel, toggleCarousel } from '../carousel/actions';
+import { carouselOn, positionOf, shownApp } from '../carousel/model';
 import { easeCamera, edgePan } from './camera';
 import { camera } from './controller';
 import { etchEpoch, fitName, statusTextWidth, stripControlSize, type NameFit } from './etch';
@@ -28,13 +32,17 @@ import { CANVAS_FONT } from './font';
 import { drawMark } from './glyphs';
 import { ItemTile } from './ItemTile';
 import {
-  cornerInset, countSlotW, deskBounds, deskGeometry, ETCH_BASELINE, ETCH_ICON, fitDeskSize, G, iconsFit, iconsLeft, nameRoom, overOthers, roundUnit, slotRight, stackOrder, statusClear, statusRoom, STRIP, stripTarget,
+  carouselStage, countSlotW, deskBounds, deskGeometry, ETCH_BASELINE, ETCH_ICON, fitDeskSize, G, iconsFit, iconsLeft, nameRaster, nameRoom, nameShows, overOthers, roundUnit, slotRight, stackOrder, statusClear, statusRoom, STRIP, stripTarget, switchFits,
   type DetailLevel, type LayoutDesk,
 } from './layout';
-import { blitPanel, blitPanelLive, blitPinned, etchCountSprite, etchIconSprite, etchSprite, newEtchHold, panelSprite, undoSprite, whenIdle } from './sprites';
+import { blit, blitPanel, blitPanelLive, blitScaled, blitTileLive, etchCountSprite, etchIconSprite, etchSprite, glyphSprite, newEtchHold, panelSprite, tileSprite, undoSprite, whenIdle } from './sprites';
 import { preloadDeskStyle } from './textureHub';
 
 const T = { fontFamily: CANVAS_FONT, listening: false, perfectDrawEnabled: false } as const;
+/** The card's glyph: about a third of the stage's short side, in desk units, within reason. */
+const cardGlyphSize = (w: number, h: number): number => Math.round(Math.max(24, Math.min(96, Math.min(w, h) * 0.34)));
+const cardNameSize = (h: number): number => Math.round(Math.max(13, Math.min(22, h * 0.09)));
+const layoutNow = (id: string) => useLayoutStore.getState().desks[id];
 const NONE: ReadonlySet<string> = new Set();
 
 /** True once `ms` has passed since it was last set. Lands after a camera move, never during one. */
@@ -122,6 +130,8 @@ export const DeskPanel = memo(function DeskPanel({ desk, layout, hidden, touchUI
   // A renamed desk says its kind on hover over its name, "Personal desk"; one named for its kind has nothing to add.
   const kindTip = kindTipFor(desk.name, desk.kind);
   const live = useLive(desk.id);
+  // Behind card C or D: no counts, on tiles or the strip (`stopped.ts`).
+  const stopped = useDesksStopped();
   const openApps = useWindowStore((s) => s.windows);
 
   const groupRef = useRef<Konva.Group>(null);
@@ -129,6 +139,7 @@ export const DeskPanel = memo(function DeskPanel({ desk, layout, hidden, touchUI
   const statusRef = useRef<Konva.Group>(null);
   const statusTextRef = useRef<KonvaText>(null);
   const controlRef = useRef<Konva.Group>(null);
+  const switchRef = useRef<Konva.Group>(null);
   const countRef = useRef<Konva.Group>(null);
   const sizeFrame = useRef(0);
   // The size while the corner is dragged. It goes straight to Konva: no render, and no new bitmap.
@@ -141,7 +152,7 @@ export const DeskPanel = memo(function DeskPanel({ desk, layout, hidden, touchUI
   // What's in the strip, for the draws and writes that happen outside a render.
   const stripNow = useRef({ dot: false, textX: STRIP.textX as number, labelW: 0, control: null as 'sparkle' | 'undo' | null, controlW: 0, controlH: 0, heldW: 0, count: false });
   // Which icon has the pointer: it's only a draw, so it isn't a render.
-  const overIcon = useRef<'grip' | 'control' | 'count' | null>(null);
+  const overIcon = useRef<'grip' | 'switch' | 'control' | 'count' | null>(null);
   const [preview, setPreview] = useState<string[] | null>(null);
   // A phone's tile being dragged: drawn last, so it passes over the others, and back in its place at the drop.
   const [lifted, setLifted] = useState<string | null>(null);
@@ -156,6 +167,13 @@ export const DeskPanel = memo(function DeskPanel({ desk, layout, hidden, touchUI
     return it ? [it] : [];
   });
   const geo = deskGeometry({ ...layout, items }, phone);
+  // Carousel mode: the desk is a stage for one app (`carousel/`), so its tiles, cleanup and hidden count step aside. The
+  // live app is DOM over this (`CarouselLayer`); what's drawn here is its card, for when the desk is too small on screen to
+  // use the app, or isn't the one looked at. Phones keep their list.
+  const carousel = !phone && carouselOn(layout);
+  const carouselApp = carousel ? shownApp(layout) : null;
+  const { index: carouselIndex, count: carouselCount } = carousel ? positionOf(layout) : { index: 0, count: 0 };
+  const carouselGlyph = useGlyph(desk.id, carouselApp ?? 'notebook');
   // Bottom to top, once per render: React puts the nodes in this order, so a move or a drag sorts nothing. Larger
   // screens go by the stack. Phones go by the grid's list, and nothing stacks there.
   const drawn = phone ? (lifted ? [...order.filter((id) => id !== lifted), lifted] : order) : stackOrder(layout);
@@ -242,7 +260,7 @@ export const DeskPanel = memo(function DeskPanel({ desk, layout, hidden, touchUI
   const statusWidth = useCallback((w: number, h: number): number => {
     const { s } = camera.cam;
     const { textX, heldW, count } = stripNow.current;
-    return statusRoom(w, textX, s, !phone && iconsFit(w * s, h * s) ? statusClear(touchUI, cornerInset(s), heldW, count) : STRIP.clear);
+    return statusRoom(w, textX, 1, !phone && iconsFit(w, h) && nameShows(s) ? statusClear(touchUI, 0, heldW, count, switchFits(w, h)) : STRIP.clear);
   }, [phone, touchUI]);
   const showSize = (size: { w: number; h: number }): void => {
     liveSize.current = size;
@@ -250,6 +268,7 @@ export const DeskPanel = memo(function DeskPanel({ desk, layout, hidden, touchUI
     statusRef.current?.y(size.h - G.strip / 2);
     statusTextRef.current?.width(statusWidth(size.w, size.h));
     controlRef.current?.position({ x: size.w, y: size.h });
+    switchRef.current?.position({ x: size.w, y: size.h });
     countRef.current?.position({ x: size.w, y: size.h });
   };
   const growTo = (x: number, y: number): void => {
@@ -417,8 +436,8 @@ export const DeskPanel = memo(function DeskPanel({ desk, layout, hidden, touchUI
   // has focus, on touch only with focus, and only if there's something to clean up. Its slot is held whenever
   // it could show without a tap, so the count beside it doesn't move when the pointer comes (`slotRight`).
   const undo = useCleanup((s) => s[desk.id]);
-  const offering = !phone && undo?.after === layout && undo.offered;
-  const held = offering || (!phone && (active || !touchUI) && needsCleanup(layout));
+  const offering = !phone && !carousel && undo?.after === layout && undo.offered;
+  const held = offering || (!phone && !carousel && (active || !touchUI) && needsCleanup(layout));
   const sparkle = held && !offering && (active || (hover && !touchUI));
   const control = offering ? 'undo' : sparkle ? 'sparkle' : null;
   const controlSize = stripControlSize(offering, touchUI);
@@ -426,10 +445,14 @@ export const DeskPanel = memo(function DeskPanel({ desk, layout, hidden, touchUI
   const controlW = control ? controlSize.w : 0;
   const heldW = held ? controlSize.w : 0;
   // Once per version of the layout, however many things ask, so a drop or a raise works it out and a move doesn't.
-  const hiddenCount = phone ? 0 : hiddenOn(layout).length;
+  // A Work desk a step down stopped: its tiles show at 45 percent (billing spec still 15), in one group.
+  const dimTiles = (tiles: ReactNode): ReactNode => (desk.ended ? <Group opacity={0.45}>{tiles}</Group> : tiles);
+  const hiddenCount = phone || carousel || stopped ? 0 : hiddenOn(layout).length;
   const countText = hiddenCount ? String(Math.min(hiddenCount, 99)) : '';
   stripNow.current = { dot: !!dot, textX, labelW: dot ? statusTextWidth(line.label) : 0, control, controlW, controlH, heldW, count: hiddenCount > 0 };
   const gripShows = hover || active || touchUI;
+  // The carousel's switch shows with the grip, and always while the desk is a carousel, so the way back is never hidden.
+  const switchShows = gripShows || carousel;
 
   // It went while the pointer was on it, so no leave will come.
   useEffect(() => {
@@ -472,14 +495,17 @@ export const DeskPanel = memo(function DeskPanel({ desk, layout, hidden, touchUI
     const dh = size?.h ?? geo.h;
     const deskPx = dw * s;
     const n = stripNow.current;
-    const inset = cornerInset(s);
-    const icons = !phone && iconsFit(deskPx, dh * s);
+    const inset = 0; // the icons scale with the desk, so nothing pokes out of the corner at any zoom
+    const icons = !phone && iconsFit(dw, dh) && nameShows(s);
+    // The carousel's switch is in the row only on a desk wide enough for it, and then it holds its slot at rest.
+    const sw = !phone && switchFits(dw, dh);
     let fit = nameFit.current;
     if (!fit || fit.name !== desk.name || fit.epoch !== etchEpoch() || !camera.holdsNameFit()) {
       // Zoomed out, the status text is hidden, and its dot is all that's left to keep clear of.
-      const textEnd = n.textX + Math.min(n.labelW, statusRoom(dw, n.textX, s, icons ? statusClear(touchUI, inset, heldW, !!countText) : STRIP.clear));
-      const leftEnd = !n.dot ? 0 : (camera.lod === 'full' ? textEnd : STRIP.dotX + 4) * s;
-      fit = fitName(fit, desk.name, nameRoom(deskPx, leftEnd, icons ? iconsLeft(touchUI, inset, heldW, !!countText) : 0));
+      const textEnd = n.textX + Math.min(n.labelW, statusRoom(dw, n.textX, 1, icons ? statusClear(touchUI, inset, heldW, !!countText, sw) : STRIP.clear));
+      const leftEnd = !n.dot ? 0 : (camera.lod === 'full' ? textEnd : STRIP.dotX + 4);
+      fit = fitName(fit, desk.name, nameRoom(dw, leftEnd, icons ? iconsLeft(touchUI, inset, heldW, !!countText, sw) : 0));
+      // The fit is at 100 % zoom, in desk units: the name and the icons scale with the desk.
       nameFit.current = fit;
     }
     const ctx = context._context;
@@ -496,108 +522,164 @@ export const DeskPanel = memo(function DeskPanel({ desk, layout, hidden, touchUI
     ctx.rect(right - deskPx, bottom - dh * s, deskPx, dh * s);
     ctx.clip();
     // A bitmap holds no text for a test to read.
-    shape.attrs.drawn = fit.text;
+    // The name is part of the desk's surface: its size and place scale with the zoom, and it hides when too small to read.
+    const nameOn = !!fit.text && nameShows(s);
+    shape.attrs.drawn = nameOn ? fit.text : '';
     shape.attrs.drawnCount = icons ? countText : '';
-    if (fit.text && !renaming) {
-      const x = camera.pinned(right - deskPx / 2 - fit.width / 2);
-      const y = camera.pinned(bottom - ETCH_BASELINE);
+    if (nameOn && !renaming) {
+      const x = camera.pinned(right - deskPx / 2 - (fit.width * s) / 2);
+      const y = camera.pinned(bottom - ETCH_BASELINE * s);
       shape.attrs.drawnX = x;
       shape.attrs.drawnY = y;
-      blitPinned(ctx, etchSprite(nameHold, fit.text, plain, tokens, rev, q, ink), x, y);
+      shape.attrs.drawnScale = s;
+      blitScaled(ctx, etchSprite(nameHold, fit.text, plain, tokens, rev, nameRaster(q, s), ink), x, y, s);
     }
     if (!icons) return;
-    const edge = right - inset;
-    const mid = bottom - STRIP.iconUp;
+    const qi = nameRaster(q, s);
+    const edge = right;
+    const mid = bottom - STRIP.iconUp * s;
     if (control) {
-      const end = edge - slotRight('cleanup', touchUI);
+      const end = edge - slotRight('cleanup', touchUI, 0, sw) * s;
       if (overIcon.current === 'control') {
         ctx.fillStyle = tokens.surface.fill;
         ctx.beginPath();
-        ctx.roundRect(camera.pinned(end - controlW), camera.pinned(mid - controlH / 2), controlW, controlH, STRIP.padRadius);
+        ctx.roundRect(camera.pinned(end - controlW * s), camera.pinned(mid - (controlH * s) / 2), controlW * s, controlH * s, STRIP.padRadius * s);
         ctx.fill();
       }
       if (control === 'undo') {
-        blitPinned(ctx, undoSprite(tokens, rev, q, ink.deskText), camera.pinned(end - controlW / 2 - statusTextWidth('Undo') / 2), camera.pinned(mid + 5));
+        blitScaled(ctx, undoSprite(tokens, rev, qi, ink.deskText), camera.pinned(end - (controlW * s) / 2 - (statusTextWidth('Undo') * s) / 2), camera.pinned(mid + 5 * s), s);
       } else {
-        blitPinned(ctx, etchIconSprite('sparkle', plain, tokens, rev, q, ink), camera.pinned(end - (controlW + ETCH_ICON) / 2), camera.pinned(mid - ETCH_ICON / 2));
+        blitScaled(ctx, etchIconSprite('sparkle', plain, tokens, rev, qi, ink), camera.pinned(end - ((controlW + ETCH_ICON) * s) / 2), camera.pinned(mid - (ETCH_ICON * s) / 2), s);
       }
     }
     if (countText) {
-      const end = edge - slotRight('count', touchUI, heldW);
-      const w = countSlotW(touchUI);
+      const end = edge - slotRight('count', touchUI, heldW, sw) * s;
+      const w = countSlotW(touchUI) * s;
       if (overIcon.current === 'count') {
-        const target = stripTarget(touchUI);
+        const target = stripTarget(touchUI) * s;
         ctx.fillStyle = tokens.surface.fill;
         ctx.beginPath();
-        ctx.roundRect(camera.pinned(end - w), camera.pinned(mid - target / 2), w, target, STRIP.padRadius);
+        ctx.roundRect(camera.pinned(end - w), camera.pinned(mid - target / 2), w, target, STRIP.padRadius * s);
         ctx.fill();
       }
-      const cutCount = etchCountSprite(countHold, countText, plain, tokens, rev, q, ink);
-      blitPinned(ctx, cutCount, camera.pinned(end - (w + cutCount.width + 2 * cutCount.x) / 2), camera.pinned(mid - ETCH_ICON / 2));
+      const cutCount = etchCountSprite(countHold, countText, plain, tokens, rev, qi, ink);
+      blitScaled(ctx, cutCount, camera.pinned(end - (w + (cutCount.width + 2 * cutCount.x) * s) / 2), camera.pinned(mid - (ETCH_ICON * s) / 2), s);
+    }
+    if (switchShows && sw) {
+      const target = stripTarget(touchUI) * s;
+      const end = edge - slotRight('carousel', touchUI) * s;
+      if (overIcon.current === 'switch') {
+        ctx.fillStyle = tokens.surface.fill;
+        ctx.beginPath();
+        ctx.roundRect(camera.pinned(end - target), camera.pinned(mid - target / 2), target, target, STRIP.padRadius * s);
+        ctx.fill();
+      }
+      shape.attrs.drawnSwitch = carousel ? 'desk' : 'carousel';
+      blitScaled(ctx, etchIconSprite(carousel ? 'desk' : 'carousel', plain, tokens, rev, qi, ink), camera.pinned(end - (target + ETCH_ICON * s) / 2), camera.pinned(mid - (ETCH_ICON * s) / 2), s);
+    } else {
+      shape.attrs.drawnSwitch = '';
     }
     if (gripShows) {
-      const target = stripTarget(touchUI);
-      const end = edge - slotRight('grip', touchUI);
+      const target = stripTarget(touchUI) * s;
+      const end = edge - slotRight('grip', touchUI) * s;
       if (overIcon.current === 'grip') {
         ctx.fillStyle = tokens.surface.fill;
         ctx.beginPath();
-        ctx.roundRect(camera.pinned(end - target), camera.pinned(mid - target / 2), target, target, STRIP.padRadius);
+        ctx.roundRect(camera.pinned(end - target), camera.pinned(mid - target / 2), target, target, STRIP.padRadius * s);
         ctx.fill();
       }
-      blitPinned(ctx, etchIconSprite('grip', plain, tokens, rev, q, ink), camera.pinned(end - (target + ETCH_ICON) / 2), camera.pinned(mid - ETCH_ICON / 2));
+      blitScaled(ctx, etchIconSprite('grip', plain, tokens, rev, qi, ink), camera.pinned(end - (target + ETCH_ICON * s) / 2), camera.pinned(mid - (ETCH_ICON * s) / 2), s);
     }
-  }, [geo.w, geo.h, desk.name, nameHold, countHold, countText, touchUI, phone, gripShows, control, controlW, controlH, heldW, renaming, style]);
+  }, [geo.w, geo.h, desk.name, nameHold, countHold, countText, touchUI, phone, gripShows, switchShows, carousel, control, controlW, controlH, heldW, renaming, style]);
+
+  // The carousel's card: the shown app's glyph large, its name under it (a Text node), and where it is in the list as
+  // dots, on a widget's surface the size of the stage. Read at draw time, so a camera move costs a blit or two.
+  const cardScene = useCallback((context: Konva.Context, shape: Konva.Shape) => {
+    const ctx = context._context;
+    const { t: tokens, rev } = getTheme();
+    const size = liveSize.current;
+    const st = carouselStage(size?.w ?? geo.w, size?.h ?? geo.h);
+    shape.attrs.drawnApp = carouselApp ?? '';
+    ctx.save();
+    ctx.translate(st.x, st.y);
+    if (size) blitTileLive(ctx, st.w, st.h, null, tokens, rev, G.widgetRadius);
+    else blit(ctx, tileSprite({ w: st.w, h: st.h, app: null, glyphSize: 0, radius: G.widgetRadius, stacked: false }, tokens, rev));
+    if (camera.lod !== 'card' && carouselApp) {
+      const g = cardGlyphSize(st.w, st.h);
+      blit(ctx, glyphSprite(carouselGlyph, tokens, rev, g), Math.round((st.w - g) / 2), Math.round(st.h / 2 - g * 0.8));
+    }
+    if (carouselCount > 1 && camera.lod === 'full') {
+      const gap = 12;
+      const x0 = st.w / 2 - ((carouselCount - 1) * gap) / 2;
+      for (let n = 0; n < carouselCount; n += 1) {
+        ctx.fillStyle = n === carouselIndex ? tokens.text.secondary : tokens.border.default;
+        ctx.beginPath();
+        ctx.arc(x0 + n * gap, st.h - 16, 3, 0, Math.PI * 2);
+        ctx.fill();
+      }
+    }
+    ctx.restore();
+  }, [geo.w, geo.h, carouselApp, carouselGlyph, carouselIndex, carouselCount]);
 
   // Where the etched name is, for its tooltip: its fitted width, about its cap height, in desk units at this zoom.
   const nameHit = useCallback((context: Konva.Context, shape: Konva.Shape) => {
     const fit = nameFit.current;
-    if (!fit?.text) return;
     const { s } = camera.cam;
+    if (!fit?.text || !nameShows(s)) return;
     const size = liveSize.current ?? geoRef.current;
     context.beginPath();
-    context.rect(size.w / 2 - fit.width / 2 / s, size.h - (ETCH_BASELINE + 12) / s, fit.width / s, 16 / s);
+    context.rect(size.w / 2 - fit.width / 2, size.h - (ETCH_BASELINE + 12), fit.width, 16);
     context.closePath();
     context.fillStrokeShape(shape);
   }, []);
 
-  // Where a press goes: the same boxes, in CSS pixels, so it's the same size at every zoom. Under the tiles, like
+  // Where a press goes: the same boxes, in desk units like what's drawn, so they scale with the desk. Under the tiles, like
   // what they cover, so a press on an app that's over an icon is the app's. The grip's also runs on into the
   // desk's corner, since that's where a pointer aims for it. It isn't there when the icons aren't.
   const controlHit = useCallback((context: Konva.Context, shape: Konva.Shape) => {
     const { s } = camera.cam;
     const size = liveSize.current ?? geoRef.current;
-    if (!iconsFit(size.w * s, size.h * s)) return;
+    if (!iconsFit(size.w, size.h) || !nameShows(s)) return;
     const { controlW: w, controlH: h } = stripNow.current;
     context.beginPath();
-    context.rect(-(slotRight('cleanup', touchUI) + cornerInset(s) + w) / s, -(STRIP.iconUp + h / 2) / s, w / s, h / s);
+    context.rect(-(slotRight('cleanup', touchUI, 0, switchFits(size.w, size.h)) + w), -(STRIP.iconUp + h / 2), w, h);
     context.closePath();
     context.fillStrokeShape(shape);
   }, [touchUI]);
   const countHit = useCallback((context: Konva.Context, shape: Konva.Shape) => {
     const { s } = camera.cam;
     const size = liveSize.current ?? geoRef.current;
-    if (!iconsFit(size.w * s, size.h * s)) return;
+    if (!iconsFit(size.w, size.h) || !nameShows(s)) return;
     const h = stripTarget(touchUI);
     const w = countSlotW(touchUI);
     context.beginPath();
-    context.rect(-(slotRight('count', touchUI, stripNow.current.heldW) + cornerInset(s) + w) / s, -(STRIP.iconUp + h / 2) / s, w / s, h / s);
+    context.rect(-(slotRight('count', touchUI, stripNow.current.heldW, switchFits(size.w, size.h)) + w), -(STRIP.iconUp + h / 2), w, h);
+    context.closePath();
+    context.fillStrokeShape(shape);
+  }, [touchUI]);
+  const switchHit = useCallback((context: Konva.Context, shape: Konva.Shape) => {
+    const size = liveSize.current ?? geoRef.current;
+    if (!iconsFit(size.w, size.h) || !nameShows(camera.cam.s) || !switchFits(size.w, size.h)) return;
+    const target = stripTarget(touchUI);
+    context.beginPath();
+    context.rect(-(slotRight('carousel', touchUI) + target), -(STRIP.iconUp + target / 2), target, target);
     context.closePath();
     context.fillStrokeShape(shape);
   }, [touchUI]);
   const gripHit = useCallback((context: Konva.Context, shape: Konva.Shape) => {
     const { s } = camera.cam;
     const size = liveSize.current ?? geoRef.current;
-    if (!iconsFit(size.w * s, size.h * s)) return;
+    if (!iconsFit(size.w, size.h) || !nameShows(s)) return;
     const target = stripTarget(touchUI);
-    const w = (slotRight('grip', touchUI) + cornerInset(s) + target) / s;
-    const h = (STRIP.iconUp + target / 2) / s;
+    const w = slotRight('grip', touchUI) + target;
+    const h = STRIP.iconUp + target / 2;
     context.beginPath();
     context.rect(-w, -h, w, h);
     context.closePath();
     context.fillStrokeShape(shape);
   }, [touchUI]);
 
-  const onIcon = (e: Konva.KonvaEventObject<MouseEvent>, icon: 'grip' | 'control' | 'count' | null, cursor: string, title: string): void => {
+  const onIcon = (e: Konva.KonvaEventObject<MouseEvent>, icon: 'grip' | 'switch' | 'control' | 'count' | null, cursor: string, title: string): void => {
     overIcon.current = icon;
     const stage = e.target.getStage();
     if (stage) {
@@ -611,6 +693,14 @@ export const DeskPanel = memo(function DeskPanel({ desk, layout, hidden, touchUI
     e.cancelBubble = true;
   };
   const pressControl = (): void => (offering ? undoCleanup(desk.id) : cleanUpDesk(desk.id));
+  const pressSwitch = (): void => {
+    toggleCarousel(desk.id);
+    // The pointer's still on it, so its tooltip says where it leads now.
+    if (overIcon.current === 'switch') {
+      const box = camera.getStage()?.container();
+      if (box) box.title = switchLabel(carouselOn(layoutNow(desk.id)));
+    }
+  };
   const isMine = (e: Konva.KonvaEventObject<unknown>): boolean => (e.target as unknown) === groupRef.current;
 
   return (
@@ -674,6 +764,22 @@ export const DeskPanel = memo(function DeskPanel({ desk, layout, hidden, touchUI
       )}
       {!phone && (
         <Group
+          ref={switchRef}
+          name="desk-carousel"
+          x={geo.w}
+          y={geo.h}
+          onMouseEnter={(e) => onIcon(e, 'switch', 'pointer', switchLabel(carousel))}
+          onMouseLeave={(e) => onIcon(e, null, '', '')}
+          onMouseDown={stopPress}
+          onTouchStart={stopPress}
+          onClick={(e) => { e.cancelBubble = true; if (e.evt.button === 0) pressSwitch(); }}
+          onTap={(e) => { e.cancelBubble = true; pressSwitch(); }}
+        >
+          <Shape hitFunc={switchHit} perfectDrawEnabled={false} />
+        </Group>
+      )}
+      {!phone && (
+        <Group
           ref={handleRef}
           name="resize-handle"
           x={geo.w}
@@ -710,7 +816,33 @@ export const DeskPanel = memo(function DeskPanel({ desk, layout, hidden, touchUI
           />
         </Group>
       )}
-      {drawn.map((id) => {
+      {carousel && (() => {
+        const st = carouselStage(geo.w, geo.h);
+        const g = cardGlyphSize(st.w, st.h);
+        return (
+          <Group listening={false} name="carousel-card">
+            <Shape sceneFunc={cardScene} listening={false} perfectDrawEnabled={false} name="carousel-card-face" />
+            {carouselApp && (
+              <Text
+                {...T}
+                name="lod-text carousel-card-name"
+                visible={textVisible}
+                x={st.x + 12}
+                y={st.y + st.h / 2 + g * 0.35}
+                width={Math.max(0, st.w - 24)}
+                align="center"
+                text={appLabel(carouselApp, desk.id)}
+                fontSize={cardNameSize(st.h)}
+                fontStyle="600"
+                fill={t.text.primary}
+                wrap="none"
+                ellipsis
+              />
+            )}
+          </Group>
+        );
+      })()}
+      {!carousel && dimTiles(drawn.map((id) => {
         const item = byId.get(id);
         const slot = geo.slots[id];
         if (!item || !slot) return null;
@@ -726,7 +858,7 @@ export const DeskPanel = memo(function DeskPanel({ desk, layout, hidden, touchUI
             touchUI={touchUI}
             t={t}
             summary={summary}
-            badge={summary?.badge ?? desk.badges[item.app] ?? 0}
+            badge={stopped ? 0 : (summary?.badge ?? desk.badges[item.app] ?? 0)}
             windowOpen={!!openApps[windowKey(desk.id, item.app)]}
             shield={shield}
             showControls={touchUI && active}
@@ -737,7 +869,7 @@ export const DeskPanel = memo(function DeskPanel({ desk, layout, hidden, touchUI
             onDragEnd={onTileDragEnd}
           />
         );
-      })}
+      }))}
     </Group>
   );
 });

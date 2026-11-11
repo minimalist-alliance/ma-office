@@ -35,8 +35,8 @@ export const mayHaveGoneOut = (err: unknown): boolean => details(err).mayHaveApp
 /** It's certain this didn't happen: deskd's answer has no flag, which says nothing was done (API.md section 4), or it never left here. */
 export const certainlyNotDone = (err: unknown): boolean => !mayHaveGoneOut(err) && (code(err) !== '' || err instanceof DeskNotConnected);
 
-export async function mutate<T>(call: (idem: string) => Promise<T>): Promise<T> {
-  const idem = uuidv7();
+/** `idem` is the action's own key when it outlives one run here, as Send to my desk's does across Try again (`open/sendToDesk.ts`). */
+export async function mutate<T>(call: (idem: string) => Promise<T>, idem: string = uuidv7()): Promise<T> {
   const started = Date.now();
   let attempt = 0;
   let lost = 0;

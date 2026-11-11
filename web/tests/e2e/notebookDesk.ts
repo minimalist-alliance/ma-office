@@ -22,6 +22,21 @@ registerHooks({
 // `mockNotebook.ts` runs in a browser. It needs this much of one.
 (globalThis as unknown as { window: unknown }).window ??= Object.assign(new EventTarget(), { setTimeout, clearTimeout, setInterval, clearInterval });
 
+// `fake-indexeddb/auto` installs itself on `window` when there is one, and on `globalThis` only when there is not. Specs share a
+// worker, and `filesDesk.ts` (which `files.rtc.spec.ts` loads first) has already put this same stand-in `window` up by the time
+// this file runs. The fake database then lands on that object and `globalThis.indexedDB` is never set, so the editor's
+// `LocalBackend` fails with "indexedDB is not defined", but only after another spec has loaded. Put every one of them on
+// `globalThis`, whichever object got them.
+{
+  const stand = (globalThis as unknown as { window: Record<string, unknown> }).window;
+  const here = globalThis as unknown as Record<string, unknown>;
+  for (const name of Object.getOwnPropertyNames(stand)) {
+    if ((name === 'indexedDB' || name.startsWith('IDB')) && !(name in here)) {
+      Object.defineProperty(here, name, { value: stand[name], configurable: true, writable: true });
+    }
+  }
+}
+
 const { MockCollabServer, mockDesk } = await import('../../src/desk/mockNotebook');
 
 export interface WireStats {

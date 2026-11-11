@@ -5,7 +5,15 @@ desk-rtc keeps its DTLS identity, key and certificate in one file (0600, user rt
 identity's fingerprint with the desk's key, because the platform takes a self-hosted desk's hello only with fingerprints
 its key signed (ma-platform contract selfhost.md section 3). ma-selfhost runs as its own user and can't read desk-rtc's
 file, so this runs as root, reads only the certificate's block, and writes its sha-256 (what desk-rtc puts in hello) to
-/run/ma-selfhost/dtls.json. It never reads the key's block or writes anything of it.
+/run/ma-selfhost-dtls/dtls.json. It never reads the key's block or writes anything of it.
+
+As root, it never acts on a name another user controls (EXP-7):
+- desk-rtc's file is in /data/rtc, which user rtc owns. The directory is opened with O_NOFOLLOW (its own name is in /data,
+  which only root can change), and the file relative to it with O_NOFOLLOW|O_NONBLOCK. Only a regular file of at most
+  64 KiB is read, so a link or a FIFO there reads as "no identity yet".
+- It writes into /run/ma-selfhost-dtls, a directory it makes itself and that only root may write (0755, checked before
+  each write), and ma-selfhost only reads. It used to write into ma-selfhost's own RuntimeDirectory, where a link that
+  user's code planted had root truncate, create or chmod whatever the link named.
 
   ma-selfhost-dtls           write it now (ma-selfhost-prep, as ma-selfhost starts)
   ma-selfhost-dtls --wait    first wait, up to 30 s, until desk-rtc holds its port (desk-rtc's ExecStartPost)
@@ -15,21 +23,57 @@ import binascii
 import hashlib
 import json
 import os
+import stat
 import subprocess
 import sys
 import time
 
-SRC = "/data/rtc/dtls-identity.pem"
-OUT_DIR = "/run/ma-selfhost"
-OUT = os.path.join(OUT_DIR, "dtls.json")
+SRC_DIR = "/data/rtc"
+SRC_NAME = "dtls-identity.pem"
+SRC_MAX = 64 * 1024
+OUT_DIR = "/run/ma-selfhost-dtls"
+OUT_NAME = "dtls.json"
+OUT_OWNER = 0  # who must own OUT_DIR: root (the tests set their own uid)
 BEGIN, END = "-----BEGIN CERTIFICATE-----", "-----END CERTIFICATE-----"
 
 
-def fingerprint():
+class Unsafe(Exception):
+    pass
+
+
+def read_identity():
+    """desk-rtc's identity file as text, or None: never through a link, never a FIFO or anything but a regular file."""
     try:
-        with open(SRC) as f:
-            text = f.read()
-    except FileNotFoundError:
+        dfd = os.open(SRC_DIR, os.O_RDONLY | os.O_DIRECTORY | os.O_NOFOLLOW | os.O_CLOEXEC)
+    except OSError:
+        return None
+    try:
+        try:
+            fd = os.open(SRC_NAME, os.O_RDONLY | os.O_NOFOLLOW | os.O_NONBLOCK | os.O_CLOEXEC, dir_fd=dfd)
+        except OSError:
+            return None
+        try:
+            st = os.fstat(fd)
+            if not stat.S_ISREG(st.st_mode) or st.st_size > SRC_MAX:
+                return None
+            data = b""
+            while len(data) <= SRC_MAX:
+                chunk = os.read(fd, SRC_MAX + 1 - len(data))
+                if not chunk:
+                    break
+                data += chunk
+            if len(data) > SRC_MAX:
+                return None
+        finally:
+            os.close(fd)
+    finally:
+        os.close(dfd)
+    return data.decode("ascii", "replace")
+
+
+def fingerprint():
+    text = read_identity()
+    if text is None:
         return None
     i = text.find(BEGIN)
     j = text.find(END, i + len(BEGIN)) if i >= 0 else -1
@@ -40,6 +84,46 @@ def fingerprint():
     except (binascii.Error, ValueError):
         return None
     return hashlib.sha256(der).hexdigest()
+
+
+def out_dir_fd():
+    """An fd on OUT_DIR, made here if missing: a real directory OUT_OWNER owns that nobody else can write, or Unsafe."""
+    made = False
+    try:
+        os.mkdir(OUT_DIR, 0o755)
+        made = True
+    except FileExistsError:
+        pass
+    try:
+        fd = os.open(OUT_DIR, os.O_RDONLY | os.O_DIRECTORY | os.O_NOFOLLOW | os.O_CLOEXEC)
+    except OSError as e:
+        raise Unsafe(f"{OUT_DIR} isn't a directory of its own ({e.strerror})") from None
+    st = os.fstat(fd)
+    if made and st.st_uid == OUT_OWNER:
+        os.fchmod(fd, 0o755)  # whatever the umask was
+        st = os.fstat(fd)
+    if st.st_uid != OUT_OWNER or st.st_mode & 0o022:
+        os.close(fd)
+        raise Unsafe(f"{OUT_DIR} isn't root's alone (owner {st.st_uid}, mode {stat.S_IMODE(st.st_mode):o})")
+    return fd
+
+
+def write_out(fp):
+    dfd = out_dir_fd()
+    try:
+        tmp = OUT_NAME + ".new"
+        try:
+            os.unlink(tmp, dir_fd=dfd)
+        except FileNotFoundError:
+            pass
+        fd = os.open(tmp, os.O_WRONLY | os.O_CREAT | os.O_EXCL | os.O_NOFOLLOW | os.O_CLOEXEC, 0o644, dir_fd=dfd)
+        with os.fdopen(fd, "w") as f:
+            json.dump({"fingerprintsSha256": [fp]}, f)
+            f.flush()
+            os.fchmod(f.fileno(), 0o644)
+        os.replace(tmp, OUT_NAME, src_dir_fd=dfd, dst_dir_fd=dfd)
+    finally:
+        os.close(dfd)
 
 
 def port_held():
@@ -62,13 +146,11 @@ def main(argv):
     if fp is None:
         print("ma-selfhost-dtls: desk-rtc has no DTLS identity yet")
         return 0
-    if not os.path.isdir(OUT_DIR):
-        return 0  # ma-selfhost isn't running; its prep writes this when it starts
-    tmp = OUT + ".new"
-    with open(tmp, "w") as f:
-        json.dump({"fingerprintsSha256": [fp]}, f)
-    os.chmod(tmp, 0o644)
-    os.replace(tmp, OUT)
+    try:
+        write_out(fp)
+    except Unsafe as e:
+        print(f"ma-selfhost-dtls: not written: {e}", file=sys.stderr)
+        return 1
     print(f"ma-selfhost-dtls: desk-rtc's fingerprint is {fp[:16]}...")
     return 0
 

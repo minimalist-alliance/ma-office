@@ -1,0 +1,12 @@
+{
+  "category": "background",
+  "layer": "01-background",
+  "colorSlot": "bg",
+  "default": "disc",
+  "parts": [
+    {
+      "id": "disc",
+      "name": "Background"
+    }
+  ]
+}

@@ -115,6 +115,36 @@ final class Uploads {
         return active.size();
     }
 
+    /**
+     * The whole declared size of every unfinished upload, running or parked, as any of them can resume: what a free desk's
+     * cap holds for them (ADR 0090). By the sidecars, and a partial whose sidecar can't be read by its own length.
+     */
+    long reservedBytes() {
+        java.util.Set<String> ids = new java.util.HashSet<>();
+        for (String name : tree.names(new String[] {PathRules.UPLOADS})) {
+            int dot = name.indexOf('.');
+            if (dot > 0) {
+                ids.add(name.substring(0, dot));
+            }
+        }
+        long total = 0;
+        for (String id : ids) {
+            if (!Ids.valid(id)) {
+                continue;
+            }
+            Loaded loaded = load(id);
+            if (loaded != null) {
+                total += loaded.meta().size();
+                continue;
+            }
+            BasicFileAttributes a = tree.rawAttrs(part(id));
+            if (a != null) {
+                total += a.size();
+            }
+        }
+        return total;
+    }
+
     static String hex(byte[] bytes) {
         StringBuilder sb = new StringBuilder(bytes.length * 2);
         for (byte b : bytes) {
@@ -213,22 +243,38 @@ final class Uploads {
         } finally {
             tree.lock.unlock();
         }
-        long uploadable = quota.uploadable();
-        if (size > uploadable) {
-            throw Errs.noSpace(quota.noSpaceDetails(size));
-        }
-        String id = Ids.next(clock.millis());
-        Meta meta = new Meta(id, PathRules.join(comps), size, replace, sha, mtimeMs, who.sub(), clock.millis());
         Session session = sessions.session(who.sessionId());
         if (session == null) {
             throw new RpcException(RpcException.UNAVAILABLE, "The session has ended", Map.of());
         }
-        context.beginEffect();
-        lockFor(id).lock();
+        // The last bytes' lock (Quota.room), held from the check of the room until the partial and sidecar exist, which an
+        // agent's write shares: two can't both take the same last bytes.
+        ReentrantLock room = quota.room;
+        room.lock();
         try {
-            return attach(session, meta, 0, sha256(), true, false);
+            // A free desk's cap first: it's the member's own limit, and the one an upgrade lifts (ADR 0090).
+            long cap = quota.cap();
+            if (cap >= 0) {
+                long used = quota.capUsed();
+                if (used + size > cap) {
+                    throw Errs.noSpace(quota.capDetails(cap, used, size));
+                }
+            }
+            long uploadable = quota.uploadable();
+            if (size > uploadable) {
+                throw Errs.noSpace(quota.noSpaceDetails(size));
+            }
+            String id = Ids.next(clock.millis());
+            Meta meta = new Meta(id, PathRules.join(comps), size, replace, sha, mtimeMs, who.sub(), clock.millis());
+            context.beginEffect();
+            lockFor(id).lock();
+            try {
+                return attach(session, meta, 0, sha256(), true, false);
+            } finally {
+                lockFor(id).unlock();
+            }
         } finally {
-            lockFor(id).unlock();
+            room.unlock();
         }
     }
 
@@ -528,6 +574,8 @@ final class Uploads {
                 }
                 tree.move(part(id), comps);
                 tree.syncDir(parent);
+                // Into the kept walk before the sidecar goes, so a free desk's cap never counts these bytes in neither.
+                quota.placed(meta.size());
                 tree.deleteTree(sidecar(id));
                 Map<String, Object> out = new LinkedHashMap<>();
                 out.put("path", meta.path());
@@ -541,7 +589,6 @@ final class Uploads {
                 if (replaced != null) {
                     feed.trash();
                 }
-                quota.forget();
                 return out;
             } catch (SafeTree.TreeException e) {
                 throw Errs.of(e);

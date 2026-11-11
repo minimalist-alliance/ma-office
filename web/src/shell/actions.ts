@@ -2,11 +2,12 @@
 // they can't drift. Component code calls these; these call the camera and the stores.
 import { zoomedInOn } from '../canvas/camera';
 import { camera } from '../canvas/controller';
-import { deskBounds, isAgentApp, unionBounds, type AppId, type CoreAppId, type LayoutItem, type Rect } from '../canvas/layout';
+import { deskBounds, detailLevel, isAgentApp, unionBounds, type AppId, type CoreAppId, type LayoutItem, type Rect } from '../canvas/layout';
 import { agentAppName } from '../agent/roster';
 import { isPhone } from '../canvas/phone';
 import { deskClosed, wakeDesk } from '../desk/liveStore';
 import { loadedConfig, supportAddress } from '../platform/clientConfig';
+import { useFree } from '../free/door';
 import { useDeskStore, type DeskInfo } from '../state/deskStore';
 import { raiseDesk, useLayoutStore } from '../state/layoutStore';
 import { getView, setView, type Scope } from '../state/viewStore';
@@ -14,6 +15,9 @@ import { openWindow, requestClose, topWindow } from '../state/windowStore';
 import { announce } from './announce';
 import { restack } from './cleanup';
 import { readingOrder } from './order';
+import { carouselOn, positionOf, positionWords } from '../carousel/model';
+import { asPhoneSees } from '../carousel/phone';
+import { readJson, writeJson } from '../lib/util';
 
 export function inScopeDesks(scope: Scope = getView().scope): DeskInfo[] {
   const { desks } = useDeskStore.getState();
@@ -53,15 +57,20 @@ function closedWords(id: string): string {
   }
 }
 
-function fitDesk(id: string, animate: boolean): boolean {
+function fitDesk(id: string, animate: boolean, raise = true): boolean {
   const layout = useLayoutStore.getState().desks[id];
   if (!layout) return false;
   const changed = getView().activeDesk !== id || getView().mode !== 'desk';
   setView({ activeDesk: id, mode: 'desk' });
-  raiseDesk(id);
-  camera.animateTo(camera.fit(deskBounds(layout, isPhone()), 'desk'), animate ? undefined : 0);
+  if (raise) raiseDesk(id);
+  camera.animateTo(camera.fit(deskBounds(layout, isPhone()), carouselOn(layout) && !isPhone() ? 'stage' : 'desk'), animate ? undefined : 0);
   if (changed) announce(`${nameOf(id)} desk${closedWords(id)}`);
   return true;
+}
+
+/** Fit the desk again for what it now shows (carousel mode or not), and wake nothing. */
+export function refitDesk(id: string): void {
+  fitDesk(id, true);
 }
 
 // The desk the member focused: a click or tap on it, a key, a card. One the office focuses for them (arriving, or a
@@ -72,12 +81,13 @@ let chosen: string | null = null;
 export function focusDesk(id: string, animate = true): void {
   if (!fitDesk(id, animate)) return;
   chosen = id;
+  if (readJson<string>(LANDED)) writeJson(LANDED, null); // the member's own pick is remembered from here
   wakeDesk(id);
 }
 
 /** The office focusing a desk for the member. It wakes the same, but it isn't one they chose. */
-function showDesk(id: string, animate = true): void {
-  if (!fitDesk(id, animate)) return;
+function showDesk(id: string, animate = true, raise = true): void {
+  if (!fitDesk(id, animate, raise)) return;
   chosen = null;
   wakeDesk(id);
 }
@@ -88,7 +98,8 @@ export function goOverview(animate = true): void {
   if (!ids.length) return;
   const active = getView().activeDesk;
   setView({ mode: 'overview', activeDesk: active && ids.includes(active) ? active : ids[0]! });
-  const bounds = unionBounds(rects(inScopeDesks()).map((r) => r.rect));
+  // The free tier's empty desk spot is in view too (`free/door.ts`; unset today).
+  const bounds = unionBounds([...rects(inScopeDesks()).map((r) => r.rect), ...(useFree.getState().frames?.() ?? [])]);
   camera.animateTo(camera.fit(bounds, 'overview'), animate ? undefined : 0);
 }
 
@@ -103,11 +114,13 @@ export function fitScope(): void {
  * A click on the canvas outside every desk. It's a way out, like Esc and the mark, but only from a desk in
  * focus: one the member focused, or zoomed in on (`zoomedInOn`). Any other view is the member's own and the
  * click leaves it be (ADR 0003), one desk or many. An open window holds the view too: the overview parks
- * windows, and clicking away from a window is too easy a habit to have it take the member's work off the screen.
+ * windows, and clicking away from a window is too easy a habit to have it take the member's work off the screen. So
+ * does a desk in carousel mode, whose stage is an app at work in the same way (`carousel/`).
  */
 export function emptyCanvasClicked(): void {
   const { mode, activeDesk } = getView();
-  if (mode === 'overview' || topWindow(activeDesk)) return;
+  const layout = activeDesk ? useLayoutStore.getState().desks[activeDesk] : undefined;
+  if (mode === 'overview' || topWindow(activeDesk) || (carouselOn(layout) && !isPhone())) return;
   const focused = (mode === 'desk' && activeDesk === chosen)
     || rects(inScopeDesks()).some(({ rect }) => zoomedInOn(rect, camera.cam, camera.vp, camera.fit(rect, 'desk').s));
   if (focused) goOverview();
@@ -120,7 +133,41 @@ export function emptyCanvasClicked(): void {
 // "Only one desk" starts an EC2, so it's Platform's list that says so, counting every desk on it. Until the
 // list answers, the desks here are the ones this browser remembers, and a new one may not be among them, or
 // may have no layout yet. So the first refits only paint, and the arrival waits for the answer.
+//
+// A phone arrives at its desk, not at the overview: with several desks the overview is three small grey rectangles on a
+// screen that fits one desk well. So a phone with more than one desk arrives like a one-desk member, on the desk it
+// remembers if that's still in scope, else the first. Larger screens still arrive on the overview.
 let arrived = false;
+
+/** For tests: the next refit is an arrival again. */
+export function resetArrival(): void {
+  arrived = false;
+}
+
+/** The desk this phone was put on asleep, with nothing chosen (the view saves it as `activeDesk` all the same). */
+const LANDED = 'ma.view.landed.v1';
+
+/**
+ * The desk a phone arrives at, and whether arriving wakes it. The remembered desk if it's still in scope (it wakes, as
+ * focusing it always does). With nothing remembered, the first desk already awake, which needs no wake; else the first that
+ * can open, framed asleep so the member starts it with the desk's own control; else the first, also asleep. The office never
+ * starts a desk the member didn't pick.
+ */
+const isAwake = (id: string): boolean => {
+  const vm = useDeskStore.getState().desks.find((d) => d.id === id)?.vm;
+  return (vm === 'running' || vm === 'starting') && !deskClosed(id);
+};
+
+function phoneDesk(ids: string[]): { id: string; wake: boolean } {
+  const a = getView().activeDesk;
+  // A desk the office framed asleep isn't one the member chose, though the view saved it: it doesn't count as remembered.
+  if (a && ids.includes(a) && a !== readJson<string>(LANDED)) return { id: a, wake: true };
+  const vmOf = (id: string) => useDeskStore.getState().desks.find((d) => d.id === id)?.vm;
+  const awake = ids.find((id) => isAwake(id));
+  if (awake) return { id: awake, wake: false };
+  const open = ids.find((id) => !useDeskStore.getState().desks.find((d) => d.id === id)?.removed && !['setting-up', 'held', 'removed'].includes(vmOf(id) ?? '') && !deskClosed(id));
+  return { id: open ?? ids[0]!, wake: false };
+}
 
 /** Re-fit whatever the current mode shows: on load, on a resize, or after the desk list changes. */
 export function refit(animate: boolean): void {
@@ -130,14 +177,27 @@ export function refit(animate: boolean): void {
   const arriving = !arrived;
   const { desks, status } = useDeskStore.getState();
   const inDeskMode = v.mode === 'desk' && !!v.activeDesk && ids.includes(v.activeDesk);
-  if (arriving && status !== 'ready' && v.mode !== 'free' && !inDeskMode) {
+  const phone = isPhone();
+  if (arriving && status !== 'ready' && (phone || v.mode !== 'free') && !inDeskMode) {
     // What's most likely to stay, with no change to the view or anything else: one desk filling the screen, or all of them.
-    const layout = desks.length === 1 ? useLayoutStore.getState().desks[ids[0]!] : undefined;
-    if (layout) camera.animateTo(camera.fit(deskBounds(layout, isPhone()), 'desk'), 0);
+    // A phone's is the desk it remembers, whatever else it saved, since that is where it will land.
+    const layout = useLayoutStore.getState().desks[phone ? phoneDesk(ids).id : ids[0]!];
+    if (layout && (phone || desks.length === 1)) camera.animateTo(camera.fit(deskBounds(layout, phone), carouselOn(layout) && !phone ? 'stage' : 'desk'), 0);
     else goOverview(animate);
     return;
   }
   arrived = true;
+  if (arriving && phone && desks.length > 1) {
+    // Whatever the phone saved (the overview, a free camera), it lands on its desk. Esc and the mark still go to the overview.
+    // Without raising it: arriving mustn't rewrite the member's saved stacking, and a phone shows one desk anyway.
+    const pick = phoneDesk(ids);
+    if (pick.wake) showDesk(pick.id, animate, false);
+    else {
+      fitDesk(pick.id, animate, false); // frames it with no wake: the member starts it themselves
+      if (!isAwake(pick.id)) writeJson(LANDED, pick.id);
+    }
+    return;
+  }
   if (v.mode === 'free') {
     // Keep a free camera. After a reload, restore it; with none saved, fit as usual.
     const saved = camera.takeSaved();
@@ -149,7 +209,7 @@ export function refit(animate: boolean): void {
   }
   if (inDeskMode) {
     if (arriving) showDesk(v.activeDesk!, animate);
-    else fitDesk(v.activeDesk!, animate);
+    else fitDesk(v.activeDesk!, animate, false); // a re-fit (resize, list change) isn't the member raising the desk
   } else if (arriving && desks.length === 1) {
     showDesk(ids[0]!, animate);
   } else {
@@ -182,8 +242,13 @@ export function cycleDesk(dir: 1 | -1): void {
 }
 
 function launch(deskId: string, item: LayoutItem): void {
-  openWindow(deskId, item.app, item.id);
-  announce(`${appLabel(item.app, deskId)} window opened`);
+  const opened = openWindow(deskId, item.app, item.id);
+  const desk = useLayoutStore.getState().desks[deskId];
+  if (opened === 'carousel' && desk) {
+    // In the carousel, which says where it is as it does on every step: a phone's own, or the desk's.
+    const { index, count } = positionOf(isPhone() ? asPhoneSees(desk) : desk);
+    announce(`${appLabel(item.app, deskId)}, ${positionWords(index, count)}`);
+  } else announce(`${appLabel(item.app, deskId)} window opened`);
 }
 
 const LABELS: Record<CoreAppId, string> = { notebook: 'Notebook', browser: 'Browser', chat: 'Chat', agent: 'Agent', commons: 'Commons', files: 'Files' };
@@ -206,9 +271,10 @@ export function openItem(deskId: string, itemId: string): void {
     launch(deskId, item);
     return;
   }
-  // From the overview the camera focuses the desk first and the window launches halfway through (design 3.6).
+  // From the overview the camera focuses the desk first and the window launches halfway through (design 3.6). An open tile
+  // (ADR 0053) is the app itself once its desk is in focus, so no window opens for it on the way.
   focusDesk(deskId);
-  window.setTimeout(() => launch(deskId, item), 160);
+  if (isPhone() || carouselOn(layout) || detailLevel(item.w, item.h, item.app) !== 'open') window.setTimeout(() => launch(deskId, item), 160);
 }
 
 /** A click on a tile: open if it is at least 32 px on screen, otherwise focus its desk (design 3.1). */

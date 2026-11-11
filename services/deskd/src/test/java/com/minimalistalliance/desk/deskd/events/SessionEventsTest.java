@@ -207,6 +207,19 @@ class SessionEventsTest {
         assertThat(peer.replies.poll(5, TimeUnit.SECONDS)).containsEntry("code", "bad_request");
     }
 
+    /** Audit Z29: a NUL would split where deskd keeps a guild member's own subscription; no topic has any control. */
+    @Test
+    void aTopicWithAControlCharacterIsBadRequestBeforeAnyTopicIsAsked() throws Exception {
+        for (String topic : List.of("agent.run:x\u0000gm-self", "agent.run:\u0000", "summary\u0001", "summary\n",
+                "agent.run:x\u007f", "agent.run:x\u0085")) {
+            assertThat(sub(topic, null)).as(topic.replace("\u0000", "\\0"))
+                    .containsEntry("_kind", "ERR").containsEntry("code", "bad_request");
+        }
+        assertThat(run.snapshots.get()).isZero();
+        assertThat(events.subscriptionCount()).isZero();
+        assertThat(sub("agent.run:x", null)).containsEntry("_kind", "RES");
+    }
+
     @Test
     void aTopicCanRefuseASubscriber() throws Exception {
         topics.register("private", new CountingTopic(true) {

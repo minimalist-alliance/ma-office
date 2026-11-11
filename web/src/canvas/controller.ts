@@ -3,7 +3,7 @@
 import Konva from 'konva/lib/Core.js';
 import { readJson, reducedMotion, writeJson } from '../lib/util';
 import {
-  cameraDuration, DESK_MAX_SCALE, easeCamera, fitRect, interpolateCamera, isVisible, lodFor, OVERVIEW_MAX_SCALE, SlowFrameWindow, snapToDevice, zoomAtPoint,
+  cameraDuration, DESK_MAX_SCALE, easeCamera, fitRect, interpolateCamera, isVisible, lodFor, MAX_SCALE, OVERVIEW_MAX_SCALE, SlowFrameWindow, snapToDevice, zoomAtPoint,
   type Camera, type Insets, type Lod, type Viewport,
 } from './camera';
 import { setRasterScale, setScreenScale } from './sprites';
@@ -335,8 +335,12 @@ class CameraController {
     return total;
   }
 
-  fit(rect: Rect, mode: 'desk' | 'overview'): Camera {
-    const max = mode === 'desk' ? DESK_MAX_SCALE : OVERVIEW_MAX_SCALE;
+  /**
+   * `stage` is a desk in carousel mode (`carousel/`): the app on it is laid out in screen pixels whatever the zoom, so the
+   * desk can fill the screen, up to the camera's own limit, and the app has the room.
+   */
+  fit(rect: Rect, mode: 'desk' | 'overview' | 'stage'): Camera {
+    const max = mode === 'desk' ? DESK_MAX_SCALE : mode === 'stage' ? MAX_SCALE : OVERVIEW_MAX_SCALE;
     return fitRect(rect, this.vp, chromeInsets(this.vp.w), fitMargin(this.vp.w), max);
   }
 

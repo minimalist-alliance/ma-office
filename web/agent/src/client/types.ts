@@ -63,6 +63,9 @@ export interface Agent {
   /** How many timers it has. */
   timers?: number;
   createdAt?: number;
+  // ----- S-14 (deskd API.md section 18). Absent from a desk before approvals.
+  /** Its approvals waiting for the member. While above 0 the desk says `working` with `statusDetail: "awaiting_approval"`. */
+  approvalsPending?: number;
 }
 
 /** An agent's tile: a library icon's id (or `png`), a tone's id, and the upload's version (`web/agent/src/look/`). */
@@ -298,7 +301,8 @@ export interface Usage {
   reasoningTokens: number;
 }
 
-export type MessageState = 'streaming' | 'done' | 'stopped' | 'failed';
+/** `awaiting_approval` (API.md section 18): between `streaming` and its end, while the run waits on the member's answers. */
+export type MessageState = 'streaming' | 'awaiting_approval' | 'done' | 'stopped' | 'failed';
 
 export interface Message {
   id: string;
@@ -317,6 +321,8 @@ export interface Message {
   /** Why a reply failed: an `AgentErrorReason`, never the provider's own message. */
   error?: AgentErrorReason | null;
   errorDetail?: string | null;
+  /** On a `free_limit` reply: when the provider's free requests come back, epoch ms (`X-RateLimit-Reset`). Not served yet. */
+  errorResetAt?: number | null;
   /** Too long for one event (deskd API.md section 11): this has the start of its text, and `agent.thread.get` the whole. */
   truncated?: boolean;
   /** A `user` message the member didn't write: from another agent, or a timer (task 49). */
@@ -327,6 +333,161 @@ export interface Message {
   proposals?: Proposal[] | null;
   /** Files this `user` message carried (ADR 0049): a name, a kind, a size and maybe a note, never the content. */
   attachments?: SentFile[] | null;
+  // ----- S-14 (API.md section 18)
+  /** The tool calls of this reply's run, as chips. A few words the desk writes, never content. */
+  tools?: ToolChip[] | null;
+  /** While `awaiting_approval`: the approvals it waits on. */
+  pendingApprovals?: string[] | null;
+  /** Its run read untrusted content (pages, files, another agent's message). */
+  untrusted?: boolean;
+  /** How many `egress` calls its run made, approved and run. Absent for none. */
+  egressCount?: number;
+}
+
+// ----- S-14: tools, approvals, running tools and memory (deskd API.md section 18, desk-agent README "Memory")
+
+/**
+ * A call's class, the desk's, with taint applied (API.md section 18). It can be higher than the tool's usual one, never lower.
+ * `read` never asks; `own` asks only as a memory save in an untrusted run.
+ */
+export type Risk = 'read' | 'own' | 'write' | 'delete' | 'send' | 'spend' | 'egress';
+
+/** `pending` → `approved` (running) → `done`, `failed` or `interrupted`; or `pending` → `declined` or `expired`. */
+export type ApprovalState = 'pending' | 'approved' | 'done' | 'failed' | 'declined' | 'expired' | 'interrupted';
+
+/** What a call acts on, read by the desk. Not hashed: a card shows it as context, never as what runs. */
+export type ApprovalTarget =
+  | { kind: 'file'; path: string; to?: string }
+  | { kind: 'page'; pageId: string; title: string }
+  | { kind: 'element'; origin: string; pageTitle: string; label: string; role: string }
+  | { kind: 'site'; site?: string; origin?: string }
+  | { kind: 'timer'; at: number }
+  | { kind: 'memory' };
+
+/**
+ * One request for the member's yes (API.md section 18, "The approval"). Every string in it came from a model, a page or a file
+ * except `title`, the desk's: render it as plain text only. `sha256` is the hash the app checks against what it shows.
+ */
+export interface Approval {
+  id: string;
+  agentId: string;
+  runId: string;
+  messageId: string;
+  tool: string;
+  risk: Risk;
+  /** The desk's words, from the tool's template. The card builds its own per `tool` and uses this only for a tool it doesn't know. */
+  title: string;
+  /** `agent` (the agent's own signed-out Browser, or none) or `member:<site>` (the member's signed-in session for that site). Hashed. */
+  context: string;
+  target: ApprovalTarget | null;
+  /** The exact arguments, hashed. Left out of events over 32 KiB (`payloadOmitted`): `agent.approval.get` has it. */
+  payload?: Record<string, unknown> | null;
+  payloadOmitted?: boolean;
+  payloadBytes?: number;
+  /** What the change replaces, read when asked, not hashed. */
+  before: Record<string, unknown> | null;
+  /** Hex SHA-256 of the canonical JSON of `{v: 1, agentId, runId, tool, context, payload}`. */
+  sha256: string;
+  /** The run read web pages, files or another agent's messages before asking. */
+  untrusted: boolean;
+  origin: ProposalOrigin;
+  state: ApprovalState;
+  /** `expired`: `timeout`, `stopped`, `restart`, `age_band`. */
+  detail: string | null;
+  createdAt: number;
+  expiresAt: number;
+  decidedAt: number | null;
+  /** `owner`, or a guild member's id. */
+  decidedBy: string | null;
+  note: string | null;
+  /** After the tool ran: `{ok: true}` or `{ok: false, error}`, `error` a word such as `changed`, `gone`, `off_site`. Never content. */
+  result: { ok: boolean; error?: string | null; durationMs?: number } | null;
+  // ----- the Product Designer's spec section 1.10, not in section 18 yet: absent on today's desk, drawn when a desk sends them.
+  /** The agent's own reason, at most 300 characters. Untrusted, not hashed. */
+  reason?: string | null;
+  /** Spend only: what it costs, estimated. */
+  cost?: { microUsd: number } | null;
+}
+
+/** A tool chip on a reply (API.md section 18, "Tool chips"). */
+export interface ToolChip {
+  /** The tool's wire name. */
+  name: string;
+  /** A few words the desk writes, never content. */
+  summary: string;
+  ok: boolean;
+  path?: string | null;
+  reason?: string | null;
+  risk?: Risk;
+  /** When the call asked. */
+  approval?: { id: string; decision: 'approved' | 'declined' | 'expired' | 'interrupted' } | null;
+  target?: ApprovalTarget | null;
+  untrusted?: boolean;
+  /** Browser calls: the agent's own context or the member's session. */
+  session?: 'agent' | 'member';
+  // ----- the spec's section 2.8, not in section 18 yet
+  durationMs?: number | null;
+  /** The member stopped it. */
+  stopped?: boolean;
+}
+
+/**
+ * A tool call running now (the Product Designer's spec section 2.8, topic `agent.tools`; not in section 18 yet: the Desk Engineer's
+ * to build). Uses section 18's risk words.
+ */
+export interface RunningCall {
+  callId: string;
+  agentId: string;
+  runId: string;
+  tool: string;
+  /** "Reading a web page", from the tool's declaration. */
+  doing: string;
+  /** Short: host and path for an address, a page's title, a file name. Untrusted text. */
+  target: string;
+  risk: Risk;
+  /** The desk's clock, epoch ms. */
+  startedAt: number;
+  approvedBy: 'member' | 'rule' | 'none';
+  stoppable: boolean;
+  state: 'running' | 'stopping';
+}
+
+/** Events on topic `agent.tools`: a snapshot first, then each call as it starts or changes, and its end. */
+export type ToolsEvent =
+  | { type: 'snapshot'; serverNow: number; calls: RunningCall[] }
+  | { type: 'call'; call: RunningCall }
+  | { type: 'end'; callId: string; agentId: string; result?: 'done' | 'failed' | 'stopped' };
+
+/** One line an agent remembers (desk-agent `agent.memory.list`, S-14). Its text is the member's data. */
+export interface MemoryLine {
+  id: string;
+  text: string;
+  createdAt: number;
+  /** Saved in a run that read untrusted content, which only happens after the member approved it. */
+  untrusted: boolean;
+  // ----- the spec's section 3.6, not on today's desk
+  source?: MemorySource;
+  pinned?: boolean;
+  updatedAt?: number;
+}
+
+export type MemorySource =
+  | { kind: 'chat'; messageId?: string }
+  | { kind: 'member' }
+  | { kind: 'edited' }
+  | { kind: 'timer'; timerLabel?: string }
+  | { kind: 'agent'; fromAgentId?: string }
+  | { kind: 'approval'; approvalId?: string };
+
+/** `agent.memory.list`'s answer: what the agent remembers, newest first, and its thread's summary, which the Memory tab doesn't list. */
+export interface MemoryList {
+  agentId: string;
+  memories: MemoryLine[];
+  summary: { id: string; text: string; messages: number; throughId: string; at: number; untrusted: boolean } | null;
+  /** At most `items` lines of `chars` characters. */
+  limits: { items: number; chars: number };
+  /** The spec's switch (`memoryOn`), not on today's desk: absent means no switch is drawn. */
+  on?: boolean;
 }
 
 /** What the thread keeps of a file sent with a message. `note` is the desk's own words, e.g. that the text was cut. */
@@ -361,6 +522,8 @@ export interface AttachCapsView {
 export interface ThreadSnapshot {
   agentId: string;
   messages: Message[];
+  /** Every approval of these messages (API.md section 18). Absent from a desk before approvals. */
+  approvals?: Approval[];
   /** The conversation topic's latest seq, for `since`. */
   seq: number;
 }
@@ -370,8 +533,9 @@ export interface ThreadSnapshot {
  * harmless (deskd API.md section 5). `delta` appends text to a streaming reply.
  */
 export type ConversationEvent =
-  | { type: 'snapshot'; seq: number; messages: Message[] }
+  | { type: 'snapshot'; seq: number; messages: Message[]; approvals?: Approval[] }
   | { type: 'message'; seq: number; message: Message }
+  | { type: 'approval'; seq: number; approval: Approval }
   | { type: 'delta'; seq: number; messageId: string; runId: string; text: string };
 
 /** A provider key as the desk describes it. The key itself never comes back. */
@@ -389,6 +553,11 @@ export interface KeyMeta {
    * it can't read any more, still listed. No field at all is a desk that keeps keys in memory, so a restart drops them.
    */
   available?: boolean;
+  /**
+   * An OpenRouter key's free requests (agent-free-key spec 9): a day's allowance, what's left of it, and when it comes back, in
+   * epoch ms. Not served yet; without it, no numbers show.
+   */
+  free?: { perDay: number; leftToday: number; resetsAt: number } | null;
 }
 
 export interface ModelInfo {
@@ -400,6 +569,10 @@ export interface ModelInfo {
    */
   inputMicroUsdPerMTok: number | null;
   outputMicroUsdPerMTok: number | null;
+  /** Its provider serves it free (OpenRouter's `:free` models, desk-agent's `ProviderId.servesFree`): $0 here, whatever a table says. */
+  free?: boolean;
+  /** Whether it takes tools. False is a model that only chats: the desk sends it none (desk-agent README, "OpenRouter"). */
+  tools?: boolean;
 }
 
 export interface Provider {
@@ -493,6 +666,21 @@ export interface AuditEntry {
   costMicroUsd: number | null;
   /** Hex: `SHA-256(prev ‖ entry)`. */
   hash: string;
+  /** The words for a tool, approval or memory row, joined in at read time and not chained (the spec's section 4.5; not on today's desk). */
+  detail?: AuditDetail | null;
+}
+
+export interface AuditDetail {
+  agentId?: string;
+  tool?: string;
+  risk?: Risk;
+  done?: string;
+  asked?: string;
+  /** Short. An address shows its host only. */
+  target?: string | null;
+  approvedBy?: 'member' | 'rule' | 'none' | null;
+  approval?: 'declined' | 'expired' | 'cancelled' | null;
+  undoable?: boolean;
 }
 
 export interface AuditPage {
@@ -569,4 +757,7 @@ export type AgentErrorReason =
   | 'no_vision'
   | 'missing'
   | 'bad_upload'
-  | 'staging_full';
+  | 'staging_full'
+  // S-14: a message to an agent whose run waits on the member; a call that can't be stopped once it began.
+  | 'awaiting_approval'
+  | 'not_stoppable';

@@ -20,6 +20,12 @@
 # come before any start, and before anything below changes the profile. A refused browser is recoverable; razed
 # cookies aren't. Exit 78 is RestartPreventExitStatus in desk-browser.service. --check runs only this part, and
 # desk-units runs it first, so deskd gets an error at once instead of a unit that starts and dies.
+# JPEG XL off (from 0.3.5): Chromium 156 asks for image/jxl first in every image request's Accept header, sites such as the
+# Guardian then send every picture as JPEG XL, and deskd's simplified view refuses that type (docs/sub-status/
+# simple-view-quality.md), so their pictures were missing there. The feature is JXLImageFormat (chrome://flags'
+# enable-jxl-image-format, "Adds image/jxl to the Accept header and enables decoding"); measured on 156.0.8078.79 by the
+# Accept header, the names JXL, JXLDecoding and JpegXl, and --disable-blink-features, change nothing. Chromium reads only
+# the last --disable-features, so add any other name to this one.
 # Test hook: MA_BROWSER_PROFILE.
 set -u
 P=${MA_BROWSER_PROFILE:-/data/browser/profile}
@@ -73,6 +79,6 @@ fi
 exec /usr/bin/chromium --kiosk --no-first-run --no-default-browser-check --noerrdialogs \
   --disable-session-crashed-bubble --disable-infobars --disable-breakpad --password-store=basic \
   --ozone-platform=x11 --disable-gpu --window-position=0,0 --window-size="$W,$H" \
-  --user-data-dir="$P" --disk-cache-size=1073741824 \
+  --user-data-dir="$P" --disk-cache-size=1073741824 --disable-features=JXLImageFormat \
   --remote-debugging-address=127.0.0.1 --remote-debugging-port=9222 \
   "${args[@]}"

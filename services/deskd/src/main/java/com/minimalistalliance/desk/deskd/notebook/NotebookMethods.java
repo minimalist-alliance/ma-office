@@ -27,7 +27,10 @@ final class NotebookMethods {
             "notebook.notebook.create", "notebook.notebook.rename", "notebook.tab.create", "notebook.tab.rename",
             "notebook.tab.recolor", "notebook.tab.addAtPage", "notebook.page.create", "notebook.page.move",
             "notebook.page.trash", "notebook.page.restore", "notebook.version.save", "notebook.version.restore",
-            "notebook.settings.set");
+            "notebook.settings.set",
+            // ADR 0091: a page's label, a copy of a page, and a page from a notebook file. Anyone who may make or move a
+            // page may do these, so the guild's rules for them are desk-notebook's, as for the rest.
+            "notebook.page.label", "notebook.page.duplicate", "notebook.page.import");
 
     private final NotebookLinks links;
 
@@ -39,6 +42,10 @@ final class NotebookMethods {
     static final Set<String> SCOPES = Set.of(RpcPrincipal.OWNER, RpcPrincipal.GUILD_MEMBER);
     /** The desk's time zone, for every member's Temporal view: the Founder's, or an Officer's with manage_spaces. */
     static final String SETTINGS_SET = "notebook.settings.set";
+    /** The space structure, notebooks and tabs: the same rule (guild design call 3). Pages stay open to every member. */
+    static final Set<String> SPACE_STRUCTURE = Set.of(
+            SETTINGS_SET, "notebook.notebook.create", "notebook.notebook.rename", "notebook.tab.create",
+            "notebook.tab.rename", "notebook.tab.recolor", "notebook.tab.addAtPage");
 
     void register(RpcDispatcher dispatcher) {
         for (String method : READS) {
@@ -65,7 +72,7 @@ final class NotebookMethods {
     private static void requireCaller(RpcContext context, String method) throws RpcException {
         RpcPrincipal principal = context.principal();
         if (principal.isGuildMember()) {
-            if (method.equals(SETTINGS_SET) && !principal.caller().has(Caller.MANAGE_SPACES)) {
+            if (SPACE_STRUCTURE.contains(method) && !principal.caller().has(Caller.MANAGE_SPACES)) {
                 throw new RpcException(RpcException.FORBIDDEN, "The member's role doesn't allow this", Map.of("reason", "grant"));
             }
             return;

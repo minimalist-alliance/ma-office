@@ -7,7 +7,7 @@ import { expect, test, type Page } from '@playwright/test';
 import { encodeJson, Kind } from '../../src/desk/rtc/frames';
 import { FakeDeskStream } from './fakeDeskStream';
 import { harness, signIn, watchConsole } from './helpers';
-import { buildTools, Stack } from './rtcStack';
+import { buildTools, DESK_ID, Stack } from './rtcStack';
 
 const EVIDENCE = resolve('test-results/rtc-browser');
 const stack = new Stack(EVIDENCE, true);
@@ -519,6 +519,7 @@ test('a desk restart holds the last frame under a scrim, and the picture comes b
 // level does to the picture is desk-stream's own proof (section 5); this is everything up to that line.
 
 const ME = 'u-test'; // the harness's member
+const RTC_DESK = DESK_ID; // the desk gateway-shim lists for the real stack
 
 interface QualityStats {
   stream?: { viewers?: number; level?: string; limit?: string | null };
@@ -655,7 +656,10 @@ test('a change in the Picture quality menu while live: a new level line within a
   await expect(choice('Low')).toHaveAttribute('aria-checked', 'true');
   await expect(page.getByTestId('quality-reason')).toHaveCount(0);
   await page.keyboard.press('Escape');
-  await expect.poll(async () => ((await (await request.get('/__harness')).json()) as { streamQualityDocs?: Record<string, { apps: Record<string, string> }> }).streamQualityDocs?.[ME]?.apps).toEqual({ browser: 'low' });
+  // The menu's choice is this desk's, for its Browser (contract 0.3.70's desk layer).
+  await expect
+    .poll(async () => ((await (await request.get('/__harness')).json()) as { streamQualityDocs?: Record<string, { desks?: Record<string, { apps: Record<string, string> }> }> }).streamQualityDocs?.[ME]?.desks?.[RTC_DESK]?.apps)
+    .toEqual({ browser: 'low' });
 
   const stats = await rpc<QualityStats>(page, 'test.rtc.stats');
   expect(stats.stream?.level).toBe('low');

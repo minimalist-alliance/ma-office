@@ -1,0 +1,61 @@
+{
+  "_about": "Headwear sits over any hair in one of three ways, each set on the part's SVG root and repeated here.",
+  "hairClip": "Brimmed hats (beanie, cap, bucket hat): data-hair-clip is a path in the 256 viewBox. The renderer adds <clipPath id=\"hair-clip\"><path d=\"...\"/></clipPath> to defs and clip-path=\"url(#hair-clip)\" to the back-hair and front-hair layer groups, so hair shows only below the brim: long hair, an afro's sides and a ponytail still come out from under the hat, and nothing pokes through above it.",
+  "hides": "Wraps that cover all the hair as worn (headwrap, turban, patka): data-hides=\"back-hair front-hair\". Ears stay. A hides from a layer that is itself hidden should not count (a hijab under a turban must not take the ears away).",
+  "anchor": "kippah: data-anchor=\"crown\". It is drawn for a crown at y 60, its rim the curve y = crown + 2 + 0.0125 dx^2 that hair tops follow; the renderer wraps it in transform=\"translate(0, crown - 60)\", where crown is the drawn hair part's data-crown (62 when no hair draws). Each hair's data-crown is measured from its outline (scratch-hair/measure.mjs) so the rim overlaps the hair by at least 1.5 units, about 2 at the centre.",
+  "category": "headwear",
+  "layer": "10-headwear",
+  "colorSlot": "headwearColor",
+  "default": "none",
+  "parts": [
+    {
+      "id": "none",
+      "name": "None",
+      "layers": []
+    },
+    {
+      "id": "beanie",
+      "name": "Beanie",
+      "hairClip": "M0,150 C30,140 52,104 72,86 H184 C204,104 226,140 256,150 V256 H0 Z"
+    },
+    {
+      "id": "cap",
+      "name": "Cap",
+      "hairClip": "M0,150 C30,140 56,104 76,86 H180 C200,104 226,140 256,150 V256 H0 Z"
+    },
+    {
+      "id": "bucket-hat",
+      "name": "Bucket hat",
+      "hairClip": "M0,150 C30,140 44,109 64,91 H192 C212,109 226,140 256,150 V256 H0 Z"
+    },
+    {
+      "id": "headwrap",
+      "name": "Headwrap",
+      "hides": [
+        "back-hair",
+        "front-hair"
+      ]
+    },
+    {
+      "id": "turban",
+      "name": "Turban",
+      "hides": [
+        "back-hair",
+        "front-hair"
+      ]
+    },
+    {
+      "id": "patka",
+      "name": "Patka",
+      "hides": [
+        "back-hair",
+        "front-hair"
+      ]
+    },
+    {
+      "id": "kippah",
+      "name": "Kippah",
+      "anchor": "crown"
+    }
+  ]
+}

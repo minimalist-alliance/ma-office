@@ -6,11 +6,19 @@ import type { NotebookBackend, PageSession } from '../model/backend.ts';
 import { formatWhen } from '../model/days.ts';
 import { stepPage } from '../model/tree.ts';
 import { TAB_COLORS, type PageRec, type TabRec, type Tree } from '../model/types.ts';
+import { pageColors } from './colorCommands.ts';
 import { InlineName, Menu, type MenuItem } from './controls.tsx';
 import { PageEditor } from './Editor.tsx';
+import { paletteItems, SWATCH_COLUMNS } from './editorMenu.ts';
 import { exportHtml, exportMarkdown } from './exporting.ts';
 import { HistoryPane } from './History.tsx';
 import { Icon } from './icons.tsx';
+import type { MenuAnchor } from './menu/Menu.tsx';
+import { rectOf, type Rect } from './menu/placement.ts';
+import { useMenuTrigger, type MenuRequest } from './menu/useMenuTrigger.ts';
+import { applyView, isFiltered, labelCounts, labelOf, toggleLabel, usePageListView, type PageListView } from './pageView.ts';
+import { exportPalette, PALETTE, paletteName, type PaletteId } from './palette.ts';
+import { restoreRefusal } from './refusals.ts';
 import type { Resolved, Selection } from './state.ts';
 
 /** The open page's first line while it's typed, so its row in the list keeps up without re-rendering the list. */
@@ -57,8 +65,16 @@ function usePageSession(backend: NotebookBackend, pageId: string | undefined): P
 
 const PAGE_MIME = 'application/x-ma-notebook-page';
 
+/** What a filter shows, in words: "Blue, Rose, No label". */
+const filterNames = (v: PageListView): string => [...v.labels.map(paletteName), ...(v.none ? ['No label'] : [])].join(', ');
+
 /** A desk can be away. The host says so, from what its backend reports, and nothing here goes on as if it had worked. */
+/** What a member without the grant is told when a notebook or tab change is refused. */
+const SPACES_REFUSED = 'Only the Founder and Officers who manage spaces can change notebooks and tabs.';
 const quietly = (work: Promise<unknown>): void => void work.catch(() => {});
+
+/** A finger drags nothing: a long press on a row opens its menu instead. */
+const COARSE = typeof window !== 'undefined' && !!window.matchMedia?.('(pointer: coarse)').matches;
 
 const PageItem = memo(function PageItem({
   page,
@@ -66,20 +82,28 @@ const PageItem = memo(function PageItem({
   live,
   onSelect,
   onDropBefore,
+  onMenu,
+  reorder,
 }: {
   page: PageRec;
   on: boolean;
   live: LiveTitles;
   onSelect: (id: string) => void;
   onDropBefore: (draggedId: string, beforeId: string) => void;
+  /** With the title the row shows, which for the open page is its first line as it's typed. */
+  onMenu: (page: PageRec, req: MenuRequest, title: string) => void;
+  /** Dropping a page before this one reorders the list; off while it's sorted by label. */
+  reorder: boolean;
 }) {
   const liveTitle = useSyncExternalStore(live.subscribe, () => (on ? live.get(page.id) : null));
   const title = (on && liveTitle !== null ? liveTitle : page.title) || 'New note';
   const [over, setOver] = useState(false);
+  const label = labelOf(page);
+  const trigger = useMenuTrigger((req) => onMenu(page, req, title));
   return (
     <li
       onDragOver={(e) => {
-        if (e.dataTransfer.types.includes(PAGE_MIME)) {
+        if (reorder && e.dataTransfer.types.includes(PAGE_MIME)) {
           e.preventDefault();
           setOver(true);
         }
@@ -96,19 +120,25 @@ const PageItem = memo(function PageItem({
         type="button"
         className={`nb-page-btn${on ? ' on' : ''}`}
         aria-current={on || undefined}
-        draggable
+        draggable={!COARSE}
         onDragStart={(e) => {
           e.dataTransfer.setData(PAGE_MIME, page.id);
           e.dataTransfer.effectAllowed = 'move';
         }}
+        {...trigger}
         onClick={() => onSelect(page.id)}
         data-page-id={page.id}
+        data-label={label ?? undefined}
       >
-        <span className="nb-page-title">{title}</span>
+        <span className="nb-page-line">
+          <span className="nb-page-title">{title}</span>
+          {label && <span className="nb-label-dot" data-pal={label} aria-hidden="true" />}
+        </span>
         <span className="nb-page-meta">
           {formatWhen(page.updatedAt)}
           <span className="nb-page-snip">{page.snippet}</span>
         </span>
+        {label && <span className="nb-sr">, {paletteName(label)} label</span>}
       </button>
     </li>
   );
@@ -123,6 +153,7 @@ function BinderTab({
   onDropPage,
   renaming,
   onRenamed,
+  readOnly,
 }: {
   tab: TabRec;
   on: boolean;
@@ -132,9 +163,16 @@ function BinderTab({
   onDropPage: (pageId: string) => void;
   renaming: boolean;
   onRenamed: () => void;
+  /** No grant for tabs: the name can't be edited. */
+  readOnly: boolean;
 }) {
   const [over, setOver] = useState(false);
   const ref = useRef<HTMLDivElement>(null);
+  const trigger = useMenuTrigger((req) => {
+    if (req.via === 'keyboard' && req.target !== ref.current) return false;
+    if (ref.current) onMenu(ref.current);
+    return true;
+  });
   const onDragOver = (e: DragEvent) => {
     if (e.dataTransfer.types.includes(PAGE_MIME)) {
       e.preventDefault();
@@ -150,20 +188,15 @@ function BinderTab({
       className={`nb-tab${on ? ' on' : ''}${over ? ' drop' : ''}`}
       data-color={tab.color}
       data-tab-id={tab.id}
+      {...trigger}
       onClick={onSelect}
       onKeyDown={(e) => {
-        if (e.target !== e.currentTarget) return;
+        trigger.onKeyDown(e);
+        if (e.defaultPrevented || e.target !== e.currentTarget) return;
         if (e.key === 'Enter' || e.key === ' ') {
           e.preventDefault();
           onSelect();
-        } else if (e.key === 'ContextMenu' || (e.shiftKey && e.key === 'F10')) {
-          e.preventDefault();
-          if (ref.current) onMenu(ref.current);
         }
-      }}
-      onContextMenu={(e) => {
-        e.preventDefault();
-        if (ref.current) onMenu(ref.current);
       }}
       onDragOver={onDragOver}
       onDragLeave={() => setOver(false)}
@@ -173,7 +206,7 @@ function BinderTab({
         if (id) onDropPage(id);
       }}
     >
-      <InlineName value={tab.title} label="Tab name" onCommit={onRename} editing={renaming} onDone={onRenamed} />
+      <InlineName value={tab.title} label="Tab name" onCommit={onRename} editing={renaming} onDone={onRenamed} readOnly={readOnly} />
     </div>
   );
 }
@@ -186,6 +219,10 @@ export function TabView({
   onOpenLink,
   onPrint,
   focusPageId,
+  stateKey,
+  lastColor,
+  onLastColor,
+  manageSpaces,
 }: {
   backend: NotebookBackend;
   tree: Tree;
@@ -195,13 +232,27 @@ export function TabView({
   onPrint: (pageId: string) => void;
   /** Put the cursor in this page when it opens. */
   focusPageId?: string | null;
+  /** The host's localStorage key: the page list's filter and sort are kept beside it, per notebook. */
+  stateKey: string;
+  /** The color this member last used (`Notebook`'s `lastColor`), and where a new one goes. */
+  lastColor: PaletteId;
+  onLastColor: (id: PaletteId) => void;
+  /** May create, rename and recolor notebooks and tabs (a Guild Desk's Founder, or an Officer with manage_spaces; always on a member's own desk). */
+  manageSpaces: boolean;
 }) {
   const { notebook, tab, page } = resolved;
   const live = useMemo(createLiveTitles, []);
   const session = usePageSession(backend, page?.id);
   const [renaming, setRenaming] = useState<string | null>(null);
-  const [menu, setMenu] = useState<{ items: MenuItem[]; anchor: HTMLElement; label: string } | null>(null);
-  const [confirmDelete, setConfirmDelete] = useState(false);
+  // Built when it renders, so a menu left open (the filter) shows what it changes.
+  const [menu, setMenu] = useState<{ build: () => MenuItem[]; anchor: MenuAnchor; label: string; avoid?: Rect | null; touch?: boolean; fallback?: HTMLElement | null } | null>(null);
+  /** The page whose footer asks "Delete this page?". */
+  const [confirmDelete, setConfirmDelete] = useState<string | null>(null);
+  /** Rename from the page list: the page whose first line gets selected once it opens. */
+  const [renameTitle, setRenameTitle] = useState<string | null>(null);
+  const [view, setView] = usePageListView(stateKey, notebook?.id);
+  const viewRef = useRef(view);
+  viewRef.current = view;
   const [history, setHistory] = useState(false);
   const [showTrash, setShowTrash] = useState(false);
   const [focusNew, setFocusNew] = useState<string | null>(null);
@@ -209,9 +260,35 @@ export function TabView({
   const tablist = useRef<HTMLDivElement>(null);
 
   useEffect(() => {
-    setConfirmDelete(false);
     setHistory(false);
   }, [page?.id]);
+  const titleSelected = useCallback(() => setRenameTitle(null), []);
+  // Asked from a menu, the safe answer takes focus, so a keyboard member is right there.
+  const keepRef = useRef<HTMLButtonElement>(null);
+  useEffect(() => {
+    if (confirmDelete && confirmDelete === page?.id) keepRef.current?.focus();
+  }, [confirmDelete, page?.id]);
+  // A quiet line under the page list: a desk too old for labels or Duplicate says so here, and nothing else changes.
+  const [notice, setNotice] = useState<string | null>(null);
+  useEffect(() => {
+    if (!notice) return undefined;
+    const t = setTimeout(() => setNotice(null), 6000);
+    return () => clearTimeout(t);
+  }, [notice]);
+  /** Like `quietly`, but a desk that doesn't know the call (`not_found`) gets the update line. */
+  /** A notebook or tab change the desk refused (the grant changed since this loaded): one plain line. */
+  const spaceRefused = useCallback((work: Promise<unknown>): void => {
+    void work.catch((err: unknown) => {
+      const code = (err as { code?: unknown } | null)?.code;
+      if (code === 'forbidden') setNotice(SPACES_REFUSED);
+      else if (code === 'not_found') setNotice('Update your desk to use this.');
+    });
+  }, []);
+  const needsDesk = useCallback((work: Promise<unknown>): void => {
+    void work.catch((err: unknown) => {
+      if ((err as { code?: unknown } | null)?.code === 'not_found') setNotice('Update your desk to use this.');
+    });
+  }, []);
 
   const onTitle = useCallback((t: string) => {
     if (page) live.set(page.id, t);
@@ -224,6 +301,10 @@ export function TabView({
 
   const tabs = tree.tabs[notebook.id] ?? [];
   const pages = tree.pages[tab.id] ?? [];
+  const shown = applyView(pages, view);
+  const colors = pageColors(backend);
+  // The filter shows once a page in this notebook has a label, or while one is set: nothing new until colors are used.
+  const labelsInUse = tabs.some((t) => (tree.pages[t.id] ?? []).some((p) => labelOf(p))) || isFiltered(view) || view.sort !== 'manual';
   const prev = page ? stepPage(tree, page.id, -1) : null;
   const next = page ? stepPage(tree, page.id, 1) : null;
 
@@ -259,11 +340,88 @@ export function TabView({
     setMenu({
       anchor: el,
       label: `Tab ${t.title}`,
-      items: [
+      build: () => [
         { label: 'Rename', onSelect: () => setRenaming(t.id) },
         { label: 'Color', heading: true },
-        ...TAB_COLORS.map((c): MenuItem => ({ label: c[0]?.toUpperCase() + c.slice(1), swatch: c, checked: t.color === c, onSelect: () => quietly(backend.recolorTab(t.id, c)) })),
+        ...TAB_COLORS.map((c): MenuItem => ({ label: c[0]?.toUpperCase() + c.slice(1), swatch: c, checked: t.color === c, onSelect: () => spaceRefused(backend.recolorTab(t.id, c)) })),
       ],
+    });
+
+  /** Label, Rename, Duplicate and Delete: a page row's own menu, and the start of the page's ⋯ menu. */
+  const labelItem = (p: PageRec): MenuItem => ({
+    label: 'Label',
+    columns: SWATCH_COLUMNS,
+    submenu: paletteItems(
+      labelOf(p),
+      'No label',
+      (id) => {
+        needsDesk(colors.setPageLabel(p.id, id));
+        if (id && id !== lastColor) onLastColor(id);
+      },
+      { last: lastColor, testPrefix: 'label' },
+    ),
+  });
+  const duplicate = (p: PageRec) => needsDesk(colors.duplicatePage(p.id).then((id) => select({ pageId: id })));
+  const askDelete = (p: PageRec) => {
+    select({ pageId: p.id });
+    setHistory(false);
+    setConfirmDelete(p.id);
+  };
+  const rowMenu = (p: PageRec, req: MenuRequest, title: string) => {
+    const row = req.target.closest<HTMLElement>('.nb-page-btn');
+    setMenu({
+      anchor: req.via === 'keyboard' && row ? row : { x: req.x, y: req.y },
+      avoid: row ? rectOf(row.getBoundingClientRect()) : null,
+      touch: req.via === 'touch',
+      fallback: row,
+      label: `Page ${title}`,
+      build: () => [
+        labelItem(p),
+        {
+          label: 'Rename',
+          onSelect: () => {
+            select({ pageId: p.id });
+            setHistory(false);
+            setRenameTitle(p.id);
+          },
+        },
+        { label: 'Duplicate', onSelect: () => duplicate(p) },
+        { label: '', separator: true },
+        { label: 'Delete page', danger: true, onSelect: () => askDelete(p) },
+      ],
+    });
+  };
+
+  const counts = labelCounts(pages);
+  const filterMenu = (el: HTMLElement) =>
+    setMenu({
+      anchor: el,
+      label: 'Filter and sort pages',
+      build: () => {
+        // Read at render, from the latest view, as the menu stays open while it's changed.
+        const v = viewRef.current;
+        const set = (next: PageListView) => setView(next);
+        return [
+          { label: 'Show', heading: true },
+          { label: 'All pages', checked: !isFiltered(v), keepOpen: true, onSelect: () => set({ ...v, labels: [], none: false }) },
+          ...PALETTE.map(
+            (c): MenuItem => ({
+              label: c.name,
+              pal: c.id,
+              checkbox: true,
+              checked: v.labels.includes(c.id),
+              keepOpen: true,
+              hint: String(counts[c.id]),
+              onSelect: () => set(toggleLabel(v, c.id)),
+            }),
+          ),
+          { label: 'No label', pal: null, checkbox: true, checked: v.none, keepOpen: true, hint: String(counts.none), onSelect: () => set(toggleLabel(v, 'none')) },
+          { label: '', separator: true },
+          { label: 'Sort', heading: true },
+          { label: 'Manual order', checked: v.sort === 'manual', keepOpen: true, onSelect: () => set({ ...v, sort: 'manual' }) },
+          { label: 'By label', checked: v.sort === 'label', keepOpen: true, onSelect: () => set({ ...v, sort: 'label' }) },
+        ];
+      },
     });
 
   const pageMenu = (el: HTMLElement) => {
@@ -272,18 +430,21 @@ export function TabView({
     setMenu({
       anchor: el,
       label: 'Page actions',
-      items: [
+      build: () => [
+        labelItem(page),
+        { label: 'Duplicate page', onSelect: () => duplicate(page) },
+        { label: '', separator: true },
         { label: 'Save a version now', onSelect: () => quietly(backend.saveVersion(page.id)) },
         { label: 'History…', onSelect: () => setHistory(true) },
-        { label: 'Add tab at this page', onSelect: () => quietly(backend.addTabAtPage(page.id).then((t) => setRenaming(t.id))) },
+        ...(manageSpaces ? [{ label: 'Add tab at this page', onSelect: () => spaceRefused(backend.addTabAtPage(page.id).then((t) => setRenaming(t.id))) }] : []),
         ...(otherTabs.length
           ? [{ label: 'Move to tab', heading: true }, ...otherTabs.map((t): MenuItem => ({ label: t.title, swatch: t.color, onSelect: () => quietly(backend.movePage(page.id, t.id)) }))]
           : []),
         { label: 'Export', heading: true },
-        { label: 'Markdown (.md)', onSelect: () => quietly(exportMarkdown(backend, page.id)) },
-        { label: 'Web page (.html)', onSelect: () => quietly(exportHtml(backend, page.id)) },
+        { label: 'Markdown (.md)', onSelect: () => quietly(exportMarkdown(backend, page.id, exportPalette())) },
+        { label: 'Web page (.html)', onSelect: () => quietly(exportHtml(backend, page.id, exportPalette())) },
         { label: 'Print or save as PDF', onSelect: () => onPrint(page.id) },
-        { label: 'Delete page', danger: true, onSelect: () => setConfirmDelete(true) },
+        { label: 'Delete page', danger: true, onSelect: () => setConfirmDelete(page.id) },
       ],
     });
   };
@@ -304,9 +465,11 @@ export function TabView({
       <aside className="nb-side" aria-label="Notebooks and pages">
         <div className="nb-side-head">
           <h3 id="nb-list-label">Notebooks</h3>
-          <button type="button" className="nb-icon-btn" onClick={() => quietly(addNotebook())} aria-label="New notebook" title="New notebook">
-            <Icon name="plus" size={16} />
-          </button>
+          {manageSpaces && (
+            <button type="button" className="nb-icon-btn" onClick={() => spaceRefused(addNotebook())} aria-label="New notebook" title="New notebook">
+              <Icon name="plus" size={16} />
+            </button>
+          )}
         </div>
         <ul className="nb-list" aria-labelledby="nb-list-label">
           {tree.notebooks.map((n) => {
@@ -327,7 +490,7 @@ export function TabView({
                   }}
                 >
                   <span className="nb-spine" aria-hidden="true" />
-                  <InlineName value={n.title} label="Notebook name" onCommit={(t) => quietly(backend.renameNotebook(n.id, t))} editing={renaming === n.id} onDone={() => setRenaming(null)} />
+                  <InlineName value={n.title} label="Notebook name" onCommit={(t) => spaceRefused(backend.renameNotebook(n.id, t))} editing={renaming === n.id} onDone={() => setRenaming(null)} readOnly={!manageSpaces} />
                   <span className="nb-count">{count}</span>
                 </div>
               </li>
@@ -336,16 +499,53 @@ export function TabView({
         </ul>
         <div className="nb-side-head">
           <h3 id="pg-list-label">Pages in {tab.title}</h3>
-          <button type="button" className="nb-icon-btn" onClick={() => quietly(addPage())} aria-label="New page" title="New page" data-testid="new-page">
-            <Icon name="plus" size={16} />
-          </button>
+          <span className="nb-side-actions">
+            {labelsInUse && (
+              <button
+                type="button"
+                className={`nb-icon-btn${isFiltered(view) || view.sort !== 'manual' ? ' on' : ''}`}
+                onClick={(e) => filterMenu(e.currentTarget)}
+                aria-label="Filter and sort pages"
+                aria-haspopup="menu"
+                title="Filter and sort pages"
+                data-testid="page-filter"
+              >
+                <Icon name="filter" size={16} />
+              </button>
+            )}
+            <button type="button" className="nb-icon-btn" onClick={() => quietly(addPage())} aria-label="New page" title="New page" data-testid="new-page">
+              <Icon name="plus" size={16} />
+            </button>
+          </span>
         </div>
         <ul className="nb-pages" aria-labelledby="pg-list-label">
-          {pages.map((p) => (
-            <PageItem key={p.id} page={p} on={p.id === page?.id} live={live} onSelect={(id) => select({ pageId: id })} onDropBefore={onDropBefore} />
+          {shown.map((p) => (
+            <PageItem
+              key={p.id}
+              page={p}
+              on={p.id === page?.id}
+              live={live}
+              onSelect={(id) => select({ pageId: id })}
+              onDropBefore={onDropBefore}
+              onMenu={rowMenu}
+              reorder={view.sort === 'manual'}
+            />
           ))}
           {!pages.length && <li className="nb-hint">No pages in this tab yet.</li>}
+          {pages.length > 0 && isFiltered(view) && (
+            <li className="nb-hint nb-filter-hint" data-testid="page-filter-hint">
+              {shown.length ? `Showing: ${filterNames(view)}` : 'No pages match in this tab.'}
+              <button type="button" className="nb-text-btn" onClick={() => setView({ ...view, labels: [], none: false })}>
+                Show all
+              </button>
+            </li>
+          )}
         </ul>
+        {notice && (
+          <p className="nb-hint nb-side-notice" role="status" data-testid="notebook-notice">
+            {notice}
+          </p>
+        )}
         {tree.trash.length > 0 && (
           <div className="nb-trash">
             <button type="button" className="nb-text-btn" aria-expanded={showTrash} onClick={() => setShowTrash((v) => !v)}>
@@ -356,7 +556,7 @@ export function TabView({
                 {tree.trash.map((p) => (
                   <li key={p.id} className="nb-trash-row">
                     <span className="nb-page-title">{p.title || 'New note'}</span>
-                    <button type="button" className="nb-text-btn" onClick={() => quietly(backend.restorePage(p.id).then(() => select({ pageId: p.id })))}>
+                    <button type="button" className="nb-text-btn" onClick={() => void backend.restorePage(p.id).then(() => select({ pageId: p.id }), (err: unknown) => { const line = restoreRefusal(err); if (line) setNotice(line); })}>
                       Restore
                     </button>
                   </li>
@@ -377,17 +577,20 @@ export function TabView({
                 tab={t}
                 on={t.id === tab.id}
                 onSelect={() => select({ notebookId: notebook.id, tabId: t.id })}
-                onRename={(name) => quietly(backend.renameTab(t.id, name))}
-                onMenu={(el) => tabMenu(t, el)}
+                onRename={(name) => spaceRefused(backend.renameTab(t.id, name))}
+                onMenu={(el) => (manageSpaces ? tabMenu(t, el) : undefined)}
+                readOnly={!manageSpaces}
                 onDropPage={(id) => quietly(backend.movePage(id, t.id))}
                 renaming={renaming === t.id}
                 onRenamed={() => setRenaming(null)}
               />
             ))}
           </div>
-          <button type="button" className="nb-tab add" onClick={() => quietly(addTab())} aria-label="New tab" title="New tab" data-testid="new-tab">
-            <Icon name="plus" size={15} />
-          </button>
+          {manageSpaces && (
+            <button type="button" className="nb-tab add" onClick={() => spaceRefused(addTab())} aria-label="New tab" title="New tab" data-testid="new-tab">
+              <Icon name="plus" size={15} />
+            </button>
+          )}
         </div>
         <div className="nb-paper" data-color={tab.color} role="tabpanel">
           {!page ? (
@@ -409,6 +612,10 @@ export function TabView({
                   onOpenLink={onOpenLink}
                   autofocus={focusNew === page.id || focusPageId === page.id}
                   onEditor={onEditor}
+                  selectTitle={renameTitle === page.id}
+                  onTitleSelected={titleSelected}
+                  lastColor={lastColor}
+                  onLastColor={onLastColor}
                 />
               ) : (
                 <div className="nb-editor nb-loading" aria-busy="true" />
@@ -417,11 +624,11 @@ export function TabView({
                 <span className="nb-foot-meta">
                   Created {formatWhen(page.createdAt)} · Edited {formatWhen(page.updatedAt)} · {page.wordCount} {page.wordCount === 1 ? 'word' : 'words'}
                 </span>
-                {confirmDelete ? (
-                  <span className="nb-confirm">
+                {confirmDelete === page.id ? (
+                  <span className="nb-confirm" role="group" aria-label="Delete this page?">
                     Delete this page?
                     <button type="button" className="nb-text-btn danger" onClick={() => quietly(trash())}>Delete</button>
-                    <button type="button" className="nb-text-btn" onClick={() => setConfirmDelete(false)}>Keep</button>
+                    <button type="button" className="nb-text-btn" ref={keepRef} onClick={() => setConfirmDelete(null)}>Keep</button>
                   </span>
                 ) : (
                   <span className="nb-foot-actions">
@@ -444,7 +651,17 @@ export function TabView({
           )}
         </div>
       </section>
-      {menu && <Menu items={menu.items} anchor={menu.anchor} label={menu.label} onClose={() => setMenu(null)} />}
+      {menu && (
+        <Menu
+          items={menu.build()}
+          anchor={menu.anchor}
+          avoid={menu.avoid}
+          touch={menu.touch}
+          fallbackFocus={menu.fallback}
+          label={menu.label}
+          onClose={() => setMenu(null)}
+        />
+      )}
     </div>
   );
 }

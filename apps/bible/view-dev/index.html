@@ -1,0 +1,10 @@
+<!-- Developer view: a plain test aid for the contract's path, NOT the product view. The UI/UX Engineer's view in
+     apps/bible/view/ replaces it; build.sh packs this one only with --dev. -->
+<main>
+  <p class="dev">Developer view: not the product view</p>
+  <form id="go"><input id="ref" aria-label="Reference" placeholder="John 3:16" autocomplete="off"><button>Go</button></form>
+  <form id="find"><input id="q" aria-label="Search" placeholder="Search BSB" autocomplete="off"><button>Search</button></form>
+  <p id="status" aria-live="polite"></p>
+  <h1 id="title"></h1>
+  <ol id="list"></ol>
+</main>

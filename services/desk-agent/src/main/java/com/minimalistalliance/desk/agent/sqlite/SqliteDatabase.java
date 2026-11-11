@@ -23,7 +23,8 @@ import org.sqlite.SQLiteConfig;
  * this thread and callers park on the result instead.
  *
  * <p>WAL, {@code synchronous=FULL} (a commit is on disk when it returns: these are a ledger and an audit log, and an
- * LLM call takes seconds anyway), temporary tables in memory so nothing goes to {@code /tmp}, and the schema
+ * LLM call takes seconds anyway), {@code secure_delete} so a deleted row's bytes don't stay in the file, temporary
+ * tables in memory so nothing goes to {@code /tmp}, and the schema
  * version in {@code user_version}: migrate forward at open, refuse a newer one (ADR 0040).
  */
 public final class SqliteDatabase implements AutoCloseable {
@@ -86,6 +87,11 @@ public final class SqliteDatabase implements AutoCloseable {
         config.enforceForeignKeys(true);
         Connection connection = config.createConnection("jdbc:sqlite:" + file);
         try {
+            // A deleted row's bytes are zeroed, in its page and in pages freed, so a purge leaves nothing to read back
+            // (ADR 0080's addendum of 2026-11-10). It costs a write of the freed space, and this file sees few deletes.
+            try (Statement statement = connection.createStatement()) {
+                statement.execute("PRAGMA secure_delete = ON");
+            }
             migrate(name, connection, steps);
             return connection;
         } catch (SQLException | RuntimeException e) {
@@ -188,6 +194,21 @@ public final class SqliteDatabase implements AutoCloseable {
                 Thread.currentThread().interrupt();
             }
         }
+    }
+
+    /**
+     * Copies the WAL into the file and truncates it to nothing, so a page a purge zeroed has no older copy left in it.
+     * There's one connection to the file, so nothing holds the WAL open.
+     *
+     * @return false if a reader kept part of the WAL, which is then still there
+     */
+    public boolean checkpoint() throws SQLException {
+        return call(c -> {
+            try (Statement statement = c.createStatement();
+                    ResultSet result = statement.executeQuery("PRAGMA wal_checkpoint(TRUNCATE)")) {
+                return result.next() && result.getInt(1) == 0;
+            }
+        });
     }
 
     public String name() {

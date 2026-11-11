@@ -1,5 +1,6 @@
 #!/bin/sh
-# ma-selfhost's commands, run as its own user so the desk's key stays that user's. selfhost/README.md.
+# ma-selfhost's commands, run as its own user so the desk's key stays that user's, with no way back to more privilege
+# (setpriv --no-new-privs). selfhost/README.md.
 # `port` is root's: it changes desk-rtc's config and the firewall (ma-selfhost-port).
 [ "$(id -u)" = 0 ] || { echo "ma-selfhost: run it as root (sudo ma-selfhost $*)" >&2; exit 1; }
 # One live boot per desk: when Minimalist Alliance already has another copy of this desk online, deskd's hello is refused
@@ -10,13 +11,29 @@ boot_in_use_note() {
   echo "          Stop the other copy, or wait about 3 minutes after it stops, and this one starts by itself."
   echo "          If you didn't start another copy, remove this desk in your office and pair it again."
 }
+# EXP-8: whether this desk's Browser has a profile. /data/browser/profile is Chromium's user data directory
+# (desk-browser-start's --user-data-dir); desk-datadirs makes it empty, and Chromium's first start there writes
+# "Local State" and "Default". Only root can see it (ma-selfhost's own user can't, and its service has
+# InaccessiblePaths=/data/browser), so the check is here. Read-only, by ADR 0035: it only asks whether two names exist,
+# and opens, lists, writes or changes nothing under /data/browser.
+BROWSER_PROFILE=/data/browser/profile
+browser_profile() {
+  [ -e "$BROWSER_PROFILE/Local State" ] || [ -d "$BROWSER_PROFILE/Default" ]
+}
+# `pair` and `forget` say plainly that whoever's office the desk joins gets the Browser's sign-ins, and ask. Set here every
+# time, so what a caller passes in never counts.
+if browser_profile; then MA_SELFHOST_BROWSER=profile; else MA_SELFHOST_BROWSER=none; fi
+export MA_SELFHOST_BROWSER
 case "${1:-}" in
   boot-note) boot_in_use_note; exit 0 ;;
   port) shift; exec /usr/local/lib/ma/selfhost/ma-selfhost-port "$@" ;;
+  # A newer installer folder, checked with this desk's own checker and the key it already holds, before anything in it
+  # runs (EXP-10): `sudo ma-selfhost verify <folder> [--bundle <dir>]`.
+  verify) shift; exec /usr/local/lib/ma/selfhost/ma-selfhost-bundle verify "$@" --installed ;;
   status)
-    setpriv --reuid=selfhost --regid=selfhost --init-groups /usr/local/lib/ma/selfhost/ma-selfhost "$@"; rc=$?
+    setpriv --reuid=selfhost --regid=selfhost --init-groups --no-new-privs /usr/local/lib/ma/selfhost/ma-selfhost "$@"; rc=$?
     echo "port:     $(/usr/local/lib/ma/selfhost/ma-selfhost-port 2>&1)"
     boot_in_use_note
     exit "$rc" ;;
 esac
-exec setpriv --reuid=selfhost --regid=selfhost --init-groups /usr/local/lib/ma/selfhost/ma-selfhost "$@"
+exec setpriv --reuid=selfhost --regid=selfhost --init-groups --no-new-privs /usr/local/lib/ma/selfhost/ma-selfhost "$@"

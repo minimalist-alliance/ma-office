@@ -13,6 +13,8 @@ import { closeTopWindow, cycleDesk, fitScope, focusDesk, focusProxy, goOverview,
 import { cleanupProxyId } from './cleanup';
 import { hiddenProxyId } from './hidden';
 import { appsInOrder } from './order';
+import { backToDesk, carouselProxyId } from '../carousel/actions';
+import { carouselOn } from '../carousel/model';
 
 function isEditable(el: Element | null): boolean {
   if (!el) return false;
@@ -33,12 +35,16 @@ function moveFocus(dir: 1 | -1): void {
     return;
   }
   const desk = v.activeDesk ? useLayoutStore.getState().desks[v.activeDesk] : undefined;
-  const ids = desk ? appsInOrder(desk.items, isPhone()).map((i) => i.id) : [];
-  // The strip comes after the apps, left to right as it's drawn: the hidden count, then cleanup's control, when there are.
+  // A carousel's apps are on its stage, not the desk (`carousel/`), so the arrows there meet only the strip.
+  const ids = desk && !(carouselOn(desk) && !isPhone()) ? appsInOrder(desk.items, isPhone()).map((i) => i.id) : [];
+  // The strip comes after the apps, left to right as it's drawn: the hidden count, cleanup's control, then the
+  // carousel's switch, when there are.
   const count = v.activeDesk ? hiddenProxyId(v.activeDesk) : '';
   if (document.getElementById(`proxy-${count}`)) ids.push(count);
   const control = v.activeDesk ? cleanupProxyId(v.activeDesk) : '';
   if (document.getElementById(`proxy-${control}`)) ids.push(control);
+  const carousel = v.activeDesk ? carouselProxyId(v.activeDesk) : '';
+  if (document.getElementById(`proxy-${carousel}`)) ids.push(carousel);
   if (!ids.length) {
     cycleDesk(dir);
     return;
@@ -60,7 +66,7 @@ function openMenuHere(el: Element): void {
   if (isPhone()) return;
   const id = getView().kbFocus;
   const { desks } = useLayoutStore.getState();
-  const owner = Object.values(desks).find((d) => d.id === id || cleanupProxyId(d.id) === id || hiddenProxyId(d.id) === id || d.items.some((i) => i.id === id));
+  const owner = Object.values(desks).find((d) => d.id === id || cleanupProxyId(d.id) === id || hiddenProxyId(d.id) === id || carouselProxyId(d.id) === id || d.items.some((i) => i.id === id));
   if (!id || !owner) return;
   const box = el.getBoundingClientRect();
   setView({
@@ -82,9 +88,17 @@ export function useKeyboard(): void {
       if ((e.defaultPrevented && !editorEsc) || e.altKey || e.metaKey || e.ctrlKey) return;
       if (editKey(e)) return;
       const el = document.activeElement;
+      // An open tile's app has its keys (ADR 0053); one Esc it didn't use goes back to its tile (`opentile/`).
+      if (el?.closest('.open-tile')) return;
+      // A phone's carousel fills the screen as a window does there, so Esc goes back to its desk, as the back arrow does.
+      const phoneStage = el?.closest<HTMLElement>('.carousel-stage.phone')?.dataset['desk'];
       if (e.key === 'Escape' && e.shiftKey) {
         e.preventDefault();
-        closeTopWindow(true);
+        // From a carousel's app, where plain Esc may be the web page's, Shift+Esc always leaves, as from a window.
+        if (!closeTopWindow(true) && el?.closest('.carousel-stage')) {
+          if (phoneStage) backToDesk(phoneStage);
+          else goOverview();
+        }
         return;
       }
       if (e.key === 'Escape') {
@@ -92,7 +106,12 @@ export function useKeyboard(): void {
           e.preventDefault();
           return;
         }
-        if (el?.closest('[data-testid="window-browser"]')) return; // the web page's Esc
+        if (el?.closest('[data-testid="window-browser"], [data-testid="carousel-slide-browser"]')) return; // the web page's Esc
+        if (phoneStage) {
+          e.preventDefault();
+          backToDesk(phoneStage);
+          return;
+        }
         const v = getView();
         if (v.mode !== 'overview') {
           e.preventDefault();
@@ -170,7 +189,7 @@ export function useKeyboard(): void {
             return;
           }
           const desk = v.activeDesk ? useLayoutStore.getState().desks[v.activeDesk] : undefined;
-          const first = desk ? appsInOrder(desk.items, isPhone())[0]?.id : null;
+          const first = desk && carouselOn(desk) && !isPhone() ? carouselProxyId(desk.id) : desk ? appsInOrder(desk.items, isPhone())[0]?.id : null;
           if (first) focusProxy(first);
           return;
         }

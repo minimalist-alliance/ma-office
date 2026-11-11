@@ -2,6 +2,7 @@
 // "Your data" is holding it. A download keeps running with the modal closed, so its panel stays mounted, out of sight,
 // until it's finished and saved; opening Account settings again goes straight back to it.
 import { create } from 'zustand';
+import { releaseOffice } from './officeInert';
 
 export type SettingsSection = 'account' | 'data';
 
@@ -25,6 +26,7 @@ export function openSettings(section?: SettingsSection, from?: HTMLElement | nul
 
 export function closeSettings(): void {
   if (!useSettingsStore.getState().open) return;
+  releaseOffice(); // first, or the button below is still inert and takes no focus
   useSettingsStore.setState({ open: false });
   // Back to where the member opened it from, or else the account menu's button.
   const to = returnTo?.isConnected ? returnTo : typeof document === 'undefined' ? null : document.querySelector<HTMLElement>('.account-btn');

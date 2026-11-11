@@ -18,6 +18,7 @@ import java.util.List;
 import java.util.Locale;
 import java.util.Map;
 import java.util.Set;
+import java.util.regex.Matcher;
 import java.util.regex.Pattern;
 
 /**
@@ -404,7 +405,7 @@ final class MDocBuilder {
                 }
                 out.put("t", "image");
                 out.put("image", id);
-                out.put("alt", Text.clean(in.get("a"), MAX_LABEL_CHARS));
+                out.put("alt", altText(in.get("a")));
                 out.put("width", integer(in.get("w"), 0, 20_000, 0));
                 out.put("height", integer(in.get("h"), 0, 20_000, 0));
                 putRendered(out, in.get("rw"), in.get("rh"));
@@ -637,18 +638,34 @@ final class MDocBuilder {
         Object title = in.get("title");
         item.put("t", title);
         List<Object> chips = new ArrayList<>();
+        List<Object> lines = new ArrayList<>();
         List<Object> actions = new ArrayList<>();
+        // Round 6: the snippet whole, as the distiller read it, when it says so (its line right after the first break):
+        // a snippet whose query words the page set in bold ("<b>Desk lamps</b> come in…") is one snippet, never its
+        // plain pieces as a snippet starting mid-sentence and chips ("The best").
+        String snip = in.get("snip") instanceof String s ? s.replaceAll("\\s+", " ").strip() : "";
+        if (!snip.isEmpty()) {
+            item.put("d", snip);
+        }
         int part = 0;
         for (Object run : in.get("c") instanceof List<?> c ? c : List.of()) {
+            if (part == 1 && !snip.isEmpty() && !(run instanceof List<?> l && !l.isEmpty() && "br".equals(l.get(0)))) {
+                continue;
+            }
             if (run instanceof String text) {
                 String shown = text.strip();
-                if (part == 0 || shown.isEmpty()) {
+                // (round 5: never a separator between a card's links, "·", as a chip)
+                if (part == 0 || shown.isEmpty() || shown.equals(in.get("meta")) || shown.codePoints().noneMatch(Character::isLetterOrDigit)) {
                     continue;
                 }
                 if (!item.containsKey("d") && shown.length() >= 40) {
                     item.put("d", shown);
                 } else if (shown.length() <= 24) {
                     chips.add(shown);
+                } else if (lines.size() < 3) {
+                    // Round 5: a line between a chip's length and a snippet's ("High: 66 °F · Chance Rain") is the
+                    // card's meta, never dropped.
+                    lines.add(shown);
                 }
                 continue;
             }
@@ -658,6 +675,12 @@ final class MDocBuilder {
             switch (String.valueOf(l.get(0))) {
                 case "br" -> part++;
                 case "btn" -> actions.add(l);
+                case "img" -> {
+                    // Round 5: a tile's own picture outside any link (a forecast's day icon) is its picture.
+                    if (!item.containsKey("i") && at(l, 1) instanceof String src) {
+                        item.put("i", List.of(src, at(l, 3) == null ? 0 : at(l, 3), at(l, 4) == null ? 0 : at(l, 4)));
+                    }
+                }
                 case "a" -> {
                     if (at(l, 3) instanceof List<?> image && !image.isEmpty() && "img".equals(image.get(0))) {
                         item.put("i", List.of(String.valueOf(at(image, 1)), at(image, 3) == null ? 0 : at(image, 3), at(image, 4) == null ? 0 : at(image, 4)));
@@ -676,6 +699,8 @@ final class MDocBuilder {
         item.put("s", in.get("stars"));
         if (in.get("meta") instanceof String meta) {
             item.put("m", List.of(meta.split(" · ")));
+        } else if (!lines.isEmpty()) {
+            item.put("m", lines);
         }
         if (!chips.isEmpty()) {
             item.put("ch", chips);
@@ -691,8 +716,41 @@ final class MDocBuilder {
         if (runs.isEmpty()) {
             return false;
         }
+        loneArrow(runs);
         out.put("runs", runs);
         return true;
+    }
+
+    /**
+     * R40 (round 5): a lone vote arrow on a line (Hacker News' ▲ on a comment, with no score shown) is the vote control
+     * with that one arrow and no number, drawn where R26's control sits. An arrow with a score beside it, or both arrows
+     * (a Q&A's ▲ 27 ▼), stays as the distiller wrote it, for the view to draw as one control.
+     */
+    private static void loneArrow(List<Object> runs) {
+        int at = -1;
+        for (int i = 0; i < runs.size(); i++) {
+            if (runs.get(i) instanceof Map<?, ?> m && "button".equals(m.get("r")) && m.get("node") != null
+                    && ("\u25b2".equals(m.get("label")) || "\u25bc".equals(m.get("label")))) {
+                if (at >= 0) {
+                    return;
+                }
+                at = i;
+            }
+        }
+        if (at < 0) {
+            return;
+        }
+        for (int i : new int[] {at - 1, at + 1}) {
+            if (i >= 0 && i < runs.size() && runs.get(i) instanceof String text && text.strip().matches("[\\d.,]+[kKmM]?")) {
+                return;
+            }
+        }
+        Map<?, ?> arrow = (Map<?, ?>) runs.get(at);
+        Map<String, Object> vote = new LinkedHashMap<>();
+        vote.put("r", "vote");
+        vote.put("score", "");
+        vote.put("\u25b2".equals(arrow.get("label")) ? "up" : "down", mapOf("node", arrow.get("node"), "fp", arrow.get("fp")));
+        runs.set(at, vote);
     }
 
     private List<Object> table(Object raw) {
@@ -828,6 +886,13 @@ final class MDocBuilder {
                 : "click-to-play".equals(in.get("why")) ? "click"
                 : out.containsKey("island") ? "live"
                 : "none";
+        // A paused <video> or <audio> deskd found is live, whatever the distiller said: the view's play goes to the
+        // element itself (the media verbs, Ask 2), and one that won't play answers play_refused, "Play on the real
+        // page". The distiller's "click" stays for a poster with no element behind it yet, and for another site's frame.
+        if ("click".equals(state) && out.containsKey("island") && match != null
+                && ("video".equals(match.get("m")) || "audio".equals(match.get("m"))) && !truthy(match.get("drm"))) {
+            state = "live";
+        }
         out.put("state", state);
         if (truthy(in.get("ad")) || match != null && truthy(match.get("ad"))) {
             out.put("ad", true);
@@ -851,6 +916,13 @@ final class MDocBuilder {
             media.put("chapters", chapters);
         }
     }
+
+    /** An ad's click on a link: an ad network's click id, plain or URL-encoded in a redirect, or a store's ad server. */
+    static final Pattern AD_CLICK = Pattern.compile(
+            "(?i)(?:[?&]|%3f|%26)(?:hvadid|msclkid|gclid)(?:=|%3d)|/sspa/click|/gp/slredirect/|sponsored-ads\\.amazon\\.|//aax-|"
+                    + "^https?://(?:[a-z.]*\\.)?(?:google\\.[a-z.]+/aclk|googleadservices\\.com|bing\\.com/aclk|ad\\.doubleclick\\.net)");
+    /** Cards dropped as ads by their own link, counted with what the page hid as sponsored. */
+    private int adCards;
 
     /** R22: a search engine's own answer, as one card above the results, its sources as links. */
     private Map<String, Object> answer(Map<String, Object> in) {
@@ -1105,6 +1177,9 @@ final class MDocBuilder {
         return out;
     }
 
+    /** A listing's filter on one of its items: "Filter by author ann" says the item's author is ann. */
+    private static final Pattern LISTING_FILTER = Pattern.compile("(?i)filter by (?:author|user|assignee|label|reporter|owner|seller) (\\S.{0,60})");
+
     /** Repeated items as typed cards (spec section 9), from distiller v2's cards. */
     private Map<String, Object> cards(Map<String, Object> in) {
         if (!(in.get("items") instanceof List<?> items)) {
@@ -1117,6 +1192,12 @@ final class MDocBuilder {
             }
             String title = Text.clean(it.get("t"), 200);
             if (title.isEmpty()) {
+                continue;
+            }
+            // An item whose own link is an ad's click (an ad network's click id, a store's ad server) is an ad, wherever
+            // the distiller found it: an engine's shopping row inside its results (Yahoo's), a store's sponsored row.
+            if (it.get("u") instanceof String u && AD_CLICK.matcher(u).find()) {
+                adCards++;
                 continue;
             }
             Map<String, Object> card = new LinkedHashMap<>();
@@ -1138,11 +1219,30 @@ final class MDocBuilder {
             putText(card, "deal", it.get("deal"), 80);
             putText(card, "delivery", it.get("dl"), 80);
             putText(card, "duration", it.get("du"), 16);
-            putTexts(card, "meta", it.get("m"), 4, 80);
+            // A listing's own filters on an item ("Filter by author ann", GitHub's) aren't the item's actions: the name
+            // they carry is its meta, and an action that only repeats one of its chips (a label) goes (P34).
+            List<Object> chipTexts = it.get("ch") instanceof List<?> ch ? new ArrayList<>(ch) : List.of();
+            List<Object> meta = it.get("m") instanceof List<?> m ? new ArrayList<>(m) : new ArrayList<>();
+            List<Object> raws = new ArrayList<>();
+            for (Object x : it.get("x") instanceof List<?> xs ? xs : List.of()) {
+                String label = x instanceof List<?> l ? Text.clean(at(l, 2), MAX_LABEL_CHARS).strip() : "";
+                // The filter's words may be in the name or only in what deskd's half read of it (GitHub's hidden prefix).
+                Map<String, Object> seenAction = x instanceof List<?> l ? nodeSeen(at(l, 1)) : null;
+                String read = seenAction == null ? "" : Text.clean(seenAction.get("t"), MAX_LABEL_CHARS).strip();
+                java.util.regex.Matcher by = LISTING_FILTER.matcher(LISTING_FILTER.matcher(label).matches() ? label : read);
+                if (by.matches()) {
+                    if (meta.size() < 4 && !chipTexts.contains(by.group(1)) && !meta.contains(by.group(1))) {
+                        meta.add(by.group(1));
+                    }
+                } else if (!chipTexts.contains(label)) {
+                    raws.add(x);
+                }
+            }
+            putTexts(card, "meta", meta, 4, 80);
             putTexts(card, "chips", it.get("ch"), 4, 24);
             putText(card, "snippet", it.get("d"), 260);
             List<Object> actions = new ArrayList<>();
-            for (Object run : runs(it.get("x"), 0, false)) {
+            for (Object run : runs(raws, 0, false)) {
                 if (run instanceof Map<?, ?> m && "button".equals(m.get("r")) && actions.size() < 3) {
                     actions.add(run);
                 }
@@ -1305,7 +1405,7 @@ final class MDocBuilder {
                     Map<String, Object> image = new LinkedHashMap<>();
                     image.put("r", "image");
                     image.put("image", id);
-                    image.put("alt", Text.clean(at(l, 2), MAX_LABEL_CHARS));
+                    image.put("alt", altText(at(l, 2)));
                     image.put("width", integer(at(l, 3), 0, 20_000, 0));
                     image.put("height", integer(at(l, 4), 0, 20_000, 0));
                     putRendered(image, at(l, 5), at(l, 6));
@@ -1341,6 +1441,35 @@ final class MDocBuilder {
         }
     }
 
+    /**
+     * The same words, but for where the spaces fall: the distiller read the layout's gaps (a kicker set apart from its
+     * headline) where deskd's half's plain text runs them together, so the distiller's spacing is kept.
+     */
+    static boolean sameButSpacing(String a, String b) {
+        return a.replaceAll("\\s+", "").equals(b.replaceAll("\\s+", "")) && a.length() > b.length();
+    }
+
+    /**
+     * Round 5: the page's own text only repeats what the distiller's name says, with a screen reader's copy of it ("Open
+     * 20 (20)" for "Open 20", GitHub's counts): every word it shows is one of the name's, so the name is what it shows.
+     */
+    static boolean onlyRepeats(String named, String shown) {
+        if (shown.length() <= named.length()) {
+            return false;
+        }
+        Set<String> words = new HashSet<>(List.of(named.toLowerCase(Locale.ROOT).split("[^\\p{L}\\p{N}]+")));
+        words.remove("");
+        if (words.isEmpty()) {
+            return false;
+        }
+        for (String word : shown.toLowerCase(Locale.ROOT).split("[^\\p{L}\\p{N}]+")) {
+            if (!word.isEmpty() && !words.contains(word)) {
+                return false;
+            }
+        }
+        return true;
+    }
+
     private void link(List<Object> out, List<?> l, int depth, boolean inLink) {
         // ['a', ref, href, {pri}?, ...runs]: flags, when there are any, come before the runs.
         boolean flagged = at(l, 3) instanceof Map<?, ?>;
@@ -1361,7 +1490,8 @@ final class MDocBuilder {
             putNode(link, at(l, 1), seen);
             // R1: a link named by its label rather than its text shows its text, and keeps the name for screen readers.
             String shown = Text.clean(seen.get("t"), MAX_LABEL_CHARS).strip();
-            if (!shown.isEmpty() && inner.size() == 1 && inner.get(0) instanceof String named && !named.equals(shown)) {
+            if (!shown.isEmpty() && inner.size() == 1 && inner.get(0) instanceof String named && !named.equals(shown)
+                    && !sameButSpacing(named, shown) && !onlyRepeats(named, shown)) {
                 link.put("name", named);
                 inner.set(0, shown);
             }
@@ -1464,6 +1594,21 @@ final class MDocBuilder {
         append(out, vote);
     }
 
+    /** A file's or an id's name in place of words ("ex-main-demo", "IMG_9231.jpeg"): no description of a picture. */
+    private static final Pattern FILE_ALT = Pattern.compile("[a-z0-9]+([_.-][a-z0-9]+)+|(?i:img|dsc|pxl)[_-]?\\d+.*|(?i:image|photo|picture|screenshot)");
+
+    /** Round 5: a picture's alt, unless it's only a file's name, which the view would show as a stray label. */
+    private static String altText(Object raw) {
+        String alt = Text.clean(raw, MAX_LABEL_CHARS);
+        return FILE_ALT.matcher(alt.strip()).matches() ? "" : alt;
+    }
+
+    private static final Pattern STARS = Pattern.compile("(?i)\\b(\\d(?:\\.\\d)?) out of (?:5|five) stars?\\b");
+    private static final Pattern STAR_COUNT = Pattern.compile("(?i)(?:reviews?|ratings?)\\D{0,4}(\\d[\\d,]*)");
+
+    /** A shop's badge on a control: a word or two the page draws on it, never what the control is. */
+    private static final Pattern BADGE = Pattern.compile("(?i)(sale|new|hot|final sale|limited( edition)?|sold out|low stock|best ?seller|\\d{1,2}% off)");
+
     private void button(List<Object> out, List<?> l) {
         String name = Text.clean(at(l, 2), MAX_LABEL_CHARS);
         String label = name;
@@ -1477,6 +1622,28 @@ final class MDocBuilder {
             String shown = Text.clean(seen.get("t"), MAX_LABEL_CHARS).strip();
             if (!shown.isEmpty()) {
                 label = shown;
+            }
+        }
+        // Round 5: a rating's own button, spelled out for a screen reader ("Review: 4.6 out of 5 stars. Total reviews:
+        // 2191 (2191)"), shows as its stars and count, "★ 4.6 (2191)"; the words stay its name.
+        Matcher stars = STARS.matcher(label);
+        if (stars.find() && label.length() > 24) {
+            Matcher count = STAR_COUNT.matcher(label);
+            String total = null;
+            while (count.find()) {
+                total = count.group(1);
+            }
+            name = label;
+            label = "\u2605 " + stars.group(1) + (total != null ? " (" + total + ")" : "");
+        }
+        // Round 5: a badge the page draws on a control that names it otherwise (a swatch's "SALE") is the badge on that
+        // name, never the control's whole label: "Jet Black (Black Sole) · SALE" shows both.
+        if (!name.equals(label) && BADGE.matcher(label).matches() && name.length() > label.length() && name.chars().anyMatch(Character::isLetter)) {
+            String lower = name.toLowerCase(Locale.ROOT), badge = label.toLowerCase(Locale.ROOT);
+            if (lower.endsWith(" \u00b7 " + badge)) {
+                label = name;
+            } else if (!lower.contains(badge)) {
+                label = name + " \u00b7 " + label;
             }
         }
         button.put("label", label);
@@ -1873,7 +2040,11 @@ final class MDocBuilder {
         if (challenge != null) {
             facts.put("challenge", challenge);
         }
-        if ("article".equals(mode)) {
+        // A thread (a Q&A, a forum) or a listing reads as the page it is, never as an article with a read time: its
+        // length is its replies' or its results' (the Product Designer, Nov 9).
+        // Round 5: nor a shop's product page (its JSON-LD names a Product, or it has a button to buy it): its length is its
+        // details', not a read.
+        if ("article".equals(mode) && !thread() && !listing() && !productPage()) {
             facts.put("article", article());
         }
         Object height = meta.get("doc_h") != null ? meta.get("doc_h") : raw.stats().get("pageHeight");
@@ -1941,6 +2112,9 @@ final class MDocBuilder {
                     counts.merge(kind, n, (a, b) -> (Integer) a + (Integer) b);
                 }
             }
+        }
+        if (adCards > 0) {
+            counts.merge("sponsored", adCards, (a, b) -> (Integer) a + (Integer) b);
         }
         Map<String, Object> hidden = new LinkedHashMap<>();
         hidden.put("counts", counts);
@@ -2076,6 +2250,59 @@ final class MDocBuilder {
             }
         }
         return article;
+    }
+
+    /** Votes on two or more posts, or the page's own word that it's a Q&A or a forum thread: a thread, not an article. */
+    private boolean thread() {
+        if (firstLd("QAPage", "DiscussionForumPosting") != null) {
+            return true;
+        }
+        int voted = 0;
+        for (Map<String, Object> block : blocks) {
+            if (block.get("runs") instanceof List<?> runs && runs.stream().anyMatch(MDocBuilder::voteRun) && ++voted >= 2) {
+                return true;
+            }
+        }
+        return false;
+    }
+
+    private static final Pattern BUY = Pattern.compile("(?i)(add to (cart|bag|basket)|buy (it )?now|select a size|choose a size)");
+
+    /** A shop's page for one product: its JSON-LD says so, or one of its buttons buys it. */
+    private boolean productPage() {
+        if (firstLd("Product", "ProductGroup") != null) {
+            return true;
+        }
+        for (Map<String, Object> block : blocks) {
+            if (block.get("runs") instanceof List<?> runs) {
+                for (Object run : runs) {
+                    if (run instanceof Map<?, ?> m && "button".equals(m.get("r")) && m.get("label") instanceof String label && BUY.matcher(label.strip()).matches()) {
+                        return true;
+                    }
+                }
+            }
+        }
+        return false;
+    }
+
+    /** Six or more cards in one block, and little prose beside them: search results, a shop's listing. */
+    private boolean listing() {
+        boolean cards = false;
+        int prose = 0;
+        for (Map<String, Object> block : blocks) {
+            if ("cards".equals(block.get("t")) && block.get("items") instanceof List<?> items && items.size() >= 6) {
+                cards = true;
+            } else if ("para".equals(block.get("t")) && plain(block.get("runs")).length() >= 200) {
+                prose++;
+            }
+        }
+        return cards && prose < 3;
+    }
+
+    /** A vote control: deskd's own, or an up or down arrow the distiller kept as a button. */
+    private static boolean voteRun(Object run) {
+        return run instanceof Map<?, ?> m && ("vote".equals(m.get("r"))
+                || "button".equals(m.get("r")) && ("\u25b2".equals(m.get("label")) || "\u25bc".equals(m.get("label"))));
     }
 
     private List<Object> names(Object raw) {
@@ -2346,6 +2573,11 @@ final class MDocBuilder {
         if (doc.textChars < 80 && doc.controls < 2 && doc.islands.isEmpty()) {
             return Fallback.LOW_CONFIDENCE;
         }
+        // A long page of which the view kept almost nothing to read: no cards, picture or player and under 600 characters
+        // (a store's grid still drawing its placeholders). The real page shows it as it is.
+        if (almostNothingOfALongPage(doc) && kept.getOrDefault("image", 0) == 0) {
+            return Fallback.LOW_CONFIDENCE;
+        }
         // A form the view can't complete: the page's typing and picking fields, against those the view kept. Buttons and
         // boxes don't count: the distiller folds filter rails and drops a page's widgets on purpose (Amazon, IKEA).
         int pageFields = integer(stats.get("textFields"), 0, 1_000_000, 0);
@@ -2354,6 +2586,20 @@ final class MDocBuilder {
             return Fallback.LOW_CONFIDENCE;
         }
         return null;
+    }
+
+    /** A page at least this tall (CSS px) whose view kept almost nothing falls back: four screens and more. */
+    static final int LONG_PAGE = 4000;
+
+    /** A view of a long page that kept almost nothing to read: no cards, picture, table, wall or player, under 600 characters. */
+    static boolean almostNothingOfALongPage(MDoc doc) {
+        return integer(doc.facts.get("pageHeight"), 0, 10_000_000, 0) >= LONG_PAGE && doc.textChars < 600 && doc.islands.isEmpty()
+                && doc.blocks.stream().noneMatch(b -> Set.of("cards", "image", "paywall", "island", "table").contains(b.get("t")));
+    }
+
+    /** Whether a view had something to read: cards, or 600 characters and more. */
+    static boolean hadSomething(MDoc doc) {
+        return doc != null && (doc.textChars >= 600 || doc.blocks.stream().anyMatch(b -> "cards".equals(b.get("t"))));
     }
 
     /** How many runs of each kind the document holds, and {@code plainField}: fields to type in that aren't a search. */

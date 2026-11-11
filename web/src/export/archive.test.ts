@@ -1,6 +1,6 @@
 import { describe, expect, it } from 'vitest';
 import { setCurrentBand } from '../platform/age';
-import { accountFiles, archiveOrder, deskFolders, exportFileName, folderName, readme, safePath } from './archive';
+import { accountFiles, archiveOrder, deskFolders, exportFileName, folderName, partLabel, readme, safePath } from './archive';
 
 describe('the archive layout', () => {
   it('names the file by the date', () => {
@@ -83,6 +83,15 @@ describe('the archive layout', () => {
     for (const word of ['account/', 'browser/', 'browser-readable/', 'bookmarks.html', 'history.csv', 'manifest.json', 'SHA-256', 'cloud', '2 files couldn\'t be copied', 'Work: the download']) expect(text).toContain(word);
     expect(text).not.toMatch(/AWS|Amazon|EC2|S3|!/);
     expect(readme({ madeAt: new Date(2026, 10, 6), desks: [], notCopied: 0 })).not.toContain('notCopied');
+  });
+
+  it('puts Notebook in notebook/, its own folder, and desk/ holds settings and Chat (Security NE-3)', () => {
+    const text = readme({ madeAt: new Date(2026, 10, 6), desks: ['Personal'], notCopied: 0 });
+    expect(text).toContain('  desk/                  Desk settings and Chat.');
+    expect(text).toContain('  notebook/              Your Notebook.');
+    expect(text).not.toMatch(/desk\/ .*Notebook/);
+    expect(partLabel('desk')).toBe('Desk settings and Chat');
+    expect(partLabel('notebook')).toBe('Notebook');
   });
 
   it('says agent/keys holds working AI keys, to keep the file safe, and to revoke them at the provider if it is lost (ADR 0042)', () => {

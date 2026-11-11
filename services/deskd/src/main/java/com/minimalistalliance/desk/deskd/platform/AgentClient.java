@@ -137,11 +137,8 @@ public final class AgentClient {
         }
     }
 
+    /** Held to {@link PlatformHttp#MAX_RETRY_AFTER}, so no answer can park the boot thread or the heartbeat for long. */
     private static Duration retryAfter(HttpResponse<?> response) {
-        try {
-            return response.headers().firstValue("retry-after").map(value -> Duration.ofSeconds(Long.parseLong(value.trim()))).orElse(null);
-        } catch (NumberFormatException e) {
-            return null;
-        }
+        return PlatformHttp.retryAfter(response.headers());
     }
 }

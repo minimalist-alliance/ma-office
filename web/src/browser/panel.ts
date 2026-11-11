@@ -15,6 +15,8 @@ export type BrowserPanel =
   | { kind: 'asleep' }
   | { kind: 'failed' }
   | { kind: 'queued'; position: number | null }
+  /** A free desk is waiting for room (`free_capacity_wait`). */
+  | { kind: 'busy' }
   | { kind: 'waking'; step: WakeStep }
   | { kind: 'opening' }
   | { kind: 'stopping' }
@@ -52,6 +54,8 @@ export interface PanelInput {
   simple?: boolean;
   /** On screen, and the desk says someone looks while its Chromium is still frozen. */
   resuming?: boolean;
+  /** `connect` said a free desk must wait for room. */
+  busy?: boolean;
 }
 
 export function browserPanel(i: PanelInput): BrowserPanel {
@@ -62,6 +66,7 @@ export function browserPanel(i: PanelInput): BrowserPanel {
   if (i.refusal?.kind === 'data_guard') return { kind: 'dataGuard', message: i.refusal.message ?? null, resumesAt: i.refusal.resumesAt ?? null };
   if (i.refusal) return { kind: 'membership', billingUrl: i.refusal.billingUrl };
   if (i.vm === 'error' || i.phase === 'failed') return { kind: 'failed' };
+  if (i.busy) return { kind: 'busy' };
   if (i.vm === 'stopped') return { kind: 'asleep' };
   if (i.vm === 'stopping') return { kind: 'stopping' };
   if (i.vm === 'starting') {

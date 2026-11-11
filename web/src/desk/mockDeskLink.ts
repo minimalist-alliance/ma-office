@@ -9,7 +9,7 @@ import { answerData, MockBulk, newDataControl, type MockDataControl } from './mo
 import { cursorCss, InputEncoder } from './rtc/input';
 import { refusalOf } from './rtc/policy';
 import { Subscriptions } from './rtc/subs';
-import { DeskNotConnected, MAX_COLLAB_MESSAGE, type AgentActivity, type DeskAttentionMessage, type AppSummary, type BrowserInput, type BrowserMedia, type BrowserTab, type BulkChannel, type CollabChannel, type CollabEnd, type DeskLink, type DeskRefusal, type DeskRpc, type LinkDetails, type LinkState, type LinkTopics, type RpcOptions, type StreamState, type SummaryMessage } from './deskLink';
+import { DeskNotConnected, MAX_COLLAB_MESSAGE, type AgentActivity, type DeskAttentionMessage, type AppSummary, type BrowserInput, type BrowserMedia, type PhoneDevice, type BrowserViewMessage, type BrowserDownload, type BrowserDownloadsMessage, type BrowserLinkOutMessage, type BrowserTab, type BulkChannel, type CollabChannel, type CollabEnd, type DeskLink, type DeskRefusal, type DeskRpc, type LinkDeskState, type LinkDetails, type LinkState, type LinkTopics, type RpcOptions, type StreamState, type SummaryMessage } from './deskLink';
 import type { MockCollabServer, MockNotebookControl } from './mockNotebook';
 import { MockSimpleDesk, type MockSimpleControl } from './mockSimpleView';
 import { isRefusal, type GuildAccess } from '../guild/access';
@@ -26,6 +26,13 @@ const SAMPLE: Record<string, AppSummary> = {
 export interface MockDeskControl {
   /** A Guild Desk's side (task 48, `mockGuild.ts`). */
   guild: MockGuildControl;
+  /**
+   * The free tier's proposed `desk.contention` topic (S-119): this desk says its container is being held back. Off by
+   * default, and refused like any topic a deskd doesn't serve when `refuse['desk.contention']` is set.
+   */
+  setHeld(deskId: string, held: boolean): void;
+  /** A free desk waits for room, as `connect`'s `503 free_capacity_wait` says (S-119). */
+  setBusy(deskId: string, busy: boolean): void;
   /** Every RPC, in order, with a key's `secret` taken out. A test's clipboard text stays in here, as nothing but the mock keeps any. */
   rpc: { m: string; p: Record<string, unknown>; options?: RpcOptions }[];
   /** Answer `m=video 0`, as for a browser with no H.264. */
@@ -74,6 +81,29 @@ export interface MockDeskControl {
   deskClipboard: string | null;
   /** Something on the desk takes the clipboard, and `browser.clipboard` says so. A page can do this with nobody asking. */
   clipboardChanged(text: string | null): void;
+  /** The desk's Browser downloads, newest first, as `browser.downloads` has them (LS-31). `setDownloads` sends the list. */
+  downloads: BrowserDownload[];
+  setDownloads(downloads: BrowserDownload[]): void;
+  /** The desk's Chromium refused protected playback in a tab: its `protectedMedia {at, keySystem}` on `browser.tabs` (TD-225). */
+  protectedFailed(tabId: string, keySystem?: string): void;
+  /**
+   * A page on the desk hands over a link (#9): `browser.links`' `linkOut` to every session subscribed, as deskd sends it
+   * (API.md section 10, "Links out"). `refuse['browser.links'] = 'not_found'` is a deskd or image before it.
+   */
+  linkOut(url: string, extra?: Partial<BrowserLinkOutMessage>): void;
+  /**
+   * The desk's Chromium isn't running (#9's Send to my desk): tab calls get `unavailable {reason: "chromium"}` until a
+   * `browser.stream.set` with `warm` or `live` starts it, or, with `tabOpenStarts`, a `browser.tab.open` with `start: true`.
+   */
+  chromiumOff: boolean;
+  /** deskd takes `browser.tab.open`'s `start` (the Desk Engineer's change #9 asks for). Off: today's deskd, which ignores it. */
+  tabOpenStarts: boolean;
+  /**
+   * An own desk asleep, as `connect` would say: its link stays closed, and its state is `stopped`. A wake then goes through
+   * Platform's phases, `wakeStepMs` each (starting, booting, connecting), and the link opens. `sleepFails` never wakes.
+   */
+  sleep(deskId: string, opts?: { fails?: boolean }): void;
+  wakeStepMs: number;
   /** Methods whose answer waits for `releaseHeld`. */
   hold: Record<string, boolean>;
   releaseHeld(): void;
@@ -113,6 +143,18 @@ export interface MockDeskControl {
   setSound(deskId: string, on: boolean): void;
   /** Every `desk.attention.set` the desk heard, with `performance.now()`. */
   attentionLog: { deskId: string; seen: boolean; at: number }[];
+  /**
+   * deskd's phone view (API.md section 10, "On a phone"): `browser.view` per desk, the `device` each `desk.attention.set`
+   * carried, and a field to report as focused. A seen phone gets the phone's view after `viewDelayMs`, anything else the
+   * desk's own. Off unless `phoneView`: a deskd before it, which refuses the topic and ignores `device`, as most specs
+   * expect of a phone's Browser. `setView` says what another session's phone would.
+   */
+  phoneView: boolean;
+  view: Record<string, BrowserViewMessage>;
+  setView(deskId: string, view: BrowserViewMessage): void;
+  viewDelayMs: number;
+  deviceLog: { deskId: string; device: PhoneDevice | null; at: number }[];
+  setField(deskId: string, field: BrowserViewMessage['field']): void;
 }
 
 const notebookModule = (): Promise<typeof import('./mockNotebook')> => import('./mockNotebook');
@@ -121,12 +163,32 @@ const mockLinks = new Set<MockDeskLink>();
 
 const cursorListeners = new Set<(css: string) => void>();
 const clipboardListeners = new Set<(m: { seq: number; type: string }) => void>();
+const downloadListeners = new Set<(m: BrowserDownloadsMessage) => void>();
+const linkOutListeners = new Set<(m: BrowserLinkOutMessage) => void>();
+let linkOutSeq = 0;
+/** Own desks asleep (`control.sleep`), and whether a wake of each gets anywhere. */
+const asleep = new Map<string, 'stopped' | 'fails'>();
+let downloadSeq = 0;
 const heldAnswers: (() => void)[] = [];
 let clipboardSeq = 0;
 const links = new Set<MockDeskLink>();
 const query = new URLSearchParams(window.location.search);
+const heldDesks = new Map<string, boolean>();
+const heldListeners = new Map<string, Set<(m: { seq: number; type: string; held: boolean }) => void>>();
+let heldSeq = 0;
+const busyDesks = new Set<string>();
 const control: MockDeskControl = {
   guild: guildControl,
+  setBusy: (deskId, busy) => {
+    if (busy) busyDesks.add(deskId);
+    else busyDesks.delete(deskId);
+    for (const l of links) if (l.deskId === deskId) l.noteBusy();
+  },
+  setHeld: (deskId, held) => {
+    heldDesks.set(deskId, held);
+    heldSeq += 1;
+    for (const fn of heldListeners.get(deskId) ?? []) fn({ seq: heldSeq, type: 'patch', held });
+  },
   rpc: [],
   noVideo: false,
   refuse: {},
@@ -163,6 +225,32 @@ const control: MockDeskControl = {
     clipboardSeq += 1;
     for (const fn of clipboardListeners) fn({ seq: clipboardSeq, type: 'changed' });
   },
+  downloads: [],
+  setDownloads: (downloads) => {
+    control.downloads = downloads;
+    downloadSeq += 1;
+    for (const fn of downloadListeners) fn({ seq: downloadSeq, downloads });
+  },
+  protectedFailed: (tabId, keySystem = 'com.widevine.alpha') => {
+    control.setTabs(control.tabs.map((t) => (t.tabId === tabId ? { ...t, protectedMedia: { at: new Date().toISOString(), keySystem } } : t)));
+  },
+  linkOut: (url, extra = {}) => {
+    linkOutSeq += 1;
+    const scheme = /^([a-z][a-z0-9+.-]*):/i.exec(url)?.[1]?.toLowerCase() ?? '';
+    const shown = url.replace(/%([0-9A-F]{2})/gi, (m, h: string) => {
+      const c = parseInt(h, 16);
+      return c >= 0x20 && c < 0x7f ? String.fromCharCode(c) : m;
+    });
+    const msg: BrowserLinkOutMessage = { seq: linkOutSeq, type: 'linkOut', url, scheme, displayText: shown, reason: 'externalScheme', at: new Date().toISOString().replace(/\.\d+Z$/, 'Z'), tabId: activeTab().tabId, ...extra };
+    for (const fn of linkOutListeners) fn(msg);
+  },
+  chromiumOff: false,
+  tabOpenStarts: false,
+  sleep: (deskId, opts = {}) => {
+    asleep.set(deskId, opts.fails ? 'fails' : 'stopped');
+    for (const link of mockLinks) if (link.deskId === deskId) link.sleepForTest();
+  },
+  wakeStepMs: Number(query.get('wakeStepMs') ?? 400),
   hold: {},
   releaseHeld: () => {
     for (const answer of heldAnswers.splice(0)) answer();
@@ -227,6 +315,15 @@ const control: MockDeskControl = {
     control.setKeepThawed(deskId, on);
   },
   attentionLog: [],
+  phoneView: false,
+  view: {},
+  setView: (deskId, view) => publishView(deskId, view),
+  viewDelayMs: 60,
+  deviceLog: [],
+  setField: (deskId, field) => {
+    const v = control.view[deskId] ?? DESK_VIEW;
+    publishView(deskId, { ...v, field });
+  },
 };
 guildControl.kick = (deskId) => {
   for (const link of mockLinks) if (link.deskId === deskId) link.kickForTest();
@@ -263,6 +360,37 @@ function attentionDesk(deskId: string): AttentionDesk {
   return d;
 }
 const deskSeen = (d: AttentionDesk): boolean => d.open && (d.said ?? d.wants);
+
+// ----- the phone view (API.md section 10, "On a phone")
+
+const DESK_VIEW: BrowserViewMessage = { mode: 'desktop', field: null };
+const viewListeners = new Map<string, Set<(m: BrowserViewMessage) => void>>();
+const viewTimers = new Map<string, number>();
+function publishView(deskId: string, v: BrowserViewMessage): void {
+  control.view[deskId] = v;
+  for (const fn of viewListeners.get(deskId) ?? []) fn(v);
+  for (const link of mockLinks) if (link.deskId === deskId) link.refreshPicture();
+}
+/** A seen phone has the tabs, laid out at its size and scaled to fit the screen's top left, as deskd does. */
+function settleView(deskId: string, sessionId: string | null, seen: boolean, device: PhoneDevice | null): void {
+  if (!control.phoneView) return;
+  window.clearTimeout(viewTimers.get(deskId));
+  viewTimers.set(
+    deskId,
+    window.setTimeout(() => {
+      const was = control.view[deskId] ?? DESK_VIEW;
+      if (!seen || !device || !sessionId) {
+        if (was.mode !== 'desktop') publishView(deskId, DESK_VIEW);
+        return;
+      }
+      const screen = { ...control.picture };
+      const scale = Math.floor(Math.min(screen.width / device.width, screen.height / device.height) * 100) / 100;
+      const region = { x: 0, y: 0, width: Math.round(device.width * scale), height: Math.round(device.height * scale) };
+      if (was.mode === 'phone' && was.sessionId === sessionId && was.width === device.width && was.height === device.height) return;
+      publishView(deskId, { mode: 'phone', sessionId, width: device.width, height: device.height, scale, region, screen, field: null });
+    }, control.viewDelayMs),
+  );
+}
 
 function publishAttention(deskId: string): void {
   const d = attentionDesk(deskId);
@@ -403,7 +531,7 @@ class TestPicture {
   private frame = 0;
   private timer = 0;
 
-  constructor() {
+  constructor(private readonly deskId: string) {
     this.stream = this.canvas.captureStream(PICTURE_FPS);
   }
 
@@ -440,6 +568,20 @@ class TestPicture {
     g.fillStyle = text.secondary;
     g.font = '20px sans-serif';
     g.fillText(`frame ${this.frame}`, 48, 120);
+    // A phone's view, drawn where deskd draws it: the top left, at the phone's size times its scale.
+    const view = control.view[this.deskId];
+    if (!island && view?.mode === 'phone' && view.region) {
+      const r = view.region;
+      const k = view.scale ?? 1;
+      g.fillStyle = surface.window;
+      g.fillRect(r.x, r.y, r.width, r.height);
+      g.fillStyle = text.primary;
+      g.font = `${Math.round(22 * k)}px sans-serif`;
+      g.fillText('Test page, laid out', r.x + 16 * k, r.y + 40 * k);
+      g.fillText('for a phone', r.x + 16 * k, r.y + 70 * k);
+      g.fillStyle = accent.default;
+      g.fillRect(r.x + 16 * k, r.y + 100 * k + ((this.frame * 4) % Math.max(1, r.height - 160 * k)), r.width - 32 * k, 40 * k);
+    }
   }
 }
 
@@ -518,6 +660,7 @@ export class MockDeskLink implements DeskLink {
   private readonly mediaListeners = new Set<() => void>();
   private readonly startedAt = Date.now() - 754_000;
   private seq = 0;
+  private sessionNo = 0;
   private picture: TestPicture | null = null;
   private currentMedia: BrowserMedia | null = null;
   private currentInput: BrowserInput | null = null;
@@ -533,7 +676,7 @@ export class MockDeskLink implements DeskLink {
   private streamLive = false;
   /** When this session last heard its desk's sound, for `silentFor`. */
   private soundAt = 0;
-  readonly attention = new AttentionSignal((seen) => this.call('desk.attention.set', { seen }, { deadlineMs: ATTENTION_DEADLINE_MS }));
+  readonly attention = new AttentionSignal((seen, device) => this.call('desk.attention.set', device ? { seen, device } : { seen }, { deadlineMs: ATTENTION_DEADLINE_MS }));
   /**
    * A guild's panel (task 48): the Guild Desk's state, wake and token come from the harness's API for real, through
    * `guild/access.ts`, so a test sees every request. Only the session itself is the mock's: data only, no picture.
@@ -699,12 +842,17 @@ export class MockDeskLink implements DeskLink {
   }
 
   details(): LinkDetails {
-    return { unreachable: false, path: null, rttMs: null, desk: this.guildDesk, refusal: this.refusal };
+    return { unreachable: false, path: null, rttMs: null, desk: this.guildDesk ?? this.sleepDesk, refusal: this.refusal, busy: busyDesks.has(this.deskId) };
   }
 
   onDetails(fn: () => void): () => void {
     this.detailListeners.add(fn);
     return () => this.detailListeners.delete(fn);
+  }
+
+  /** The harness changed whether this desk is waiting for room. */
+  noteBusy(): void {
+    this.detailListeners.forEach((fn) => fn());
   }
 
   private setRefusal(r: DeskRefusal | null): void {
@@ -722,14 +870,30 @@ export class MockDeskLink implements DeskLink {
       d.said = null;
       d.wants = false;
       settleAttention(this.deskId);
-      if (next === 'open') this.attention.up();
-      else this.attention.down();
+      if (next === 'open') {
+        this.sessionNo += 1;
+        this.attention.up();
+      } else {
+        this.attention.down();
+        // That session's phone leaves: the desk takes its own view back.
+        const v = control.view[this.deskId];
+        if (v?.mode === 'phone') settleView(this.deskId, null, false, null);
+      }
     }
     this.listeners.forEach((fn) => fn(next));
   }
 
   setSeen(seen: boolean): void {
     if (this.purpose !== 'export' && !this.guild) this.attention.want(seen);
+  }
+
+  setDevice(device: PhoneDevice | null): void {
+    if (this.purpose !== 'export' && !this.guild) this.attention.device(device);
+  }
+
+  /** A session's id while one is open, as the gateway gives it, for `browser.view`'s `sessionId`. */
+  currentSessionId(): string | null {
+    return this.state === 'open' ? `cs-mock-${this.deskId}-${this.sessionNo}` : null;
   }
 
   knowsAttention(): boolean {
@@ -770,6 +934,10 @@ export class MockDeskLink implements DeskLink {
       this.set('denied');
       return;
     }
+    if (asleep.has(this.deskId)) {
+      this.sleepForTest();
+      return;
+    }
     this.set('signaling');
     window.setTimeout(() => this.set('connecting'), 20);
     window.setTimeout(() => {
@@ -778,6 +946,46 @@ export class MockDeskLink implements DeskLink {
       this.setMedia(true);
     }, 40);
   }
+
+  /** As `connect` says of a stopped desk (`control.sleep`): no session, and the desk's state for the office. */
+  private sleepDesk: LinkDeskState | null = null;
+
+  sleepForTest(): void {
+    this.setSession(false);
+    this.set('idle');
+    this.setMedia(false);
+    this.sayDesk('stopped', null);
+  }
+
+  private sayDesk(state: string, phase: string | null): void {
+    this.sleepDesk = { state, phase, queuePosition: null, stopAt: null, heardAt: Date.now() };
+    this.detailListeners.forEach((fn) => fn());
+  }
+
+  /** A wake of a sleeping mock desk: Platform's phases, then a session. One that `fails` stays at its first step. */
+  private wakeFromSleep(): void {
+    const how = asleep.get(this.deskId);
+    if (!how || this.waking) return;
+    this.waking = true;
+    const step = control.wakeStepMs;
+    this.sayDesk('starting', 'starting');
+    if (how === 'fails') return;
+    window.setTimeout(() => this.sayDesk('starting', 'booting'), step);
+    window.setTimeout(() => this.sayDesk('starting', 'connecting'), 2 * step);
+    window.setTimeout(() => {
+      asleep.delete(this.deskId);
+      this.waking = false;
+      this.sayDesk('running', 'ready');
+      this.set('signaling');
+      window.setTimeout(() => {
+        this.setSession(true);
+        this.set('open');
+        this.setMedia(true);
+      }, 40);
+    }, 3 * step);
+  }
+
+  private waking = false;
 
   close(): void {
     this.guildTry += 1;
@@ -795,7 +1003,11 @@ export class MockDeskLink implements DeskLink {
       else if (this.state !== 'open') this.connectGuild(true);
       return;
     }
-    // A mock desk is always running.
+    // A mock desk is always running, unless a test put it to sleep (`control.sleep`).
+    if (asleep.has(this.deskId)) {
+      this.wakeFromSleep();
+      return;
+    }
     this.reopen();
   }
 
@@ -848,7 +1060,7 @@ export class MockDeskLink implements DeskLink {
     this.streamLive = false;
     this.currentInput = on ? mockInput() : null;
     const old = this.picture;
-    this.picture = on ? new TestPicture() : null;
+    this.picture = on ? new TestPicture(this.deskId) : null;
     this.currentMedia = this.picture ? { stream: this.picture.stream, canPlayVideo: !control.noVideo, silentFor: () => this.silentFor() } : null;
     this.mediaListeners.forEach((fn) => fn());
     old?.stop(); // after, as the real link closes its PeerConnection: a window takes its last frame first
@@ -922,7 +1134,8 @@ export class MockDeskLink implements DeskLink {
       const delay = method === 'browser.minified.site.get' ? simpleDesk.control.siteDelayMs : 0;
       return delay > 0 ? new Promise<void>((done) => window.setTimeout(done, delay)).then(run) : run();
     }
-    if (browserDownMs() > 0 && (method === 'browser.text.insert' || method.startsWith('browser.tab.'))) {
+    if (control.chromiumOff && method === 'browser.tab.open' && control.tabOpenStarts && params['start'] === true) control.chromiumOff = false;
+    if ((browserDownMs() > 0 || control.chromiumOff) && (method === 'browser.text.insert' || method.startsWith('browser.tab.'))) {
       return Promise.reject(Object.assign(new Error('Chromium is starting'), { code: 'unavailable', details: { reason: 'chromium' } }));
     }
     const mutation = method.startsWith('browser.tab.') && method !== 'browser.tab.list';
@@ -935,6 +1148,12 @@ export class MockDeskLink implements DeskLink {
       const seen = params['seen'];
       if (typeof seen !== 'boolean') return Promise.reject(Object.assign(new Error('seen'), { code: 'bad_request', details: { reason: 'seen' } }));
       control.attentionLog.push({ deskId: this.deskId, seen, at: performance.now() });
+      const device = (params['device'] as PhoneDevice | undefined) ?? null;
+      if (device && (device.kind !== 'phone' || !(device.width >= 160 && device.width <= 2048) || !(device.height >= 160 && device.height <= 2048) || !Number.isInteger(device.width) || !Number.isInteger(device.height))) {
+        return Promise.reject(Object.assign(new Error('device'), { code: 'bad_request', details: { reason: 'device' } }));
+      }
+      control.deviceLog.push({ deskId: this.deskId, device, at: performance.now() });
+      settleView(this.deskId, this.currentSessionId(), seen, device);
       const d = attentionDesk(this.deskId);
       d.said = seen;
       settleAttention(this.deskId);
@@ -975,6 +1194,7 @@ export class MockDeskLink implements DeskLink {
       // An island's crop has no wire of its own: the stream going warm, or off, is the crop ending.
       if (state !== 'live') simpleDesk.control.island = null;
       if (state === 'live' && control.browserStartMs && !browserUpAt) browserUpAt = Date.now() + control.browserStartMs;
+      if (state === 'live' || state === 'warm') control.chromiumOff = false;
       const wait = Math.max(control.streamDelayMs, browserDownMs());
       const deadline = options?.deadlineMs ?? Infinity;
       return new Promise((resolve, reject) => {
@@ -1046,6 +1266,51 @@ export class MockDeskLink implements DeskLink {
       clipboardListeners.add(listener);
       return () => clipboardListeners.delete(listener);
     }
+    if (topic === 'browser.downloads') {
+      // `refuse['browser.downloads'] = 'not_found'` is a deskd before it.
+      const refusal = control.refuse[topic];
+      if (refusal) {
+        const timer = window.setTimeout(() => onRefused?.(refusal), 10);
+        return () => window.clearTimeout(timer);
+      }
+      const listener = fn as (m: BrowserDownloadsMessage) => void;
+      downloadListeners.add(listener);
+      const timer = window.setTimeout(() => listener({ seq: downloadSeq, downloads: control.downloads }), 10);
+      return () => {
+        window.clearTimeout(timer);
+        downloadListeners.delete(listener);
+      };
+    }
+    if (topic === 'browser.view') {
+      const refusal = control.refuse[topic] ?? (control.phoneView ? undefined : 'not_found');
+      if (refusal) {
+        const timer = window.setTimeout(() => onRefused?.(refusal), 10);
+        return () => window.clearTimeout(timer);
+      }
+      const listener = fn as (m: BrowserViewMessage) => void;
+      let set = viewListeners.get(this.deskId);
+      if (!set) viewListeners.set(this.deskId, (set = new Set()));
+      set.add(listener);
+      const timer = window.setTimeout(() => listener(control.view[this.deskId] ?? DESK_VIEW), 10);
+      return () => {
+        window.clearTimeout(timer);
+        set.delete(listener);
+      };
+    }
+    if (topic === 'browser.links') {
+      // `refuse['browser.links'] = 'not_found'` is a deskd or an image before Links out. No first event, nothing kept.
+      const refusal = control.refuse[topic];
+      if (refusal) {
+        const timer = window.setTimeout(() => onRefused?.(refusal), 10);
+        return () => window.clearTimeout(timer);
+      }
+      const listener = fn as (m: BrowserLinkOutMessage) => void;
+      const own = (m: BrowserLinkOutMessage): void => {
+        if (this.state === 'open') listener(m);
+      };
+      linkOutListeners.add(own);
+      return () => linkOutListeners.delete(own);
+    }
     if (topic === 'files.changes') {
       const refusal = control.refuse[topic];
       if (refusal) {
@@ -1086,6 +1351,22 @@ export class MockDeskLink implements DeskLink {
       return () => {
         gone = true;
         off?.();
+      };
+    }
+    if (topic === 'desk.contention') {
+      const refusal = control.refuse[topic];
+      if (refusal) {
+        onRefused?.(refusal);
+        return () => {};
+      }
+      const listener = fn as (m: { seq: number; type: string; held: boolean }) => void;
+      const set = heldListeners.get(this.deskId) ?? new Set();
+      heldListeners.set(this.deskId, set);
+      set.add(listener);
+      const timer = window.setTimeout(() => listener({ seq: heldSeq, type: 'snapshot', held: heldDesks.get(this.deskId) === true }), 10);
+      return () => {
+        window.clearTimeout(timer);
+        set.delete(listener);
       };
     }
     if (topic === 'desk.attention') {

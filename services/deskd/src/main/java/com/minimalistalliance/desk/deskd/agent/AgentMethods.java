@@ -55,7 +55,11 @@ final class AgentMethods {
             "agent.get", "agent.caps", "agent.workspace.get", "agent.workspace.read", "agent.timer.list",
             "agent.icon.get", "agent.a2a.list",
             // Files attached to a message (desk-agent ADR 0049): the limits and what a model takes.
-            "agent.attach.caps");
+            "agent.attach.caps",
+            // What an agent remembers, and its thread's summary (S-14): the owner's agents', or a member's own.
+            "agent.memory.list",
+            // The Agent's approvals (API.md section 18): a guild member sees only their own agent's.
+            "agent.approvals.list", "agent.approval.get");
     static final List<String> MUTATIONS = List.of(
             "agent.create", "agent.update", "agent.bind", "agent.message.send", "agent.run.stop", "agent.key.add",
             "agent.key.delete", "agent.limits.set",
@@ -64,7 +68,11 @@ final class AgentMethods {
             "agent.timer.delete", "agent.icon.upload", "agent.proposal.answer",
             // Files attached to a message: a chunk of one, taking one off, the owner's limits. Their params carry file
             // content, which deskd only relays: it never logs or audits params, and the idempotency store keeps results.
-            "agent.attach.put", "agent.attach.remove", "agent.attach.caps.set");
+            "agent.attach.put", "agent.attach.remove", "agent.attach.caps.set",
+            // Deleting what an agent remembers, one line or all (S-14). Their results carry no text.
+            "agent.memory.delete", "agent.memory.clear",
+            // The member's yes or no for one card (API.md section 18): a session that may act, and deskd's own ticket.
+            "agent.approval.decide");
 
     /**
      * desk-agent's team methods ({@code Team.handles}) but {@code agent.get}: the desk owner's, so a guild member gets
@@ -79,6 +87,7 @@ final class AgentMethods {
             "agent.attach.caps.set");
 
     static final String KEY_ADD = "agent.key.add";
+    static final String DECIDE = "agent.approval.decide";
     private static final String KEY_MODELS = "agent.key.models";
     /** What only the Founder or an Officer with manage_agents may do on a guild desk: the guild's keys, limits and audit. */
     static final Set<String> MANAGERS_ONLY = Set.of("agent.key.add", "agent.key.delete", "agent.limits.set", "agent.audit.list");
@@ -95,14 +104,17 @@ final class AgentMethods {
     private final Supplier<String> deskId;
     private final Waits waits;
     private final Supplier<AgeBand.Band> band;
+    private final ApprovalTickets tickets;
     /** A member's current name for {@code guild.usage.get} rows: null when nothing knows it. */
     private volatile Function<String, String> memberNames = id -> null;
 
-    AgentMethods(AgentLink link, Supplier<String> deskId, Waits waits, Supplier<AgeBand.Band> band) {
+    AgentMethods(AgentLink link, Supplier<String> deskId, Waits waits, Supplier<AgeBand.Band> band,
+            ApprovalTickets tickets) {
         this.link = link;
         this.deskId = deskId;
         this.waits = waits;
         this.band = band;
+        this.tickets = tickets;
     }
 
     void register(RpcDispatcher dispatcher) {
@@ -116,6 +128,10 @@ final class AgentMethods {
         for (String method : MUTATIONS) {
             if (method.equals(KEY_ADD)) {
                 dispatcher.registerMutation(method, SCOPES, this::keyAdd);
+                continue;
+            }
+            if (method.equals(DECIDE)) {
+                dispatcher.registerMutation(method, SCOPES, this::decide);
                 continue;
             }
             dispatcher.registerMutation(method, SCOPES, (context, params) -> {
@@ -209,6 +225,75 @@ final class AgentMethods {
     static void requireMemberAge(Caller caller) throws RpcException {
         if (caller.teen()) {
             throw new RpcException(RpcException.FORBIDDEN, "The Agent app isn't available on this desk", Map.of("reason", AGE_BAND));
+        }
+    }
+
+    /**
+     * {@code agent.approval.decide} (API.md section 18). Only a session that may act decides: the owner's with input
+     * (never a viewer's or, once they exist, a support session's), or a guild member's, whose token has no input because
+     * a guild desk has no Browser, for their own agent (desk-agent answers {@code not_found} for any other). A yes makes
+     * deskd's own ticket just before the request's bytes go, so it exists before desk-agent can act on it; desk-agent
+     * refusing the decision takes it back. A tool deskd runs for desk-agent then runs only against that ticket
+     * ({@link ApprovalTickets#redeem}).
+     */
+    private Object decide(RpcContext context, Map<String, Object> params) throws Exception {
+        requireCaller(context, DECIDE);
+        requireDecider(context);
+        requireAgent();
+        boolean approve = Boolean.TRUE.equals(params.get("approve"));
+        String approvalId = params.get("approvalId") instanceof String id ? id : null;
+        String sha256 = params.get("sha256") instanceof String sha ? sha : null;
+        // Whether this call made the ticket: only then may its refusal take it back (a double click's second yes, which
+        // desk-agent answers answered, must not take away the first's).
+        java.util.concurrent.atomic.AtomicBoolean made = new java.util.concurrent.atomic.AtomicBoolean();
+        AgentLink.Gate gate = () -> {
+            context.beginEffect();
+            requireCaller(context, DECIDE);
+            requireDecider(context);
+            if (approve) {
+                made.set(tickets.record(approvalId, sha256, context.principal().caller()));
+            }
+        };
+        Object answer;
+        try {
+            answer = link.call(DECIDE, params, waits.call(), session(context), gate, caller(context));
+        } catch (RpcException e) {
+            // desk-agent's own refusal: nothing was approved. Anything else (it may not have heard) keeps the ticket,
+            // which lapses unused.
+            if (made.get() && DECIDED_NOTHING.contains(e.code())) {
+                tickets.forget(approvalId);
+            }
+            throw e;
+        }
+        if (made.get() && !(answer instanceof Map<?, ?> map && map.get("approval") instanceof Map<?, ?> approval
+                && APPROVED.contains(approval.get("state")))) {
+            tickets.forget(approvalId);
+        }
+        return answer;
+    }
+
+    /** desk-agent's refusals of a decision, which mean it approved nothing. */
+    private static final Set<String> DECIDED_NOTHING = Set.of(RpcException.BAD_REQUEST, RpcException.NOT_FOUND,
+            RpcException.CONFLICT, RpcException.FORBIDDEN, RpcException.TOO_LARGE);
+    /** An approval's states after a yes: running, or already run. */
+    private static final Set<Object> APPROVED = Set.of("approved", "done", "failed", "interrupted");
+
+    /**
+     * A session that may decide, read live: an owner token with input, or a guild member's (their tokens carry no
+     * input, as there's no Browser to drive; desk-agent checks the agent is theirs). Else {@code forbidden} with
+     * {@code reason: permission}, before desk-agent hears of it.
+     */
+    private static void requireDecider(RpcContext context) throws RpcException {
+        RpcPrincipal principal = context.principal();
+        if (principal.isGuildMember()) {
+            Caller caller = principal.caller();
+            if (caller == null || !Caller.GUILD_MEMBER.equals(caller.kind()) || caller.memberId() == null) {
+                throw forbidden();
+            }
+            return;
+        }
+        if (!OWNER.equals(principal.scope()) || !principal.input()) {
+            throw forbidden();
         }
     }
 

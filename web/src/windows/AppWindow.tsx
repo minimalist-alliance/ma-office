@@ -208,6 +208,7 @@ export function AppWindow({ win, deskName, active, parked, forceFull }: {
         tabIndex={-1}
         data-testid={`window-${win.app}`}
         data-desk={win.deskId}
+        data-app={win.app}
         onPointerDown={() => raiseWindow(win.key)}
         onKeyDown={onKeyDown}
       >

@@ -1,0 +1,278 @@
+#!/usr/bin/python3 -I
+"""desk-host-template: a shared host's template generations and its own updates (ADR 0077). Root. templates.py has the rules.
+
+  boot                                  desk-host-boot's part: the migration (an older bake's template becomes g1), leftovers of
+                                        a cut-off fetch or re-root removed, every sealed generation bound read-only, desk-host-upd
+  bake-g1 <host-version>                the bake's g1 (image/host/recipe/build.sh): its manifest, .complete written last, state.json
+  current | state | path <gen> | manifest <tree>
+  fetch <order.json>                    one template_target (1.4): exit 0 sealed (the candidate), 3 refused, 4 URLs wanted, 1 failed
+  choose <k> reroot|new [--trial | --trial-at-stop] [--gen <slot's gen>] [--vol <vol-id>]
+                                        the generation slot k should be on (section 2), reading its volume's Last Version
+                                        (mounts.py peek) from the record's volume; one JSON line: gen, reason, chromiumBehind, lastVersion
+  due <k>                               exit 0 when slot k's record isn't on the current generation (or the candidate wants a trial)
+  promote <gen> | rollback <gen> | halt <gen> <reason> | trial <gen> <k> start|passed|failed | gc
+  trial-check <k>                       the candidate's start checks on slot k: exit 0 passed, 1 failed (halted), 2 not yet or n/a
+  start-failed <k>                      slot k's start failed on the candidate: halted, exit 0 (desk-host up then prepares again)
+  record-set <k> <json>                 fields merged into slot k's record (lastVersion, chromiumBehind): the host's own file
+  idle <k> [--urgent-since <utc>]       slot k's idle.json by desk-batch's rule, downloads 0 (idlerule.py); exit 0 when idle
+  hold <k> [<seconds>] | unhold <k> | hold-until <k>
+                                        update.holdUntil in the report while a swap or an idle restart runs
+  reboot-pending                        {since, kernel} and exit 0 when the host's own packages want a reboot
+  upd [--detach] -- <argv>              argv in desk-host-upd (section 4); upd-ensure; upd-kill; upd-freeze on|off
+  host-apt [--force]                    the host's own security updates (section 3), as desk-host-apt.service runs them
+  report-host                           PU-1's host fields, one JSON line
+  copy-tree <gen dir> <new dir>         a re-root's copy, paced so desk-host-upd's io.max never fills its memory
+  room <k> <gen> [<spare MB>]           desk-host prepare's room check, in the copy turn: exit 0 when the store holds one more root beside
+                                        the other slots' quota room and the spare (512 MB), else 1; one line of the numbers either way
+"""
+import json
+import os
+import subprocess
+import sys
+import time
+
+sys.dont_write_bytecode = True
+sys.path.insert(0, os.path.dirname(os.path.abspath(__file__)))
+import idlerule  # noqa: E402
+import templates as T  # noqa: E402
+
+MOUNTS = os.path.join(T.LIB, "mounts.py")
+
+
+def out(o):
+    print(json.dumps(o, separators=(",", ":")), flush=True)
+
+
+def dev_for_vol(vol):
+    want = (vol or "").replace("-", "", 1)
+    if not want.startswith("vol"):
+        return None
+    for c in sorted(os.listdir("/sys/class/nvme")) if os.path.isdir("/sys/class/nvme") else []:
+        try:
+            if open(f"/sys/class/nvme/{c}/serial").read().strip() == want:
+                return f"/dev/{c}n1"
+        except OSError:
+            pass
+    return None
+
+
+def peek(k, vol):
+    """The profile's Last Version from slot k's volume (mounts.py peek): (version or None, 'ok'|'absent'|'unreadable', why)."""
+    if os.environ.get("DESK_HOST_NO_PEEK") == "1" and T.test_mode():   # verify.sh's rollback mutation: the read turned off
+        return None, "absent", "the read is turned off (a test host's mutation)"
+    dev = dev_for_vol(vol)
+    if not dev:
+        return None, "unreadable", "the volume isn't attached"
+    try:
+        r = subprocess.run([sys.executable, "-I", MOUNTS, "peek", str(k), dev], capture_output=True, text=True, timeout=30)
+        j = json.loads(r.stdout.strip().splitlines()[-1])
+    except (subprocess.TimeoutExpired, ValueError, IndexError, OSError) as e:
+        return None, "unreadable", f"peek: {type(e).__name__}"
+    return j.get("version"), j.get("state", "unreadable"), j.get("why", "")
+
+
+def record_set(k, fields):
+    r = T.record(k)
+    if r is None:
+        return False
+    r.update(fields)
+    T.write_atomic(f"{T.REC}/{k}.json", json.dumps(r).encode(), 0o600)
+    return True
+
+
+def choose(k, purpose, trial=None, slot_gen=None, vol=None):
+    st = T.load_state()
+    rec = T.record(k) or {}
+    gen = slot_gen or (rec.get("template") if purpose == "reroot" else None)
+    vol = vol or (rec.get("volumeId") if purpose == "reroot" else None)
+    running = subprocess.run(["runc", "state", f"dh-desk-{k}"], capture_output=True).returncode == 0
+    if running and purpose == "reroot":
+        # a running desk's volume is mounted, and Chromium writes Last Version only at its start: the profile's is at most the
+        # higher of the host's last read and its generation's Chromium (desk-host restart reads it again after the stop)
+        cands = [v for v in (rec.get("lastVersion"), T.upstream(T.chromium_for(st, gen) or "")) if v and T.vkey(v)]
+        lv, how, why = (max(cands, key=T.vkey) if cands else None), ("ok" if cands else "absent"), "a running desk: its last read or its generation's Chromium"
+    else:
+        lv, how, why = peek(k, vol) if vol else (None, "absent", "no volume named")
+    lvx = lv if how == "ok" else (None if how == "absent" else "unreadable")
+    c = T.candidate_trial_ok(st, k, at_stop=(trial == "stop")) if trial else False
+    g, reason, behind = T.choose(st, gen, lvx, purpose, c)
+    o = {"gen": g, "reason": reason, "chromiumBehind": behind, "lastVersion": lv if how == "ok" else None, "read": how,
+         **({"why": why} if why else {})}
+    if purpose == "reroot" and rec and rec.get("deskId") and not running:
+        record_set(k, {"lastVersion": o["lastVersion"], "lastVersionRead": how, "lastVersionAt": T.utc(), "chromiumBehind": behind})
+    return o
+
+
+def due(k):
+    st = T.load_state()
+    rec = T.record(k)
+    if not rec or not T.current_gen(st):
+        return False
+    return rec.get("template") != T.current_gen(st) or T.candidate_trial_ok(st, k, at_stop=True)
+
+
+def main(a):
+    if not a:
+        print(__doc__, file=sys.stderr)
+        return 2
+    cmd = a[0]
+    if cmd == "upd":
+        detach = "--detach" in a[1:a.index("--")] if "--" in a else False
+        argv = a[a.index("--") + 1:] if "--" in a else []
+        if not argv:
+            print("usage: desk-host-template upd [--detach] -- <argv>", file=sys.stderr)
+            return 2
+        return T.upd_launch(argv, detach)
+    if os.geteuid() != 0 and not T.test_mode():
+        print("desk-host-template: root only", file=sys.stderr)
+        return 1
+    if cmd == "boot":
+        for line in T.boot():
+            print(f"desk-host-template: {line}")
+        return 0
+    if cmd == "bake-g1":
+        t = T.gen_dir("g1")
+        if os.path.exists(f"{t}/.complete"):
+            os.unlink(f"{t}/.complete")
+        man = T.manifest_of(t)
+        f = T.seal(t, "g1", man, {"host-template": T.utc(), "host-version": a[1]}, bind=False)
+
+        def s(st):
+            st.clear()
+            st.update(T.empty_state())
+            st["current"] = {"gen": "g1", "chromium": f["chromium"], "sealedAt": f["host-template"], "target": None, "currentSince": T.utc()}
+            st["maxGen"] = 1
+        T.update_state(s)
+        print(f"g1: {len(T.parse_manifest(man, refused=T.Failed))} paths, {len(man)} bytes of manifest (sha256 {f['manifest'][:12]}), chromium {f['chromium']}")
+        return 0
+    if cmd == "room":
+        ok, why = T.prepare_room(int(a[1]), a[2] if len(a) > 2 else None, int(a[3]) if len(a) > 3 else 512)
+        print(why)
+        return 0 if ok else 1
+    if cmd == "current":
+        print(T.current_gen() or "")
+        return 0 if T.current_gen() else 1
+    if cmd == "state":
+        print(json.dumps(T.load_state(), indent=1, sort_keys=True))
+        return 0
+    if cmd == "path":
+        print(T.gen_dir(a[1]))
+        return 0
+    if cmd == "manifest":
+        sys.stdout.buffer.write(T.manifest_of(a[1]))
+        return 0
+    if cmd == "fetch":
+        order = json.load(open(a[1]))
+        try:
+            T.fetch(order)
+            return 0
+        except T.Refused:
+            return 3
+        except T.UrlsWanted:
+            return 4
+        except T.Failed:
+            return 1
+    if cmd == "choose":
+        k = int(a[1])
+        sg = a[a.index("--gen") + 1] if "--gen" in a else None
+        vol = a[a.index("--vol") + 1] if "--vol" in a else None
+        out(choose(k, a[2], "restart" if "--trial" in a else "stop" if "--trial-at-stop" in a else None, sg, vol))
+        return 0
+    if cmd == "due":
+        return 0 if due(int(a[1])) else 1
+    if cmd == "promote":
+        r = T.promote(a[1])
+        print(r)
+        return 0 if r in ("promoted", "already current") or r.startswith("promote ordered") else 1
+    if cmd == "rollback":
+        r = T.halt(a[1], "rollback")
+        print(r)
+        return 0 if r.startswith(("halted", "already")) else 1
+    if cmd == "halted":   # desk-host: a generation halted (a rollback, a failed start) while a root was built from it isn't swapped in
+        return 0 if a[1] in T.halted_gens(T.load_state()) else 1
+    if cmd == "halt":
+        r = T.halt(a[1], a[2])
+        print(r)
+        return 0 if r.startswith(("halted", "already")) else 1
+    if cmd == "trial":
+        r = T.trial(a[1], int(a[2]), a[3])
+        print(r)
+        return 0 if r and not r.startswith("not") else 1
+    if cmd == "gc":
+        g = T.gc()
+        print(f"removed {' '.join(g) or 'nothing'}")
+        return 0
+    if cmd == "record-set":
+        return 0 if record_set(int(a[1]), json.loads(a[2])) else 1
+    if cmd == "idle":
+        pending = None
+        if "--urgent-since" in a:
+            pending = {"urgent": True, "offeredAt": a[a.index("--urgent-since") + 1]}
+        ok, why = idlerule.slot_idle(int(a[1]), pending)
+        out({"idle": ok, "reason": why})
+        return 0 if ok else 1
+    if cmd == "hold":
+        T.set_hold(int(a[1]), int(a[2]) if len(a) > 2 else 900)
+        return 0
+    if cmd == "unhold":
+        T.clear_hold(int(a[1]))
+        return 0
+    if cmd == "upd-ensure":
+        print(json.dumps(T.ensure_upd()))
+        return 0
+    if cmd == "upd-kill":
+        T.upd_kill()
+        return 0
+    if cmd == "upd-freeze":
+        T.upd_freeze(a[1] == "on")
+        return 0
+    if cmd == "host-apt":
+        return T.host_apt(force="--force" in a)
+    if cmd == "copy-tree":   # a re-root's copy (desk-host rr_build), paced for desk-host-upd's io.max
+        t0 = time.monotonic()
+        n = T.copy_tree(a[1], a[2])
+        print(f"copied {n} paths in {time.monotonic() - t0:.1f} s", file=sys.stderr)
+        return 0
+    if cmd == "fetch-ended":   # the link: a fetch process ended with no verdict of its own (killed): failed, its leftovers removed
+        fs = T.read_fetch_status() or {}
+        if fs.get("state") in ("downloading", "verifying", "unpacking", "checking"):
+            T.fetch_status(state="failed", error=f"the fetch ended with exit {a[1]} at {fs.get('step')} (killed?)")
+            for d in os.listdir(T.TPL) if os.path.isdir(T.TPL) else []:
+                if d.startswith(".build-"):
+                    T.rm_tree(f"{T.TPL}/{d}")
+            for d in os.listdir(T.DL) if os.path.isdir(T.DL) else []:
+                T.rm_tree(f"{T.DL}/{d}")
+            g = fs.get("gen")
+            if T.gen_n(g) and not T.sealed(g) and g != T.current_gen():   # a seal cut off: its files on the host's root go too
+                T.rm_tree(T.gen_dir(g))
+                for ext in (".json", ".changed", ".plan"):
+                    try:
+                        os.unlink(f"{T.VAR}/{g}{ext}")
+                    except OSError:
+                        pass
+        return 0
+    if cmd == "trial-check":
+        r = T.trial_check(int(a[1]))
+        print(r)
+        return 0 if r.startswith("passed") else 1 if r.startswith("failed") else 2
+    if cmd == "start-failed":
+        return 0 if T.start_failed(int(a[1])) else 1
+    if cmd == "reboot-pending":
+        rp = T.reboot_pending()
+        if rp:
+            out(rp)
+        return 0 if rp else 1
+    if cmd == "hold-until":
+        h = T.hold_until(int(a[1]))
+        if h:
+            print(h)
+        return 0 if h else 1
+    if cmd == "report-host":
+        out(T.report_host())
+        return 0
+    print(__doc__, file=sys.stderr)
+    return 2
+
+
+if __name__ == "__main__":
+    sys.exit(main(sys.argv[1:]))

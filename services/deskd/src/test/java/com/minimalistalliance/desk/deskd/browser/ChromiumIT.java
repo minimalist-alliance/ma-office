@@ -55,6 +55,12 @@ class ChromiumIT {
     private static final String TRICKY_TITLE = "Q&A: <b> \"quoted\" it's";
     private static final String ESCAPED_TRICKY_TITLE = "Q&amp;A: &lt;b&gt; &quot;quoted&quot; it&#39;s";
     private static final String TITLE_BY_SCRIPT = "Later & <i> \"again\" it's";
+    /** A page's request for a key system, as a player makes one before it plays, with each answer added to the title. */
+    private static final String ASK_KEY_SYSTEM = "const cfg = [{initDataTypes: ['cenc'], videoCapabilities: [{contentType: 'video/mp4; codecs=\"avc1.42E01E\"'}]}];"
+            + "const answers = [];"
+            + "function ask(ks) { navigator.requestMediaKeySystemAccess(ks, cfg).then("
+            + "(a) => { answers.push('granted:' + a.keySystem); document.title = answers.join(' '); },"
+            + "(e) => { answers.push('refused:' + e.name + ':' + e.message); document.title = answers.join(' '); }); }";
 
     @TempDir
     Path dir;
@@ -95,6 +101,21 @@ class ChromiumIT {
         page("/retitles", "<title>before</title><script>addEventListener('load', () => setTimeout(() => {"
                 + "document.title = 'Later & <i> \"again\" it\\'s'; }, 700))</script>");
         page("/ampersands", "<title>" + "&amp;".repeat(BrowserTabs.TITLE_CHARS + 50) + "</title>");
+        // Protected playback (TD-225): asked as the page parses, before deskd can be listening in it; asked well after,
+        // twice; and ClearKey, which Chromium has.
+        page("/widevine", "<title>widevine</title><script>" + ASK_KEY_SYSTEM + "ask('com.widevine.alpha');</script>");
+        page("/fairplay-later", "<title>fairplay</title><script>" + ASK_KEY_SYSTEM
+                + "setTimeout(() => { ask('com.apple.fps.1_0'); ask('com.microsoft.playready'); }, 1500);</script>");
+        page("/clearkey", "<title>clearkey</title><script>" + ASK_KEY_SYSTEM + "ask('org.w3.clearkey');</script>");
+        // A file the server says to save, as the sweep's download did (LS-31).
+        pages.createContext("/report", exchange -> {
+            byte[] body = "a report\n".repeat(1000).getBytes(StandardCharsets.UTF_8);
+            exchange.getResponseHeaders().set("Content-Type", "application/octet-stream");
+            exchange.getResponseHeaders().set("Content-Disposition", "attachment; filename=\"report.txt\"");
+            exchange.sendResponseHeaders(200, body.length);
+            exchange.getResponseBody().write(body);
+            exchange.close();
+        });
         pages.start();
         base = "http://127.0.0.1:" + pages.getAddress().getPort();
         await().atMost(Duration.ofSeconds(30)).until(this::debuggingPortAnswers);
@@ -132,6 +153,13 @@ class ChromiumIT {
     }
 
     private void startChromium() throws IOException {
+        // Where downloads go, as the desk's DownloadDirectory policy says, so none lands in this user's own Downloads.
+        Path preferences = dir.resolve("profile").resolve("Default").resolve("Preferences");
+        if (!java.nio.file.Files.exists(preferences)) {
+            java.nio.file.Files.createDirectories(preferences.getParent());
+            java.nio.file.Files.writeString(preferences, "{\"download\":{\"default_directory\":\"" + dir.resolve("downloads")
+                    + "\",\"prompt_for_download\":false,\"directory_upgrade\":true}}");
+        }
         // The same flags as desk-browser.service wherever they can apply without a display.
         chromium = new ProcessBuilder(
                         System.getenv("DESKD_CHROMIUM_BIN"),
@@ -436,6 +464,51 @@ class ChromiumIT {
         assertThat(rig.call(client, "browser.tab.reload", Map.of())).containsEntry("_kind", "RES");
     }
 
+    /**
+     * TD-225, what no fake can show: the page's own world wraps the request, deskd's isolated world hears of a refusal
+     * through the DOM, and its binding reaches deskd with Runtime never enabled. The page gets Chromium's own answer
+     * either way. A Chromium with Widevine, as Chrome for Testing has, grants that one, and then there's nothing to tell.
+     */
+    @Test
+    void aPageRefusedProtectedPlaybackMarksItsTabUntilItNavigates() throws Exception {
+        navigate("/widevine");
+        await().atMost(Duration.ofSeconds(10)).until(() -> String.valueOf(onlyTab().get("title")).matches("(refused|granted):.*"));
+        String answer = (String) onlyTab().get("title");
+        String id = (String) onlyTab().get("tabId");
+        System.out.printf("com.widevine.alpha here: %s%n", answer);
+        if (answer.startsWith("refused:")) {
+            assertThat(answer).isEqualTo("refused:NotSupportedError:Unsupported keySystem or supportedConfigurations.");
+            await().atMost(Duration.ofSeconds(10)).untilAsserted(() ->
+                    assertThat(Json.object(onlyTab(), "protectedMedia")).containsEntry("keySystem", "com.widevine.alpha"));
+        } else {
+            Thread.sleep(1000);
+            assertThat(onlyTab()).doesNotContainKey("protectedMedia");
+        }
+        // Nothing of deskd's has a name in the page's world, and the method keeps its own.
+        assertThat(inPage(id, "Object.getOwnPropertyNames(window).filter(k => /^ma[0-9a-f]{16}/.test(k)).length")).isEqualTo("0");
+        assertThat(inPage(id, "navigator.requestMediaKeySystemAccess.name + navigator.requestMediaKeySystemAccess.length"))
+                .isEqualTo("requestMediaKeySystemAccess2");
+
+        // A new page clears it, and is watched afresh: asked well after deskd is listening, twice, it's one mark.
+        navigate("/fairplay-later");
+        await().atMost(Duration.ofSeconds(10)).untilAsserted(() ->
+                assertThat(onlyTab()).containsEntry("url", base + "/fairplay-later").doesNotContainKey("protectedMedia"));
+        await().atMost(Duration.ofSeconds(10)).untilAsserted(() -> {
+            assertThat(String.valueOf(onlyTab().get("title"))).matches("refused:\\S+ .*refused:.*");
+            assertThat(onlyTab()).containsKey("protectedMedia");
+        });
+        Map<String, Object> seen = Json.object(onlyTab(), "protectedMedia");
+        assertThat(seen.get("keySystem")).isIn("com.apple.fps", "com.microsoft.playready");
+        Thread.sleep(500);
+        assertThat(Json.object(onlyTab(), "protectedMedia")).isEqualTo(seen);
+
+        // ClearKey is granted, so there's nothing to tell.
+        navigate("/clearkey");
+        await().atMost(Duration.ofSeconds(10)).untilAsserted(() -> assertThat(onlyTab()).containsEntry("title", "granted:org.w3.clearkey"));
+        Thread.sleep(500);
+        assertThat(onlyTab()).doesNotContainKey("protectedMedia");
+    }
+
     @Test
     void aFailedNavigationIsANetError() throws Exception {
         // .invalid never resolves, whatever the network here is doing.
@@ -597,6 +670,38 @@ class ChromiumIT {
         System.out.printf("hostile page: %d pings answered, heap in use %d MiB%n", pings, (runtime.totalMemory() - runtime.freeMemory()) / (1024 * 1024));
         assertThat(rig.call(client, "browser.tab.navigate", Map.of("url", base + "/a"))).containsEntry("_kind", "RES");
         await().atMost(Duration.ofSeconds(15)).untilAsserted(() -> assertThat(onlyTab()).containsEntry("title", "Page A"));
+    }
+
+    /**
+     * LS-31 on a real Chromium: with the behavior left at {@code default}, Chromium still saves where its own setting says,
+     * and deskd hears the download start and finish.
+     */
+    @Test
+    @SuppressWarnings("unchecked")
+    void aDownloadIsHeardFromStartToEndAndSavedWhereChromiumSavesThem() throws Exception {
+        assertThat(client.subscribe(BrowserDownloads.TOPIC, null)).containsEntry("_kind", "RES");
+        navigate("/a");
+        rig.call(client, "browser.tab.navigate", Map.of("url", base + "/report"));
+        long deadline = System.nanoTime() + TimeUnit.SECONDS.toNanos(20);
+        List<Object> seen = new ArrayList<>();
+        Map<String, Object> done = null;
+        while (done == null && System.nanoTime() < deadline) {
+            Frame frame = rig.fake.pollFrame(client.handle(), Channels.EVENTS, 500);
+            if (frame == null || frame.more()) {
+                continue;
+            }
+            Map<String, Object> event = Json.parseObject(frame.payload());
+            Object downloads = Json.object(event, "data").get("downloads");
+            seen.add(downloads);
+            if (downloads instanceof List<?> list && !list.isEmpty()
+                    && "completed".equals(((Map<String, Object>) list.get(0)).get("state"))) {
+                done = (Map<String, Object>) list.get(0);
+            }
+        }
+        assertThat(done).as("snapshots: " + seen).isNotNull();
+        assertThat(done).containsEntry("name", "report.txt").containsEntry("receivedBytes", 9000).doesNotContainKey("filesPath");
+        assertThat(seen.toString()).doesNotContain("127.0.0.1");
+        assertThat(dir.resolve("downloads").resolve("report.txt")).hasSize(9000);
     }
 
     @Test

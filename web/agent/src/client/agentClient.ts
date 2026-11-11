@@ -12,6 +12,7 @@ import type {
   AttachLimits,
   AgentLink,
   AgentPatch,
+  Approval,
   AuditPage,
   ConversationEvent,
   DeskErrorCode,
@@ -19,6 +20,7 @@ import type {
   LimitScope,
   LimitsChange,
   LimitsView,
+  MemoryList,
   ModelInfo,
   Provider,
   ProviderId,
@@ -27,6 +29,7 @@ import type {
   Timer,
   TimerInput,
   TimerList,
+  ToolsEvent,
   WorkspaceFile,
   WorkspaceView,
 } from './types';
@@ -137,6 +140,31 @@ export interface AgentClient {
 
   /** `agent.audit.list`: newest first. */
   listAudit(opts?: { beforeSeq?: number; limit?: number }): Promise<AuditPage>;
+
+  // ----- S-14: approvals (deskd API.md section 18), running tools (the spec's section 2.8) and memory (desk-agent, "Memory")
+
+  /** `agent.approvals.list`: newest first, 50 a page. `state` `pending` (the default) or `all`. */
+  listApprovals(opts?: { agentId?: string; state?: 'pending' | 'all'; before?: string }): Promise<{ approvals: Approval[]; older: boolean }>;
+  /** `agent.approval.get`: one approval, always with its whole `payload`. */
+  getApproval(approvalId: string): Promise<Approval>;
+  /**
+   * `agent.approval.decide`: the member's yes or no, with the hash the card computed from the payload it shows. `note` only with a
+   * no. Answers the approval as it is after the decision.
+   */
+  decideApproval(approvalId: string, decision: { approve: boolean; sha256: string; note?: string }, m: Mutation): Promise<Approval>;
+  /**
+   * Topic `agent.tools`: every tool call running on the desk now, a snapshot first. `onAbsent` is a desk that doesn't serve the
+   * topic (every desk today): nothing is running as far as this app can tell. Returns an unsubscribe.
+   */
+  watchTools(onEvent: (e: ToolsEvent) => void, onAbsent?: () => void): () => void;
+  /** `agent.tool.stop`: one running call. `not_found` once it has ended; `precondition_failed` `not_stoppable`. */
+  stopTool(callId: string, m: Mutation): Promise<void>;
+  /** `agent.memory.list`: what an agent remembers, newest first. */
+  listMemories(agentId: string): Promise<MemoryList>;
+  /** `agent.memory.delete`: one line, for good. */
+  deleteMemory(agentId: string, memoryId: string, m: Mutation): Promise<void>;
+  /** `agent.memory.clear`: every line, and the thread's summary. */
+  clearMemories(agentId: string, m: Mutation): Promise<{ deleted: number }>;
 }
 
 /** An `ERR` from the desk, kept to what the UI branches on. `message` is for logs, never shown. */

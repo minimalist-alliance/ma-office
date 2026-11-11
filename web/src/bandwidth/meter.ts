@@ -36,6 +36,8 @@ export interface BandwidthMeter {
   pollAfterSeconds: number;
   /** Null, or present while the data guard holds the member's desks. */
   dataGuard: DataGuardState | null;
+  /** A free member's Browser time today, as it came: only the free tier's chunk reads it (`free/wire.ts`). */
+  browserTime?: unknown;
 }
 
 const GB = 1e9;
@@ -80,6 +82,7 @@ export function parseMeter(raw: unknown): BandwidthMeter | null {
     asOf: time(r.asOf) ? r.asOf : null,
     pollAfterSeconds: num(r.pollAfterSeconds) && r.pollAfterSeconds >= 1 ? Math.min(r.pollAfterSeconds, 600) : 60,
     dataGuard: guardOf(r.dataGuard),
+    browserTime: r.browserTime,
   };
 }
 
@@ -152,7 +155,7 @@ export function circleLabel(m: BandwidthMeter, c: Clock): string {
  * What goes on when the Browser pauses: only apps the member has and can use. Chat isn't built, so it's never named, and a
  * teen has no Agent, so it isn't named for them.
  */
-const keepsWorking = (): string => (mayHaveApp('agent') ? 'Notebook and Agent keep working' : 'Notebook keeps working');
+export const keepsWorking = (): string => (mayHaveApp('agent') ? 'Notebook and Agent keep working' : 'Notebook keeps working');
 
 /** The one line under the numbers in the panel, or null when there's nothing to say. */
 export function stateLine(m: BandwidthMeter, c: Clock): string | null {

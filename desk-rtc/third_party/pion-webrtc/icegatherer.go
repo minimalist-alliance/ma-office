@@ -269,6 +269,11 @@ func (g *ICEGatherer) credentialOptions() []ice.AgentOption {
 	ufrag := g.api.settingEngine.candidates.UsernameFragment
 	pass := g.api.settingEngine.candidates.Password
 	if ufrag == "" && pass == "" {
+		// desk-rtc's patch (desk-rtc/third_party/README.md): a ufrag prefix, when set, gives fresh prefixed credentials.
+		if u, p, ok := g.api.settingEngine.prefixedICECredentials(); ok {
+			return []ice.AgentOption{ice.WithLocalCredentials(u, p)}
+		}
+
 		return nil
 	}
 

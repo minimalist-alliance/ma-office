@@ -83,7 +83,8 @@ class TeamSchemaTest {
 
         assertThat(userVersion()).isEqualTo(1);
         assertThat(names("SELECT name FROM sqlite_master WHERE type = 'table'"))
-                .contains("agents", "messages", "keys", "settings", "links", "proposals", "a2a", "timers");
+                .contains("agents", "messages", "keys", "settings", "links", "proposals", "a2a", "timers", "memories",
+                        "thread_summaries");
         assertThat(names("SELECT name FROM pragma_table_info('agents')"))
                 .contains("purpose", "icon", "tone", "png_version", "solo", "workspace_mb", "shared_with");
         assertThat(names("SELECT name FROM pragma_table_info('messages')")).contains("origin", "tools");

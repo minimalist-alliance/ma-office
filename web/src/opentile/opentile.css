@@ -1,0 +1,122 @@
+/* ------------------------------------------------------------ open tiles (opentile/OpenTileLayer.tsx, ADR 0053)
+   The live app docked to its tile, in screen pixels for the camera at rest, moved by one transform on the layer while the
+   camera moves, as the carousel's stage is. Above the canvas and the proxies, under the bars, the notices and the windows.
+   Its own stylesheet, loaded with its chunk. */
+.open-layer {
+  position: absolute;
+  top: 0;
+  left: 0;
+  width: 0;
+  height: 0;
+  transform-origin: 0 0;
+  pointer-events: none;
+}
+.open-tile {
+  position: absolute;
+  display: flex;
+  flex-direction: column;
+  overflow: hidden;
+  background: var(--ma-surface-window);
+  box-shadow: var(--ma-elevation-tile);
+  pointer-events: auto;
+}
+.open-layer.shielded .open-tile {
+  filter: blur(14px);
+}
+.open-layer.shielded .br-video {
+  visibility: hidden;
+}
+/* The head: the app's glyph and name, as a window's title bar but quieter. It moves the tile, and it's the tile's stop for
+   the keyboard. "Open as window" sits at its right end, after the app in the Tab order. */
+.open-tile-head {
+  flex: none;
+  display: flex;
+  align-items: center;
+  gap: 8px;
+  height: 32px;
+  padding: 0 44px 0 12px;
+  border-bottom: 1px solid var(--ma-border-hairline);
+  color: var(--ma-text-secondary);
+  cursor: grab;
+  -webkit-user-select: none;
+  user-select: none;
+  touch-action: none;
+}
+.open-tile-head:active {
+  cursor: grabbing;
+}
+/* The tile's stop on the desk is its proxy, whose ring would be under the frame: the frame draws it, the chrome's 2 px with
+   a 2 px gap, dashed while the keyboard moves or resizes it (`m`, `r`). */
+.open-tile.ring {
+  outline: 2px solid var(--ma-focus-ring);
+  outline-offset: 2px;
+}
+.open-tile.ring.editing {
+  outline: 3px dashed var(--ma-focus-ring);
+}
+.open-tile-name {
+  flex: 1;
+  min-width: 0;
+  margin: 0;
+  overflow: hidden;
+  font-size: 13px;
+  line-height: 18px;
+  font-weight: 600;
+  white-space: nowrap;
+  text-overflow: ellipsis;
+}
+.open-tile-expand {
+  position: absolute;
+  top: 2px;
+  right: 8px;
+  z-index: 2;
+  color: var(--ma-text-secondary);
+}
+.ma-window.open-tile-app {
+  position: relative;
+  flex: 1;
+  min-height: 0;
+  border-radius: 0;
+  box-shadow: none;
+}
+.open-tile > .window-edge {
+  z-index: 1;
+}
+/* The corner's grip: a 24 px target, and a quiet mark inside the round corner that shows while the pointer is on the tile or
+   its ring is, and strengthens under the pointer or in hand, as a tile's grip does on the canvas. Every edge and corner
+   resizes; this one says so. */
+.open-tile > .window-edge.se {
+  width: 24px;
+  height: 24px;
+}
+.open-tile > .window-edge.se::after {
+  content: "";
+  position: absolute;
+  right: 6px;
+  bottom: 6px;
+  width: 8px;
+  height: 8px;
+  border-right: 2px solid var(--ma-text-tertiary);
+  border-bottom: 2px solid var(--ma-text-tertiary);
+  border-bottom-right-radius: 4px;
+  opacity: 0;
+  transition: opacity 120ms ease-out;
+}
+.open-tile:hover > .window-edge.se::after,
+.open-tile.ring > .window-edge.se::after {
+  opacity: 1;
+}
+.open-tile > .window-edge.se:hover::after,
+.open-tile > .window-edge.se:active::after {
+  border-color: var(--ma-text-secondary);
+  border-width: 0 2.5px 2.5px 0;
+}
+@media (prefers-reduced-motion: reduce) {
+  .open-tile > .window-edge.se::after {
+    transition: none;
+  }
+}
+/* The Browser's one ring: typing's ring is around the picture only (`.br-surface:focus-within`). */
+.open-tile:has(.br-surface) .open-tile-app:focus-visible {
+  outline: none;
+}

@@ -26,6 +26,8 @@ import com.minimalistalliance.desk.deskd.rpc.RpcDispatcher;
 import com.minimalistalliance.desk.deskd.rtc.RtcClient;
 import com.minimalistalliance.desk.deskd.session.SessionManager;
 import com.minimalistalliance.desk.deskd.status.StatusMethods;
+import com.minimalistalliance.desk.deskd.tier.BrowserTime;
+import com.minimalistalliance.desk.deskd.tier.FreeTier;
 import java.nio.file.Files;
 import java.nio.file.Path;
 import java.time.Clock;
@@ -39,7 +41,7 @@ import java.time.Instant;
 public final class ControlPlaneRig implements AutoCloseable {
 
     public static final BootSequence.Timing FAST_BOOT =
-            new BootSequence.Timing(Duration.ofMillis(20), Duration.ofMillis(100), Duration.ofMillis(200), Duration.ofSeconds(5));
+            new BootSequence.Timing(Duration.ofMillis(20), Duration.ofMillis(100), Duration.ofMillis(200), Duration.ofSeconds(5), Duration.ofMillis(500));
     public static final GatewayLink.Timing FAST_LINK = new GatewayLink.Timing(
             Duration.ofMillis(20),
             Duration.ofMillis(200),
@@ -47,7 +49,8 @@ public final class ControlPlaneRig implements AutoCloseable {
             Duration.ofSeconds(30),
             Duration.ofMillis(300),
             Duration.ofHours(1),
-            Duration.ZERO);
+            Duration.ZERO,
+            Duration.ofMillis(200));
     public static final HeartbeatLoop.Timing SLOW_BEATS =
             new HeartbeatLoop.Timing(Duration.ofHours(1), Duration.ofMillis(100), Duration.ofSeconds(5));
 
@@ -69,6 +72,8 @@ public final class ControlPlaneRig implements AutoCloseable {
     public final HeartbeatLoop heartbeat;
     public final GatewayLink link;
     public final DataVolume volume;
+    /** The data volume's usable bytes, as statvfs would say; -1 (the start) for the real file system's. */
+    public final java.util.concurrent.atomic.AtomicLong usableBytes = new java.util.concurrent.atomic.AtomicLong(-1);
     public final AgeBand ageBand;
     /** deskd's data directory, apart from the sockets, as on a desk. */
     public final Path dataDir;
@@ -78,6 +83,8 @@ public final class ControlPlaneRig implements AutoCloseable {
     public final DataModule data;
     /** Not started, as nothing else needs it: a test starts it to see what it does beside the rest. */
     public final ModelPrices prices;
+    /** The free tier's Browser time, wired as on a desk, with its count since boot beside units.sock. */
+    public final BrowserTime browserTime;
 
     public ControlPlaneRig(Path dir, GatewayLink.Timing linkTiming, HeartbeatLoop.Timing beatTiming) throws Exception {
         this(dir, linkTiming, beatTiming, Clock.systemUTC(), true);
@@ -98,7 +105,10 @@ public final class ControlPlaneRig implements AutoCloseable {
         rtc = new FakeDeskRtc(socket);
         rtc.autoStats(true);
         dataDir = Files.createDirectories(dir.resolve("data"));
-        volume = new DataVolume(dataDir);
+        volume = new DataVolume(dataDir, directory -> {
+            long stub = usableBytes.get();
+            return stub >= 0 ? stub : Files.getFileStore(directory).getUsableSpace();
+        });
         ageBand = new AgeBand(dataDir.resolve(AgeBand.FILE));
         state = new DeskState("00000000-0000-4000-8000-000000000099", apiOverride ? platform.url() : null, null);
         rtcClient = new RtcClient(new RtcClient.Config(socket, SessionManager.MAX_SESSIONS, state::publicIpv4));
@@ -127,6 +137,7 @@ public final class ControlPlaneRig implements AutoCloseable {
         units.forgetStartupThaw();
         browser.followStreamingPause(state.streamingPause());
         browser.followAgeBand(ageBand);
+        browserTime = FreeTier.follow(state, dataDir, dir, browser, clock);
         data = new DataModule(
                 sessions, dispatcher, browser, dir.resolve("data.sock"), dir.resolve(DataModule.FREE_BYTES_FILE), state::bootId,
                 volume, clock, DataModule.Timing.DEFAULT);
@@ -139,6 +150,7 @@ public final class ControlPlaneRig implements AutoCloseable {
                 agent, state, sessions, rtcClient, volume, browser::chromiumRefused, data::freeBytesSent, revocations, boot, clock,
                 beatTiming);
         heartbeat.browserFrozenFrom(browser::browserFrozen);
+        heartbeat.browserLiveSecondsFrom(browserTime::liveSecondsSinceBoot);
         link = new GatewayLink(http, credentials, state, sessions, revocations, boot, "test-version", clock, linkTiming);
         revocations.closeSessionsThrough(sessions);
         sessions.setObserver(new ControlPlaneObserver(link, heartbeat, boot));
@@ -157,6 +169,7 @@ public final class ControlPlaneRig implements AutoCloseable {
         prices.close();
         link.close(Duration.ZERO);
         heartbeat.stopAndSendFinal(Duration.ofMillis(200));
+        browserTime.close();
         browser.close();
         rtcClient.close();
         http.close();

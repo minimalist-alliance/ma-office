@@ -58,6 +58,9 @@ import org.slf4j.LoggerFactory;
  * video cut at once, with desk-stream stopped once nobody wants {@code warm}. Chromium is never stopped or started for
  * it, so its tabs, cookies and history stay as they are (ADR 0035), and {@code warm}, input and every other app go on.
  *
+ * <p><b>Browser time used up.</b> On a free desk whose time for the day is used up (ADR 0090, {@link #timeUsedFrom}), a
+ * {@code live} is refused as during the pause, and {@link #endForTimeUsed} takes the pause's path. {@code warm} stays.
+ *
  * <p><b>The age gate.</b> No start of {@code desk-browser} goes out while the gate is shut ({@link #ageGateFrom}): the
  * owner's age band isn't known, or its file would take the teen policy away. That covers every way to a start, as they all
  * come through {@link #nextStep}: a {@code live}, a lost Chromium coming back, the start after a Chromium off its port, and
@@ -256,6 +259,8 @@ public final class BrowserStream {
     private final BooleanSupplier chromiumRunning;
     /** When the Platform's bandwidth pause ends, or null with none: {@link #pauseFrom}. Read under the lock. */
     private volatile Supplier<Instant> pausedUntil = () -> null;
+    /** Until when today's Browser time is used up, or null: {@link #timeUsedFrom}. Read under the lock. */
+    private volatile Supplier<Instant> timeUsedUntil = () -> null;
     /** Whether the owner's age band lets Chromium start: {@link #ageGateFrom}. Read under the lock. */
     private volatile BooleanSupplier ageGate = () -> true;
     private volatile Duration policyRestartRetry = POLICY_RESTART_RETRY;
@@ -355,6 +360,10 @@ public final class BrowserStream {
             Instant until = pausedUntil.get();
             if (until != null) {
                 return CompletableFuture.failedFuture(UnitException.paused(until));
+            }
+            Instant used = timeUsedUntil.get();
+            if (used != null) {
+                return CompletableFuture.failedFuture(UnitException.timeUsed(used));
             }
         }
         Want want = wants.computeIfAbsent(sessionId, id -> new Want());
@@ -583,6 +592,19 @@ public final class BrowserStream {
     }
 
     /**
+     * Where a free desk's Browser time comes from (ADR 0090): until when today's is used up, or null while there's time or
+     * no limit. Asked under this class's lock, so it must not block. Set once, before anything can call.
+     */
+    void timeUsedFrom(Supplier<Instant> until) {
+        timeUsedUntil = until;
+    }
+
+    /** Until when today's Browser time is used up, or null. */
+    Instant timeUsedUntil() {
+        return timeUsedUntil.get();
+    }
+
+    /**
      * Where the age gate comes from: whether the owner's age band lets Chromium start now. Asked under this class's lock, so
      * it must not block. Set once, before anything can call.
      *
@@ -716,10 +738,30 @@ public final class BrowserStream {
      * Runs on whatever thread heard the Platform, and returns quickly. Does nothing if the pause has already ended.
      */
     public void endLiveForPause() {
+        endLive(() -> {
+            Instant until = pausedUntil.get();
+            return until == null ? null : UnitException.paused(until);
+        });
+    }
+
+    /**
+     * Today's Browser time on a free desk is used up (ADR 0090): the bandwidth pause's path ({@link #endLiveForPause}), so
+     * every session that wants {@code live} is left {@code off} with its video cut at once, {@code warm} stays, and
+     * Chromium, its tabs and its profile are left as they are (ADR 0035). Runs on the Browser time's thread, and returns
+     * quickly. Does nothing if there's time again by now.
+     */
+    public void endForTimeUsed() {
+        endLive(() -> {
+            Instant until = timeUsedUntil.get();
+            return until == null ? null : UnitException.timeUsed(until);
+        });
+    }
+
+    /** @param refusal what a {@code live} gets now, or null if the reason has gone by now and nothing should end */
+    private void endLive(Supplier<UnitException> refusal) {
         lock.lock();
         try {
-            Instant until = pausedUntil.get();
-            if (until == null) {
+            if (refusal.get() == null) {
                 return;
             }
             Iterator<Waiter> iterator = waiters.iterator();
@@ -729,7 +771,7 @@ public final class BrowserStream {
                     continue;
                 }
                 iterator.remove();
-                UnitException failure = UnitException.paused(until);
+                UnitException failure = refusal.get();
                 takeAwayWant(waiter);
                 waiter.result.completeExceptionally(failure);
                 tell(waiter, failure.code());
@@ -881,6 +923,22 @@ public final class BrowserStream {
         lock.lock();
         try {
             return chromiumRefused;
+        } finally {
+            lock.unlock();
+        }
+    }
+
+    /** The sessions that want {@code live} now, which is what the phone view goes by ({@link BrowserView}). */
+    java.util.Set<String> liveSessions() {
+        lock.lock();
+        try {
+            java.util.Set<String> live = new java.util.HashSet<>();
+            for (Map.Entry<String, Want> entry : wants.entrySet()) {
+                if (entry.getValue().level == Level.LIVE) {
+                    live.add(entry.getKey());
+                }
+            }
+            return live;
         } finally {
             lock.unlock();
         }

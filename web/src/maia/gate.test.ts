@@ -73,6 +73,7 @@ describe('readState', () => {
   it('reads memory, limits and retention', () => {
     const s = readState({ enabled: true, modelLabel: 'Claude Opus 5.5', limited: 'pool', retentionDays: 30, memory: { enabled: true, maxItems: 50 } });
     expect(s).toMatchObject({ modelLabel: 'Claude Opus 5.5', limited: 'pool', retentionDays: 30, memory: { enabled: true, maxItems: 50 } });
+    expect(readState({ enabled: false, limited: 'trial', trial: { status: 'ended', days: 7, endsAt: '2026-11-08T00:00:00.000Z', usedFraction: 1 } })).toMatchObject({ enabled: false, limited: 'trial' });
     expect(readState({ enabled: true, limited: 'everyone', memory: 'on' })).toMatchObject({ limited: null, memory: { enabled: false, maxItems: 0 } });
   });
 

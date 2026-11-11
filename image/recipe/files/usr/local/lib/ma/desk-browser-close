@@ -116,7 +116,9 @@ fi
 [ "$QUIT_ONLY" = 1 ] || systemctl stop desk-browser
 after=$(systemctl is-active desk-browser)
 if sync -f "$DATA"; then synced=ok; else synced=failed; fi
-exit_type=$(grep -o '"exit_type":"[A-Za-z]*"' "$P/Default/Preferences" 2>/dev/null | head -1 | cut -d'"' -f4)
+# As root in the Browser's own folder: only an exit_type-shaped match is kept, and a FIFO put there can hold this for 5 s at
+# most, not until the stop's timeout (EXP-7).
+exit_type=$(timeout 5 grep -o '"exit_type":"[A-Za-z]*"' "$P/Default/Preferences" 2>/dev/null | head -1 | cut -d'"' -f4)
 if [ "$QUIT_ONLY" = 1 ]; then echo "desk-browser-close --quit: browser=$before->$after exit_type=${exit_type:-none} deskd=left quit=$quit sync=$synced"; exit 0; fi
 echo "desk-browser-close: browser=$before->$after exit_type=${exit_type:-none} deskd=$(systemctl is-active deskd) quit=$quit sync=$synced"
 

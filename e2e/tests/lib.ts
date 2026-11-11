@@ -9,7 +9,7 @@ export const REGION = 'us-east-1';
 /** The staging test desk these suites drive, from the environment. `assertTestDesk()` refuses any other machine. */
 export const INSTANCE = process.env['E2E_TEST_INSTANCE'] ?? '';
 export const DESK_ID = process.env['E2E_TEST_DESK'] ?? '';
-export const APP = 'https://test.office.staging.minimalistalliance.com';
+export const APP = process.env.TD_APP ?? 'https://test.office.staging.minimalistalliance.com';
 export const API = 'https://api.staging.minimalistalliance.com';
 export const B14_MS = 1500;
 const sleep = (ms: number) => new Promise((r) => setTimeout(r, ms));
@@ -45,6 +45,28 @@ export async function onDesk(command: string, timeoutS = 90): Promise<string> {
     if (['Failed', 'Cancelled', 'TimedOut'].includes(inv.Status)) throw new Error(`ssm ${inv.Status}: ${inv.StandardErrorContent.slice(0, 300)}`);
   }
   throw new Error('ssm command timed out');
+}
+
+/**
+ * A template builder's slot (ADR 0077 1.3 item 9, browser-session.spec.ts's SESSION_SLOT): a shell command, as root, on the
+ * builder that image/host/template-build.sh launched, over its SSH for that run (SESSION_SLOT_SSH=admin@<address>,
+ * SESSION_SLOT_KEY=<key file>). Before the first command it asks EC2 which instance has that address and refuses unless it is
+ * a running builder (Purpose=desk-image-build, Name ma-template-builder-*): never a desk, a member host or the test desk.
+ */
+let builderChecked = '';
+export async function onBuilder(command: string, timeoutS = 90): Promise<string> {
+  const target = process.env.SESSION_SLOT_SSH ?? '', key = process.env.SESSION_SLOT_KEY ?? '';
+  const m = /^admin@(\d{1,3}(?:\.\d{1,3}){3})$/.exec(target);
+  if (!m || !key) throw new Error('SESSION_SLOT needs SESSION_SLOT_SSH=admin@<builder address> and SESSION_SLOT_KEY');
+  if (builderChecked !== target) {
+    const tags = JSON.parse(aws('ec2', 'describe-instances', '--filters', `Name=ip-address,Values=${m[1]}`, 'Name=instance-state-name,Values=running',
+      '--query', 'Reservations[].Instances[].Tags', '--output', 'json')) as { Key: string; Value: string }[][];
+    const t = (k: string) => (tags.length === 1 ? tags[0].find((x) => x.Key === k)?.Value : undefined) ?? '';
+    if (t('Purpose') !== 'desk-image-build' || !t('Name').startsWith('ma-template-builder-')) throw new Error(`${m[1]} isn't a running template builder`);
+    builderChecked = target;
+  }
+  return execFileSync('ssh', ['-o', 'StrictHostKeyChecking=no', '-o', 'UserKnownHostsFile=/dev/null', '-o', 'LogLevel=ERROR', '-o', 'ConnectTimeout=10',
+    '-i', key, target, 'sudo bash -s'], { input: command, encoding: 'utf8', timeout: timeoutS * 1000, maxBuffer: 64 << 20 });
 }
 
 export interface DeskTruth { deskId: string; deskdVersion: string; rtcVersion: string; publicIp: string; health: Record<string, unknown> }
@@ -124,7 +146,29 @@ export const INIT_SCRIPT = () => {
     const orig = pc.createDataChannel.bind(pc);
     pc.createDataChannel = (label: string, init?: RTCDataChannelInit) => {
       const dc = orig(label, init);
-      if (label === 'rpc') dc.addEventListener('message', () => marks.rpcMsg.push(performance.now()));
+      if (label === 'rpc') dc.addEventListener('message', (ev: MessageEvent) => {
+        marks.rpcMsg.push(performance.now());
+        // The app's own `desk.status.get` reply (frame kind 8, one frame), kept for openAbout: see there.
+        void (async () => {
+          try {
+            const d = ev.data as unknown;
+            const buf: ArrayBuffer | null = d instanceof ArrayBuffer ? d : d instanceof Blob ? await d.arrayBuffer() : null;
+            if (!buf || buf.byteLength < 14) return;
+            const b = new Uint8Array(buf);
+            if (b[1] !== 8) return;
+            const txt = new TextDecoder().decode(b.subarray(12));
+            if (!txt.includes('"deskdVersion"')) return;
+            const find = (o: unknown): Record<string, unknown> | null => {
+              if (!o || typeof o !== 'object') return null;
+              if ('deskdVersion' in (o as object)) return o as Record<string, unknown>;
+              for (const v of Object.values(o as object)) { const r = find(v); if (r) return r; }
+              return null;
+            };
+            const st = find(JSON.parse(txt));
+            if (st) (w.__e2e as { status?: unknown }).status = { at: performance.now(), pc: marks.pcCreated.length, s: st };
+          } catch { /* not a status reply */ }
+        })();
+      });
       return dc;
     };
     return pc;
@@ -139,11 +183,26 @@ export const INIT_SCRIPT = () => {
   };
 };
 
+/**
+ * The one console error the gate allows: the browser's own "Failed to load resource ... status of 429" for
+ * `POST <api>/v1/desks/<id>/rtt`. The contract (desks.md, connect-time round trip) answers a member's 25th report of a UTC
+ * day with `429 rate_limited`, which is normal, and each test starts with fresh storage so it can't remember the refusal.
+ * Matches only that text with a 429 and a resource URL whose path is exactly `/v1/desks/<one segment>/rtt`; nothing else.
+ */
+export function isRttCapLog(text: string, url: string): boolean {
+  if (!/^Failed to load resource: the server responded with a status of 429\b/.test(text)) return false;
+  try {
+    return /^\/v1\/desks\/[^/]+\/rtt$/.test(new URL(url).pathname);
+  } catch {
+    return false;
+  }
+}
+
 export interface Watch { errors: string[]; desks: { deskId: string; name: string; state?: string }[]; connectStatuses: number[] }
 /** Console + CSP errors, the desk list the API returned, and connect response statuses. Bodies and URLs with queries are never kept. */
 export function watch(page: Page): Watch {
   const w: Watch = { errors: [], desks: [], connectStatuses: [] };
-  page.on('console', (m) => { if (m.type() === 'error') w.errors.push(m.text().replace(/[?#]\S*/g, '')); });
+  page.on('console', (m) => { if (m.type() === 'error' && !isRttCapLog(m.text(), m.location().url)) w.errors.push(m.text().replace(/[?#]\S*/g, '')); });
   page.on('pageerror', (e) => w.errors.push(String(e).slice(0, 300)));
   page.on('response', async (r) => {
     const u = new URL(r.url());
@@ -174,11 +233,22 @@ export async function focusTestDesk(page: Page, w: Watch): Promise<string> {
   return d.name;
 }
 
-export async function openAbout(page: Page): Promise<string> {
-  const panel = page.getByRole('dialog', { name: 'Account' });
-  if (!(await panel.isVisible().catch(() => false))) await page.getByRole('button', { name: 'Account', exact: true }).click();
-  await expect(panel.getByTestId('about-desk').getByText(/^deskd /)).toBeVisible({ timeout: 30_000 });
-  return panel.getByTestId('about-desk').innerText();
+/**
+ * The desk's versions as the Desk app gets them. "About this desk" is the owner's only (menu in `AccountMenu.tsx`, Nov 9)
+ * and the test account is not the owner, so the page shows none of it. The app reads it from `desk.status.get` over the
+ * rpc data channel (`liveStore.ts` `refreshStatus`, every 15 s while the page is visible); INIT_SCRIPT keeps the last
+ * reply and this waits for one no older than `maxAgeMs`, then returns it in the words the panel used, for `aboutValues`.
+ * `afterPc`: only a reply that came on a peer connection created after that many were (a reconnect).
+ */
+export async function openAbout(page: Page, opts: { afterPc?: number; maxAgeMs?: number; timeoutMs?: number } = {}): Promise<string> {
+  const { afterPc = 0, maxAgeMs = 20_000, timeoutMs = 60_000 } = opts;
+  const handle = await page.waitForFunction(({ afterPc, maxAgeMs }) => {
+    const st = (window as unknown as { __e2e?: { status?: { at: number; pc: number; s: Record<string, unknown> } } }).__e2e?.status;
+    return st && st.pc > afterPc && performance.now() - st.at < maxAgeMs ? st.s : null;
+  }, { afterPc, maxAgeMs }, { timeout: timeoutMs });
+  const s = (await handle.jsonValue()) as Record<string, unknown>;
+  const f = (v: unknown, d = 'not reported yet') => (v === null || v === undefined ? d : String(v));
+  return `Service deskd ${f(s.deskdVersion)} Streaming desk-rtc ${f(s.rtcVersion)} Uptime ${f(s.uptimeSec)}s Instance ${f(s.instanceType)} Java ${f(s.javaVersion)} Desk ${f(s.deskId)} Boot ${f(s.bootId)}`;
 }
 
 export function aboutValues(text: string): Record<string, string> {

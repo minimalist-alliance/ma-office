@@ -1,0 +1,32 @@
+{
+  "category": "eyes",
+  "layer": "07-face",
+  "colorSlot": null,
+  "default": "round",
+  "parts": [
+    {
+      "id": "round",
+      "name": "Round"
+    },
+    {
+      "id": "soft",
+      "name": "Soft"
+    },
+    {
+      "id": "smiling",
+      "name": "Smiling"
+    },
+    {
+      "id": "almond",
+      "name": "Almond"
+    },
+    {
+      "id": "wide",
+      "name": "Wide set"
+    },
+    {
+      "id": "closed-happy",
+      "name": "Closed, happy"
+    }
+  ]
+}

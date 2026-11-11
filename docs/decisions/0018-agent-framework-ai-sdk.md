@@ -1,6 +1,7 @@
 # 0018. Agent framework: AI SDK Core with thin custom orchestration
 
-**Status:** Proposed (pending the owner's approval of design v1)
+**Status:** Proposed, superseded 
+in part by [0040](0040-desk-services-spring-boot-docker.md): the runtime is `desk-agent`, Java 21 and Spring Boot, with thin provider clients on the JDK's HTTP client, and the AI SDK is not used. Keys are sealed by [0042](0042-llm-keys-sealed-on-the-desk.md) and limits follow [0043](0043-agent-limits-local-time-and-platform-prices.md). The wish for thin custom orchestration (tool calling, streaming, approval, per-call budget hooks) stands. Pending the owner's approval of design v1
 **Date:** 2026-11-04
 **Amended:** 2026-11-05 by [0040](0040-desk-services-spring-boot-docker.md) (the AI SDK is replaced by thin provider clients in `desk-agent`, Java; noted 2026-11-09 from `services/desk-agent/README.md`)
 

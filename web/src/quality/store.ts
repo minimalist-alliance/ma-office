@@ -3,26 +3,45 @@
 // localStorage with the member's `sub`, so a new session starts at the right level without waiting for Platform,
 // and another member's choice is never used.
 //
+// It's in layers (the owner's rule, `HANDOFF.md` section 4: the account sets a default, a desk follows it or
+// overrides it, an app on that desk overrides the desk, and nothing set on one desk reaches another): the account's
+// default and per-app levels, then each desk's own level and each app's on it (contract 0.3.70, `desks`). A desk's own
+// goes to Platform like the rest, so it follows the member to any browser.
+//
 // What shows is what Platform last confirmed, with the change on its way and the newest one waiting on top. A save
 // that fails takes its change away again and says so; nothing is retried by itself. Saves go one at a time, and
 // changes made meanwhile wait as one merged body, the newest winning. The fixtures (dev and the fixture tests)
 // never reach Platform, as with the layout (`shell/layoutSync.ts`): there a choice is kept in memory only.
 //
-// Each desk's own level sits on top (the owner's rule, `HANDOFF.md` section 4: the account sets a default, a desk
-// follows it or overrides it, and nothing set on one desk reaches another). The contract has no desk layer, so the
-// app's menu keeps a desk's choice in this browser only, in `ma.streamQuality.desks.v1` with the member's `sub`, and
-// sends nothing to Platform: the account's document (`default`, and `apps` as `/account` sets them) is what every desk
-// follows until it has its own. It reaches this browser's other tabs, but not another browser or device.
+// A Platform from before 0.3.70 has no `desks`. Against one, a desk's level for an app stays in this browser only, as
+// it did before (`ma.streamQuality.desks.v1`, with the member's `sub`), and a desk's own level for every app isn't
+// offered (`layered` false). Once Platform has `desks`, what this browser kept moves there once, quietly, under
+// anything Platform already has, and the browser's copy is emptied.
 import { useSyncExternalStore } from 'react';
 import { readJson, writeJson } from '../lib/util';
 import { api } from '../platform/api';
 import { decodeJwtPayload } from '../platform/pkce';
 import { placeTokenFor } from '../platform/tokenStore';
 import { isSavingLayout } from '../state/layoutStore';
-import { levelOnDesk, NEVER_SET, parseDeskLevels, parseStreamQuality, withDeskLevel, type DeskLevels, type Level, type StreamQuality } from './levels';
+import {
+  asDesks,
+  deskLevelsToMove,
+  hasDeskLayer,
+  levelOnDesk,
+  mergeChanges,
+  NEVER_SET,
+  overlay,
+  parseDeskLevels,
+  parseStreamQuality,
+  withDeskLevel,
+  type DeskLevels,
+  type Level,
+  type QualityChange,
+  type StreamQuality,
+} from './levels';
 
 export const MIRROR_KEY = 'ma.streamQuality.v1';
-/** Each desk's own levels, with whose they are. This browser's only, until the contract has a desk layer. */
+/** Each desk's levels for its apps, kept in this browser against a Platform from before the desk layer. */
 export const DESK_MIRROR_KEY = 'ma.streamQuality.desks.v1';
 /** Coming back to the tab asks again, at most this often (interface section 2). */
 export const REFRESH_GAP_MS = 60_000;
@@ -31,16 +50,16 @@ const NOTICE_MS = 6_000;
 /** Nothing waits on these, but one that never answers would hold up the next save. */
 const TIMEOUT_MS = 15_000;
 
-/** A `PUT /v1/me/stream-quality` body: only what's sent changes, and an app set to null follows the default again. */
-export interface QualityChange {
-  default?: Level;
-  apps?: Record<string, Level | null>;
-}
+export type { QualityChange };
 
 export interface QualitySnapshot {
+  /** Every layer, a desk's included: Platform's, or against an older Platform this browser's for the desks. */
   doc: StreamQuality;
-  /** Each desk's own levels, over the account's. */
-  desks: DeskLevels;
+  /**
+   * Platform keeps each desk's own (contract 0.3.70). Null until known, false for a Platform from before it: then a
+   * desk's own level for every app isn't offered, and an app's on a desk stays in this browser.
+   */
+  layered: boolean | null;
   /** A save that didn't work, for a few seconds. */
   notice: string | null;
 }
@@ -48,6 +67,8 @@ export interface QualitySnapshot {
 interface Mirror {
   sub: string;
   doc: unknown;
+  /** Absent in a mirror from before 0.3.70: not known. */
+  layered?: boolean;
 }
 
 interface DeskMirror {
@@ -65,42 +86,27 @@ let member: string | null | undefined;
 let epoch = 0;
 /** What Platform last said, or the mirror of it, or never set. */
 let confirmed: StreamQuality = NEVER_SET;
-/** Each desk's own, this member's, kept in this browser. */
-let desks: DeskLevels = {};
+/** Platform has the desk layer: from its document, or the mirror's word for it. Null until either says. */
+let layered: boolean | null = null;
+/** Each desk's levels for its apps in this browser, this member's: used while `layered` isn't true, then moved. */
+let localDesks: DeskLevels = {};
 /** On its way to Platform, with no answer yet. */
 let inflight: QualityChange | null = null;
 /** Made while a save was on its way: goes next, as one body. */
 let pending: QualityChange | null = null;
+/** Moving this browser's desk levels to Platform, once: quiet, never shown as the member's own change. */
+let moving = false;
 /** Saves sent so far. A read that no save overlapped is Platform's word, whatever it says. */
 let writes = 0;
 let lastRead = 0;
 let reading: Promise<void> | null = null;
 let notice: string | null = null;
 let noticeTimer: ReturnType<typeof setTimeout> | undefined;
-let snapshot: QualitySnapshot = { doc: NEVER_SET, desks: {}, notice: null };
+let snapshot: QualitySnapshot = { doc: NEVER_SET, layered: null, notice: null };
 const listeners = new Set<() => void>();
 
 /** False under the fixtures, whose desks and layout never reach Platform. */
 const onPlatform = (): boolean => isSavingLayout();
-
-function overlay(doc: StreamQuality, change: QualityChange | null): StreamQuality {
-  if (!change) return doc;
-  const apps: Record<string, Level> = { ...doc.apps };
-  for (const [app, level] of Object.entries(change.apps ?? {})) {
-    if (level === null) delete apps[app];
-    else apps[app] = level;
-  }
-  return { default: change.default ?? doc.default, apps, updatedAt: doc.updatedAt };
-}
-
-/** Two changes as one body, the later winning wherever both say something. */
-function merge(earlier: QualityChange, later: QualityChange): QualityChange {
-  const out: QualityChange = {};
-  const def = later.default ?? earlier.default;
-  if (def) out.default = def;
-  if (earlier.apps || later.apps) out.apps = { ...earlier.apps, ...later.apps };
-  return out;
-}
 
 const same = (a: StreamQuality, b: StreamQuality): boolean => JSON.stringify(a) === JSON.stringify(b);
 
@@ -111,10 +117,19 @@ function newer(a: StreamQuality, than: StreamQuality): boolean {
   return Date.parse(a.updatedAt) > Date.parse(than.updatedAt);
 }
 
+/**
+ * What shows: Platform's, the changes on top, and this browser's desk levels: against an older Platform, as they are;
+ * against one with the desk layer, those still to move there, under what Platform has, until they have.
+ */
+function shown(): StreamQuality {
+  if (layered !== true) return { ...overlay(overlay(confirmed, inflight), pending), desks: asDesks(localDesks) };
+  return overlay(overlay(overlay(confirmed, deskLevelsToMove(localDesks, confirmed)), inflight), pending);
+}
+
 function emit(): void {
-  const doc = overlay(overlay(confirmed, inflight), pending);
-  if (same(doc, snapshot.doc) && desks === snapshot.desks && notice === snapshot.notice) return;
-  snapshot = { doc: same(doc, snapshot.doc) ? snapshot.doc : doc, desks, notice };
+  const doc = shown();
+  if (same(doc, snapshot.doc) && layered === snapshot.layered && notice === snapshot.notice) return;
+  snapshot = { doc: same(doc, snapshot.doc) ? snapshot.doc : doc, layered, notice };
   for (const fn of [...listeners]) fn();
 }
 
@@ -126,7 +141,7 @@ function setNotice(text: string | null): void {
 }
 
 function writeMirror(): void {
-  if (typeof member === 'string') writeJson(MIRROR_KEY, { sub: member, doc: confirmed } satisfies Mirror);
+  if (typeof member === 'string') writeJson(MIRROR_KEY, { sub: member, doc: confirmed, ...(layered !== null ? { layered } : {}) } satisfies Mirror);
 }
 
 /** This member's desk levels as this browser has them, from any tab. */
@@ -141,13 +156,70 @@ function writeDeskChange(deskId: string, app: string, level: Level | null): void
   writeJson(DESK_MIRROR_KEY, { sub: member, desks: withDeskLevel(storedDesks(member), deskId, app, level) } satisfies DeskMirror);
 }
 
+/**
+ * Platform has the desk layer and its document is in: what this browser kept moves there, under what Platform has, in
+ * one quiet save while nothing else is on its way. A failure leaves it here for the next read.
+ */
+function moveDeskLevels(): void {
+  if (layered !== true || typeof member !== 'string' || !onPlatform() || moving || inflight || pending) return;
+  const kept = storedDesks(member);
+  if (!Object.keys(kept).length) return;
+  const body = deskLevelsToMove(kept, confirmed);
+  const who = member;
+  const done = (): void => {
+    localDesks = {};
+    writeJson(DESK_MIRROR_KEY, { sub: who, desks: {} } satisfies DeskMirror);
+  };
+  if (!body) {
+    done();
+    emit();
+    return;
+  }
+  moving = true;
+  writes += 1;
+  const asked = epoch;
+  void api<unknown>('/v1/me/stream-quality', {
+    method: 'PUT',
+    onToken: checkToken,
+    signal: AbortSignal.timeout(TIMEOUT_MS),
+    headers: { 'Content-Type': 'application/json' },
+    body: JSON.stringify(body),
+  })
+    .then((res) => {
+      if (asked !== epoch) return;
+      const raw = res.data;
+      if (hasDeskLayer(raw)) {
+        const doc = parseStreamQuality(raw);
+        if (!newer(confirmed, doc)) confirmed = doc;
+      } else confirmed = overlay(confirmed, body);
+      writeMirror();
+      done();
+    })
+    .catch((err: unknown) => {
+      if (asked === epoch && err instanceof OtherMember) startOver();
+      // Anything else: kept here, and the next read tries again. The member chose nothing, so nothing is said.
+    })
+    .finally(() => {
+      if (asked !== epoch) return;
+      moving = false;
+      emit();
+      void send(); // a change the member made meanwhile
+    });
+}
+
 /** A document from Platform. `authoritative`: no save overlapped the read that brought it, so it's Platform's word as it stands. */
-function adopt(doc: StreamQuality, authoritative: boolean): void {
-  if (!authoritative && !newer(doc, confirmed)) return;
-  if (same(doc, confirmed)) return;
-  confirmed = doc;
-  writeMirror();
+function adopt(doc: StreamQuality, authoritative: boolean, hasDesks: boolean): void {
+  const wasLayered = layered;
+  if (authoritative) layered = hasDesks;
+  else if (hasDesks) layered = true;
+  if (authoritative || newer(doc, confirmed)) {
+    if (!same(doc, confirmed) || layered !== wasLayered) {
+      confirmed = doc;
+      writeMirror();
+    }
+  } else if (layered !== wasLayered) writeMirror();
   emit();
+  moveDeskLevels();
 }
 
 /** Called with every token a call is about to send. The first says whose this is, and whether the mirror is theirs. */
@@ -159,23 +231,18 @@ function checkToken(token: string): void {
     const mirror = readJson<Partial<Mirror>>(MIRROR_KEY);
     if (who !== null && mirror?.sub === who) {
       const doc = parseStreamQuality(mirror.doc);
-      if (confirmed === NEVER_SET || newer(doc, confirmed)) {
-        confirmed = doc;
-        emit();
-      }
+      if (layered === null && typeof mirror.layered === 'boolean') layered = mirror.layered;
+      if (confirmed === NEVER_SET || newer(doc, confirmed)) confirmed = doc;
     }
     if (who !== null) {
       // What this browser kept for each desk, under anything chosen here before the first token, which then is kept too.
-      const kept = storedDesks(who);
-      const chosen = desks;
-      let merged: DeskLevels = kept;
+      const chosen = localDesks;
+      let merged: DeskLevels = storedDesks(who);
       for (const [deskId, apps] of Object.entries(chosen)) for (const [app, level] of Object.entries(apps)) merged = withDeskLevel(merged, deskId, app, level);
-      if (Object.keys(merged).length) {
-        desks = merged;
-        for (const [deskId, apps] of Object.entries(chosen)) for (const [app, level] of Object.entries(apps)) writeDeskChange(deskId, app, level);
-        emit();
-      }
+      localDesks = merged;
+      for (const [deskId, apps] of Object.entries(chosen)) for (const [app, level] of Object.entries(apps)) writeDeskChange(deskId, app, level);
     }
+    emit();
     return;
   }
   if (who !== member) throw new OtherMember();
@@ -186,9 +253,11 @@ function startOver(): void {
   epoch += 1;
   member = undefined;
   confirmed = NEVER_SET;
-  desks = {};
+  layered = null;
+  localDesks = {};
   inflight = null;
   pending = null;
+  moving = false;
   clearTimeout(noticeTimer);
   notice = null;
   emit();
@@ -201,7 +270,7 @@ function read(): Promise<void> {
     lastRead = Date.now();
     const asked = epoch;
     const writesThen = writes;
-    const quietThen = !inflight;
+    const quietThen = !inflight && !moving;
     try {
       const res = await api<{ streamQuality?: unknown; preferences?: { staySignedIn?: unknown } | null }>('/v1/me', { onToken: checkToken, signal: AbortSignal.timeout(TIMEOUT_MS) });
       if (asked !== epoch) return;
@@ -209,7 +278,7 @@ function read(): Promise<void> {
       const raw = res.data?.streamQuality;
       // A Platform from before the contract says nothing, and what's here stands.
       if (raw === undefined || raw === null) return;
-      adopt(parseStreamQuality(raw), quietThen && writes === writesThen && !inflight);
+      adopt(parseStreamQuality(raw), quietThen && writes === writesThen && !inflight && !moving, hasDeskLayer(raw));
     } catch (err) {
       if (asked !== epoch) return;
       if (err instanceof OtherMember) startOver();
@@ -222,7 +291,7 @@ function read(): Promise<void> {
 }
 
 async function send(): Promise<void> {
-  if (inflight || !pending) return;
+  if (inflight || moving || !pending) return;
   const body = pending;
   inflight = body;
   pending = null;
@@ -241,7 +310,7 @@ async function send(): Promise<void> {
     // The whole document after the change, unless a read has since brought a newer one. Without one, what was sent is what Platform has.
     if (res.data) {
       const doc = parseStreamQuality(res.data);
-      adopt(doc, !newer(confirmed, doc));
+      adopt(doc, !newer(confirmed, doc), hasDeskLayer(res.data));
     } else {
       confirmed = overlay(confirmed, body);
       writeMirror();
@@ -272,7 +341,7 @@ function change(c: QualityChange): void {
     emit();
     return;
   }
-  pending = pending ? merge(pending, c) : c;
+  pending = pending ? mergeChanges(pending, c) : c;
   emit();
   void send();
 }
@@ -285,8 +354,8 @@ function onVisibility(): void {
 function onStorage(e: StorageEvent): void {
   if (e.key === DESK_MIRROR_KEY && typeof member === 'string') {
     const kept = storedDesks(member);
-    if (JSON.stringify(kept) !== JSON.stringify(desks)) {
-      desks = kept;
+    if (JSON.stringify(kept) !== JSON.stringify(localDesks)) {
+      localDesks = kept;
       emit();
     }
     return;
@@ -294,7 +363,7 @@ function onStorage(e: StorageEvent): void {
   if (e.key !== MIRROR_KEY || !e.newValue || typeof member !== 'string') return;
   try {
     const mirror = JSON.parse(e.newValue) as Partial<Mirror> | null;
-    if (mirror?.sub === member) adopt(parseStreamQuality(mirror.doc), false);
+    if (mirror?.sub === member) adopt(parseStreamQuality(mirror.doc), false, mirror.layered === true);
   } catch {
     /* the next read puts it right */
   }
@@ -304,7 +373,12 @@ function onStorage(e: StorageEvent): void {
 function start(): void {
   if (started) return;
   started = true;
-  if (!onPlatform()) return;
+  if (!onPlatform()) {
+    // The fixtures keep every layer in memory, as Platform would.
+    layered = true;
+    emit();
+    return;
+  }
   document.addEventListener('visibilitychange', onVisibility);
   window.addEventListener('storage', onStorage);
   void read();
@@ -312,26 +386,38 @@ function start(): void {
 
 // ----- for the menu and the player
 
-/**
- * The account's own choice for an app, which every desk without its own follows. Null follows the account's default
- * again. The Desk app's menu doesn't use it: a choice there is that desk's (`setDeskLevel`).
- */
+/** The account's own level for an app on every desk. Null follows the account's default again. No menu sets it now. */
 export const setOverride = (app: string, level: Level | null): void => change({ apps: { [app]: level } });
 
+/** The account's default for every desk. Null clears it: High, until the member picks one. `/account` sets it. */
+export const setDefault = (level: Level | null): void => change({ default: level });
+
 /**
- * One desk's own level for an app, or null to follow the account again. Shown and sent to that desk at once, kept in
- * this browser, and never sent to Platform, whose contract has no desk layer yet: so no other desk hears of it.
+ * One app's own level on one desk, or null to follow that desk again. Shown and sent to that desk at once, and saved
+ * to Platform, so no other desk hears of it. Against a Platform without the desk layer, kept in this browser only.
  */
 export function setDeskLevel(deskId: string, app: string, level: Level | null): void {
   start();
-  clearTimeout(noticeTimer);
-  notice = null;
-  desks = withDeskLevel(desks, deskId, app, level);
-  writeDeskChange(deskId, app, level);
-  emit();
+  if (layered === false) {
+    clearTimeout(noticeTimer);
+    notice = null;
+    localDesks = withDeskLevel(localDesks, deskId, app, level);
+    writeDeskChange(deskId, app, level);
+    emit();
+    return;
+  }
+  change({ desks: { [deskId]: { apps: { [app]: level } } } });
 }
 
-export const setDefault = (level: Level): void => change({ default: level });
+/**
+ * One desk's own level for every app on it that streams, or null to follow the account again. Only where Platform keeps
+ * the desk layer (`layered`): the menu doesn't offer it otherwise.
+ */
+export function setDeskOwnLevel(deskId: string, level: Level | null): void {
+  start();
+  if (layered === false) return;
+  change({ desks: { [deskId]: { level } } });
+}
 
 export function getSnapshot(): QualitySnapshot {
   return snapshot;
@@ -345,12 +431,12 @@ export function subscribe(fn: () => void): () => void {
 }
 
 /**
- * The level an app streams at now on a desk: that desk's own, else the account's override for the app, else the
- * account's default, else High. Starts the store on first use.
+ * The level an app streams at now on a desk, the first that is set: the app on that desk, the desk, the app on every
+ * desk, the account's default, then High. Starts the store on first use.
  */
 export function levelFor(app: string, deskId?: string): Level {
   start();
-  return levelOnDesk(snapshot.doc, snapshot.desks, deskId, app);
+  return levelOnDesk(snapshot.doc, deskId, app);
 }
 
 export function dismissNotice(): void {

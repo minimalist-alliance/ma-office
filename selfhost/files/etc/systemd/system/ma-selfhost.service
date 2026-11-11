@@ -13,11 +13,20 @@ Group=selfhost
 # As root: the metadata address on lo, and the state directory.
 ExecStartPre=+/usr/local/lib/ma/selfhost/ma-selfhost-prep
 ExecStart=/usr/local/lib/ma/selfhost/ma-selfhost serve
+# status.json holds a live pairing code (EXP-8): only selfhost and root may read it, so the directory is closed to the
+# rest. Root writes nothing here (EXP-7: desk-rtc's fingerprint goes to /run/ma-selfhost-dtls), and install.sh reads
+# status.json as selfhost.
 RuntimeDirectory=ma-selfhost
-RuntimeDirectoryMode=0755
+RuntimeDirectoryMode=0750
 AmbientCapabilities=CAP_NET_BIND_SERVICE
 CapabilityBoundingSet=CAP_NET_BIND_SERVICE
 NoNewPrivileges=yes
+# Security's ptrace note (Nov 11): `sudo ma-selfhost pair --wait` runs the client as this user on the admin's terminal, so
+# nothing this service runs may trace a process (ptrace, pidfd_getfd, perf: @debug), or call another processor's system
+# calls, where the filter might not reach. The client also makes itself non-dumpable as it starts, which keeps this user
+# out of its /proc files too. It's the only long-running process of this user (selfhost/README.md).
+SystemCallArchitectures=native
+SystemCallFilter=~@debug
 ProtectSystem=strict
 ProtectHome=yes
 PrivateTmp=yes

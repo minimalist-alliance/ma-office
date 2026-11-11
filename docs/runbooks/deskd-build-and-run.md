@@ -8,8 +8,11 @@ How `deskd` goes from a commit to a desk. Format and rules: [`desk-runtime.md`](
 From the dev machine, with a commit that exists locally:
 ```sh
 services/scripts/build-on-box.sh <git-sha> [service]      # deskd by default
+# The scripts read BUILD_INSTANCE (the build box) and ARTIFACT_BUCKET from the environment, or from the private file `~/work/desk-build.env` (or `$DESK_BUILD_ENV`) on the release machine; the values are never in this repo.
 ```
-- It uploads a `git archive` of the commit to `s3://ma-lambda-artifacts-<account-id>/desk/deskd/build/<version>/`, starts the test box `<instance>` if it's stopped, and has the box build and package over SSM, using presigned URLs only. The box stops itself after 60 idle minutes.
+- It uploads a `git archive` of the commit to 
+`s3://$ARTIFACT_BUCKET/desk/deskd/build/<version>/`, starts the test box 
+(`$BUILD_INSTANCE`) if it's stopped, and has the box build and package over SSM, using presigned URLs only. The box stops itself after 60 idle minutes.
 - It prints the end of the build log and the artifact's path: `~/.local/share/ma-desk-releases/deskd/<version>/deskd-<version>.tgz`, with its `.sha256`. Then it deletes its S3 objects under `build/`.
 - The version is `<commit date in UTC>-<sha7>`, such as `2026.11.05-a72fc48`. A commit always gets the same version.
 - If the build fails, the full log is on the box at `/var/tmp/ma-build-deskd.log`. If the disk is full, run `docker system prune -af` there over SSM.

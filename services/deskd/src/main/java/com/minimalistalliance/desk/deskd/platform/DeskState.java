@@ -23,6 +23,7 @@ public final class DeskState implements DeskFacts, DeskTokenVerifier.Trust {
     private final String jwksOverride;
     private final StreamingPause streamingPause = new StreamingPause(Clock.systemUTC());
     private final AccountDefaults accountDefaults = new AccountDefaults();
+    private final TierLimits tierLimits = new TierLimits();
     private volatile InstanceIdentity identity;
     private volatile PlatformConfig config;
     private final java.util.List<java.util.function.Consumer<PlatformConfig>> configListeners =
@@ -70,6 +71,11 @@ public final class DeskState implements DeskFacts, DeskTokenVerifier.Trust {
     /** The account's values for the desk's spending limits, as the config last said (ADR 0043). */
     public AccountDefaults accountDefaults() {
         return accountDefaults;
+    }
+
+    /** The free tier's limits on this desk, as the config last said: null for none (ADR 0090). */
+    public TierLimits tierLimits() {
+        return tierLimits;
     }
 
     /** @return null if the Env tag isn't one deskd knows, which fails closed: no hello, no sessions */

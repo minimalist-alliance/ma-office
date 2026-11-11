@@ -9,3 +9,10 @@ export { DOC_FIELD, BLANK_PAGE, schemaExtensions, notebookSchema, type PMNode } 
 export { derive } from './model/derive.ts';
 export { toMarkdown, toHtmlBody, toHtmlDocument } from './model/export.ts';
 export { NOTEBOOK_THEMES, notebookThemeCss, type ThemeId } from './theme/tokens.ts';
+// Colors (ADR 0091): the six colors' names, the editor's color commands, labels in the page list, and the notebook file.
+export { DEFAULT_HIGHLIGHT, PALETTE_IDS, isPaletteId, nearestPaletteId, paletteId, type PaletteColors, type PaletteId } from './model/colors.ts';
+export { blockAt, blocksInSelection, clearFormatting, colorsAt, setBlockColor, setHighlight, setTextColor, type BlockTarget, type ColorsAt, type ColorState } from './model/commands.ts';
+export { filterByLabels, labelOf, sortByLabel } from './model/tree.ts';
+export { NotebookFileError, parseNotebookFile, toNotebookFile, type ImportedPage } from './model/notebookFile.ts';
+export type { SchemaOptions } from './model/schema.ts';
+export { collabToken, holdsNewerThan, NOTEBOOK_SCHEMA, RELOAD_REASON, schemaOfToken, tokenSaysSchema } from './model/compat.ts';

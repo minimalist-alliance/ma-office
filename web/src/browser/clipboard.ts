@@ -22,6 +22,9 @@ const TRIES = 3;
 const RETRY_MS = 300;
 
 export const PASTE_TOO_BIG = "That's too much text to paste at once.";
+/** The phone Paste key: an empty clipboard, and a browser that said no (the Product Designer's lines, touch spec section 3a). */
+export const NOTHING_TO_PASTE = "There's nothing to paste.";
+export const PASTE_REFUSED = "Your browser didn't allow that paste.";
 export const PASTE_FAILED = "That text didn't reach the page.";
 export const CANT_CONTROL = "This session can't control the browser.";
 const COPY_TOO_BIG = "That's too much text to copy at once.";

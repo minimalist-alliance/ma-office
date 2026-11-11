@@ -6,6 +6,9 @@
 # The port is 443 unless the desk's config says otherwise: /etc/ma/desk-rtc.conf, port=<n>. A cloud desk has
 # no such file. A self-hosted desk's installer writes port=4443 (selfhost/README.md, "The port").
 # DESK_RTC_CONF names another file, for tests.
+# --profile-file: desk-egress's allowance profile (ADR 0036), read at start and each time desk-stream connects, so the
+# level a member asked for is held to the capped or deep picture's ceiling and the reply says so. A desk with no
+# desk-egress (self-hosted) has no file there: every level as asked.
 set -eu
 : "${RELEASE_DIR:?RELEASE_DIR is not set}"
 export GOMEMLIMIT="${GOMEMLIMIT:-96MiB}"
@@ -17,4 +20,5 @@ exec "$RELEASE_DIR/desk-rtc" \
   --config "${DESK_RTC_CONF:-/etc/ma/desk-rtc.conf}" \
   --stream-socket /run/desk-media/stream.sock \
   --stream-user stream \
+  --profile-file /run/desk-egress/profile \
   --display :99

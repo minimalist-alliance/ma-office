@@ -748,6 +748,43 @@ test.describe('every state a member can hit', () => {
     expect(errors).toEqual([]);
   });
 
+  // The clip's phone, 360 px: beside the five detail buttons the head had about 55 px for the name, so "Manager" read "Man…".
+  for (const theme of THEMES) {
+    test(`${theme}: on a phone the agent's name has the head's first row, and its panels open under the head`, async ({ page }) => {
+      await page.setViewportSize({ width: 360, height: 640 });
+      const errors = watchConsole(page);
+      await setTheme(page, theme);
+      await arrive(page);
+      await openAgent(page);
+      await page.getByTestId('tab-settings').click();
+      await page.getByTestId('settings-name').fill('Manager');
+      await page.getByTestId('settings-save').click();
+      const win = agentWindow(page);
+      const name = win.locator('.ag-head-name');
+      await expect(name).toHaveText('Manager');
+      expect(await name.evaluate((el) => el.scrollWidth <= el.clientWidth)).toBe(true); // not cut
+      // The detail buttons have a row of their own under it, wholly in the window, and a panel open covers none of them.
+      const head = (await win.locator('.ag-head').boundingBox())!;
+      const nameBox = (await name.boundingBox())!;
+      const tabs = (await win.locator('.ag-tabs').boundingBox())!;
+      expect(tabs.y).toBeGreaterThanOrEqual(nameBox.y + nameBox.height);
+      expect((await page.getByTestId('drawer').boundingBox())!.y).toBeGreaterThanOrEqual(head.y + head.height - 1);
+      for (const tab of await win.locator('.ag-tabs button').all()) {
+        await expect(tab).toBeInViewport({ ratio: 1 });
+        expect(await tab.evaluate((el) => {
+          const r = el.getBoundingClientRect();
+          const hit = document.elementFromPoint(r.left + r.width / 2, r.top + r.height / 2);
+          return !!hit && (hit === el || el.contains(hit));
+        })).toBe(true);
+      }
+      await shot(page, `phone-head-${theme}-panel`);
+      await closeDrawer(page);
+      expect(await axe(page)).toEqual([]);
+      await shot(page, `phone-head-${theme}`);
+      expect(errors).toEqual([]);
+    });
+  }
+
   test('showing it to the status line: `?agent=live` fills the panel from `agent.state`', async ({ page }) => {
     await arrive(page, '&agent=live');
     const proxy = page.getByRole('button', { name: /^Personal desk/ });
@@ -916,7 +953,7 @@ test.describe('on the real link', () => {
       await shot(page, `${theme}-asleep`);
       const before = await wakes(request);
       await harness(request, { refuseWake: null });
-      await page.getByRole('button', { name: 'Wake', exact: true }).click();
+      await page.getByRole('button', { name: 'Wake this desk', exact: true }).click();
       await expect(panel(page)).toHaveAttribute('data-panel', 'waking');
       await expect.poll(() => wakes(request)).toBe(before + 1);
       await shot(page, `${theme}-waking`);

@@ -2,15 +2,17 @@
 // the input is uncontrolled, so the key is never in state, props or a store. Submitting takes it out of the
 // field in the same task (KeySecret.takeFrom) and hands it to the client, which sends it only to the desk.
 // Nothing here logs it, stores it in the browser or sends it anywhere else.
-import { useEffect, useId, useRef, useState, type FormEvent } from 'react';
+import { useCallback, useEffect, useId, useRef, useState, type FormEvent } from 'react';
 import { AgentError, newIdem, type AgentClient } from '../client/agentClient';
 import { KeySecret, keyFormatMessage, keyFormatProblem, keyOwner, providerMismatchMessage } from '../client/keySecret';
 import type { Agent, KeyMeta, ModelInfo, Provider } from '../client/types';
+import { freeOffered, modelOption, OPENROUTER, readPending } from '../connect/openrouter';
 import { errorText, KEY_RESTART_LINE, keyLost } from '../model/agents';
 import { UNPRICED } from '../model/limits';
 import { when } from '../model/format';
 import { ProviderBadge, Switch } from './bits';
-import { useRead } from './hooks';
+import { FreeCard } from './FreeCard';
+import { useRead, useUnsaved } from './hooks';
 import { Icon } from './icons';
 
 function failure(err: unknown): string {
@@ -75,6 +77,7 @@ export function KeyForm({ client, providers, onAdded, onFailed, again, submitLab
   const [busy, setBusy] = useState(false);
   const [error, setError] = useState<string | null>(null);
   const provider = providers.find((p) => p.id === providerId) ?? providers[0];
+  useUnsaved(hasText);
 
   // Whatever happens, the field is empty when this form goes.
   useEffect(() => {
@@ -160,23 +163,29 @@ export function KeyForm({ client, providers, onAdded, onFailed, again, submitLab
           {...NO_MANAGER}
         />
         <small id={`${ids}-keyhelp`}>
-          Make one at {provider.console}. It has to be an API key: a chat app subscription can’t be used by other apps.
+          {provider.id === OPENROUTER
+            ? `Make one at ${provider.console}. Only its free models are listed for now.`
+            : `Make one at ${provider.console}. It has to be an API key: a chat app subscription can’t be used by other apps.`}
         </small>
       </label>
       <label className="ag-field" htmlFor={`${ids}-label`}>
         <span>Name it (optional)</span>
         <input id={`${ids}-label`} value={label} maxLength={40} placeholder="e.g. Personal" onChange={(e) => setLabel(e.target.value)} disabled={busy} autoComplete="off" {...NO_MANAGER} />
       </label>
-      <p className="ag-note">
-        The key goes straight to this desk over its own encrypted connection, and this window keeps no copy. The desk checks it with the provider and uses it on this desk only.
-        Your prompts and replies then go to the provider, under your own agreement with them. That’s the one place desk content leaves Minimalist Alliance.
-      </p>
+      <div className="ag-note ag-travel">
+        <p>The key goes straight to this desk over its own encrypted connection, and this window keeps no copy.</p>
+        {/* The rest of the same words, a press away, so the form reads provider, key, Add key at a glance. */}
+        <details>
+          <summary>How the key travels</summary>
+          <p>The desk checks it with the provider and uses it on this desk only. Your prompts and replies then go to the provider, under your own agreement with them. That’s the one place desk content leaves Minimalist Alliance.</p>
+        </details>
+      </div>
       {error && (
         <p className="ag-error" id={`${ids}-err`} role="alert" data-testid="key-error">
           {error}
         </p>
       )}
-      <div className="ag-row-end">
+      <div className="ag-row-end ag-keyform-actions">
         <button type="submit" className="ag-btn primary" disabled={busy || !hasText} data-testid="key-submit">
           <Icon name="key" />
           {busy ? 'Checking the key…' : submitLabel}
@@ -201,6 +210,9 @@ export function BindingPicker({ client, agent, keys, onBound, compact = false }:
   const chosenInfo = list.find((m) => m.id === chosen);
   const unpriced = chosenInfo != null && (chosenInfo.inputMicroUsdPerMTok == null || chosenInfo.outputMicroUsdPerMTok == null);
   const unchanged = agent.binding?.keyId === keyId && agent.binding?.model === chosen;
+  // Changed from what it opened on, and not yet the agent's: one with no key yet opens on a choice it hasn't made, and a save makes it so.
+  const [opened] = useState({ keyId, model });
+  useUnsaved(!unchanged && (keyId !== opened.keyId || model !== opened.model));
 
   const save = async (): Promise<void> => {
     if (!keyId || !chosen) return;
@@ -234,12 +246,28 @@ export function BindingPicker({ client, agent, keys, onBound, compact = false }:
         <select id={`${ids}-m`} value={chosen} onChange={(e) => setModel(e.target.value)} disabled={busy || !list.length} data-testid="bind-model">
           {list.map((m) => (
             <option key={m.id} value={m.id}>
-              {m.label}
+              {modelOption(m)}
             </option>
           ))}
         </select>
       </label>
-      {unpriced && (
+      {chosenInfo?.free && (
+        <div className="ag-model-notes" data-testid="model-free">
+          <div className="ag-tags">
+            <span className="ag-free-tag">Free</span>
+            {chosenInfo.tools === false && <span className="ag-free-tag">Chats only</span>}
+          </div>
+          <p>
+            Slower than paid models, with a limited number of requests a day.
+            {chosenInfo.tools === false && ' This one chats only: it can’t use tools on your desk, so it can’t read your notes or open pages.'}
+          </p>
+          <p className="ag-free-privacy">
+            <Icon name="eye" size={14} />
+            <span>The company running a free model may keep what you send and learn from it.</span>
+          </p>
+        </div>
+      )}
+      {unpriced && !chosenInfo?.free && (
         <p className="ag-muted ag-small" data-testid="model-unpriced">
           {UNPRICED}
         </p>
@@ -266,7 +294,22 @@ export interface KeyWords {
  * `introAgain` replace its first heading and line (a first key, and one the desk lost), and `restartLine` is the guild's own,
  * shown whatever `keysLast` says, as a Guild Desk loses its key with every sleep for now.
  */
-export function KeySetup({ client, agent, agents, providers, keys, keysLast, onKeysChanged, intro = null, introAgain = null, restartLine = null }: {
+export function KeySetup({
+  client,
+  agent,
+  agents,
+  providers,
+  keys,
+  keysLast,
+  onKeysChanged,
+  intro = null,
+  introAgain = null,
+  restartLine = null,
+  deskId = null,
+  deskName = '',
+  offerFree = false,
+  announce,
+}: {
   client: AgentClient;
   agent: Agent;
   agents: readonly Agent[];
@@ -277,18 +320,31 @@ export function KeySetup({ client, agent, agents, providers, keys, keysLast, onK
   intro?: KeyWords | null;
   introAgain?: KeyWords | null;
   restartLine?: string | null;
+  /** For the free card (spec agent-free-key): which desk, its name for the key's label at OpenRouter, and whether it's offered at all. */
+  deskId?: string | null;
+  deskName?: string;
+  /** Not a teen, not a Guild Desk (`freeOffered`); the desk's providers and keys decide the rest. */
+  offerFree?: boolean;
+  announce?: (text: string) => void;
 }) {
   const had = agent.binding ? (keys.find((k) => k.keyId === agent.binding?.keyId) ?? null) : null;
   const usable = keys.filter((k) => !keyLost(k, agents));
-  const added = async (key: KeyMeta): Promise<void> => {
+  // Drawn while its own Connect is under way or saying how it went, even once the desk lists the key it brought.
+  const [freeActive, setFreeActive] = useState(false);
+  const showFree = offerFree && (freeActive || freeOffered({ providers, keys: usable, guild: false, allowed: true }));
+  const added = async (key: KeyMeta): Promise<boolean> => {
     onKeysChanged();
     const back = await takeOver(client, agents, keys, key);
     onKeysChanged();
-    if (back.includes(agent.id)) return;
+    if (back.includes(agent.id)) return true;
     const models = await client.listModels(key.keyId);
     const model = models.find((m) => m.id === agent.binding?.model) ?? models[0];
-    if (model) await client.bindAgent(agent.id, { keyId: key.keyId, model: model.id }, { idem: newIdem() });
+    if (!model) return false;
+    await client.bindAgent(agent.id, { keyId: key.keyId, model: model.id }, { idem: newIdem() });
+    return true;
   };
+  const form = <KeyForm client={client} providers={providers} onAdded={async (k) => void (await added(k))} onFailed={onKeysChanged} again={had} />;
+  const restart = restartLine ? <p className="ag-note" data-testid="key-restart-line">{restartLine}</p> : <RestartLine keysLast={keysLast} />;
   return (
     <div className="ag-setup" data-testid="key-setup">
       <div className="ag-setup-card">
@@ -314,6 +370,11 @@ export function KeySetup({ client, agent, agents, providers, keys, keysLast, onK
             <h3>{intro.title}</h3>
             <p className="ag-muted">{intro.line}</p>
           </>
+        ) : showFree ? (
+          <>
+            <h3>Give {agent.name} a key</h3>
+            <p className="ag-muted">{agent.name} wakes once it has an AI key, and the key stays on this desk.</p>
+          </>
         ) : (
           <>
             <h3>Give {agent.name} a key</h3>
@@ -328,10 +389,28 @@ export function KeySetup({ client, agent, agents, providers, keys, keysLast, onK
             <BindingPicker client={client} agent={agent} keys={usable} />
           </section>
         )}
-        <section className="ag-setup-section" aria-label="Add a key">
+        {/* One shape whatever shows, so the form (a half-typed key, its error) and the card's own Connect keep their state as the
+            desk's keys change under them: the free card first, then "or" and your own key (spec §1.2, taste call A). */}
+        <section className={showFree && usable.length === 0 ? 'ag-setup-choices' : 'ag-setup-section'} aria-label="Add a key">
           {usable.length > 0 && <h4>Or add another</h4>}
-          {restartLine ? <p className="ag-note" data-testid="key-restart-line">{restartLine}</p> : <RestartLine keysLast={keysLast} />}
-          <KeyForm client={client} providers={providers} onAdded={added} onFailed={onKeysChanged} again={had} />
+          {restart}
+          {showFree && (
+            <FreeCard client={client} agent={agent} deskId={deskId ?? deskName} deskName={deskName} onAdded={added} onActive={setFreeActive} onKeysChanged={onKeysChanged} announce={announce} />
+          )}
+          {showFree && (
+            <p className="ag-or" aria-hidden="true">
+              or
+            </p>
+          )}
+          <section className={showFree ? 'ag-own' : 'ag-own-plain'} aria-labelledby={showFree ? `ag-own-${agent.id}` : undefined}>
+            {showFree && (
+              <h4 className="ag-setup-title" id={`ag-own-${agent.id}`}>
+                Add your own key
+              </h4>
+            )}
+            {showFree && <p>From your own provider account. You pay the provider directly, and your limits here stop {agent.name} before it spends more than you allow.</p>}
+            {form}
+          </section>
         </section>
       </div>
     </div>
@@ -339,7 +418,7 @@ export function KeySetup({ client, agent, agents, providers, keys, keysLast, onK
 }
 
 /** The drawer's Keys tab: this agent's key and model, its badge, and every key on the desk. */
-export function KeysPanel({ client, agent, agents, providers, keys, keysLast, onKeysChanged, deskName }: {
+export function KeysPanel({ client, agent, agents, providers, keys, keysLast, onKeysChanged, deskName, deskId = null, offerFree = false, openAdd = false, announce }: {
   client: AgentClient;
   agent: Agent;
   agents: readonly Agent[];
@@ -349,13 +428,42 @@ export function KeysPanel({ client, agent, agents, providers, keys, keysLast, on
   keysLast: boolean | null;
   onKeysChanged: () => void;
   deskName: string;
+  /** For "Try free models" (spec agent-free-key §3.2): as `KeySetup`'s. */
+  deskId?: string | null;
+  offerFree?: boolean;
+  /** Opens with the form open (the free limit's "Add a key"). */
+  openAdd?: boolean;
+  announce?: (text: string) => void;
 }) {
   const [confirm, setConfirm] = useState<string | null>(null);
   const [deleted, setDeleted] = useState<KeyMeta | null>(null);
   const [error, setError] = useState<string | null>(null);
-  const [adding, setAdding] = useState<{ again: KeyMeta | null } | null>(null);
+  const [adding, setAdding] = useState<{ again: KeyMeta | null } | null>(() => (openAdd ? { again: null } : null));
+  // A Connect started here and not finished (the drawer closed, the page reloaded) opens the card again to finish it.
+  const [trying, setTrying] = useState(() => {
+    const p = readPending();
+    return p !== null && p.agentId === agent.id && p.deskId === (deskId ?? deskName);
+  });
+  const [freeActive, setFreeActive] = useState(false);
   const usable = keys.filter((k) => !keyLost(k, agents));
   const boundLost = keys.some((k) => k.keyId === agent.binding?.keyId && keyLost(k, agents));
+  const free = offerFree && (freeActive || freeOffered({ providers, keys: usable, guild: false, allowed: true }));
+  // A key from "Try free models" wakes this agent only where it has no working key; otherwise the member picks it above.
+  const freeAdded = useCallback(
+    async (key: KeyMeta): Promise<boolean> => {
+      onKeysChanged();
+      await takeOver(client, agents, keys, key);
+      onKeysChanged();
+      setTrying(false);
+      if (agent.binding && !boundLost) return false;
+      const models = await client.listModels(key.keyId);
+      const model = models[0];
+      if (!model) return false;
+      await client.bindAgent(agent.id, { keyId: key.keyId, model: model.id }, { idem: newIdem() });
+      return true;
+    },
+    [client, agents, keys, agent, boundLost, onKeysChanged],
+  );
 
   const remove = async (k: KeyMeta): Promise<void> => {
     setError(null);
@@ -403,6 +511,16 @@ export function KeysPanel({ client, agent, agents, providers, keys, keysLast, on
               <div className="ag-key-meta">
                 <span className="ag-mono">····{k.last4}</span> · added on {k.createdByDesk === deskName ? 'this desk' : `the ${k.createdByDesk} desk`}, {when(k.createdAt)}
               </div>
+              {k.provider === OPENROUTER && (
+                <p className="ag-key-free" data-testid="key-free">
+                  Free models only, from your OpenRouter account.
+                </p>
+              )}
+              {k.provider === OPENROUTER && k.free && (
+                <p className="ag-key-free">
+                  {k.free.leftToday} of {k.free.perDay} free requests left today
+                </p>
+              )}
               {keyLost(k, agents) && (
                 <button type="button" className="ag-text-btn" onClick={() => setAdding({ again: k })} data-testid="key-again">
                   Add this key again
@@ -457,6 +575,14 @@ export function KeysPanel({ client, agent, agents, providers, keys, keysLast, on
             <Icon name="plus" /> Add a key
           </button>
         )}
+        {free &&
+          (trying || freeActive ? (
+            <FreeCard client={client} agent={agent} deskId={deskId ?? deskName} deskName={deskName} onAdded={freeAdded} onActive={setFreeActive} onKeysChanged={onKeysChanged} announce={announce} />
+          ) : (
+            <button type="button" className="ag-text-btn" onClick={() => setTrying(true)} data-testid="free-try">
+              Try free models
+            </button>
+          ))}
       </section>
     </div>
   );

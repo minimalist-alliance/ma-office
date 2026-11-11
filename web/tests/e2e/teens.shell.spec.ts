@@ -285,10 +285,15 @@ test('nothing asks a desk about it: no call in the mock names the Agent or Claud
   expect(calls.filter((m) => /agent|claude/i.test(m))).toEqual([]);
 });
 
-/** The topics each desk's mock `desk-agent` has been asked for and still serves. */
+/**
+ * The topics each desk's mock `desk-agent` has been asked for and still serves. Empty until the mock exists: a poll
+ * that starts while `/v1/me` is still held runs before the mock desk link has loaded, and a throw there would end
+ * the poll instead of waiting.
+ */
 const agentTopics = (page: Page): Promise<string[]> =>
   page.evaluate(() => {
-    const mock = (window as unknown as { __maDeskMock: { agent: { desks: Record<string, { subs: Map<number, { topic: string }> }> } } }).__maDeskMock;
+    const mock = (window as unknown as { __maDeskMock?: { agent?: { desks: Record<string, { subs: Map<number, { topic: string }> }> } } }).__maDeskMock;
+    if (!mock?.agent) return [];
     return Object.values(mock.agent.desks).flatMap((desk) => [...desk.subs.values()].map((sub) => sub.topic));
   });
 

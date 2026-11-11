@@ -1,0 +1,39 @@
+{
+  "_about": "Brows take the hair color as it is: {{brow}} is the recipe's hair color (dark brown under a hijab), with no contrast floor. All are left out at 24 px (minSize 32); the md files are a little bolder for 32 px.",
+  "category": "brows",
+  "layer": "07-face",
+  "colorSlot": "hairColor",
+  "default": "soft",
+  "parts": [
+    {
+      "id": "none",
+      "name": "None",
+      "layers": []
+    },
+    {
+      "id": "soft",
+      "name": "Soft",
+      "minSize": 32
+    },
+    {
+      "id": "straight",
+      "name": "Straight",
+      "minSize": 32
+    },
+    {
+      "id": "arched",
+      "name": "Arched",
+      "minSize": 32
+    },
+    {
+      "id": "thick",
+      "name": "Thick",
+      "minSize": 32
+    },
+    {
+      "id": "thin",
+      "name": "Thin",
+      "minSize": 32
+    }
+  ]
+}
