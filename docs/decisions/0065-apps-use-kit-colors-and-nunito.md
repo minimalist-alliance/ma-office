@@ -42,3 +42,6 @@ The owner asked to see the kit's colors and Nunito against today's look on the r
 
 ## Addendum, 2026-11-11: Inter, not Nunito
 The owner, Nov 10, on Forums v2: "Nunito is goofy and off brand". Every app and the sign-in pages now self-host Inter Variable, and the kit's colors stand. Unread badges are the accent in every theme, and red is for errors only.
+
+## Addendum, 2026-11-11: one Light link
+The kit's Light `text.link` is `#355F91`, not `#476C9E` (the Product Designer's pick from the accessibility pass): the office's own accent.hover, and the link the account site already used. `#476C9E` was 4.42:1 on `surface.worldBase` and 3.97:1 on `surface.worldLo`, where the account site and the sign-in pages put links; `#355F91` is 4.86:1 or more on every opaque Light surface. The account site, the Management Console and the sign-in pages in ma-platform carry the same value, held there by `web/platform/src/linkParity.test.ts`, and the kit's half by `web/src/theme/linkToken.test.ts`. Zen and Dark are unchanged.

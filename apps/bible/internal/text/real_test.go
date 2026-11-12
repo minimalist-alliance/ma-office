@@ -7,6 +7,7 @@ import (
 	"testing"
 	"time"
 	"unicode/utf16"
+	"unicode/utf8"
 )
 
 // The package's real texts (apps/bible/texts/), when they're in the tree: every translation reads, every line is where
@@ -114,4 +115,33 @@ func TestRealSearchAndLookup(t *testing.T) {
 		t.Errorf("god in all: %d of %d", len(res.Hits), res.Total)
 	}
 	t.Logf("god in all four: %d verses (%v), a page of %d", res.Total, res.Counts, len(res.Hits))
+}
+
+// TestNotices: every translation's NOTICE.txt, what the About sheet shows, is only paragraphs found word for word in
+// its STATEMENT.txt, one line each, a blank line between, LF, a newline at the end.
+func TestNotices(t *testing.T) {
+	for _, dir := range []string{realTexts, fixtures} {
+		for _, code := range []string{"bsb", "web", "kjv", "asv"} {
+			notice, err := os.ReadFile(dir + "/" + code + "/NOTICE.txt")
+			if os.IsNotExist(err) && dir == realTexts {
+				t.Skip("the real texts aren't in this tree")
+			}
+			statement, err2 := os.ReadFile(dir + "/" + code + "/STATEMENT.txt")
+			if err != nil || err2 != nil {
+				t.Fatalf("%s %s: %v %v", dir, code, err, err2)
+			}
+			n := string(notice)
+			if strings.Contains(n, "\r") || !strings.HasSuffix(n, "\n") || strings.HasSuffix(n, "\n\n") || !utf8.ValidString(n) {
+				t.Fatalf("%s %s: not UTF-8 with LF and one newline at the end", dir, code)
+			}
+			for i, p := range strings.Split(strings.TrimSuffix(n, "\n"), "\n\n") {
+				if p == "" || strings.Contains(p, "\n") || p != strings.TrimSpace(p) {
+					t.Fatalf("%s %s: paragraph %d isn't one line between single blank lines", dir, code, i+1)
+				}
+				if !strings.Contains(string(statement), p) {
+					t.Fatalf("%s %s: paragraph %d isn't word for word in STATEMENT.txt: %q", dir, code, i+1, p)
+				}
+			}
+		}
+	}
 }

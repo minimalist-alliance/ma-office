@@ -173,7 +173,11 @@ export class PeerSession {
     send: (id, seq, payload) => {
       const dc = this.channels.get(BULK);
       if (dc?.readyState !== 'open') return false;
-      dc.send(encodeFrame(Kind.CHUNK, FLAG_BIN, id, seq, payload));
+      const frame = encodeFrame(Kind.CHUNK, FLAG_BIN, id, seq, payload);
+      dc.send(frame);
+      // `send` has taken its own copy, so the frame's copy of the file goes now: a passwords file's bytes (#11) never
+      // linger here, and nothing else needs them.
+      frame.fill(0);
       return true;
     },
     drained: () => {

@@ -23,6 +23,10 @@ import java.util.concurrent.atomic.AtomicLong;
  * answers HELLO, serves {@code tally.get}, {@code tally.add} and {@code tally.reset} with idempotency by {@code idem}, the
  * topics {@code tally} and {@code app.summary}, and PING. It can be told to misbehave: never answer HELLO, close with 4426,
  * or crash.
+ *
+ * <p>For a guild desk it also keeps notes per caller, as an app must there: {@code notes.put} and {@code notes.list}, and
+ * the topic {@code notes}, each by {@code from.caller.member} (or {@code owner}); and it takes {@code app.members.retain},
+ * deleting every member's notes but the listed ones', unless told it doesn't know that call.
  */
 final class FakeApp implements AutoCloseable {
 
@@ -35,6 +39,11 @@ final class FakeApp implements AutoCloseable {
     final List<Map<String, Object>> subscribes = new CopyOnWriteArrayList<>();
     final List<Map<String, Object>> hellos = new CopyOnWriteArrayList<>();
     final List<Map<String, Object>> fromDeskd = new CopyOnWriteArrayList<>();
+    /** Each caller's notes, by member pseudonym or {@code owner}. */
+    final Map<String, List<String>> notes = new ConcurrentHashMap<>();
+    final List<Map<String, Object>> retains = new CopyOnWriteArrayList<>();
+    volatile boolean retainUnknown;
+    private final Map<Long, String> subMember = new ConcurrentHashMap<>();
     private final Map<String, byte[]> done = new ConcurrentHashMap<>();
     private final Map<Long, String> subs = new ConcurrentHashMap<>();
     private final AtomicLong nextSub = new AtomicLong();
@@ -93,6 +102,15 @@ final class FakeApp implements AutoCloseable {
                     Map<String, Object> body = Json.parseObject(f.payload());
                     subscribes.add(body);
                     String topic = Json.string(body, "topic");
+                    if ("notes".equals(topic)) {
+                        long sub = nextSub.incrementAndGet();
+                        subs.put(sub, topic);
+                        String who = who(body);
+                        subMember.put(sub, who);
+                        send(c, FrameKind.RES.code(), f.id(), 0, Map.of("subId", sub, "seq", 0));
+                        send(c, FrameKind.EVT.code(), sub, 1, Map.of("type", "snapshot", "data", Map.of("notes", notesOf(who))));
+                        continue;
+                    }
                     if (!"tally".equals(topic) && !"app.summary".equals(topic)) {
                         send(c, FrameKind.ERR.code(), f.id(), 0, Map.of("code", "not_found", "message", "No such topic"));
                         continue;
@@ -148,6 +166,43 @@ final class FakeApp implements AutoCloseable {
                     send(c, FrameKind.EVT.code(), s.getKey(), 2, Map.of("type", "patch", "data", data(s.getValue())));
                 }
             }
+            case "notes.list" -> send(c, FrameKind.RES.code(), f.id(), 0, Map.of("notes", notesOf(who(r))));
+            case "notes.put" -> {
+                byte[] before = idem == null ? null : done.get(idem);
+                if (before != null) {
+                    write(c, AppLink.encode(FrameKind.RES.code(), f.id(), 0, before));
+                    return;
+                }
+                String who = who(r);
+                notes.computeIfAbsent(who, k -> new CopyOnWriteArrayList<>()).add(Json.string(Json.object(r, "p"), "text"));
+                byte[] res = Json.bytes(Map.of("notes", notesOf(who)));
+                if (idem != null) {
+                    done.put(idem, res);
+                }
+                write(c, AppLink.encode(FrameKind.RES.code(), f.id(), 0, res));
+                for (Map.Entry<Long, String> s : subMember.entrySet()) {
+                    if (s.getValue().equals(who) && subs.containsKey(s.getKey())) {
+                        send(c, FrameKind.EVT.code(), s.getKey(), 2, Map.of("type", "patch", "data", Map.of("notes", notesOf(who))));
+                    }
+                }
+            }
+            case "app.members.retain" -> {
+                retains.add(r);
+                if (retainUnknown) {
+                    send(c, FrameKind.ERR.code(), f.id(), 0, Map.of("code", "not_found", "message", "No such method"));
+                    return;
+                }
+                @SuppressWarnings("unchecked")
+                List<String> keep = (List<String>) Json.object(r, "p").get("members");
+                int removed = 0;
+                for (String who : List.copyOf(notes.keySet())) {
+                    if (!who.equals("owner") && !keep.contains(who)) {
+                        notes.remove(who);
+                        removed++;
+                    }
+                }
+                send(c, FrameKind.RES.code(), f.id(), 0, Map.of("removed", removed));
+            }
             case "weird.error" -> send(c, FrameKind.ERR.code(), f.id(), 0, Map.of("code", "teapot", "message", "secret detail"));
             case "ask.desk" -> {
                 send(c, FrameKind.REQ.code(), 99, 0, Map.of("m", "desk.info.get", "p", Map.of()));
@@ -155,6 +210,20 @@ final class FakeApp implements AutoCloseable {
             }
             default -> send(c, FrameKind.ERR.code(), f.id(), 0, Map.of("code", "not_found", "message", "No such method"));
         }
+    }
+
+    /** The caller's key: its member pseudonym on a guild desk, else {@code owner}. */
+    @SuppressWarnings("unchecked")
+    static String who(Map<String, Object> request) {
+        if (request.get("from") instanceof Map<?, ?> from && from.get("caller") instanceof Map<?, ?> caller
+                && "guild_member".equals(caller.get("kind")) && caller.get("member") instanceof String member) {
+            return member;
+        }
+        return "owner";
+    }
+
+    List<String> notesOf(String who) {
+        return List.copyOf(notes.getOrDefault(who, List.of()));
     }
 
     private Object data(String topic) {

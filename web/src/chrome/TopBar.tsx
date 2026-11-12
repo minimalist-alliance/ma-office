@@ -1,4 +1,5 @@
-// The mark, scope switcher (only with more than one desk, design 3.2), privacy shield, full
+// The mark, scope switcher (only with more than one desk, design 3.2; one menu button beside the mark in short-viewport
+// mode, `BarMenus.tsx`), privacy shield, full
 // screen, the bell and the account menu. The canvas keeps all pointer input outside these controls. Nothing else goes
 // in here: notices, such as a new version, go in the shell's stack above the bottom bar, so these never move for one.
 // The bell is the one exception, and it isn't a notice: it holds the member's own notifications (ADR 0125), which
@@ -7,10 +8,12 @@ import { useEffect, useState } from 'react';
 import markOnDark from '../assets/brand/ma-mark-on-dark.svg';
 import markOnLight from '../assets/brand/ma-mark-primary.svg';
 import markZen from '../assets/brand/ma-mark-zen.svg';
+import { useIsShort } from '../canvas/phone';
 import { goOverview, inScopeDesks, setScope, togglePrivacy } from '../shell/actions';
 import { useDeskStore } from '../state/deskStore';
 import { useViewStore, type Scope } from '../state/viewStore';
 import { AccountMenu } from './AccountMenu';
+import { BarMenu } from './BarMenus';
 import { Bell } from './Bell';
 import { Icon } from './icons';
 import { Segmented } from './Segmented';
@@ -34,6 +37,7 @@ export function TopBar({ onNotice }: { onNotice: (text: string) => void }) {
   const mode = useViewStore((s) => s.mode);
   const shield = useViewStore((s) => s.privacyShield);
   const [isFs, setIsFs] = useState(() => !!document.fullscreenElement);
+  const short = useIsShort();
 
   useEffect(() => {
     const on = (): void => {
@@ -71,8 +75,15 @@ export function TopBar({ onNotice }: { onNotice: (text: string) => void }) {
           </span>
         )}
       </h1>
+      {desks.length > 1 && short && (
+        <BarMenu panel="ScopeList" options={options} value={scope}>
+          <span className="sr-only">Scope: </span>
+          <span className="chip-text">{SCOPE_LABELS[scope]}</span>
+          <Icon name="chevronDown" size={16} />
+        </BarMenu>
+      )}
       <div className="top-actions">
-        {desks.length > 1 && <Segmented label="Scope" options={options} value={scope} onChange={setScope} className="scope" />}
+        {desks.length > 1 && !short && <Segmented label="Scope" options={options} value={scope} onChange={setScope} className="scope" />}
         <button
           type="button"
           className={`icon-btn chrome${shield ? ' on' : ''}`}

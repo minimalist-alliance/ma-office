@@ -14,6 +14,7 @@ import { getClientConfig, type ClientConfig } from './clientConfig';
 import { codeChallenge, decodeJwtPayload, randomString } from './pkce';
 import { onSignInPage, signInAddress, type Here } from './signInAddress';
 import { clearRefreshToken, clearRefreshTokenIf, HOLD_MS, outlivedChoice, readChoice, readRefreshToken, readSignedInAt, writeRefreshToken, writeSignedInAt } from './tokenStore';
+import { endSignedIn, keepSignedIn } from './signedInCookie';
 
 const PENDING_KEY = 'ma.auth.pending';
 const REFRESH_MARGIN_MS = 5 * 60 * 1000;
@@ -166,9 +167,8 @@ async function postToken(cfg: ClientConfig, body: URLSearchParams, signal?: Abor
   });
 }
 
-async function underRefreshLock(fn: () => Promise<void>): Promise<void> {
-  if (navigator.locks) await navigator.locks.request('ma-refresh', fn);
-  else await fn();
+async function underRefreshLock<T>(fn: () => Promise<T>): Promise<T> {
+  return navigator.locks ? (navigator.locks.request('ma-refresh', fn) as Promise<T>) : fn();
 }
 
 /** Handles /auth/callback. Throws with a calm message for the sign-in screen. */
@@ -195,10 +195,19 @@ export async function finishSignIn(search: string): Promise<void> {
   const claims = tokens.id_token ? decodeJwtPayload(tokens.id_token) : null;
   if (claims?.['nonce'] !== pending.nonce) throw new SignInRequired("That sign-in couldn't be verified. Please try again.");
   // Under the lock, so another tab's refresh on its way can't land after this and bring the old session back.
-  await underRefreshLock(async () => {
+  const replaced = await underRefreshLock(async () => {
+    const old = await readRefreshToken();
     keep(tokens);
     await noteSignedIn(tokens, true);
+    // What this sign-in replaced, once the new token is what's stored (a write the browser refuses throws, above). If
+    // Cognito handed back the same token, or brought none, there's nothing old.
+    return old !== null && old !== tokens.refresh_token && (await readRefreshToken()) === tokens.refresh_token ? old : null;
   });
+  // The session this replaced is over here, so end it at Cognito too (ISS-68, as `ma-platform`'s Platform app does), as
+  // sign-out does. Not waited for, and it never throws: a revoke that fails or hangs changes nothing about this sign-in.
+  if (replaced) void revokeRefreshToken(cfg, replaced);
+  // The landing's signed-in cookie, for the member's "Stay signed in" (signedInCookie.ts).
+  keepSignedIn(readChoice().staySignedIn, cfg);
 }
 
 /**
@@ -253,6 +262,7 @@ async function endHere(cfg: ClientConfig, refreshToken: string, choice: string |
   if ((await readRefreshToken()) !== refreshToken) return;
   await revokeRefreshToken(cfg, refreshToken);
   if (await clearRefreshTokenIf(refreshToken)) {
+    endSignedIn(cfg);
     access = null;
     refusedHere = true;
     endedBy = choice;
@@ -281,6 +291,7 @@ async function refreshLocked(cfg: ClientConfig): Promise<void> {
       keep(tokens);
       // This tab has its access token whether or not the write works.
       await noteSignedIn(tokens, false).catch(() => undefined);
+      keepSignedIn(readChoice().staySignedIn, cfg); // a refresh renews the landing's signed-in cookie too
       return;
     }
     if (!isSessionOver(reply.body)) throw new RefreshUnavailable(`token refresh -> ${reply.status}`);
@@ -292,6 +303,7 @@ async function refreshLocked(cfg: ClientConfig): Promise<void> {
       continue;
     }
     if (await clearRefreshTokenIf(refreshToken)) {
+      endSignedIn(cfg);
       access = null;
       refusedHere = true;
       throw new SignInRequired();
@@ -417,6 +429,7 @@ async function revokeRefreshToken(cfg: ClientConfig, token: string): Promise<voi
 export async function endSession(cfg: ClientConfig | null): Promise<void> {
   const refreshToken = await readRefreshToken();
   await clearRefreshToken();
+  endSignedIn(cfg); // before the logout, everywhere or here
   access = null;
   if (!cfg) {
     window.location.assign('/signed-out');

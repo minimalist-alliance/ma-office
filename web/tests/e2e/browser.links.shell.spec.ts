@@ -1,6 +1,6 @@
 // Links in and out (#9, S-141), the Browser window's side, on the mock desk: Open on this device at the address's end (the
 // first-use card, then the bar's note), the desk's hand-off card on `browser.links` (`__maDeskMock.linkOut`, deskd's
-// `linkOut` as API.md section 10 has it), a finished download's "Get it on this device" (`BrowserDownload.url`, asked of
+// `linkOut` as API.md section 10 has it), a finished download's "Download on this device" (`BrowserDownload.url`, asked of
 // the Desk Engineer), and Picture quality folded into More under 720 px of bar. Light, Zen and Dark, and a 390 px phone.
 import { expect, test, type BrowserContext, type Page } from '@playwright/test';
 import { canvasPainted, harness, setTheme, signIn, watchConsole, type ThemeId } from './helpers';
@@ -17,7 +17,7 @@ type Win = {
   __handed: string[];
 };
 
-const FIRST_USE = 'Opened on this device. Your desk’s sign-ins stay on your desk, so you may need to sign in there.';
+const FIRST_USE = "Opened on this device, where you may need to sign in. Your desk's sign-ins stay on your desk.";
 const card = (page: Page) => page.getByTestId('browser-handoff');
 const openHere = (page: Page) => page.getByRole('button', { name: 'Open on this device', exact: true }).and(page.getByTestId('browser-open-here'));
 const setUrl = (page: Page, url: string): Promise<void> =>
@@ -223,14 +223,14 @@ test.describe('the desk hands over a link', () => {
 
 test.describe('a finished download', () => {
   const dl = (over: Record<string, unknown>) => ({ id: 'g1', name: 'report.pdf', state: 'inProgress', receivedBytes: 1, totalBytes: 4, ...over });
-  test('offers Get it on this device when the desk says its address, and not otherwise', async ({ page, context }) => {
+  test('offers Download on this device when the desk says its address, and not otherwise', async ({ page, context }) => {
     await context.route('https://files.example.com/**', (route) => route.fulfill({ contentType: 'text/plain', body: 'x' }));
     await openBrowser(page);
     await setDownloads(page, [dl({})]);
     await expect(page.getByTestId('browser-download')).toHaveAttribute('data-kind', 'going');
     await setDownloads(page, [dl({ state: 'completed', receivedBytes: 4, url: 'https://files.example.com/report.pdf' })]);
     await expect(page.getByTestId('browser-download')).toContainText('Saved report.pdf on your desk');
-    const [popup] = await Promise.all([context.waitForEvent('page'), page.getByRole('button', { name: 'Get it on this device' }).click()]);
+    const [popup] = await Promise.all([context.waitForEvent('page'), page.getByRole('button', { name: 'Download on this device' }).click()]);
     expect(popup.url()).toContain('files.example.com/report.pdf');
     await popup.close();
     // Without the address (every deskd today), or with a blob: one, no button.

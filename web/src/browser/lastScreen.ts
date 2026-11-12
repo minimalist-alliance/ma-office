@@ -13,6 +13,7 @@
 // A picture past MAX_AGE_MS is deleted whenever one is read, not only skipped.
 //
 // Every call is best effort: storage that's off, full or private-mode just means no picture, never an error.
+import { layoutMirrorWritable } from '../state/layoutStore';
 
 const DB = 'ma-last-screen';
 const STORE = 'screens';
@@ -36,6 +37,12 @@ let keeping = true;
 export function keepLastScreens(): void {
   keeping = true;
 }
+
+/**
+ * And only while the layout's mirror may be written (ISS-89): a tab that another tab's sign-out left with no token, still
+ * showing the office on the access token it holds, keeps no picture of a desk for whoever's next.
+ */
+const keepsNow = (): boolean => keeping && layoutMirrorWritable();
 
 function open(): Promise<IDBDatabase | null> {
   return new Promise((resolve) => {
@@ -75,7 +82,7 @@ export function keptSize(w: number, h: number): { w: number; h: number } {
 
 /** Keep what `source` shows now as this desk's last screen. */
 export async function saveLastScreen(deskId: string, source: HTMLVideoElement | HTMLCanvasElement, now = Date.now()): Promise<void> {
-  if (!keeping) return;
+  if (!keepsNow()) return;
   const begun = clears;
   const w = source instanceof HTMLVideoElement ? source.videoWidth : source.width;
   const h = source instanceof HTMLVideoElement ? source.videoHeight : source.height;
@@ -94,7 +101,7 @@ export async function saveLastScreen(deskId: string, source: HTMLVideoElement | 
   const blob = await new Promise<Blob | null>((resolve) => canvas.toBlob(resolve, 'image/jpeg', QUALITY));
   canvas.width = 0;
   // Nothing awaits between this check and the open in `tx`, so a clear that comes later is queued behind this write.
-  if (!blob || !keeping || begun !== clears) return;
+  if (!blob || !keepsNow() || begun !== clears) return;
   await tx('readwrite', (s) => s.put({ blob, savedAt: now } satisfies Kept, deskId));
 }
 

@@ -3,6 +3,7 @@
 import { lookChunk, parseLook, type GlyphId } from '../agent/roster';
 import { THEME_IDS, THEMES, type Tokens } from '../theme/tokens';
 import { CANVAS_FONT } from './font';
+import { host } from '../deskapps/door';
 import type { CoreAppId } from './layout';
 
 type Ctx = CanvasRenderingContext2D | OffscreenCanvasRenderingContext2D;
@@ -178,6 +179,11 @@ const DRAW: Record<CoreAppId, (ctx: Ctx, t: Tokens) => void> = {
 
 /** Draw app glyph `app` scaled to `size` px at the context's current origin. */
 export function drawGlyph(ctx: Ctx, app: GlyphId, t: Tokens, size: number): void {
+  if (app.startsWith('dapp:')) {
+    // An installed app (ADR 0054): drawn by the desk app host's chunk once it's here; until then the tile is plain.
+    host?.drawGlyph(ctx, app.slice(5), t, size);
+    return;
+  }
   const look = parseLook(app);
   if (look) {
     // An agent's own app (task 49): its mark, the tone square with its icon or upload in the one foreground color. Its drawing

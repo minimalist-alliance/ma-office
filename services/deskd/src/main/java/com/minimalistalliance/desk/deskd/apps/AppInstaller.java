@@ -4,6 +4,8 @@ import com.minimalistalliance.desk.deskd.rpc.RpcContext;
 import com.minimalistalliance.desk.deskd.rpc.RpcException;
 import java.io.IOException;
 import java.io.InputStream;
+import java.nio.file.Files;
+import java.nio.file.LinkOption;
 import java.nio.file.Path;
 import java.time.Clock;
 import java.time.Duration;
@@ -37,6 +39,12 @@ import org.slf4j.LoggerFactory;
  * </ol>
  * Only {@code current} and {@code previous} are kept. <b>Remove</b> stops the app, deletes its releases and links, and asks the
  * helper to drop the rest; its data stays unless the member asked, and with it the app's uid, so a reinstall finds it.
+ *
+ * <p><b>A bundled app</b> (API.md section 19, "Bundled apps") installs from deskd's own image: the same refusals where they
+ * apply, then its directories under {@code /data/desk/apps} and its record in that registry, marked {@code bundled}, and the
+ * same trial start and rollback. Nothing is downloaded or placed, and there's no catalog, review key or helper to need. Its
+ * {@code packageSha256} is its manifest's hash, which names every file's. One id lives in one place: an id this deskd has
+ * bundled is never installed from the catalog.
  */
 final class AppInstaller {
 
@@ -56,9 +64,14 @@ final class AppInstaller {
     private final LongSupplier freeBytes;
     private final Clock clock;
     private final ReentrantLock busy = new ReentrantLock();
+    private final BundledApps bundled;
+    private final AppRuntime.Home bundledHome;
 
     AppInstaller(AppStore store, AppHost host, AppRuntime runtime, CatalogKeeper catalogs, AppsSwitch toggle,
-            Supplier<List<AppKeys.TrustedKey>> reviewKeys, String arch, LongSupplier freeBytes, Clock clock) {
+            Supplier<List<AppKeys.TrustedKey>> reviewKeys, String arch, LongSupplier freeBytes, Clock clock, BundledApps bundled,
+            AppRuntime.Home bundledHome) {
+        this.bundled = bundled;
+        this.bundledHome = bundledHome;
         this.store = store;
         this.host = host;
         this.runtime = runtime;
@@ -75,7 +88,11 @@ final class AppInstaller {
         if (!toggle.installs()) {
             throw AppRuntime.unavailable("switched_off");
         }
-        String why = store.unavailable() != null ? store.unavailable() : host.unavailable();
+        BundledApps.Bundled b = bundled.find(id);
+        AppRuntime.Home home = b != null ? bundledHome : null;
+        String why = b != null
+                ? (bundledHome.store().unavailable() != null ? bundledHome.store().unavailable() : bundledHome.host().unavailable())
+                : (store.unavailable() != null ? store.unavailable() : host.unavailable());
         if (why != null) {
             throw AppRuntime.unavailable(why);
         }
@@ -83,9 +100,130 @@ final class AppInstaller {
             throw new RpcException(RpcException.CONFLICT, "Another install is under way", Map.of("reason", "busy"));
         }
         try {
-            return installLocked(context, id, version, packageSha256, grants);
+            return home != null ? installBundled(context, b, version, packageSha256, grants)
+                    : installLocked(context, id, version, packageSha256, grants);
         } finally {
             busy.unlock();
+        }
+    }
+
+    /** {@link #install} of an app from deskd's own image, under {@link #busy}. */
+    private Map<String, Object> installBundled(RpcContext context, BundledApps.Bundled b, String version, String packageSha256,
+            List<String> grants) throws RpcException, InterruptedException {
+        String id = b.id();
+        AppStore bundledStore = bundledHome.store();
+        AppHost bundledHost = bundledHome.host();
+        if (!b.version().equals(version)) {
+            throw new RpcException(RpcException.NOT_FOUND, "No such version in the catalog", Map.of("reason", "version"));
+        }
+        if (!b.manifestSha256().equals(packageSha256)) {
+            throw precondition("catalog_changed");
+        }
+        List<String> permissions = b.manifest().permissions();
+        if (!new HashSet<>(grants).equals(new HashSet<>(permissions)) || grants.size() != new HashSet<>(grants).size()) {
+            throw new RpcException(RpcException.BAD_REQUEST, "grants must be exactly the version's permissions", Map.of("reason", "grants"));
+        }
+        AppStore.Entry old;
+        try {
+            old = bundledStore.entry(id);
+        } catch (IOException e) {
+            throw AppRuntime.unavailable("storage");
+        }
+        AppStore.Entry oldInstalled = old != null && old.installed() ? old : null;
+        if (oldInstalled != null && oldInstalled.disabled() == null && version.equals(oldInstalled.version())) {
+            AppRuntime.Process p = runtime.process(id);
+            return reply(id, version, p == null ? AppRuntime.STOPPED : p.state);
+        }
+        long diskBytes = b.manifest().resources().diskMaxBytes();
+        if (freeBytes.getAsLong() - diskBytes < BROWSER_FLOOR) {
+            throw precondition("no_space");
+        }
+
+        context.beginEffect();
+        // Whether this install made the app's directory, so a failed trial takes away only what it made: data a move or an
+        // earlier install left there stays, as a re-add finds it.
+        boolean made = !Files.exists(bundledStore.appDir(id), LinkOption.NOFOLLOW_LINKS);
+        AppStore.MemberKey memberKey = bundledStore.memberKeyFor(id, old, hasData(bundledStore.appDir(id).resolve("data")));
+        try {
+            bundledHost.prepare(id, AppStore.NO_UID, diskBytes);
+            bundledStore.keepMemberKey(id, memberKey);
+        } catch (AppHost.AppHostException e) {
+            throw AppRuntime.unavailable(e.code());
+        } catch (IOException e) {
+            throw AppRuntime.unavailable("storage");
+        }
+        boolean wasRunning = runtime.running(id);
+        AppManifest oldManifest = runtime.process(id) == null ? null : runtime.process(id).manifest;
+        if (wasRunning) {
+            runtime.stop(id);
+        }
+        String now = clock.instant().toString();
+        AppStore.Entry next = new AppStore.Entry(id, AppStore.NO_UID, version, null, AppManifest.FIRST_PARTY, List.copyOf(grants),
+                AppStore.Entry.INSTALLED, null, oldInstalled == null ? now : oldInstalled.installedAt(), now, b.manifestSha256(),
+                b.manifestSha256(), memberKey.key(), memberKey.overData(), true, old);
+        try {
+            bundledStore.put(next);
+        } catch (IOException e) {
+            rollbackBundled(id, old, oldManifest, wasRunning, made);
+            throw AppRuntime.unavailable("storage");
+        }
+        runtime.put(next, b.manifest(), bundledHome);
+        try {
+            runtime.ensureRunning(id, true);
+        } catch (RpcException e) {
+            String reason = e.details().get("reason") instanceof String r ? r : "no_hello";
+            rollbackBundled(id, old, oldManifest, wasRunning, made);
+            log.info("apps: a bundled app didn't start and was rolled back: {}", reason);
+            Map<String, Object> details = new LinkedHashMap<>();
+            details.put("reason", reason);
+            details.put("rolledBack", true);
+            throw new RpcException(RpcException.PRECONDITION_FAILED, "The app didn't start, so nothing changed", details);
+        }
+        try {
+            bundledStore.put(next.passed());
+        } catch (IOException e) {
+            log.info("apps: a bundled app's trial end couldn't be written; the next start rolls it back");
+        }
+        runtime.put(next.passed(), b.manifest(), bundledHome);
+        log.info("apps: a bundled app was installed");
+        AppRuntime.Process p = runtime.process(id);
+        return reply(id, version, p == null ? AppRuntime.STOPPED : p.state);
+    }
+
+    /** A bundled install's way back: the old record (a kept one stays kept), and what this install made, if it made it. */
+    private void rollbackBundled(String id, AppStore.Entry old, AppManifest oldManifest, boolean wasRunning, boolean made)
+            throws InterruptedException {
+        runtime.stop(id);
+        AppStore bundledStore = bundledHome.store();
+        try {
+            if (old != null) {
+                bundledStore.put(old);
+            } else {
+                bundledStore.forget(id);
+            }
+            if (old != null && old.installed() && oldManifest != null) {
+                runtime.put(old, oldManifest, bundledHome);
+                runtime.reset(id);
+            } else {
+                runtime.forget(id);
+                bundledStore.deleteSummary(id);
+            }
+        } catch (IOException e) {
+            log.warn("apps: a bundled app's rollback couldn't finish on the volume; the next start rolls it back");
+        }
+        if (made) {
+            try {
+                bundledStore.forgetMemberKey(id);
+                bundledHome.host().remove(id, AppStore.NO_UID, true);
+            } catch (AppHost.AppHostException e) {
+                log.info("apps: a rolled-back bundled app's directory is left: {}", e.code());
+            }
+        } else if (wasRunning && old != null && old.installed()) {
+            try {
+                runtime.ensureRunning(id, true);
+            } catch (RpcException e) {
+                log.info("apps: a bundled app didn't start again after a rollback: {}", e.code());
+            }
         }
     }
 
@@ -137,11 +275,14 @@ final class AppInstaller {
         } catch (IOException e) {
             throw AppRuntime.unavailable("storage");
         }
-        String memberKey = old != null && old.memberKey() != null ? old.memberKey() : AppStore.newMemberKey();
+        AppStore.MemberKey memberKey = store.memberKeyFor(id, old, hasData(store.appDir(id).resolve("data")));
         try {
             host.prepare(id, uid, diskBytes);
+            store.keepMemberKey(id, memberKey);
         } catch (AppHost.AppHostException e) {
             throw AppRuntime.unavailable(e.code());
+        } catch (IOException e) {
+            throw AppRuntime.unavailable("storage");
         }
         Path staging = null;
         PackageReader.Result result;
@@ -175,7 +316,7 @@ final class AppInstaller {
         String now = clock.instant().toString();
         AppStore.Entry next = new AppStore.Entry(id, uid, version, oldInstalled == null ? null : oldInstalled.version(), tier,
                 List.copyOf(grants), AppStore.Entry.INSTALLED, null, oldInstalled == null ? now : oldInstalled.installedAt(), now,
-                v.packageSha256(), v.manifestSha256(), memberKey, true, old);
+                v.packageSha256(), v.manifestSha256(), memberKey.key(), memberKey.overData(), true, old);
         try {
             store.put(next);
             store.point(id, AppStore.CURRENT, version);
@@ -274,6 +415,7 @@ final class AppInstaller {
             } catch (IOException e) {
                 log.info("apps: a refused install's releases are left for the next start to clear");
             }
+            store.forgetMemberKey(id);
             try {
                 host.remove(id, uid, true);
             } catch (AppHost.AppHostException e) {
@@ -309,6 +451,7 @@ final class AppInstaller {
             log.warn("apps: a rollback couldn't finish on the volume; the next start reconciles it");
         }
         if (old == null) {
+            store.forgetMemberKey(id);
             try {
                 host.remove(id, uid, true);
             } catch (AppHost.AppHostException e) {
@@ -327,6 +470,9 @@ final class AppInstaller {
         if (!toggle.on()) {
             throw AppRuntime.unavailable("switched_off");
         }
+        AppRuntime.Home home = homeOf(id);
+        AppStore store = home.store();
+        AppHost host = home.host();
         String why = store.unavailable() != null ? store.unavailable() : host.unavailable();
         if (why != null) {
             throw AppRuntime.unavailable(why);
@@ -352,18 +498,21 @@ final class AppInstaller {
             } catch (IOException e) {
                 throw AppRuntime.unavailable("storage");
             }
+            if (deleteData) {
+                store.forgetMemberKey(id);
+            }
             try {
                 host.remove(id, entry.uid(), deleteData);
             } catch (AppHost.AppHostException e) {
                 // The releases are gone; the record stays, so the uid stays the app's and its data with it.
-                persistKept(entry);
+                persistKept(store, entry);
                 throw AppRuntime.unavailable(e.code());
             }
             try {
                 if (deleteData) {
                     store.forget(id);
                 } else {
-                    persistKept(entry);
+                    persistKept(store, entry);
                 }
             } catch (IOException e) {
                 throw AppRuntime.unavailable("storage");
@@ -375,7 +524,36 @@ final class AppInstaller {
         }
     }
 
-    private void persistKept(AppStore.Entry entry) {
+    /** Whether the app's data directory is there with anything in it: its members' pseudonyms came from some key. */
+    private static boolean hasData(java.nio.file.Path data) {
+        if (!Files.isDirectory(data, LinkOption.NOFOLLOW_LINKS)) {
+            return false;
+        }
+        try (java.util.stream.Stream<java.nio.file.Path> children = Files.list(data)) {
+            return children.findAny().isPresent();
+        } catch (IOException e) {
+            // A directory deskd can't look into (the app's own uid's, 0700) is taken as holding data.
+            return true;
+        }
+    }
+
+    /** Where an app's record is: deskd's own directory for one bundled in its image, else {@code /data/apps}. */
+    private AppRuntime.Home homeOf(String id) throws RpcException {
+        AppRuntime.Process p = runtime.process(id);
+        if (p != null) {
+            return p.home;
+        }
+        try {
+            if (bundledHome != null && bundledHome.store().unavailable() == null && bundledHome.store().entry(id) != null) {
+                return bundledHome;
+            }
+        } catch (IOException e) {
+            throw AppRuntime.unavailable("storage");
+        }
+        return new AppRuntime.Home(store, host, false);
+    }
+
+    private static void persistKept(AppStore store, AppStore.Entry entry) {
         try {
             store.put(entry.withState(AppStore.Entry.KEPT, null, null));
         } catch (IOException e) {

@@ -1,6 +1,9 @@
 import { beforeEach, describe, expect, it } from 'vitest';
 import type { BrowserMedia } from './deskLink';
-import { HIDDEN_CLOSE_MS, IDLE_CHECK_MS, IdleRule, NO_INPUT_CLOSE_MS } from './idle';
+import { HIDDEN_CLOSE_MS, IDLE_CHECK_MS, IdleRule, LIMITED_NO_INPUT_CLOSE_MS, NO_INPUT_CLOSE_MS } from './idle';
+import { isLimitedDesk } from './limited';
+import { useFree } from '../free/door';
+import { useDeskStore } from '../state/deskStore';
 import { SOUND_QUIET_MS } from './sound';
 
 const MIN = 60_000;
@@ -255,5 +258,125 @@ describe('a running file transfer (the Files app)', () => {
     busy.add('a');
     rule.checkAll();
     expect(log).toContain('resume a');
+  });
+});
+
+describe('a desk with an idle limit (free or Alliance, ISS-64b)', () => {
+  /** `lim` is limited (a free or an Alliance desk), `std` is not (Officer, Lead, Guild or self-hosted). */
+  const make = () => {
+    rule = new IdleRule(
+      { rest: (id) => log.push(`rest ${id}`), resume: (id) => log.push(`resume ${id}`), deskIds: () => ['lim', 'std'], media, limited: (id) => id === 'lim' },
+      () => clock,
+    );
+    rule.checkAll();
+  };
+
+  it('the constant is 2 hours', () => {
+    expect(LIMITED_NO_INPUT_CLOSE_MS).toBe(2 * HOUR);
+  });
+
+  it('visible and untouched: the limited desk lets go at 2 hours, the other keeps 24', () => {
+    make();
+    pass(2 * HOUR - MIN);
+    expect(log).toEqual([]);
+    pass(MIN);
+    expect(new Set(log)).toEqual(new Set(['rest lim']));
+    pass(21 * HOUR);
+    expect(log).not.toContain('rest std');
+    pass(HOUR);
+    expect(log).toContain('rest std');
+  });
+
+  it('input restarts the 2 hours, and on a resting limited desk reopens it', () => {
+    make();
+    pass(2 * HOUR - MIN);
+    rule.noteInput('lim');
+    pass(2 * HOUR - MIN);
+    expect(log).toEqual([]);
+    pass(MIN);
+    expect(log).toEqual(['rest lim']);
+    log = [];
+    rule.noteInput('lim');
+    expect(log).toEqual(['resume lim']);
+  });
+
+  it('while the desk plays sound the 2 hours wait, and the 24 hours still close it', () => {
+    make();
+    const tick = (ms: number): void => {
+      const end = clock + ms;
+      while (clock < end) {
+        clock = Math.min(end, clock + IDLE_CHECK_MS);
+        heard['lim'] = clock; // sound all the while
+        rule.checkAll();
+      }
+    };
+    tick(3 * HOUR);
+    expect(log).toEqual([]);
+    tick(21 * HOUR);
+    expect(log).toContain('rest lim');
+  });
+
+  it('once the sound stops the 2 hours apply, within the quiet time and a check', () => {
+    make();
+    for (let i = 0; i < 180; i++) {
+      clock += MIN;
+      heard['lim'] = clock;
+      rule.checkAll();
+    }
+    expect(log).toEqual([]);
+    pass(SOUND_QUIET_MS - MIN);
+    expect(log).toEqual([]);
+    pass(IDLE_CHECK_MS + 2 * MIN);
+    expect(new Set(log)).toEqual(new Set(['rest lim']));
+  });
+
+  it('a hidden tab is still 60 minutes for both', () => {
+    make();
+    rule.setHidden(true);
+    pass(HOUR);
+    expect(log).toEqual(['rest lim', 'rest std']);
+  });
+
+  it('a running file transfer keeps a limited desk open past 2 hours', () => {
+    rule = new IdleRule(
+      { rest: (id) => log.push(`rest ${id}`), resume: () => {}, deskIds: () => ['lim'], limited: () => true, busy: () => true },
+      () => clock,
+    );
+    rule.checkAll();
+    pass(5 * HOUR);
+    expect(log).toEqual([]);
+  });
+});
+
+describe('which desks are limited', () => {
+  const desk = (over: Record<string, unknown>) => ({ id: 'd', kind: 'personal', vm: 'running', ...over }) as never;
+  const set = (d: unknown) => useDeskStore.setState({ desks: [d as never] });
+  beforeEach(() => {
+    useFree.setState({ free: false });
+    useDeskStore.setState({ desks: [] });
+  });
+
+  it('an Alliance desk (starts with the office) is', () => {
+    set(desk({ startsWithOffice: true }));
+    expect(isLimitedDesk('d')).toBe(true);
+  });
+  it('a free member\'s own desk is, and an Officer\'s is not', () => {
+    set(desk({}));
+    expect(isLimitedDesk('d')).toBe(false);
+    useFree.setState({ free: true });
+    expect(isLimitedDesk('d')).toBe(true);
+  });
+  it('a Guild Desk is not, free or Alliance', () => {
+    useFree.setState({ free: true });
+    set(desk({ kind: 'guild', startsWithOffice: true }));
+    expect(isLimitedDesk('d')).toBe(false);
+  });
+  it('a desk on the member\'s own computer is not', () => {
+    useFree.setState({ free: true });
+    set(desk({ selfHosted: true }));
+    expect(isLimitedDesk('d')).toBe(false);
+  });
+  it('an unknown desk is not', () => {
+    expect(isLimitedDesk('nope')).toBe(false);
   });
 });

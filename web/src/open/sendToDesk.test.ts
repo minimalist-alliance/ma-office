@@ -35,7 +35,7 @@ describe('the sheet’s desks', () => {
       'Awake',
       'Asleep, wakes to open this',
       'Waking up',
-      'Going to sleep, stays up to open this',
+      'Going to sleep, wakes to open this',
       'Couldn’t wake last time, tries again',
       null,
     ]);

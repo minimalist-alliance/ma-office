@@ -235,10 +235,10 @@ export const onFreeModels = (binding: { provider: string } | null | undefined): 
 
 /** The words for Sales, spec §2.4 and §10. */
 export const CONNECT_WORDS = {
-  mismatch: 'That answer from OpenRouter didn’t match this window, so nothing was added. Connect again.',
+  mismatch: "That answer from OpenRouter didn't match, so nothing was added. Connect again.",
   declined: 'OpenRouter didn’t hand over a key, so nothing was added. Connect again.',
   expired: 'That took more than 10 minutes, so nothing was added. Connect again when you’re ready.',
-  unreachable: 'OpenRouter couldn’t be reached from this window. Try again in a moment.',
+  unreachable: "OpenRouter couldn't be reached from here. Try again in a moment.",
   deskUnreachable: 'Your desk can’t reach OpenRouter right now, so it kept nothing. Try again later, or add a key of your own below.',
   storage: 'Your desk couldn’t save the key, and kept nothing. Connect again.',
   keyRefused: 'OpenRouter refused the new key, so nothing was kept. Connect again.',

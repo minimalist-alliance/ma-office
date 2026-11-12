@@ -55,6 +55,8 @@ const server = async (request: APIRequestContext): Promise<Harness> => (await (a
 const savedPrefs = async (request: APIRequestContext): Promise<Record<string, unknown>> => (await server(request)).layoutDocs[ME]?.layout?.prefs ?? {};
 
 const meter = (page: Page): Locator => page.getByTestId('free-meter-button');
+/** The same ring, compact in the title bar of a Browser that covers the bar's (walk L13). */
+const titleRing = (page: Page): Locator => page.getByTestId('free-meter-window-button');
 const notice = (page: Page): Locator => page.getByTestId('free-notice');
 const tile = (page: Page, app: string): Locator => page.getByRole('group', { name: 'Personal desk' }).getByRole('button', { name: new RegExp(`^${app}`) });
 const maiaPanel = (page: Page): Locator => page.getByRole('dialog', { name: 'Maia' });
@@ -206,8 +208,9 @@ for (const theme of ['light', 'dark'] as ThemeId[]) {
     await expect(link).toHaveAttribute('href', ACCOUNT);
     await expect(page.getByTestId('browser-video')).toHaveCount(0);
     await expect.poll(async () => (await streamCalls(page)).at(-1)).toBe('off');
-    await expect(meter(page)).toHaveAccessibleName('Browser time today: 45 of 45 minutes used. Resets at midnight.');
-    await expect(page.locator('.free-meter .bw-fill')).toHaveCount(0); // empty
+    // The Browser fills the screen, so the ring is in its title bar (walk L13), empty.
+    await expect(titleRing(page)).toHaveAccessibleName('Browser time today: 45 of 45 minutes used. Resets at midnight.');
+    await expect(page.locator('.free-ring .bw-fill')).toHaveCount(0); // empty
     // Said once, through the shell's live region.
     await expect(page.getByTestId('live-region')).toHaveText("The Browser is paused until midnight. That's today's free Browser time. Notebook and Agent keep working, and your tabs are safe.");
     expect(await axe(page, '.bw-paused')).toEqual([]);
@@ -295,6 +298,7 @@ for (const reduce of [false, true]) {
     await expect(page.getByTestId('live-region')).toHaveText('Your membership has started. Your desk keeps everything, with more room now.');
     await expect(page.getByTestId('bandwidth-button')).toBeVisible();
     await expect(page.getByTestId('free-meter')).toHaveCount(0);
+    await expect(page.getByTestId('free-meter-window')).toHaveCount(0);
     const beat = await page.evaluate(() => {
       const b = (window as unknown as { __beat: { notice: number; meterGone: number } }).__beat;
       return b.meterGone - b.notice;
@@ -468,3 +472,208 @@ test('Account settings says Free under the member\'s name, as the account menu d
   await expect(settings.getByTestId('settings-tier')).toHaveText('Free');
   expect(errors.filter((e) => !e.includes('Content Security Policy'))).toEqual([]);
 });
+
+// ----- Walk L13: the ring stays in view over a Browser that covers it, compact in that Browser's title bar.
+
+/** `FREE_RING_SHOTS=<dir>`: stills of the ring in a covering Browser's title bar, for the Designer. */
+const RING_SHOTS = process.env['FREE_RING_SHOTS'];
+const THEMES: ThemeId[] = ['light', 'dusk', 'dark'];
+
+/** The rings a member can see: drawn, not stepped aside, and on top at their own middle. */
+const seenRings = (page: Page): Promise<string[]> =>
+  page.evaluate(() =>
+    [...document.querySelectorAll('[data-testid="free-meter-button"], [data-testid="free-meter-window-button"]')]
+      .filter((b) => {
+        const r = b.getBoundingClientRect();
+        if (!r.width || getComputedStyle(b).visibility === 'hidden') return false;
+        const hit = document.elementFromPoint(r.left + r.width / 2, r.top + r.height / 2);
+        return !!hit && b.contains(hit);
+      })
+      .map((b) => b.getAttribute('data-testid') ?? ''),
+  );
+const BAR_RING = ['free-meter-button'];
+const TITLE_RING = ['free-meter-window-button'];
+const browserWindow = (page: Page): Locator => page.getByRole('dialog', { name: /Browser/ });
+const fill = async (page: Page, sel: string): Promise<number> => Number((await page.locator(`${sel} .bw-fill`).getAttribute('stroke-dasharray'))!.split(' ')[0]);
+/** What a press at a box's middle would reach: the nearest test id there. */
+const reaches = (page: Page, box: { x: number; y: number; width: number; height: number }): Promise<string | null> =>
+  page.evaluate(([x, y]) => document.elementFromPoint(x, y)?.closest('[data-testid]')?.getAttribute('data-testid') ?? null, [box.x + box.width / 2, box.y + box.height / 2] as const);
+
+for (const theme of THEMES) {
+  test(`${theme}: a Browser filling the screen carries the ring in its title bar, the same ring and press, one at a time (walk L13)`, async ({ page, request }) => {
+    const errors = watchConsole(page);
+    await setTheme(page, theme);
+    await arrive(page, request);
+    await expect.poll(() => seenRings(page)).toEqual(BAR_RING);
+    await expect(page.getByTestId('free-meter-window')).toHaveCount(0);
+
+    await openApp(page, 'Browser');
+    const win = browserWindow(page);
+    const ring = win.locator('.window-head').getByTestId('free-meter-window-button');
+    await expect(ring).toBeVisible();
+    await expect(ring).toHaveAccessibleName('Browser time today: 19 of 45 minutes used. Resets at midnight.');
+    await expect(meter(page)).toBeHidden();
+    await expect.poll(() => seenRings(page)).toEqual(TITLE_RING);
+    // The same ring, what's left: 26 of 45.
+    expect(await fill(page, '.free-ring')).toBeCloseTo(57.8, 0);
+    // At the title bar's right end, just left of the window's own buttons, inside the bar.
+    const r = (await ring.boundingBox())!;
+    const head = (await win.locator('.window-head').boundingBox())!;
+    const controls = (await win.locator('.window-controls').boundingBox())!;
+    expect(r.x + r.width).toBeLessThanOrEqual(controls.x + 1);
+    expect(controls.x - (r.x + r.width)).toBeLessThanOrEqual(12);
+    expect(r.y).toBeGreaterThanOrEqual(head.y);
+    expect(r.y + r.height).toBeLessThanOrEqual(head.y + head.height);
+    await page.mouse.move(8, head.y + head.height + 200); // off the ring, so no hover panel in the still
+    if (RING_SHOTS) await page.screenshot({ path: `${RING_SHOTS}/1440-${theme}-ring.png` });
+
+    // The same press: its panel, opening down into the window, over the Browser's page.
+    await ring.click();
+    const panel = page.getByTestId('free-meter-panel');
+    await expect(panel).toHaveCount(1);
+    await expect(panel).toContainText('19 of 45 minutes used');
+    await expect(panel).toContainText('Resets at midnight');
+    await expect(panel.getByTestId('free-meter-line')).toHaveText('Alliance Member has no daily limit.');
+    const link = panel.getByRole('link', { name: 'See membership (opens in a new tab)' });
+    await expect(link).toHaveAttribute('href', ACCOUNT);
+    const p = (await panel.boundingBox())!;
+    expect(p.y).toBeGreaterThan(head.y + head.height);
+    expect(p.x + p.width).toBeLessThanOrEqual(1440);
+    expect(await reaches(page, (await link.boundingBox())!)).toBe('free-meter-membership');
+    expect(await axe(page, '.free-ring', true)).toEqual([]);
+    if (RING_SHOTS) await page.screenshot({ path: `${RING_SHOTS}/1440-${theme}-panel.png` });
+    // Escape closes the panel, not the window, and the ring keeps the focus.
+    await page.keyboard.press('Escape');
+    await expect(panel).toHaveCount(0);
+    await expect(ring).toBeFocused();
+    await expect(win).toBeVisible();
+    expect(errors).toEqual([]);
+  });
+}
+
+test('the ring goes back to the bar when the Browser stops covering it: restored, dragged over, closed, the office in full screen (walk L13)', async ({ page, request }) => {
+  const errors = watchConsole(page);
+  await arrive(page, request);
+  await openApp(page, 'Browser');
+  const win = browserWindow(page);
+  await expect(titleRing(page)).toBeVisible();
+
+  // Restored to a window clear of the corner: the bar's ring is back, and the title bar has none.
+  await win.getByRole('button', { name: 'Restore window' }).click();
+  await expect(titleRing(page)).toHaveCount(0);
+  await expect(meter(page)).toBeVisible();
+  await expect.poll(() => seenRings(page)).toEqual(BAR_RING);
+
+  // Dragged over the corner, the window covers it as surely as filling the screen does.
+  const t = (await win.locator('.window-title').boundingBox())!;
+  await page.mouse.move(t.x + 20, t.y + t.height / 2);
+  await page.mouse.down();
+  await page.mouse.move(t.x + 220, t.y + t.height / 2 + 60, { steps: 6 });
+  await page.mouse.up();
+  await expect(titleRing(page)).toBeVisible();
+  await expect.poll(() => seenRings(page)).toEqual(TITLE_RING);
+  // A press on the ring and its panel neither drags the window nor fills the screen.
+  const before = (await win.boundingBox())!;
+  await titleRing(page).dblclick();
+  await expect(win).not.toHaveClass(/\bfull\b/);
+  expect((await win.boundingBox())!.x).toBeCloseTo(before.x, 0);
+
+  // Filled, then closed: the bar's ring is back.
+  await win.getByRole('button', { name: 'Fill the screen' }).click();
+  await expect.poll(() => seenRings(page)).toEqual(TITLE_RING);
+  await win.getByRole('button', { name: 'Close Browser' }).click();
+  await expect(win).toHaveCount(0);
+  await expect.poll(() => seenRings(page)).toEqual(BAR_RING);
+
+  // The office's own full screen, with the Browser filling it.
+  await page.getByRole('button', { name: 'Full screen' }).click();
+  await expect(page.getByRole('button', { name: 'Exit full screen' })).toBeVisible();
+  await openApp(page, 'Browser');
+  await expect(titleRing(page)).toBeVisible();
+  await expect.poll(() => seenRings(page)).toEqual(TITLE_RING);
+  await page.evaluate(() => document.exitFullscreen());
+  await expect(page.getByRole('button', { name: 'Full screen' })).toBeVisible();
+  await expect.poll(() => seenRings(page)).toEqual(TITLE_RING);
+  expect(errors).toEqual([]);
+});
+
+test('running low over a full Browser: the heads-up shows over it, and both rings say the same (walk L13)', async ({ page, request }) => {
+  const errors = watchConsole(page);
+  await arrive(page, request);
+  await openApp(page, 'Browser');
+  await expect(titleRing(page)).toBeVisible();
+
+  await harness(request, { bandwidth: freeMeter(36) });
+  await expect(notice(page)).toHaveText('9 minutes of Browser time left today. Resets at midnight.');
+  // Drawn over the Browser, not under it.
+  expect(await reaches(page, (await notice(page).boundingBox())!)).toBe('free-notice');
+  await expect(titleRing(page)).toHaveAccessibleName('Browser time today: 36 of 45 minutes used. Resets at midnight.');
+  expect(await fill(page, '.free-ring')).toBeCloseTo(20, 0);
+  await expect.poll(() => seenRings(page)).toEqual(TITLE_RING);
+
+  // The Browser closed: the bar's ring says exactly the same.
+  await browserWindow(page).getByRole('button', { name: 'Close Browser' }).click();
+  await expect.poll(() => seenRings(page)).toEqual(BAR_RING);
+  await expect(meter(page)).toHaveAccessibleName('Browser time today: 36 of 45 minutes used. Resets at midnight.');
+  expect(await fill(page, '.free-meter')).toBeCloseTo(20, 0);
+  expect(errors).toEqual([]);
+});
+
+test("a paying member's full Browser has no ring in its title bar, and nothing in it moves (walk L13)", async ({ page, request }) => {
+  const errors = watchConsole(page);
+  await harness(request, { fleet: ONE });
+  await signIn(page, '/');
+  await canvasPainted(page);
+  await expect(page.getByTestId('bandwidth-button')).toBeVisible();
+  await openApp(page, 'Browser');
+  const win = browserWindow(page);
+  await expect(win.locator('.window-controls')).toBeVisible();
+  await page.waitForTimeout(500);
+  await expect(page.locator('.free-ring')).toHaveCount(0);
+  await expect(page.getByTestId('free-meter-window')).toHaveCount(0);
+  // The title runs right up to the window's buttons, with only the bar's own gap between.
+  const title = (await win.locator('.window-title').boundingBox())!;
+  const controls = (await win.locator('.window-controls').boundingBox())!;
+  expect(controls.x - (title.x + title.width)).toBeCloseTo(10, 0);
+  expect(errors).toEqual([]);
+});
+
+for (const theme of THEMES) {
+  test(`390 px, ${theme}: a phone's Browser carries the ring in its head, and Back gives it to the bar again (walk L13)`, async ({ page, request }) => {
+    const errors = watchConsole(page);
+    await setTheme(page, theme);
+    await page.setViewportSize({ width: 390, height: 844 });
+    await arrive(page, request);
+    await expect.poll(() => seenRings(page)).toEqual(BAR_RING);
+    await openApp(page, 'Browser');
+    const stage = page.getByTestId('carousel-stage');
+    const ring = stage.locator('.window-head').getByTestId('free-meter-window-button');
+    await expect(ring).toBeVisible();
+    await expect(ring).toHaveAccessibleName('Browser time today: 19 of 45 minutes used. Resets at midnight.');
+    await expect.poll(() => seenRings(page)).toEqual(TITLE_RING);
+    // The head doesn't overflow, and the ring is at its right end, on screen.
+    const head = stage.locator('.window-head').first();
+    expect(await head.evaluate((h) => h.scrollWidth <= h.clientWidth)).toBe(true);
+    const r = (await ring.boundingBox())!;
+    expect(r.x + r.width).toBeLessThanOrEqual(390 - 4);
+    expect(r.x + r.width).toBeGreaterThan(390 - 24);
+    if (RING_SHOTS) await page.screenshot({ path: `${RING_SHOTS}/390-${theme}-ring.png` });
+
+    await ring.click();
+    const panel = page.getByTestId('free-meter-panel');
+    await expect(panel).toContainText('19 of 45 minutes used');
+    const p = (await panel.boundingBox())!;
+    expect(p.x).toBeGreaterThanOrEqual(0);
+    expect(p.x + p.width).toBeLessThanOrEqual(390);
+    const link = panel.getByRole('link', { name: 'See membership (opens in a new tab)' });
+    expect(await reaches(page, (await link.boundingBox())!)).toBe('free-meter-membership');
+    if (RING_SHOTS) await page.screenshot({ path: `${RING_SHOTS}/390-${theme}-panel.png` });
+    await page.keyboard.press('Escape');
+    await expect(panel).toHaveCount(0);
+
+    await page.getByRole('button', { name: 'Back to the desk' }).click();
+    await expect(stage).toHaveCount(0);
+    await expect.poll(() => seenRings(page)).toEqual(BAR_RING);
+    expect(errors).toEqual([]);
+  });
+}

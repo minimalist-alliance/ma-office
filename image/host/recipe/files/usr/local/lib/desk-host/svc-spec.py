@@ -15,7 +15,8 @@ the host's:
 - its resolver: a service on a release's own root (deskd, desk-agent, desk-notebook) gets the template's /etc/resolv.conf bound over
   the release's empty one, read-only, and nothing else of /etc (the services on the template have it already). For desk-agent
   nothing changes in who answers: nftables redirects uid 1103's port 53 to desk-agent-filter whatever the file says (ADR 0070).
-- its /run directories: binds from the slot's host-owned tmpfs, made fresh before any desk process runs;
+- its /run directories: binds from the slot's host-owned tmpfs, made fresh before any desk process runs; deskd's include
+  /run/desk-links (desk:kiosk 2750), where it binds links.sock for Chromium's xdg-open stand-in (desk image 0.3.5's links out);
 - its /data directory: none here. mounts.py moves an open_tree() clone of the desk's own directory in after runc create,
   resolved with openat2() from the host's own detached mount of the volume (RESOLVE_IN_ROOT, no links, no crossings), over
   a placeholder each `data` entry gets here (an empty tmpfs, mode 000). deskd has two: desk and files (its Files tree, free
@@ -104,7 +105,7 @@ def spec(k, name):
     S = {
         "deskd": dict(oom=-500, root=f"{rel}/rootfs", uid=1100, gid=1100, gids=[], cwd="/app", argv=java + ["@/app/jvm.options", "-jar", "/app/deskd.jar"],
                       sup=["-restart", "always", "-restart-sec", "3", "-stop-timeout", "60"], net="ns", ipc="new",
-                      shares=["desk", "desk-agent", "desk-notebook"], data=["desk", "files"], mem="512M", pids=256, weight=20,
+                      shares=["desk", "desk-agent", "desk-notebook", "desk-links"], data=["desk", "files"], mem="512M", pids=256, weight=20,
                       env=release_env("deskd") + deskd_env(k) + ["HOME=/tmp"] + env_file(f"{rel}/version.env")),
         "desk-agent": dict(oom=200, root=f"{rel}/rootfs", uid=1103, gid=1103, gids=[], cwd="/app", argv=java + ["@/app/jvm.options", "-jar", "/app/desk-agent.jar"],
                            sup=["-restart", "always", "-restart-sec", "3", "-stop-timeout", "30"], net="ns", ipc="new",

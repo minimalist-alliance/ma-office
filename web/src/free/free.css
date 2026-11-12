@@ -5,8 +5,51 @@
 /* Its panel open: over Maia's bubble and her open panel, as the bandwidth circle's is (`.bw:has(.bw-panel)`, bandwidth.css). */
 
 /* The meter's ring fills back up over the upgrade's one beat. */
-.free-meter .bw-fill.free-fill {
+.free-meter .bw-fill.free-fill,
+.free-ring .bw-fill.free-fill {
   transition: stroke-dasharray 600ms ease;
+}
+
+/* While a Browser covers the office's corner (walk L13, cover.ts): the bar's ring steps aside, keeping its place so it's
+   known where it would be, and the same ring shows compact in that Browser's title bar, left of the window's buttons. */
+.free-meter.covered {
+  visibility: hidden;
+}
+.free-ring {
+  position: relative;
+  flex: none;
+  display: flex;
+}
+/* Its panel open: over the window's body, which comes after the head. */
+.free-ring:has(.bw-panel) {
+  z-index: 50;
+}
+/* The window's own buttons' size and look (`.window-controls .icon-btn.sm`): no disc, the ring is the button. */
+.free-ring-btn {
+  display: grid;
+  place-items: center;
+  width: 30px;
+  height: 30px;
+  padding: 0;
+  border: 0;
+  border-radius: 999px;
+  background: transparent;
+  color: var(--ma-text-primary);
+  -webkit-tap-highlight-color: transparent;
+}
+@media (hover: hover) {
+  .free-ring-btn:hover {
+    background: var(--ma-surface-fill);
+  }
+}
+.free-ring-btn:focus-visible {
+  outline: 2px solid var(--ma-focus-ring);
+  outline-offset: 2px;
+}
+/* The title bar is at the top, so the panel opens down, into the window, from the ring's right edge. */
+.free-ring .bw-panel {
+  top: calc(100% + 8px);
+  bottom: auto;
 }
 
 /* A link that opens the membership page in its own tab: text.link, and underlined, so color isn't the only cue. */
@@ -49,8 +92,17 @@
   }
 }
 
+/* A finger's 44 px, as the window's own buttons are then (LS-41). */
+@media (pointer: coarse) {
+  .free-ring-btn {
+    width: 44px;
+    height: 44px;
+  }
+}
+
 @media (prefers-reduced-motion: reduce) {
-  .free-meter .bw-fill.free-fill {
+  .free-meter .bw-fill.free-fill,
+  .free-ring .bw-fill.free-fill {
     transition: none;
   }
 }

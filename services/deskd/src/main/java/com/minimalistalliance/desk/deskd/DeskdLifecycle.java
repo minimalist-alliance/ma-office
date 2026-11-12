@@ -103,7 +103,8 @@ final class DeskdLifecycle implements SmartLifecycle {
             idle.poke();
         });
         agent.start();
-        // The apps' registry and links: a desk with none reads one missing directory and is done.
+        // The apps' registry and links: a desk with none reads one missing directory and is done. The image's bundled apps
+        // are checked on a thread of their own, which nothing here waits for.
         apps.start();
         idle.start();
         // On a thread of its own, and nothing waits for it. The API base comes once boot has read the instance's identity.
@@ -121,7 +122,8 @@ final class DeskdLifecycle implements SmartLifecycle {
         // The sessions' transfers have ended with them, so this is the count desk-egress keeps.
         data.close();
         browser.close();
-        // deskd's links to apps close; the apps run on, and the next deskd connects to them again.
+        // deskd's links to apps close; catalog apps run on, and the next deskd connects to them again. Bundled apps, deskd's
+        // own children, stop.
         apps.close();
         prices.close();
         agent.close();

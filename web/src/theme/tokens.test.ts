@@ -129,8 +129,9 @@ describe('themes.css', () => {
   });
 });
 
-describe.each(THEME_IDS)('%s: Files\' own colors', (id) => {
-  const ink = APP_INKS["files"]![id];
+// Files' ink, and the Bible's (an installed app's, by its window's `data-app`, ADR 0054).
+describe.each(Object.keys(APP_INKS).flatMap((app) => THEME_IDS.map((id) => [app, id] as const)))('%s in %s: its own colors', (app, id) => {
+  const ink = APP_INKS[app]![id];
   const t = THEMES[id];
   it('meets the Product Designer\'s ratios on its own surfaces', () => {
     expect(contrast(t.text.primary, ink.window)).toBeGreaterThanOrEqual(7 - 0.05);
@@ -143,9 +144,9 @@ describe.each(THEME_IDS)('%s: Files\' own colors', (id) => {
       expect(contrast(ink.link, bg)).toBeGreaterThanOrEqual(4.5 - 0.05);
     }
   });
-  it('is declared only on the Files window, in this theme', () => {
+  it('is declared only on its own window, in this theme', () => {
     const css = themeCss();
-    const at = css.indexOf(`:root[data-theme="${id}"] .ma-window[data-app="files"] {`);
+    const at = css.indexOf(`:root[data-theme="${id}"] .ma-window[data-app="${app}"] {`);
     expect(at).toBeGreaterThan(-1);
     const block = css.slice(at, css.indexOf('}', at));
     expect(block).toContain(`--ma-accent: ${ink.accent};`);

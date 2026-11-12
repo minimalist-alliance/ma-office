@@ -73,6 +73,18 @@ async function typeInto(page: Page, text: string): Promise<void> {
   await page.keyboard.type(text);
 }
 
+/**
+ * The text in ProseMirror's own selection. It hears of a selection the keys moved (Shift+End) on the next `selectionchange`, and a
+ * script's next key can beat that by milliseconds, which a member's can't. A key ProseMirror handles itself, such as Backspace,
+ * would then act on the old caret, so the test waits for this first (as `rt-notebook.mjs` does).
+ */
+const selectedText = (page: Page): Promise<string> =>
+  page.evaluate(() => {
+    interface PM { state: { selection: { from: number; to: number }; doc: { textBetween(from: number, to: number): string } } }
+    const ed = (document.querySelector('[data-testid="note-editor"]') as (HTMLElement & { editor?: PM }) | null)?.editor;
+    return ed ? ed.state.doc.textBetween(ed.state.selection.from, ed.state.selection.to) : '';
+  });
+
 const onDesk = (page: Page, deskId: string, pageId: string): Promise<string> =>
   page.evaluate(async ([d, p]) => (await __maDeskMock.notebook).pageText(d as string, p as string), [deskId, pageId]);
 
@@ -714,6 +726,7 @@ test('a page whose Title line is empty is named in the list by its first line wi
   // Empty the Title line, so the name is in the body, as a member who starts typing below it has it.
   await page.keyboard.press('Control+Home');
   await page.keyboard.press('Shift+End');
+  await expect.poll(() => selectedText(page)).toBe('Draft');
   await page.keyboard.press('Backspace');
   await expect(page.locator('.nb-prose .nb-empty-title')).toHaveCount(1);
   // An empty heading says what it is (a11y pass O6).

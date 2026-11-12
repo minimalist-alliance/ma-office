@@ -46,7 +46,7 @@
   cursor: grabbing;
 }
 /* The tile's stop on the desk is its proxy, whose ring would be under the frame: the frame draws it, the chrome's 2 px with
-   a 2 px gap, dashed while the keyboard moves or resizes it (`m`, `r`). */
+   a 2 px gap, dashed while the keyboard moves or resizes it (`m`, `r`), when the edit's own row has the keyboard. */
 .open-tile.ring {
   outline: 2px solid var(--ma-focus-ring);
   outline-offset: 2px;

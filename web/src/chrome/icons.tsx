@@ -1,7 +1,8 @@
 // Inline SVG icons for the DOM chrome. Stroke icons use currentColor. App glyphs match the canvas.
 import type { JSX } from 'react';
 import { lookChunk, maskKey, rosterAgent, useRosterStore } from '../agent/roster';
-import { isAgentApp, type AppId } from '../canvas/layout';
+import { isAgentApp, isDeskApp, type AppId } from '../canvas/layout';
+import { useDoor } from '../deskapps/door';
 import { useTheme } from '../theme/themeStore';
 
 const PATHS = {
@@ -112,8 +113,11 @@ function AgentAppGlyph({ app, deskId, size }: { app: AppId; deskId?: string | un
 }
 
 export function AppGlyph({ app, size = 18, deskId }: { app: AppId; size?: number; deskId?: string }) {
+  // An installed app's (ADR 0054): the desk app host's drawing, a blank of its size until that chunk is here.
+  const appsHost = useDoor((s) => s.host);
   if (isAgentApp(app)) return <AgentAppGlyph app={app} deskId={deskId} size={size} />;
   const common = { width: size, height: size, viewBox: '0 0 48 48', 'aria-hidden': true, className: 'app-glyph' } as const;
+  if (isDeskApp(app)) return appsHost ? <appsHost.DeskGlyph glyph={appsHost.glyphFor(app.slice(4))} size={size} /> : <svg {...common} />;
   if (app === 'notebook') {
     return (
       <svg {...common}>

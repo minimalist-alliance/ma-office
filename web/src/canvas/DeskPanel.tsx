@@ -11,6 +11,7 @@ import { getTheme, useTheme } from '../theme/themeStore';
 import { deskLook } from '../theme/deskStyles';
 import { moreContrast, moveBefore, reducedMotion } from '../lib/util';
 import { statusLine, type StatusDot } from '../desk/agentStatus';
+import { trafficHold } from '../desk/trafficStop';
 import { liveStatusInput, useLive } from '../desk/liveStore';
 import type { DeskInfo } from '../state/deskStore';
 import { moveDesk, raiseDesk, reorderItems, resizeDesk, setItemLevel, useLayoutStore } from '../state/layoutStore';
@@ -31,6 +32,7 @@ import { etchEpoch, fitName, statusTextWidth, stripControlSize, type NameFit } f
 import { CANVAS_FONT } from './font';
 import { drawMark } from './glyphs';
 import { ItemTile } from './ItemTile';
+import { host, useDoor } from '../deskapps/door';
 import {
   carouselStage, countSlotW, deskBounds, deskGeometry, ETCH_BASELINE, ETCH_ICON, fitDeskSize, G, iconsFit, iconsLeft, nameRaster, nameRoom, nameShows, overOthers, roundUnit, slotRight, stackOrder, statusClear, statusRoom, STRIP, stripTarget, switchFits,
   type DetailLevel, type LayoutDesk,
@@ -130,6 +132,8 @@ export const DeskPanel = memo(function DeskPanel({ desk, layout, hidden, touchUI
   // A renamed desk says its kind on hover over its name, "Personal desk"; one named for its kind has nothing to add.
   const kindTip = kindTipFor(desk.name, desk.kind);
   const live = useLive(desk.id);
+  // Installed apps' widgets come from the desk's `apps` topic, through the desk app host (ADR 0054), not `summary`.
+  useDoor((s) => s.rev);
   // Behind card C or D: no counts, on tiles or the strip (`stopped.ts`).
   const stopped = useDesksStopped();
   const openApps = useWindowStore((s) => s.windows);
@@ -416,6 +420,7 @@ export const DeskPanel = memo(function DeskPanel({ desk, layout, hidden, touchUI
     queuePosition: desk.queuePosition,
     stopInSec: stopLeft > 0 ? stopLeft : null, // past the announced time, it just says it's going
     stopReason: desk.stopReason,
+    trafficStop: !!trafficHold(desk.stopDetail),
     givebackUntil: desk.givebackUntil,
     ...liveStatusInput(live),
   });
@@ -846,7 +851,7 @@ export const DeskPanel = memo(function DeskPanel({ desk, layout, hidden, touchUI
         const item = byId.get(id);
         const slot = geo.slots[id];
         if (!item || !slot) return null;
-        const summary = live.apps[item.app];
+        const summary = live.apps[item.app] ?? host?.summary(desk.id, item.app);
         return (
           <ItemTile
             key={item.id}

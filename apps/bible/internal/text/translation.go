@@ -13,6 +13,7 @@ import (
 	"fmt"
 	"os"
 	"path/filepath"
+	"runtime/debug"
 	"strconv"
 	"strings"
 	"sync"
@@ -131,6 +132,7 @@ func (l *Library) Get(code string) (*Translation, error) {
 		if s.err != nil {
 			s.err = fmt.Errorf("%w: %s: %v", ErrUnreadable, code, s.err)
 		}
+		debug.FreeOSMemory() // reading leaves garbage; the verse tables are all that stays
 	})
 	return s.t, s.err
 }
@@ -308,7 +310,12 @@ func nextLine(data []byte, pos int) ([]byte, int) {
 
 // fields splits a line on tabs into exactly n fields, the last taking the rest.
 func fields(line []byte, n int) ([][]byte, bool) {
-	out := make([][]byte, 0, n)
+	return fieldsInto(make([][]byte, 0, n), line, n)
+}
+
+// fieldsInto is fields into dst's room, so a loop over 31,000 lines allocates once.
+func fieldsInto(out [][]byte, line []byte, n int) ([][]byte, bool) {
+	out = out[:0]
 	for i := 0; i < n-1; i++ {
 		j := bytes.IndexByte(line, '\t')
 		if j < 0 {
@@ -350,6 +357,7 @@ func (t *Translation) parse(code string) error {
 	if f := strings.Fields(string(head)); len(f) != 4 || f[0] != "#" || f[1] != "ma-bible-text" || f[2] != Format || f[3] != code {
 		return errors.New("first line isn't # ma-bible-text " + Format + " " + code)
 	}
+	var fbuf [][]byte
 	pending := -1    // where headings waiting for the next verse start
 	var place []byte // the current verse's BOOK, CHAPTER and VERSE fields, as written
 	var last byte    // the kind of the line before
@@ -369,13 +377,14 @@ func (t *Translation) parse(code string) error {
 		kind := line[0]
 		switch kind {
 		case 'H':
-			f, ok := fields(line, 6)
+			f, ok := fieldsInto(fbuf, line, 6)
+			fbuf = f
 			if !ok {
 				return fmt.Errorf("line %d: want H, BOOK, CHAPTER, VERSE, LEVEL, TEXT", lineNo)
 			}
 			// A heading inside the current verse (its place) or an end note after a book's last verse stays in that
 			// verse's block; any other heading starts the next verse's.
-			inside := pending < 0 && len(t.verses) > 0 && (string(f[4]) == "e" || bytes.Equal(placeOf(f), place))
+			inside := pending < 0 && len(t.verses) > 0 && (string(f[4]) == "e" || samePlace(f, place))
 			if !inside && pending < 0 {
 				pending = start
 			}
@@ -384,7 +393,8 @@ func (t *Translation) parse(code string) error {
 				return fmt.Errorf("line %d: a G line belongs right after its heading", lineNo)
 			}
 		case 'V':
-			f, ok := fields(line, 6)
+			f, ok := fieldsInto(fbuf, line, 6)
+			fbuf = f
 			if !ok {
 				return fmt.Errorf("line %d: want V, BOOK, CHAPTER, VERSE, FLAGS, TEXT", lineNo)
 			}
@@ -427,7 +437,7 @@ func (t *Translation) parse(code string) error {
 			if n := len(t.verses); n > 0 {
 				t.verses[n-1].blockEnd = uint32(blockStart)
 			}
-			place = placeOf(f)
+			place = append(place[:0], placeOf(f)...)
 			t.verses = append(t.verses, verseRec{
 				blockStart: uint32(blockStart), textOff: uint32(start + len(line) - len(text)),
 				textLen: uint16(len(text)), book: uint8(ci), chapter: uint8(ch), verse: uint8(v), verseEnd: uint8(ve), flags: flags,
@@ -476,6 +486,27 @@ func asciiWords(b []byte) bool {
 			return false
 		}
 		i += size
+	}
+	return true
+}
+
+// samePlace says whether a line's BOOK, CHAPTER and VERSE fields are place, without building a new slice.
+func samePlace(f [][]byte, place []byte) bool {
+	if len(f[1])+len(f[2])+len(f[3])+2 != len(place) {
+		return false
+	}
+	i := 0
+	for k, part := range f[1:4] {
+		if k > 0 {
+			if place[i] != '\t' {
+				return false
+			}
+			i++
+		}
+		if !bytes.Equal(place[i:i+len(part)], part) {
+			return false
+		}
+		i += len(part)
 	}
 	return true
 }

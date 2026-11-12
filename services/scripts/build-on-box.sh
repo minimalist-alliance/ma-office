@@ -117,6 +117,10 @@ log "uploading $sha as $version"
 # notebook bundles web/notebook/src/model as source. Other services' commits may be older than that path.
 paths=(services)
 [ "$SERVICE" = notebook ] && paths+=(web/notebook/src/model)
+# deskd bundles first-party apps from apps/ (deskd/docs/API.md section 19, "Bundled apps"): the Bible, where this commit has it.
+if [ "$SERVICE" = deskd ] && git -C "$repo" cat-file -e "$sha:apps/bible/ma-app.json" 2>/dev/null; then
+  paths+=(apps/bible)
+fi
 git -C "$repo" archive --format=tar.gz -o "$tmp/src.tgz" "$sha" "${paths[@]}"
 src_sha=$(sha256sum "$tmp/src.tgz" | cut -d' ' -f1)
 remove_objects=1

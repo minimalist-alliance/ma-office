@@ -2,7 +2,7 @@
 // overview, a drag pans. Signed in as desk-1; only the test desk (RT_DESK) is ever focused; start:true is refused
 // for every desk. What a screenshot shows is judged by reading it: this script only measures.
 import { mkdirSync } from 'node:fs';
-import { ALLOWED, CONNECTED, events, getDesk, log, logConfig, openSession, OTHER, S, shot, shutdown, wait, waitPanel } from './rt-lib.mjs';
+import { ALLOWED, createLayoutStandIn, CONNECTED, events, getDesk, log, logConfig, openSession, OTHER, S, shot, shutdown, wait, waitPanel } from './rt-lib.mjs';
 
 const EXPECTED = process.env.MA_EXPECT_VERSION;
 if (!EXPECTED) throw new Error('Set MA_EXPECT_VERSION to the bundle version you expect on staging');
@@ -40,6 +40,7 @@ async function pageVersion(page) {
 }
 
 await openSession({
+  layoutStandIn: createLayoutStandIn(),
   watch: true,
   onLanding: async (page) => {
     const limit = Date.now() + 15000;

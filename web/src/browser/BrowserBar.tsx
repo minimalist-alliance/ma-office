@@ -8,6 +8,7 @@ import { QualityMenu, QualityNotice } from '../quality/QualityMenu';
 import { addressShown, displayText } from './address';
 import { LinkIcon } from './linkIcons';
 import { deviceUrl, openOnDevice } from './openOnDevice';
+import { ExtMenu, ExtRows, KeyButton, MENU_NOTE, useSideways, type SignInsUi } from './extensions/ExtTools';
 import './bar.css';
 import type { BrowserDriver, BrowserView } from './driver';
 import type { SimpleUi } from '../simple/ui';
@@ -53,7 +54,7 @@ function TabStrip({ driver, view, disabled, onNewTab }: { driver: BrowserDriver;
   );
 }
 
-function AddressBar({ driver, view, activeUrl, activeLoading, connected, ready, disabled, inputRef, onLeave, deviceHref, onOpenedOnDevice }: {
+function AddressBar({ driver, view, activeUrl, activeLoading, connected, ready, disabled, inputRef, onLeave, deviceHref, onOpenedOnDevice, placeholder }: {
   driver: BrowserDriver;
   view: BrowserView;
   activeUrl: string;
@@ -67,6 +68,8 @@ function AddressBar({ driver, view, activeUrl, activeLoading, connected, ready, 
   /** The active tab's address when it can open on this device (http or https), else null. */
   deviceHref: string | null;
   onOpenedOnDevice: () => void;
+  /** What the empty field says: a password manager's name while its page is on screen (#11), else the usual words. */
+  placeholder: string;
 }) {
   // What's being typed. Null shows what the desk says. A page's own navigation never overwrites a draft.
   const [draft, setDraft] = useState<string | null>(null);
@@ -123,7 +126,7 @@ function AddressBar({ driver, view, activeUrl, activeLoading, connected, ready, 
         aria-label="Address"
         data-testid="browser-address"
         value={draft ?? activeUrl}
-        placeholder="Search or type an address"
+        placeholder={placeholder}
         disabled={disabled}
         inputMode="url"
         spellCheck={false}
@@ -158,7 +161,7 @@ function AddressBar({ driver, view, activeUrl, activeLoading, connected, ready, 
   );
 }
 
-export function BrowserBar({ driver, view, connected, ready = true, closed, addressRef, isMac, onLeaveAddress, deskId, simple = null, covered = false, simpleShown = false, openedNote = false, onOpenedOnDevice = () => {} }: {
+export function BrowserBar({ driver, view, connected, ready = true, closed, addressRef, isMac, onLeaveAddress, deskId, simple = null, covered = false, simpleShown = false, openedNote = false, onOpenedOnDevice = () => {}, signIns = null }: {
   driver: BrowserDriver;
   view: BrowserView;
   /** A session is open, so what needs the desk can go. */
@@ -185,8 +188,19 @@ export function BrowserBar({ driver, view, connected, ready = true, closed, addr
   /** "Opened on this device" in the note slot for a moment, after the first time (#9). */
   openedNote?: boolean;
   onOpenedOnDevice?: () => void;
+  /** Site sign-ins (#11): the key, Extensions and More's rows. Null where none of it shows. */
+  signIns?: SignInsUi | null;
 }) {
   const active = view.tabs.find((t) => t.active);
+  // A manager's page is on screen in a tab `browser.tabs` never lists, so no tab is active: the bar names it (deskd API.md 10).
+  const extOnScreen = !active ? (signIns?.installed.find((e) => e.open) ?? null) : null;
+  // A phone on its side under 700 px: the key folds into More (`useSideways`).
+  const sideways = useSideways();
+  const anyExt = (signIns?.installed.length ?? 0) > 0;
+  const moreExtras = !signIns ? null
+    : anyExt ? { rows: (close: (giveBack: boolean) => void) => <ExtRows ui={signIns} close={close} />, note: MENU_NOTE }
+    : sideways ? { rows: (close: (giveBack: boolean) => void) => <ExtRows ui={signIns} close={close} />, note: null, after: true }
+    : null;
   const why = connected ? undefined : 'Not connected to this desk right now';
   // A free desk's one line about busy times (`free/door.ts`).
   const FreeLine = useFree((s) => s.BrowserLine);
@@ -203,7 +217,7 @@ export function BrowserBar({ driver, view, connected, ready = true, closed, addr
         <button type="button" className="icon-btn sm" aria-label="Reload" title={why ?? 'Reload'} disabled={!connected} onClick={() => driver.reload()}>
           <Icon name="reload" size={17} />
         </button>
-        <AddressBar driver={driver} view={view} activeUrl={addressShown(active?.url)} activeLoading={active?.loading ?? false} connected={connected} ready={ready} disabled={closed} inputRef={addressRef} onLeave={onLeaveAddress} deviceHref={addressShown(active?.url) ? deviceUrl(active?.url) : null} onOpenedOnDevice={onOpenedOnDevice} />
+        <AddressBar driver={driver} view={view} activeUrl={addressShown(active?.url)} activeLoading={active?.loading ?? false} connected={connected} ready={ready} disabled={closed} inputRef={addressRef} onLeave={onLeaveAddress} deviceHref={addressShown(active?.url) ? deviceUrl(active?.url) : null} onOpenedOnDevice={onOpenedOnDevice} placeholder={extOnScreen?.name ?? 'Search or type an address'} />
         {openedNote && <span className="br-note" role="status" data-testid="browser-opened-note">Opened on this device</span>}
         {view.pendingAddress !== null && <span className="br-note" role="status" data-testid="browser-pending">Opens when the desk is ready</span>}
         {view.notice && <span className="br-note" role="status" title={view.notice} data-testid="browser-notice">{view.notice}</span>}
@@ -225,12 +239,21 @@ export function BrowserBar({ driver, view, connected, ready = true, closed, addr
         )}
         {FreeLine && <FreeLine deskId={deskId} />}
         {!simpleShown && <QualityNotice />}
-        {/* The bar's right group (#9's spec, section 1): #12's keyboard (touch screens), then #11's key and Extensions come
-            first, with their features. Under 720 px of bar, Picture quality folds into More. */}
+        {/* The bar's right group (the spec's section 1): #12's keyboard (touch screens), #11's key and Extensions, Picture
+            quality. Under 720 px of bar, Extensions and Picture quality fold into More; the key stays out. */}
         {!simpleShown && (
           <div className="br-tools">
+            {signIns && !sideways && <KeyButton ui={signIns} />}
+            {signIns && anyExt && <ExtMenu ui={signIns} className="br-wide" />}
             <QualityMenu app="browser" deskId={deskId} notice={false} className="br-wide" />
-            <QualityMenu app="browser" deskId={deskId} notice={false} variant="more" className="br-more-wrap" />
+            <QualityMenu
+              app="browser"
+              deskId={deskId}
+              notice={false}
+              variant="more"
+              className="br-more-wrap"
+              extras={moreExtras}
+            />
           </div>
         )}
       </div>

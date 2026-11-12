@@ -5,11 +5,18 @@ import { afterEach, beforeEach, describe, expect, it, vi } from 'vitest';
 import type { Level, StreamQuality } from './levels';
 
 const { flags, calls } = vi.hoisted(() => ({
-  flags: { platform: true, token: '' },
+  /** `writable`: the layout's mirror may be written (`layoutMirrorWritable`), so these may too (ISS-89). */
+  flags: { platform: true, token: '', writable: true, memberChange: null as null | ((sub: string, before: string | null) => void) },
   calls: [] as { path: string; method: string; body: unknown; resolve: (data: unknown) => void; reject: (err: unknown) => void }[],
 }));
 
-vi.mock('../state/layoutStore', () => ({ isSavingLayout: () => flags.platform }));
+vi.mock('../state/layoutStore', () => ({ isSavingLayout: () => flags.platform, layoutMirrorWritable: () => flags.writable }));
+vi.mock('../platform/auth', () => ({
+  onMemberChange: (fn: (sub: string, before: string | null) => void) => {
+    flags.memberChange = fn;
+    return () => {};
+  },
+}));
 vi.mock('../platform/api', () => ({
   // As the real one: the token is checked as it's about to go, after client-config, then the request.
   api: async (path: string, init: { method?: string; body?: string; onToken?: (t: string) => void } = {}) => {
@@ -45,6 +52,8 @@ beforeEach(async () => {
   vi.useFakeTimers();
   vi.setSystemTime(new Date('2026-11-06T12:00:00Z'));
   flags.platform = true;
+  flags.writable = true;
+  flags.memberChange = null;
   flags.token = tokenFor('u-a');
   calls.length = 0;
   stored.clear();
@@ -580,5 +589,68 @@ describe("moving this browser's desk levels to Platform, once it has the desk la
     expect(puts()).toHaveLength(2);
     expect(puts()[1]!.body).toEqual({ desks: { 'd-work': { level: 'max' } } });
     expect(store.levelFor('browser', 'd-work')).toBe('max');
+  });
+});
+
+describe("this browser's copies are the member's (ISS-89)", () => {
+  const deskMirror = (): { sub: string; desks: Record<string, Record<string, Level>> } | null => JSON.parse(stored.get('ma.streamQuality.desks.v1') ?? 'null');
+
+  it("a stale tab (signed out here, or no token left after another tab's sign-out) writes neither mirror, and its choices still show", async () => {
+    await ready(before('medium', {}, '2026-11-06T10:00:00.000Z'));
+    expect(mirrored()?.sub).toBe('u-a');
+    stored.clear(); // the sign-out's wipe
+    flags.writable = false;
+    store.setDeskLevel('d-personal', 'browser', 'low');
+    expect(store.levelFor('browser', 'd-personal')).toBe('low');
+    expect(deskMirror()).toBeNull();
+    // A read's answer, on the access token it still holds.
+    await settle(61_000);
+    docEvents.get('visibilitychange')!();
+    await settle();
+    gets()[1]!.resolve({ streamQuality: before('max', {}, '2026-11-06T12:00:00.000Z') });
+    await settle();
+    expect(shown()).toBe('max');
+    expect(mirrored()).toBeNull();
+    expect(stored.size).toBe(0);
+  });
+
+  it("a save's answer in a stale tab writes nothing either", async () => {
+    await ready(doc('high', {}, '2026-11-06T10:00:00.000Z'));
+    stored.clear();
+    flags.writable = false;
+    store.setOverride('browser', 'low');
+    await settle();
+    lastPut().resolve(doc('high', { browser: 'low' }, '2026-11-06T12:00:00.000Z'));
+    await settle();
+    expect(shown()).toBe('low');
+    expect(stored.size).toBe(0);
+  });
+
+  it("this tab's tokens becoming another member's start it over at once: A's levels go before any call, and A's answers land nowhere", async () => {
+    mirror('u-a', doc('low', { browser: 'low' }));
+    await ready(doc('low', { browser: 'low' }, '2026-11-06T10:00:00.000Z'));
+    store.setOverride('claude', 'max');
+    await settle();
+    const aSave = lastPut();
+    expect(shown()).toBe('low');
+    stored.clear(); // B's sign-in took A's copy from storage (`layoutMirrorFor`)
+    flags.token = tokenFor('u-b');
+    flags.memberChange?.('u-b', 'u-a');
+    expect(shown()).toBe('high'); // nothing of A's shows, with no call made
+    aSave.resolve(doc('low', { browser: 'low', claude: 'max' }, '2026-11-06T12:00:00.000Z'));
+    await settle();
+    expect(stored.size).toBe(0); // A's answer wrote nothing, under anyone's name
+    expect(shown()).toBe('high');
+    gets().at(-1)!.resolve({ streamQuality: doc('medium', {}, '2026-11-06T09:00:00.000Z') });
+    await settle();
+    expect(shown()).toBe('medium');
+    expect(mirrored()?.sub).toBe('u-b');
+  });
+
+  it('the first token, or the same member again, starts nothing over', async () => {
+    await ready(doc('low', {}, '2026-11-06T10:00:00.000Z'));
+    flags.memberChange?.('u-a', null);
+    expect(shown()).toBe('low');
+    expect(gets()).toHaveLength(1);
   });
 });

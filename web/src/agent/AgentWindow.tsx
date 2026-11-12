@@ -8,7 +8,7 @@ import { loadAgentBody } from '../apps/chunks';
 import type { AppWindowProps } from '../apps/registry';
 import type { AppId } from '../canvas/layout';
 import type { DeskLink } from '../desk/deskLink';
-import { ReachDetails, WakeBar, Waking } from '../browser/BrowserWindow';
+import { AsleepBody, ReachDetails, WakeBar, Waking } from '../browser/BrowserWindow';
 import { browserPanel, type BrowserPanel } from '../browser/panel';
 import { BillingLink, DataGuardNotice, MEMBERSHIP_LINE, SETTING_UP_LINE, SupportAddress } from '../chrome/DeskClosed';
 import { uuidv7 } from '../desk/idem';
@@ -45,11 +45,11 @@ function PanelBody({ panel, deskId, copy }: { panel: BrowserPanel; deskId: strin
       return <DataGuardNotice message={panel.message} resumesAt={panel.resumesAt} guild={guild} />;
     case 'asleep':
       return (
-        <>
+        <AsleepBody deskId={deskId}>
           <h3>{words.asleep}</h3>
           <p>{guild ? 'Your agent is here when it wakes.' : copy.asleepLine}</p>
           <button type="button" className="btn primary" onClick={() => wakeDesk(deskId)}>{words.wake}</button>
-        </>
+        </AsleepBody>
       );
     case 'failed':
       return (

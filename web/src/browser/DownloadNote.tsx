@@ -67,7 +67,7 @@ export function DownloadNote({ deskId, link, hidden }: { deskId: string; link: D
       {line.kind === 'saved' && line.deviceUrl && linksAllowed && (
         // The download's own address, opened in this device's browser, which downloads it again (new, for Sales).
         <button type="button" className="br-dl-show" data-testid="browser-download-here" onClick={() => openOnDevice(line.deviceUrl)}>
-          Get it on this device
+          Download on this device
         </button>
       )}
     </div>

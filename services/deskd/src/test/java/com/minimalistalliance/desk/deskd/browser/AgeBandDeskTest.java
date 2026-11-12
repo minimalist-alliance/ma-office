@@ -466,6 +466,65 @@ class AgeBandDeskTest {
     }
 
     @Test
+    void teenToAdultRestartsChromiumOnceNobodyStreamsAndKeepsThatOwedMeanwhile() throws Exception {
+        rigWithFile("teen\n");
+        rig.platform.ageBand = "teen";
+        rig.bootToReady();
+        TestClient client = connect();
+        goLive(client);
+        rig.units.clearRequests();
+
+        platformSays("adult");
+        awaitFile("adult\n");
+        await().until(() -> Files.exists(rig.dataDir.resolve(BrowserModule.UNLOCK_OWED_MARKER)));
+        assertThat(Files.readString(rig.dataDir.resolve(BrowserModule.UNLOCK_OWED_MARKER))).isEqualTo(ControlPlaneRig.BOOT_ID + "\n");
+        // Never where rtc can write.
+        assertThat(Files.exists(dir.resolve(BrowserModule.UNLOCK_OWED_MARKER))).isFalse();
+        Thread.sleep(QUIET_MILLIS);
+        assertThat(rig.units.requests()).doesNotContain(STOP_BROWSER, START_BROWSER);
+
+        assertThat(stream(client, "off")).containsEntry("_kind", "RES");
+        await().until(() -> count(START_BROWSER) == 1);
+        assertThat(rig.units.requests().stream().filter(r -> r.endsWith("desk-browser")).toList()).containsExactly(STOP_BROWSER, START_BROWSER);
+        assertThat(rig.units.isRunning("desk-browser")).isTrue();
+        await().until(() -> !Files.exists(rig.dataDir.resolve(BrowserModule.UNLOCK_OWED_MARKER)));
+        assertThat(Files.exists(rig.dataDir.resolve(BrowserModule.LOCK_OWED_MARKER))).isFalse();
+    }
+
+    @Test
+    void aFirstBootsAdultAsksNoStopOfAChromiumThatsDown() throws Exception {
+        rig().bootToReady();
+        awaitFile("adult\n");
+        await().until(() -> !Files.exists(rig.dataDir.resolve(BrowserModule.UNLOCK_OWED_MARKER)));
+        assertNoMoreRequests();
+        assertThat(rig.units.requests()).doesNotContain(STOP_BROWSER, START_BROWSER);
+    }
+
+    @Test
+    void aLockOwedByAnEarlierDeskdOfThisBootStopsChromiumAsTheNextOneStarts() throws Exception {
+        Files.writeString(Files.createDirectories(dir.resolve("data")).resolve(BrowserModule.LOCK_OWED_MARKER), ControlPlaneRig.BOOT_ID + "\n");
+        rigWithFile("teen\n");
+        rig.platform.ageBand = "teen";
+        await().until(() -> count(STOP_BROWSER) == 1);
+        await().until(() -> !Files.exists(rig.dataDir.resolve(BrowserModule.LOCK_OWED_MARKER)));
+        rig.bootToReady();
+        TestClient client = connect();
+        goLive(client);
+    }
+
+    @Test
+    void aLockOwedBeforeARebootAsksNothingAndGoes() throws Exception {
+        // The data volume outlives a reboot, and Chromium doesn't: another boot's marker asks nothing, and goes.
+        Files.writeString(Files.createDirectories(dir.resolve("data")).resolve(BrowserModule.LOCK_OWED_MARKER),
+                "99999999-0000-4000-8000-000000000099\n");
+        rigWithFile("adult\n");
+        assertThat(Files.exists(rig.dataDir.resolve(BrowserModule.LOCK_OWED_MARKER))).isFalse();
+        rig.bootToReady();
+        assertNoMoreRequests();
+        assertThat(rig.units.requests()).doesNotContain(STOP_BROWSER, START_BROWSER);
+    }
+
+    @Test
     void aRestartWaitsForAHoldAndThenBringsChromiumBack() throws Exception {
         rig().bootToReady();
         TestClient client = connect();

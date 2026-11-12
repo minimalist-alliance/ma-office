@@ -190,7 +190,9 @@ column is all deskd does besides checking the session, `idem` and the rate limit
   desk's own disk and unseals it at each start, so deskd sends nothing back after a reconnect, and there's no
   `agent.key.restore` frame.
 - **The key in deskd** arrives in the client's JSON, so jackson-jr makes it a `String` before deskd sees it. ADR 0040
-  accepts that; a binary RPC part would remove it.
+  accepts that; a binary RPC part would remove it. What deskd can do it does: the request's parse keeps no pooled
+  buffer, and the KEY frame goes out from a direct buffer zeroed after, not NIO's cached one (ISS-20,
+  `docs/sub-status/iss20-key-zeroing-finding.md`).
 
 ## 6. The client's interface, TD-68 (UI/UX Engineer, with task 07)
 **Adopted as task 07 proposed it** (`sub/agent-ui`, `web/agent/README.md`, "Interface", and `web/agent/src/client/

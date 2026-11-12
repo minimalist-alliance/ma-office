@@ -422,6 +422,77 @@ class AgeBandTest {
     }
 
     @Test
+    void theFileComingToSayAdultUnlocksAfterTheWriteAndBeforeSettling() throws Exception {
+        Files.writeString(file(), "teen\n");
+        AgeBand band = band();
+        List<String> seen = new ArrayList<>();
+        band.onUnlocked(() -> {
+            try {
+                seen.add("unlocked, file says " + onDisk().trim() + ", band " + band.band().wire());
+            } catch (IOException e) {
+                throw new IllegalStateException(e);
+            }
+        });
+        band.onSettled(() -> seen.add("settled"));
+
+        band.fromConfig(TEEN);
+        assertThat(seen).containsExactly("settled");
+        seen.clear();
+
+        band.fromConfig(ADULT);
+        assertThat(seen).containsExactly("unlocked, file says adult, band adult", "settled");
+        seen.clear();
+
+        // Adult again, and with no field: nothing new for a running Chromium.
+        band.fromConfig(ADULT);
+        band.fromConfig(NO_FIELD);
+        assertThat(seen).containsExactly("settled", "settled");
+    }
+
+    @Test
+    void unknownToAdultUnlocksByTheWordAndByTheDefault() {
+        AgeBand told = band();
+        List<String> seen = new ArrayList<>();
+        told.onUnlocked(() -> seen.add("told"));
+        told.fromHello(ADULT);
+        assertThat(seen).containsExactly("told");
+
+        // A fresh desk where the Platform has no field: the default writes adult.
+        Path other = dir.resolve("other");
+        AgeBand byDefault = new AgeBand(other);
+        byDefault.onUnlocked(() -> seen.add("default"));
+        byDefault.fromConfig(NO_FIELD);
+        assertThat(seen).containsExactly("told", "default");
+    }
+
+    @Test
+    void anAdultWhoseWriteFailedUnlocksOnlyOnceTheFileSaysSo() throws Exception {
+        Files.writeString(file(), "teen\n");
+        AgeBand band = band();
+        List<String> seen = new ArrayList<>();
+        band.onUnlocked(() -> seen.add("unlocked"));
+        withDirectoryReadOnly(() -> {
+            band.fromConfig(ADULT);
+            assertThat(onDisk()).isEqualTo("teen\n");
+            assertThat(seen).isEmpty();
+        });
+        band.fromConfig(ADULT);
+        assertThat(onDisk()).isEqualTo("adult\n");
+        assertThat(seen).containsExactly("unlocked");
+    }
+
+    @Test
+    void becomingTeenNeverUnlocks() throws Exception {
+        Files.writeString(file(), "adult\n");
+        AgeBand band = band();
+        List<String> seen = new ArrayList<>();
+        band.onUnlocked(() -> seen.add("unlocked"));
+        band.fromConfig(TEEN);
+        band.fromConfig(NO_FIELD);
+        assertThat(seen).isEmpty();
+    }
+
+    @Test
     void teenOnDiskToldTeenBeginsNoLock() throws Exception {
         Files.writeString(file(), "teen\n");
         AgeBand band = band();

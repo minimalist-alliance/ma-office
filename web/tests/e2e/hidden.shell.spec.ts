@@ -29,7 +29,8 @@ test.beforeEach(async ({ request }) => {
 async function seeded(page: Page, request: APIRequestContext, items: Item[] = SPREAD, stack?: string[]): Promise<void> {
   const desk = { id: PERSONAL, x: 0, y: 36, w: 800, h: 500, items, ...(stack ? { stack } : {}) };
   await page.addInitScript((d) => {
-    if (localStorage.getItem('test.seeded')) return;
+    // Seeded on the first load that's signed in: a start with nobody signed in wipes the layout's mirror (ISS-67).
+    if (localStorage.getItem('test.seeded') || !(location.pathname === '/auth/callback' || localStorage.getItem('ma-desk-web-refresh') || sessionStorage.getItem('ma-desk-web-refresh'))) return;
     localStorage.setItem('test.seeded', '1');
     localStorage.setItem('ma.layout.v2', d);
   }, JSON.stringify({ desks: { [PERSONAL]: desk }, z: [PERSONAL] }));

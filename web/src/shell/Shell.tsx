@@ -35,6 +35,10 @@ import { noDeskNotice } from './deskNotice';
 import { startLayoutSync } from './layoutSync';
 import { watchAgentTiles } from '../agent/roster';
 import { watchFilesTiles } from '../apps/files/tiles';
+import { host, useDoor } from '../deskapps/door';
+// An app's tile in the layout loads the desk app host's chunk (ADR 0054), from the first layout on.
+import '../deskapps/watch';
+import type { AppId } from '../canvas/layout';
 import { useKeyboard } from './useKeyboard';
 import { watchCarouselWindows } from '../carousel/actions';
 import { carouselOn } from '../carousel/model';
@@ -93,6 +97,8 @@ export function Shell() {
   useEffect(() => watchBoots(), []);
   useEffect(() => watchAgentTiles(), []);
   useEffect(() => watchFilesTiles(), []);
+  // The Apps sheet's layer, once the desk app host's chunk is here (ADR 0054).
+  const appsHost = useDoor((s) => s.host);
   useEffect(() => watchCarouselWindows(), []);
   // The same ask brings the owner's tier names, so a tab left open picks up a rename of a tier.
   useEffect(() => startVersionWatch((config) => freshTierNames(config.tierNames)), []);
@@ -119,7 +125,11 @@ export function Shell() {
   // Read-only hook for tests and perf runs. Not in a production bundle.
   useEffect(() => {
     if (import.meta.env.MODE === 'production') return;
-    (window as unknown as Record<string, unknown>)['__maDesk'] = { camera, desksOpacity: () => camera.getStage()?.findOne('.desks')?.opacity() ?? null, spriteCount, etchRasters, panelRasters: panelRasterCount, textureLoads };
+    (window as unknown as Record<string, unknown>)['__maDesk'] = {
+      camera, desksOpacity: () => camera.getStage()?.findOne('.desks')?.opacity() ?? null, spriteCount, etchRasters, panelRasters: panelRasterCount, textureLoads,
+      // An installed app's tile widget as the canvas draws it (ADR 0054).
+      appWidget: (deskId: string, app: AppId) => host?.summary(deskId, app)?.widget ?? null,
+    };
   }, []);
 
   // Reading order: the banner, then the desks as the page's main landmark with their own controls and notices.
@@ -177,6 +187,7 @@ export function Shell() {
         <DeskMenu />
       </Suspense>
       <GuildLayer />
+      {appsHost && <appsHost.AppsLayer />}
       <OpenSheetDoor />
       <SettingsLayer />
       <Suspense fallback={null}>

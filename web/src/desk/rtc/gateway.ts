@@ -26,6 +26,10 @@ export interface GatewayMessage {
   state?: string;
   phase?: string;
   stopAt?: string;
+  /** The contract's name for `desk.stopping`'s reason (gateway.md); `reason` is what the app has read so far. */
+  stopReason?: string;
+  /** `desk.stopping` after a cost guard stop (TD-162). Read only through `trafficStopOf`. */
+  stopDetail?: unknown;
   queue?: { position?: number } | null;
 }
 

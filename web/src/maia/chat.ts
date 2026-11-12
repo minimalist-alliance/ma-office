@@ -4,6 +4,7 @@
 import type { MaiaAvatar } from '@minimalist-alliance/maia-avatar';
 import { create } from 'zustand';
 import { getLive } from '../desk/liveStore';
+import { layoutMirrorWritable } from '../state/layoutStore';
 import { getView } from '../state/viewStore';
 import { capLine, type AttachCaps, downscaleImage, encodeFile, isImageName, planAdd, type Pending, type Sent, type WireFile } from './attachments';
 import { expired, memoryOutcome, readMemory, type Memory } from './cards';
@@ -79,7 +80,9 @@ interface Turn {
   ended: 'done' | 'stop' | 'cut' | null;
 }
 
-const CONVERSATION_KEY = 'ma.maia.conversation.v1';
+export const CONVERSATION_KEY = 'ma.maia.conversation.v1';
+/** The widget's panel was open in this tab (`MaiaWidget.tsx`). */
+export const OPEN_KEY = 'ma.maia.open.v1';
 const FLUSH_MS = 60;
 const LOOKING = 'Looking that up…';
 
@@ -91,10 +94,15 @@ function readSession(key: string): string | null {
   }
 }
 
-function writeSession(key: string, value: string | null): void {
+/**
+ * Her keys in this tab's sessionStorage (the conversation, and the widget's open panel) are the member's: they go with the
+ * layout's mirror on every signed-out state, and are written only while that may be (`MEMBER_TAB_KEYS` in
+ * `state/layoutStore.ts`, ISS-89), so a tab another tab has signed out keeps none. Taking one out is always allowed.
+ */
+export function writeSession(key: string, value: string | null): void {
   try {
     if (value === null) window.sessionStorage.removeItem(key);
-    else window.sessionStorage.setItem(key, value);
+    else if (layoutMirrorWritable()) window.sessionStorage.setItem(key, value);
   } catch {
     /* storage unavailable: the chat lasts as long as the page */
   }

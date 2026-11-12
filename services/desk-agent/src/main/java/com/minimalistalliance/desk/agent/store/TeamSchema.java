@@ -23,7 +23,7 @@ final class TeamSchema {
     static void apply(Connection connection) throws SQLException {
         addColumns(connection, "agents",
                 "purpose TEXT NOT NULL DEFAULT ''",
-                "icon TEXT NOT NULL DEFAULT 'spark'",
+                "icon TEXT NOT NULL DEFAULT 'nodes'",
                 "tone TEXT NOT NULL DEFAULT 'graphite'",
                 "png_version INTEGER",
                 "solo INTEGER NOT NULL DEFAULT 1",

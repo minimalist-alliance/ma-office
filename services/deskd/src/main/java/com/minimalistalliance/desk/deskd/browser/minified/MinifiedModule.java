@@ -146,6 +146,17 @@ public final class MinifiedModule implements TabEvents, Topic {
         long actedGeneration = -1;
         /** What this tab's last pre-scroll did, in counts, for the real-site harness: never page text or an address. */
         Map<String, Object> prescrolled;
+        /** The top frame's id, which a same-document navigation names: the tab's own until a commit says otherwise. */
+        String mainFrameId;
+        /** The top frame's same-document navigations so far (an app's route change, a fragment): S-111. */
+        long route;
+        /** {@link #route} as the look that gave {@link #doc} began, and the tab's whole URL then: what a hold must match. */
+        long viewRoute = -1;
+        String viewUrl;
+        /** When {@link #doc} began to be held for a long page gone blank (round 6), or 0 while it isn't held. */
+        long heldSince;
+        /** Holds so far, so a hold's cap ends that hold and no later one. */
+        long holds;
 
         TabState(String id) {
             this.id = id;
@@ -365,7 +376,12 @@ public final class MinifiedModule implements TabEvents, Topic {
                 if (tabId == null && sessionId != null && frame != null) {
                     frameCommitted(sessionId, frame);
                 } else if (tabId != null && frame != null && frame.get("parentId") == null) {
-                    newDocument(tabId);
+                    newDocument(tabId, Json.string(frame, "id"));
+                }
+            }
+            case "Page.navigatedWithinDocument" -> {
+                if (tabId != null) {
+                    sameDocumentNavigation(tabId, Json.string(params, "frameId"));
                 }
             }
             case "Page.javascriptDialogOpening", "Page.javascriptDialogClosed" -> {
@@ -568,12 +584,15 @@ public final class MinifiedModule implements TabEvents, Topic {
     }
 
     /** The tab's top frame has a new document: what was of the old one goes (images, islands, the fields once sensitive). */
-    private void newDocument(String tabId) {
+    private void newDocument(String tabId, String frameId) {
         lock.lock();
         try {
             TabState state = tabs.get(tabId);
             if (state == null) {
                 return;
+            }
+            if (frameId != null && TAB_ID.matcher(frameId).matches()) {
+                state.mainFrameId = frameId;
             }
             state.generation++;
             state.dirty = true;
@@ -593,6 +612,88 @@ public final class MinifiedModule implements TabEvents, Topic {
             signalWake();
         } finally {
             lock.unlock();
+        }
+    }
+
+    /**
+     * S-111: the tab's top frame navigated within its document (an app's route change, a fragment). A view held for a
+     * long page gone blank (round 6) is of what came before, so it goes now, to the real page, and the page is looked at
+     * again; and no view from before can be held from here ({@link #mayHold}). A frame's own doesn't count.
+     */
+    private void sameDocumentNavigation(String tabId, String frameId) {
+        TabState held;
+        long hold;
+        lock.lock();
+        try {
+            TabState state = tabs.get(tabId);
+            if (state == null || frameId == null || !frameId.equals(state.mainFrameId != null ? state.mainFrameId : tabId)) {
+                return;
+            }
+            state.route++;
+            if (state.heldSince == 0) {
+                return;
+            }
+            held = state;
+            hold = state.holds;
+        } finally {
+            lock.unlock();
+        }
+        // Off the read path: it publishes.
+        Thread.ofVirtual().name("minified-route").start(() -> dropHold(held, hold, true));
+    }
+
+    /** How long a view is held for a long page gone blank, at most (S-111): the moment a grid takes to draw its rows again. */
+    static final Duration HOLD_FOR = Duration.ofSeconds(5);
+
+    /**
+     * Whether the view in {@link TabState#doc} may be held for a long page that went blank (round 6), with the lock held:
+     * only while the page is where that view was looked at (S-111), the tab's whole URL the same, fragment included, as an
+     * app can route by its fragment alone ({@code #/inbox} to {@code #/sent}) and the cost of a change that wasn't a route is
+     * the real page for a moment; no same-document navigation since that look began, nor during this one; and for
+     * {@link #HOLD_FOR} at most.
+     *
+     * @param route {@link TabState#route} as this look began
+     * @param url the tab's URL as this look began
+     */
+    private static boolean mayHold(TabState state, long route, String url) {
+        return route == state.route
+                && state.viewRoute == state.route
+                && url != null
+                && url.equals(state.viewUrl)
+                && (state.heldSince == 0 || System.nanoTime() - state.heldSince < HOLD_FOR.toNanos());
+    }
+
+    /**
+     * Ends this hold, if it's still the one: the view goes, and the tab shows the real page for the reason the last look
+     * gave ({@code low_confidence}), for this moment only, so the page's next change is looked at. With {@code lookAgain},
+     * that's now.
+     */
+    private void dropHold(TabState state, long hold, boolean lookAgain) {
+        Map<String, Object> event = null;
+        boolean parked = false;
+        lock.lock();
+        try {
+            if (state.heldSince == 0 || state.holds != hold || state.closed) {
+                return;
+            }
+            state.heldSince = 0;
+            state.fallback = Fallback.LOW_CONFIDENCE;
+            state.cause = null;
+            state.doc = null;
+            state.rev++;
+            state.status = streamStatus(state);
+            event = state.status;
+            if (lookAgain) {
+                state.dirty = true;
+                parked = state.parked;
+                signalWake();
+            }
+        } finally {
+            lock.unlock();
+        }
+        publish(state.id, "changed", event);
+        if (parked) {
+            wakeParked(List.of(state));
         }
     }
 
@@ -1767,6 +1868,7 @@ public final class MinifiedModule implements TabEvents, Topic {
             return false;
         }
         long generation;
+        long route;
         lock.lock();
         try {
             if (!force && !state.dirty && state.doc != null && state.fallback == null) {
@@ -1776,6 +1878,7 @@ public final class MinifiedModule implements TabEvents, Topic {
                 return false;
             }
             generation = state.generation;
+            route = state.route;
         } finally {
             lock.unlock();
         }
@@ -1825,7 +1928,7 @@ public final class MinifiedModule implements TabEvents, Topic {
             return false;
         }
         MDocBuilder.Built built = MDocBuilder.build(tab.tabId(), tab.url(), tab.title(), raw, new DocumentContext(state, generation));
-        return take(tab, state, built, raw, generation, host);
+        return take(tab, state, built, raw, generation, route, host);
     }
 
     /** What says the stream before the page is even looked at. */
@@ -1998,12 +2101,18 @@ public final class MinifiedModule implements TabEvents, Topic {
         return kind;
     }
 
-    /** Takes a build as the view, if it's still of the document on screen. */
-    private boolean take(TabRef tab, TabState state, MDocBuilder.Built built, MDocBuilder.Raw raw, long generation, String host) {
+    /**
+     * Takes a build as the view, if it's still of the document on screen.
+     *
+     * @param route {@link TabState#route} as the look began
+     */
+    private boolean take(TabRef tab, TabState state, MDocBuilder.Built built, MDocBuilder.Raw raw, long generation, long route, String host) {
         MDoc doc = built.doc();
         boolean pressConsent = false;
         Map<String, Object> event = null;
         String type = null;
+        boolean held = false;
+        long capHold = -1;
         lock.lock();
         try {
             if (state.generation != generation || state.closed) {
@@ -2040,19 +2149,23 @@ public final class MinifiedModule implements TabEvents, Topic {
             // the pre-scroll put it back, Best Buy's) isn't given up for the real page when this document's view already
             // had something: that view stays until the page's next change is looked at. Never for a wall or a check (they
             // fall back for their own reasons, before this one), and only while the page is still as long as a page of
-            // results.
+            // results. S-111: and only while the page is where that view was looked at, for HOLD_FOR at most (mayHold).
             if (built.fallback() == Fallback.LOW_CONFIDENCE && state.fallback == null && MDocBuilder.hadSomething(state.doc)
-                    && MDocBuilder.almostNothingOfALongPage(doc) && !doc.sensitive) {
+                    && MDocBuilder.almostNothingOfALongPage(doc) && !doc.sensitive && mayHold(state, route, tab.url())) {
                 state.count = raw.count();
                 state.dirty = false;
                 state.usedNanos = System.nanoTime();
-                return true;
+                if (state.heldSince == 0) {
+                    state.heldSince = System.nanoTime();
+                    capHold = ++state.holds;
+                }
+                held = true;
             }
-            if (flags.consentReject() && doc.consent != null && state.consentGeneration != generation && !doc.sensitive) {
+            if (!held && flags.consentReject() && doc.consent != null && state.consentGeneration != generation && !doc.sensitive) {
                 state.consentGeneration = generation;
                 pressConsent = true;
             }
-            if (built.fallback() == null) {
+            if (!held && built.fallback() == null) {
                 boolean same = state.fallback == null && doc.sameAs(state.doc);
                 MDoc previous = state.doc;
                 if (!same) {
@@ -2066,11 +2179,30 @@ public final class MinifiedModule implements TabEvents, Topic {
                     event = patch != null ? patch : state.status;
                     type = patch != null ? "patch" : "changed";
                 }
+                // What a hold of this view must match (S-111), and any hold ends: the page has something again.
+                state.viewRoute = route;
+                state.viewUrl = tab.url();
+                state.heldSince = 0;
                 state.usedNanos = System.nanoTime();
                 evictBeyondKept(state);
             }
         } finally {
             lock.unlock();
+        }
+        if (held) {
+            if (capHold >= 0) {
+                // A one-shot timer: a page that stays blank, unchanged, gets the real page once the cap is up.
+                long hold = capHold;
+                Thread.ofVirtual().name("minified-hold").start(() -> {
+                    try {
+                        Thread.sleep(HOLD_FOR);
+                    } catch (InterruptedException e) {
+                        return;
+                    }
+                    dropHold(state, hold, false);
+                });
+            }
+            return true;
         }
         if (built.fallback() != null) {
             // A page still loading isn't held against its site.
@@ -2148,6 +2280,7 @@ public final class MinifiedModule implements TabEvents, Topic {
      * that's gone (review 4). A stream view stays as it is: it never showed more than the page.
      */
     private static void dropView(TabState state) {
+        state.heldSince = 0;
         if (state.doc == null) {
             return;
         }
@@ -2169,6 +2302,7 @@ public final class MinifiedModule implements TabEvents, Topic {
             if (generation >= 0 && generation != state.generation) {
                 return;
             }
+            state.heldSince = 0;
             if (forDocument) {
                 state.fallbackGeneration = state.generation;
                 state.dirty = false;

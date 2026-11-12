@@ -32,6 +32,10 @@ import org.slf4j.LoggerFactory;
  *
  * Each app has its own lock, held across a start or a stop, so a call to an app that's starting waits for it rather than
  * starting a second. deskd leaves running apps running when it stops: the next deskd asks the helper and connects again.
+ *
+ * <p>Each app has a {@link Home}: where its record and summary are kept and what runs it. An app from the catalog's is
+ * {@code /data/apps} and the helper; a bundled app's (API.md section 19, "Bundled apps") is {@code /data/desk/apps} and
+ * {@link BundledAppHost}, which runs it as deskd's own child. Everything else here is the same for both.
  */
 final class AppRuntime {
 
@@ -48,10 +52,14 @@ final class AppRuntime {
     static final int MAX_FAILURES = 3;
     private static final long[] BACKOFF_MS = {1_000, 5_000, 30_000};
 
+    /** Where an app's record and summary are kept, and what starts and stops it. */
+    record Home(AppStore store, AppHost host, boolean bundled) {}
+
     /** One installed app's run state. Fields change under {@link #lock}, and are read without it. */
     static final class Process {
         final String id;
         final ReentrantLock lock = new ReentrantLock();
+        volatile Home home;
         volatile AppStore.Entry entry;
         volatile AppManifest manifest;
         volatile String state = STOPPED;
@@ -61,6 +69,9 @@ final class AppRuntime {
         volatile long restartAt;
         volatile Map<String, Object> summary;
         final AtomicBoolean savingSummary = new AtomicBoolean();
+        /** An {@code app.members.retain} is on its way, and whether another is wanted after it (AppsModule). */
+        final AtomicBoolean retaining = new AtomicBoolean();
+        final AtomicBoolean retainAgain = new AtomicBoolean();
         final ArrayDeque<Long> failures = new ArrayDeque<>();
 
         Process(String id) {
@@ -87,8 +98,7 @@ final class AppRuntime {
         Map<String, Object> hello(Process process);
     }
 
-    private final AppHost host;
-    private final AppStore store;
+    private final Home catalogHome;
     private final AppsSwitch toggle;
     private final Supplier<Long> nanoTime;
     private final Map<String, Process> processes = new ConcurrentHashMap<>();
@@ -98,8 +108,7 @@ final class AppRuntime {
     private volatile Thread ticker;
 
     AppRuntime(AppHost host, AppStore store, AppsSwitch toggle) {
-        this.host = host;
-        this.store = store;
+        this.catalogHome = new Home(store, host, false);
         this.toggle = toggle;
         this.nanoTime = System::nanoTime;
     }
@@ -117,7 +126,13 @@ final class AppRuntime {
 
     /** Takes an installed app's record and manifest, as after an install, an upgrade or deskd's start. */
     Process put(AppStore.Entry entry, AppManifest manifest) {
+        return put(entry, manifest, catalogHome);
+    }
+
+    /** The same, for an app kept and run by {@code home}. */
+    Process put(AppStore.Entry entry, AppManifest manifest, Home home) {
         Process p = processes.computeIfAbsent(entry.id(), Process::new);
+        p.home = home;
         p.entry = entry;
         p.manifest = manifest;
         if (entry.disabled() != null) {
@@ -128,7 +143,7 @@ final class AppRuntime {
             p.problem = null;
         }
         if (p.summary == null) {
-            p.summary = AppSummaryFile.read(store, entry.id());
+            p.summary = AppSummaryFile.read(home.store(), entry.id());
         }
         return p;
     }
@@ -190,7 +205,7 @@ final class AppRuntime {
         if (!toggle.on()) {
             throw unavailable("switched_off");
         }
-        String why = host.unavailable();
+        String why = p.home.host().unavailable();
         if (why != null) {
             throw unavailable(why);
         }
@@ -223,17 +238,18 @@ final class AppRuntime {
         p.state = STARTING;
         p.restartAt = 0;
         changed();
+        AppHost host = p.home.host();
         AppLink link;
         try {
             host.start(p.id, entry.uid());
             link = AppLink.open(host.socket(p.id), host.peerUid(entry.uid()), hooks.hello(p),
                     Duration.ofSeconds(manifest.run().startTimeoutSec()), events(p));
         } catch (AppHost.AppHostException e) {
-            stopQuietly(p.id);
+            stopQuietly(p);
             failed(p, "host");
             throw unavailable(e.code());
         } catch (AppLink.OpenException e) {
-            stopQuietly(p.id);
+            stopQuietly(p);
             failed(p, e.reason());
             throw unavailable(e.reason());
         }
@@ -264,7 +280,7 @@ final class AppRuntime {
             if (link != null) {
                 link.close();
             }
-            stopQuietly(id);
+            stopQuietly(p);
             if (!DISABLED.equals(p.state)) {
                 p.state = STOPPED;
                 p.problem = null;
@@ -299,9 +315,9 @@ final class AppRuntime {
         }
     }
 
-    private void stopQuietly(String id) throws InterruptedException {
+    private static void stopQuietly(Process p) throws InterruptedException {
         try {
-            host.stop(id);
+            p.home.host().stop(p.id);
         } catch (AppHost.AppHostException e) {
             log.warn("apps: the helper couldn't stop an app: {}", e.code());
         }
@@ -349,14 +365,14 @@ final class AppRuntime {
             String reason = code == AppLink.CLOSE_API_MISMATCH ? "needs_update" : "crashed";
             if (!"needs_update".equals(reason)) {
                 try {
-                    if (host.status(p.id).outOfMemory()) {
+                    if (p.home.host().status(p.id).outOfMemory()) {
                         reason = "memory";
                     }
                 } catch (AppHost.AppHostException e) {
                     // As a crash.
                 }
             }
-            stopQuietly(p.id);
+            stopQuietly(p);
             failed(p, reason);
             if (STOPPED.equals(p.state) && (background(p) || hooks.inUse(p.id))) {
                 scheduleRestart(p, BACKOFF_MS[Math.min(p.failures.size(), BACKOFF_MS.length) - 1]);
@@ -381,7 +397,7 @@ final class AppRuntime {
                 Map<String, Object> summary = AppSummary.check(data);
                 if (summary != null && !summary.equals(p.summary)) {
                     p.summary = summary;
-                    AppSummaryFile.write(store, p);
+                    AppSummaryFile.write(p.home.store(), p);
                     changed();
                 }
             }, Duration.ofSeconds(5));
@@ -472,11 +488,17 @@ final class AppRuntime {
 
     /** At deskd's start: connects to apps the helper says still run, and starts background apps. */
     void resume() {
-        if (!toggle.on() || host.unavailable() != null) {
+        resume(all());
+    }
+
+    /** The same for these apps alone, as for the bundled ones once their files are checked. */
+    void resume(List<Process> apps) {
+        if (!toggle.on()) {
             return;
         }
-        for (Process p : all()) {
-            if (DISABLED.equals(p.state)) {
+        for (Process p : apps) {
+            AppHost host = p.home.host();
+            if (DISABLED.equals(p.state) || host.unavailable() != null) {
                 continue;
             }
             Thread.ofVirtual().name("app-resume").start(() -> {
@@ -501,6 +523,7 @@ final class AppRuntime {
         Map<String, Object> json = new LinkedHashMap<>(p.manifest.summaryJson());
         AppStore.Entry e = p.entry;
         json.put("previous", e.previous());
+        json.put("bundled", p.home.bundled());
         json.put("tier", e.tier());
         json.put("grants", e.grants());
         json.put("state", p.state);

@@ -4,7 +4,7 @@
 // for every desk. Live values come from the Konva stage, found through its React fiber: read-only.
 // What a screenshot shows is judged by reading it. This script only measures.
 import { mkdirSync } from 'node:fs';
-import { ALLOWED, events, getDesk, HOST, log, logConfig, openSession, OTHER, S, shot, shutdown, testLabel, wait, waitPanel } from './rt-lib.mjs';
+import { ALLOWED, createLayoutStandIn, events, getDesk, HOST, log, logConfig, openSession, OTHER, S, shot, shutdown, testLabel, wait, waitPanel } from './rt-lib.mjs';
 
 const EXPECTED = process.env.MA_EXPECT_VERSION;
 if (!EXPECTED) throw new Error('Set MA_EXPECT_VERSION to the bundle version you expect on staging');
@@ -128,6 +128,7 @@ function readerInit() {
 }
 
 await openSession({
+  layoutStandIn: createLayoutStandIn(),
   watch: true,
   onContext: async (context) => {
     await context.addInitScript(readerInit);

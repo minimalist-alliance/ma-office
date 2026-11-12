@@ -11,6 +11,7 @@ import { readJson, writeJson } from '../lib/util';
 import { useSession } from '../platform/session';
 import { useLayoutPrefs } from '../shell/layoutPrefs';
 import { layoutDocRead, setLayoutPref } from '../shell/layoutSync';
+import { layoutMirrorWritable } from '../state/layoutStore';
 import { isStepId, type SetupPrefs, type StepId } from './steps';
 
 export const SETUP = 'setup';
@@ -28,6 +29,8 @@ const who = (): string | null => useSession.getState().me?.userId ?? null;
 /** Counts this browser's writes, so what reads the mirror renders again when only the mirror changed. */
 export const useMirrorTick = create<{ n: number }>(() => ({ n: 0 }));
 function writeMirror(key: Key, value: unknown): void {
+  // Part of the saved layout's mirror (ISS-67, Security's ISS67-L1): never written once this page or another tab has signed out.
+  if (!layoutMirrorWritable()) return;
   writeJson(MIRROR, { who: who(), prefs: { ...mirror(), [key]: value } });
   useMirrorTick.setState((s) => ({ n: s.n + 1 }));
 }

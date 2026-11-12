@@ -17,6 +17,7 @@
 // membership status (the no-desk cards wait for Platform's own word), no age band (the age rules wait for `/v1/me`).
 // Every storage access is in try/catch (`tokenStore.ts`'s helpers): storage that's blocked or full means no head start.
 import { usableConfig, type ClientConfig } from './clientConfig';
+import { layoutMirrorWritable } from '../state/layoutStore';
 import { hasStoredToken, LAST_KNOWN_KEY, readBeside, readSignedInAt, writeBeside } from './tokenStore';
 
 export const LAST_KNOWN_VERSION = 1;
@@ -129,6 +130,8 @@ function write(r: LastKnown): void {
 
 function put(sub: string, parts: Partial<Record<Part, unknown>>): void {
   if (!hasStoredToken()) return; // nothing to keep it beside: a sign-out on its way, say
+  // Nor beside someone else's: a tab another tab signed out, still drawing its member, after a sign-in there (ISS-89).
+  if (!layoutMirrorWritable()) return;
   const cur = stored();
   const base: LastKnown = cur && cur.sub === sub ? cur : { v: LAST_KNOWN_VERSION, sub, signedInAt: null };
   const next: LastKnown = { ...base, signedInAt: readSignedInAt() };

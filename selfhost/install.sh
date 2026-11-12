@@ -12,7 +12,8 @@
 #                          bundle.pin.sig, the self-hosted release key's signature (build-bundle.sh makes one). Nothing is
 #                          installed unless all of it, and every file of this installer, is as signed (EXP-10). With a
 #                          batch-baseline file, desk-batch refuses update batches at or below it
-#   --env                  which platform to pair with (default staging; prod isn't open yet)
+#   --env                  which platform to pair with: prod, your office (the default), or staging, our test platform,
+#                          for testers only
 #   --address              the address the member's browser reaches this desk on. Default auto: this machine's address
 #                          on its home network. Give a forwarded public address only if you've forwarded UDP and TCP
 #                          --port to this machine, on the same port number.
@@ -35,8 +36,10 @@
 # Updating: run it again with a newer installer and bundle. It keeps /data, the pairing and the browser profile, and
 # the settings the desk has (--env, --address, --port, --keep-ssh, --allow-home-network) unless given again. A desk
 # installed before these were recorded (desk-rtc 0.3.0-sh1's bundles) has them read from its files: the port from
-# /etc/ma/desk-rtc-port, SSH and the home network from its firewall rules. An update takes only a bundle signed with the
-# key the desk already holds; `sudo ma-selfhost verify <folder>` checks a new folder with the desk's own checker first.
+# /etc/ma/desk-rtc-port, SSH and the home network from its firewall rules. One exception: installers before 2026.11.12
+# defaulted to staging, so a desk that has staging without --env having chosen it, and has never paired, moves to prod
+# unless --env is given, and says so (choose_env, below). An update takes only a bundle signed with the key the desk
+# already holds; `sudo ma-selfhost verify <folder>` checks a new folder with the desk's own checker first.
 set -euo pipefail
 export DEBIAN_FRONTEND=noninteractive
 HERE=$(cd "$(dirname "$0")" && pwd)
@@ -64,28 +67,54 @@ while [ $# -gt 0 ]; do
     --no-pair) PAIR=0; shift ;;
     --yes) YES=--yes; shift ;;
     --version) LABEL=$2; shift 2 ;;
-    -h|--help) sed -n '2,39p' "$0"; exit 0 ;;
+    -h|--help) sed -n '2,42p' "$0"; exit 0 ;;
     *) die "unknown option $1 (see --help)" ;;
   esac
 done
 PORT_TOOL=$HERE/files/usr/local/lib/ma/selfhost/ma-selfhost-port
 
+# The platform this desk pairs with. --env when given (env_chosen=1, kept by later updates); else the desk's own; else prod.
+# One exception: installers before 2026.11.12 defaulted to staging (prod wasn't open yet), whose pairing link a member's
+# account can't use. A desk that has staging without --env having chosen it, and has never paired, takes prod and says so;
+# one that paired, or whose pairing can't be read (its data disk isn't mounted), keeps staging.
+# choose_env <--env or empty> <saved env> <saved env_chosen> <paired: yes|no|unknown>: sets ENV, ENV_CHOSEN and ENV_NOTE.
+choose_env() {
+  ENV_NOTE=""
+  if [ -n "$1" ]; then ENV=$1 ENV_CHOSEN=1; return 0; fi
+  ENV=${2:-prod} ENV_CHOSEN=0
+  [ -z "$2" ] || [ "$3" != 1 ] || ENV_CHOSEN=1
+  [ "$ENV" = staging ] && [ "$ENV_CHOSEN" = 0 ] || return 0
+  case "$4" in
+    no) ENV=prod
+      ENV_NOTE="this desk was set for our test platform (staging), which installers before this one chose by default, and it hasn't paired yet, so it now pairs with your office (prod). To keep it on staging, run this again with --env staging" ;;
+    unknown)
+      ENV_NOTE="this desk is set for our test platform (staging), which installers before this one chose by default. Its data disk isn't mounted, so whether it has paired can't be read, and it stays on staging. For your office, run this again with --env prod" ;;
+  esac
+  return 0
+}
+
 # An installed desk: what it was installed with. /etc/ma/selfhost.conf has env and address, and from this installer on,
-# keep_ssh and allow_home_network; desk-rtc's port is in /etc/ma/desk-rtc.conf, or an older bundle's /etc/ma/desk-rtc-port.
-UPGRADE=0
+# keep_ssh, allow_home_network and env_chosen; desk-rtc's port is in /etc/ma/desk-rtc.conf, or an older bundle's
+# /etc/ma/desk-rtc-port. Whether it has paired: ma-selfhost's desk.json on the data disk, looked for as selfhost (EXP-7).
+UPGRADE=0 had_env="" had_env_chosen="" had_paired=no
 if [ -f /etc/ma/selfhost.conf ]; then
   UPGRADE=1
   setting() { sed -n "s/^$1=//p" /etc/ma/selfhost.conf | tail -1; }
-  had_env=$(setting env) had_address=$(setting address) had_ssh=$(setting keep_ssh) had_home=$(setting allow_home_network)
+  had_env=$(setting env) had_env_chosen=$(setting env_chosen)
+  had_address=$(setting address) had_ssh=$(setting keep_ssh) had_home=$(setting allow_home_network)
+  if ! mountpoint -q /data || ! id selfhost >/dev/null 2>&1; then had_paired=unknown
+  elif as_selfhost test -e /data/selfhost/desk.json; then had_paired=yes
+  fi
   had_port=$( (sed -n 's/^[[:space:]]*port[[:space:]]*=[[:space:]]*\([0-9]*\)[[:space:]]*$/\1/p' /etc/ma/desk-rtc.conf 2>/dev/null || true) | tail -1)
   [ -n "$had_port" ] || had_port=$(cat /etc/ma/desk-rtc-port 2>/dev/null || true)
   # Older installs: --keep-ssh kept the #SSH lines in the firewall, and --allow-home-network removed the #HOME ones.
   if [ -z "$had_ssh" ] && [ -f /etc/nftables.conf ]; then grep -q ' #SSH$' /etc/nftables.conf && had_ssh=1 || had_ssh=0; fi
   if [ -z "$had_home" ] && [ -f /etc/nftables.conf ]; then grep -q ' #HOME$' /etc/nftables.conf && had_home=0 || had_home=1; fi
-  ENV=${ENV:-$had_env} ADDRESS=${ADDRESS:-$had_address} PORT=${PORT:-$had_port}
+  ADDRESS=${ADDRESS:-$had_address} PORT=${PORT:-$had_port}
   KEEP_SSH=${KEEP_SSH:-$had_ssh} ALLOW_HOME=${ALLOW_HOME:-$had_home}
 fi
-ENV=${ENV:-staging} ADDRESS=${ADDRESS:-auto} PORT=${PORT:-4443} KEEP_SSH=${KEEP_SSH:-0} ALLOW_HOME=${ALLOW_HOME:-0}
+choose_env "$ENV" "$had_env" "$had_env_chosen" "$had_paired"
+ADDRESS=${ADDRESS:-auto} PORT=${PORT:-4443} KEEP_SSH=${KEEP_SSH:-0} ALLOW_HOME=${ALLOW_HOME:-0}
 
 step "checks"
 [ "$(id -u)" = 0 ] || die "run as root"
@@ -167,6 +196,7 @@ if [ "$UPGRADE" = 1 ]; then
   echo "updating this desk from desk-rtc $(installed desk-rtc), desk-stream $(installed desk-stream), deskd $(installed deskd), desk-agent $(installed desk-agent), desk-agent-filter $(installed desk-agent-filter), desk-notebook $(installed desk-notebook)"
   echo "settings: --env $ENV --address $ADDRESS --port $PORT, SSH from your home network $([ "$KEEP_SSH" = 1 ] && echo on || echo off), the Browser's access to your home network $([ "$ALLOW_HOME" = 1 ] && echo on || echo off)"
 fi
+[ -z "$ENV_NOTE" ] || echo "note: $ENV_NOTE"
 
 step "users (the cloud desk's fixed uids, plus selfhost)"
 for spec in desk:1100 rtc:1101 kiosk:1102 agent:1103 stream:1104 notebook:1105 agent-filter:1106 selfhost:1110; do
@@ -215,6 +245,9 @@ for f in $GUILD_ONLY; do rm -f "/$f"; done
 rmdir /etc/systemd/system/nftables.service.d 2>/dev/null || true
 (cd "$HERE/files" && find . \( -type f -o -type l \) ! -path "*/__pycache__/*" -print0 | tar --null --no-recursion --owner=0 --group=0 -T - -cf -) | tar -C / -xf -
 chmod 0644 /etc/ma/agent-egress.conf
+# The recipe's sysctl.d files (the UDP buffers, the kernel hardening: ptrace_scope 2 and six more) take effect now, not at the next boot.
+# A key the member's kernel doesn't know is skipped with a warning, never an error.
+sysctl -q --system >/dev/null 2>&1 || true
 chmod 0755 /opt/ma/smoke-test /opt/ma/bin/ma-update /usr/local/lib/ma/desk-firstboot /usr/local/lib/ma/desk-datadirs \
   /usr/local/lib/ma/desk-units /usr/local/lib/ma/desk-browser-start /usr/local/lib/ma/desk-xorg-ready /usr/local/lib/ma/desk-preread \
   /usr/local/lib/ma/desk-browser-policy /usr/local/lib/ma/desk-adblock /usr/local/lib/ma/desk-browser-close /usr/local/lib/ma/desk-xauth \
@@ -274,6 +307,8 @@ printf 'version=%s\nbuilt=%s\nhosting=self\n' "${LABEL:-selfhost-$rev}" "$(date 
 {
   echo "# ma-selfhost (selfhost/README.md). Written by install.sh; run it again to change these."
   echo "env=$ENV"
+  echo "# 1: --env chose it, so an update keeps it even before the desk pairs"
+  echo "env_chosen=$ENV_CHOSEN"
   echo "address=$ADDRESS"
   echo "# install.sh's own, kept when it updates the desk"
   echo "keep_ssh=$KEEP_SSH"

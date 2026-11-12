@@ -86,7 +86,7 @@ function rig(opts: { stub?: Partial<ReturnType<typeof newStubControl>>; tickMs?:
     changed: (f) => void changed.push(f),
     open: async () => {
       const sink = new BlobSink();
-      return { sink, finish: async () => void (outputs.push(sink.blob('x'))), abort: async () => {}, where: 'downloads' as const };
+      return { sink, finish: async () => void (outputs.push(sink.blob())), abort: async () => {}, where: 'downloads' as const };
     },
   });
   const outputs: Blob[] = [];

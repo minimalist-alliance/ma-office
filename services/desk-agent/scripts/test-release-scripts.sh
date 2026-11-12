@@ -9,6 +9,7 @@
 # - run, against the flags ADR 0040 and design 9.8 require; health, against a fake admin socket.
 # - desk-agent.env, against the settings the Java code reads.
 # - The Dockerfile: pinned bases, no BuildKit-only syntax, the training property nowhere a desk runs.
+# - No HTTP client or TLS logging anywhere a desk runs, as it would log a provider key (ISS-20).
 # - If desk-agent/target/desk-agent.jar exists: the Dockerfile's unpacking, SQLite's library step, the AppCDS
 #   training and the entrypoint, with this machine's JDK and /app moved to a temporary directory, up to the real
 #   /health. Run ../mvnw -f desk-agent/pom.xml verify first to include this.
@@ -162,14 +163,34 @@ done
 # --- the Dockerfile's rules
 expect "Dockerfile: every base is pinned by digest" \
   test -z "$(grep -E '^FROM ' "$dockerfile" | grep -vE '^FROM [^ ]+@sha256:[0-9a-f]{64}( AS [a-z]+)?$' || true)"
+# Only the Java bases: deskd also has a Go stage ("AS bundled") that desk-agent doesn't use, and a new Java stage
+# would still be compared.
 expect "Dockerfile: the bases are deskd's, so a desk shares their layers" test \
-  "$(grep -E '^FROM ' "$dockerfile" | awk '{print $2}')" = "$(grep -E '^FROM ' "$services_dir/deskd/Dockerfile" | awk '{print $2}')"
+  "$(grep -E '^FROM ' "$dockerfile" | grep -v ' AS bundled$' | awk '{print $2}')" = "$(grep -E '^FROM ' "$services_dir/deskd/Dockerfile" | grep -v ' AS bundled$' | awk '{print $2}')"
 refuses "Dockerfile: no BuildKit-only syntax" grep -qE '^# *syntax=|--mount=|--chmod=|--link|<<|--chown=[^ ]*\$' "$dockerfile"
 refuses "training: nothing a desk runs names its property" grep -q 'ma\.cds\.train' \
   "$docker_dir/jvm.options" "$docker_dir/desk-agent.env" "$docker_dir/run" "$docker_dir/health"
 refuses "training: nor does the entrypoint" grep -q '^ENTRYPOINT.*ma\.cds\.train' "$dockerfile"
 refuses "training: and no setting is read for it" grep -rq 'getProperty("ma\.cds\.train' "$agent_dir/src/main/java"
 expect "Dockerfile: the image runs as agent, uid 1103" grep -qx 'USER 1103:1103' "$dockerfile"
+
+# --- nothing a desk runs logs what the HTTP client sends (ISS-20)
+# jdk.httpclient.HttpClient.log=headers (or all) logs every request header, a provider key's included;
+# jdk.internal.httpclient.debug traces the client; javax.net.debug can dump TLS records in plain text.
+http_logging='jdk\.httpclient\.HttpClient\.log|jdk\.internal\.httpclient\.debug|javax\.net\.debug'
+no_http_logging() { # no_http_logging <file...>: each file is there, and names none of them
+  local file
+  for file; do
+    [ -f "$file" ] || return 1
+    ! grep -qE "$http_logging" "$file" || return 1
+  done
+}
+expect "http logging: nothing a desk runs turns it on" no_http_logging \
+  "$docker_dir/jvm.options" "$docker_dir/desk-agent.env" "$docker_dir/run" "$docker_dir/health" "$dockerfile"
+expect "http logging: and no code sets it" test -z "$(grep -rlE "$http_logging" "$agent_dir/src/main/java" || true)"
+cp "$docker_dir/jvm.options" "$work/jvm.options.logging"
+echo '-Djdk.httpclient.HttpClient.log=headers' >>"$work/jvm.options.logging"
+refuses "http logging: the check finds it once it's there" no_http_logging "$work/jvm.options.logging"
 
 # --- the Dockerfile's steps, with a real JVM
 jar=$agent_dir/target/desk-agent.jar
@@ -190,11 +211,11 @@ else
   expect "jvm.options: the JVM accepts it" java "@$app/jvm.options" -version >/dev/null 2>&1
 
   version=9.8.7-test
-  # The final stage's RUN with its continuation lines, with the paths moved. The training's temporary files go
+  # The last stage's RUN with its continuation lines, with the paths moved. The training's temporary files go
   # to a directory of its own, so it can be checked for leftovers.
   train_tmp=$work/train-tmp
   mkdir "$train_tmp"
-  steps=$(awk '/^FROM /{stage++} stage==2' "$dockerfile" | awk '/^RUN /{on=1} on{print} on && !/\\$/{on=0}' |
+  steps=$(awk -v last="$(grep -c '^FROM ' "$dockerfile")" '/^FROM /{stage++} stage==last' "$dockerfile" | awk '/^RUN /{on=1} on{print} on && !/\\$/{on=0}' |
     sed -e 's/^RUN //' -e "s#/app#$app#g" -e "s#/tmp/train.options#$work/train.options#g" \
       -e "s#-Dma.cds.train=true#-Dma.cds.train=true -Djava.io.tmpdir=$train_tmp#")
   expect "image steps: version, training and archive check" \

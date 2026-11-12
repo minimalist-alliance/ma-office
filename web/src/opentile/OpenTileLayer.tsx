@@ -17,12 +17,13 @@
 import { useEffect, useLayoutEffect, useMemo, useRef, useState, type PointerEvent as ReactPointerEvent } from 'react';
 import type Konva from 'konva/lib/Core.js';
 import { camera } from '../canvas/controller';
-import { clampMove, G, workArea, type LayoutDesk, type LayoutItem, type Rect } from '../canvas/layout';
+import { clampMove, G, isDeskApp, workArea, type LayoutDesk, type LayoutItem, type Rect } from '../canvas/layout';
 import { useIsPhone } from '../canvas/phone';
 import { useCameraRest, type RestCam } from '../canvas/useCameraRest';
 import { carouselOn } from '../carousel/model';
 import { AppGlyph, Icon } from '../chrome/icons';
 import { shownDesk } from '../desk/attention';
+import { host, useDoor } from '../deskapps/door';
 import { appLabel, focusProxy, inScopeDesks } from '../shell/actions';
 import { announce } from '../shell/announce';
 import { restack } from '../shell/cleanup';
@@ -167,10 +168,12 @@ function OpenTile({ deskId, deskName, desk, item, rest, ring }: { deskId: string
     announce(`${label} window opened`);
   };
 
+  // The frame draws the proxy's ring (its own is under the frame), and keeps it, dashed, while the keyboard moves or resizes
+  // the tile, when the edit's own row has the keyboard (`chrome/EditBar.tsx`), whatever has focus.
   return (
     <div
       ref={frameRef}
-      className={`open-tile${ring ? ' ring' : ''}${ring && editing ? ' editing' : ''}`}
+      className={`open-tile${ring || editing ? ' ring' : ''}${editing ? ' editing' : ''}`}
       style={{ left: box.left, top: box.top, width: box.width, height: box.height, borderRadius: G.widgetRadius * rest.s }}
       data-testid={`open-tile-${item.app.startsWith('agent:') ? 'agent' : item.app}`}
       data-desk={deskId}
@@ -278,7 +281,14 @@ export default function OpenTileLayer() {
   const d = shown ? desks.find((x) => x.id === shown) : undefined;
   const l = d ? layouts[d.id] : undefined;
   // Its window wins (one place per app), closing ones included: the tile comes back live once the window has gone into it.
-  const windowApps = useMemo(() => new Set(Object.values(windows).filter((w) => w.deskId === shown).map((w) => w.app)), [windows, shown]);
+  // An installed app with apps switched off on this desk is its widget alone (ADR 0054), as if its window were open elsewhere.
+  useDoor((s) => s.rev);
+  const appsOff = !!shown && host?.openable(shown) === false;
+  const windowApps = useMemo(() => {
+    const set = new Set(Object.values(windows).filter((w) => w.deskId === shown).map((w) => w.app));
+    if (appsOff && l) for (const i of l.items) if (isDeskApp(i.app)) set.add(i.app);
+    return set;
+  }, [windows, shown, appsOff, l]);
   const inScope = !!d && inScopeDesks().some((x) => x.id === d.id);
   const chosen = d && l && !phone && inScope && !carouselOn(l) ? liveTiles(l, rest, { w: window.innerWidth, h: window.innerHeight }, windowApps) : [];
   // In the desk's own order, so a change of which is largest never moves one in the DOM (a moved frame reloads what's in it).

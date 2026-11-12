@@ -134,7 +134,7 @@ class DataPlaneConfiguration {
         BrowserModule browser = new BrowserModule(
                 rtc, sessions, dispatcher, hub, http, units::run, unitsSocket.resolveSibling(BrowserModule.REFUSAL_MARKER), cdpPort, cdpUid);
         browser.followStreamingPause(state.streamingPause());
-        browser.followAgeBand(ageBand);
+        browser.followAgeBand(ageBand, state.bootId());
         // Per-site memory for the simplified view lives on the data volume, beside the desk's other state (task 47).
         // Off on every desk until /data/desk/minified-switch says on, read at run time (API.md section 14).
         browser.enableMinified(volume.directory());
@@ -218,7 +218,8 @@ class DataPlaneConfiguration {
             HeartbeatLoop heartbeat,
             CommonsRelay commons,
             NotebookModule notebook,
-            RtcClient rtc) {
+            RtcClient rtc,
+            AppsModule apps) {
         GuildModule guild = new GuildModule(
                 volume.directory(), state, sessions, dispatcher, verifier, platform, agent, clock, GuildRoster.Timing.DEFAULT,
                 new com.minimalistalliance.desk.deskd.guild.GuildSessionLog.Commons() {
@@ -238,6 +239,8 @@ class DataPlaneConfiguration {
                     }
                 });
         guild.follow(link, heartbeat, rtc);
+        // A removed member's data goes from every app too, on the purges' own guard (API.md section 19, "Members leaving").
+        apps.guildMembers(guild.roster().appMembers());
         notebook.editBudget(guild::effectiveEditBudget);
         guild.onEditBudgetChange(notebook::editBudgetChanged);
         return guild;
@@ -299,9 +302,10 @@ class DataPlaneConfiguration {
 
     /**
      * The desk app contract's base (API.md section 19): installs under /data/apps, the catalog, and the appApi relay to each
-     * app's socket. Inert until an app is installed, and on a desk with no helper, no /data/apps or no review key nothing
-     * can be; /data/desk/apps-switch turns it off. Registers its methods and topics now; reads the registry when the
-     * lifecycle starts it.
+     * app's socket. Inert until an app is installed, and on a desk with no helper, no /data/apps or no review key no catalog
+     * app can be; the first-party apps bundled in the image (/app/bundled-apps) install and run without them, kept in
+     * /data/desk/apps. /data/desk/apps-switch turns it all off. Registers its methods and topics now; reads the registries
+     * when the lifecycle starts it.
      */
     @Bean(destroyMethod = "")
     AppsModule appsModule(
@@ -312,7 +316,9 @@ class DataPlaneConfiguration {
                 volume.directory(),
                 java.util.Arrays.stream(keys.split(",")).map(String::trim).filter(k -> !k.isEmpty()).map(Path::of).toList(),
                 Path.of(environment.getProperty("deskd.apps.socket", HelperAppHost.DEFAULT_SOCKET)),
-                Path.of(environment.getProperty("deskd.apps.run", HelperAppHost.DEFAULT_APPS_RUN)));
+                Path.of(environment.getProperty("deskd.apps.run", HelperAppHost.DEFAULT_APPS_RUN)),
+                Path.of(environment.getProperty("deskd.apps.bundled", AppsModule.DEFAULT_BUNDLED)),
+                Path.of(environment.getProperty("deskd.apps.bundled.run", AppsModule.DEFAULT_BUNDLED_RUN)));
         return AppsModule.forDesk(settings, dispatcher, hub, state::guildDesk, () -> {
             java.util.Map<String, Object> defaults = state.accountDefaults().current();
             return defaults == null || !(defaults.get("timeZone") instanceof String zone) ? null : zone;

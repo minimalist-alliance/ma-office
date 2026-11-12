@@ -7,8 +7,10 @@ import type { VmState } from '../desk/agentStatus';
 import type { GuildRole } from '../guild/api';
 import { isGuildPanel } from '../guild/panel';
 import type { PlatformDesk } from '../platform/api';
+import { trafficStopOf, type TrafficStop } from '../desk/trafficStop';
 import { lastKnownFitsSession } from '../platform/lastKnown';
-import { DESK_MIRROR_KEY, readBeside, writeBeside } from '../platform/tokenStore';
+import { DESK_MIRROR_KEY, hasStoredToken, readBeside, writeBeside } from '../platform/tokenStore';
+import { layoutMirrorWritable } from './layoutStore';
 
 export type DeskKind = 'personal' | 'work' | 'guild' | 'custom';
 
@@ -22,6 +24,8 @@ export interface DeskInfo {
   stopAt: string | null;
   /** Why the stop is announced (`data_guard`, ma-platform ADR 0110). Unknown values are safe: only known ones change the words. */
   stopReason?: string | null;
+  /** Why the cost guard stopped the desk, and when it clears (TD-162). Only for a traffic stop. */
+  stopDetail?: TrafficStop;
   givebackUntil: string | null;
   badges: Record<string, number>;
   /** The Alliance Member's hosted small desk (ma-platform ADR 0097): the office wakes it as it opens, and keeps its last screen. */
@@ -78,6 +82,9 @@ const ownOf = (desks: readonly DeskInfo[]): DeskInfo[] => desks.filter((d) => !i
 const guildsOf = (desks: readonly DeskInfo[]): DeskInfo[] => desks.filter((d) => isGuildPanel(d.id));
 
 function writeMirror(desks: readonly DeskInfo[]): void {
+  // Beside the token, so never without one, and only while the layout's mirror may be written (ISS-89): a tab that
+  // another tab's sign-out left behind, still listing on the access token it holds, writes no names for whoever's next.
+  if (!hasStoredToken() || !layoutMirrorWritable()) return;
   writeBeside(MIRROR_KEY, JSON.stringify(desks.filter((d) => !d.removed).map(({ id, name, kind }) => ({ id, name, kind }))));
 }
 
@@ -153,6 +160,7 @@ export function toDeskInfo(d: PlatformDesk): DeskInfo {
     queuePosition: d.queue?.position ?? null,
     stopAt: d.stopAt ?? null,
     ...(d.stopReason ? { stopReason: d.stopReason } : {}),
+    stopDetail: trafficStopOf(d.stopDetail) ?? undefined,
     givebackUntil: until,
     badges: d.badges?.apps ?? {},
     ...(d.startsWithOffice === true ? { startsWithOffice: true } : {}),
@@ -229,7 +237,7 @@ export const allDeskIds = (): string[] => useDeskStore.getState().desks.map((d) 
 export const guildDeskIds = (): string[] => guildsOf(useDeskStore.getState().desks).map((d) => d.id);
 
 /** Newer word on one desk from its link (`connect` or the gateway), between list polls. */
-export function applyDeskProgress(id: string, p: { state: string | null; phase: string | null; queuePosition: number | null; stopAt: string | null; stopReason?: string | null; heardAt?: number }): void {
+export function applyDeskProgress(id: string, p: { state: string | null; phase: string | null; queuePosition: number | null; stopAt: string | null; stopReason?: string | null; stopDetail?: TrafficStop | null; heardAt?: number }): void {
   const { desks } = useDeskStore.getState();
   const cur = desks.find((d) => d.id === id);
   if (!cur) return;
@@ -241,8 +249,9 @@ export function applyDeskProgress(id: string, p: { state: string | null; phase: 
     queuePosition: p.queuePosition,
     stopAt: p.stopAt ?? cur.stopAt,
     stopReason: p.stopReason ?? cur.stopReason ?? null,
+    stopDetail: p.state === 'starting' || p.state === 'running' ? undefined : p.stopDetail ?? cur.stopDetail,
   };
-  if (next.vm === cur.vm && next.phase === cur.phase && next.queuePosition === cur.queuePosition && next.stopAt === cur.stopAt && next.stopReason === (cur.stopReason ?? null)) return;
+  if (next.vm === cur.vm && next.phase === cur.phase && next.queuePosition === cur.queuePosition && next.stopAt === cur.stopAt && next.stopReason === (cur.stopReason ?? null) && next.stopDetail === cur.stopDetail) return;
   useDeskStore.setState({ desks: desks.map((d) => (d.id === id ? next : d)) });
 }
 
@@ -266,6 +275,15 @@ export const ownDesks = (): DeskInfo[] => ownOf(useDeskStore.getState().desks);
 
 export function clearDeskMirror(): void {
   writeBeside(MIRROR_KEY, null);
+}
+
+/**
+ * This tab's tokens became another account's (a sign-in in another tab): the last member's list goes from the tab at
+ * once, names and all, and the office shows the list loading until the new member's own answers (ISS-89).
+ */
+export function dropDeskList(): void {
+  linkSaidAt.clear();
+  useDeskStore.setState({ desks: [], status: 'loading', unpaid: null });
 }
 
 /**

@@ -8,6 +8,7 @@ import java.net.StandardProtocolFamily;
 import java.net.UnixDomainSocketAddress;
 import java.nio.ByteBuffer;
 import java.nio.channels.SocketChannel;
+import java.nio.channels.WritableByteChannel;
 import java.nio.charset.StandardCharsets;
 import java.nio.file.Path;
 import java.time.Duration;
@@ -41,7 +42,7 @@ import org.slf4j.LoggerFactory;
  * {@code res}, {@code err} and {@code evt}; desk-agent's {@code tcall}, a tool call deskd runs (tools/ToolHost), is
  * answered {@code tres} or {@code terr}. {@code 0x02} carries a key for {@code agent.key.add}: {@code u32be id},
  * {@code u16be} length and a JSON head, {@code u16be} length and the key's bytes. deskd zeroes its copies once written or
- * dropped.
+ * dropped, the writer's own direct buffer included, so NIO's cached buffers never hold one ({@link #writeThrough}).
  *
  * <p><b>Threads.</b> Each connection has three virtual threads, as {@code notebook/NotebookLink} has, and callers touch
  * none of them, so nothing that interrupts a caller (a CANCEL, a deadline, a session's end) can reach a thread doing
@@ -734,12 +735,14 @@ public final class AgentLink implements AutoCloseable {
     // ---- the writer
 
     private void writeLoop(Connection connection) {
+        // The writer's own direct buffer, which every frame goes through (writeThrough).
+        ByteBuffer out = ByteBuffer.allocateDirect(IO_BYTES);
         try {
             Outgoing item;
             while ((item = next(connection)) != null) {
                 try {
                     if (item.begin()) {
-                        writeFrame(connection, item.frame);
+                        writeFrame(connection, item.frame, out);
                     }
                 } finally {
                     item.zero();
@@ -789,22 +792,50 @@ public final class AgentLink implements AutoCloseable {
         }
     }
 
-    private void writeFrame(Connection connection, byte[] frame) throws IOException {
+    private void writeFrame(Connection connection, byte[] frame, ByteBuffer out) throws IOException {
         connection.lastProgress = System.nanoTime();
         connection.writing = true;
         wakeWatcher(connection);
         try {
-            ByteBuffer rest = ByteBuffer.wrap(frame);
-            while (rest.position() < frame.length) {
-                rest.limit(Math.min(rest.position() + IO_BYTES, frame.length));
-                while (rest.hasRemaining()) {
-                    if (connection.channel.write(rest) > 0) {
-                        connection.lastProgress = System.nanoTime();
-                    }
-                }
-            }
+            writeThrough(connection.channel, frame, out, () -> connection.lastProgress = System.nanoTime());
         } finally {
             connection.writing = false;
+        }
+    }
+
+    /**
+     * Writes {@code frame} through {@code out}, a direct buffer, at most its capacity at a time, and zeroes the bytes each
+     * piece used once that piece is written or has failed. A heap buffer would make NIO copy every write into a temporary
+     * direct buffer of its own, cached per carrier thread and never zeroed, so a KEY frame's key would stay in native memory
+     * until a later write happened to cover it (ISS-20). From a direct buffer NIO writes in place. {@code progress} runs
+     * after each write that moved bytes.
+     */
+    static void writeThrough(WritableByteChannel channel, byte[] frame, ByteBuffer out, Runnable progress)
+            throws IOException {
+        int at = 0;
+        while (at < frame.length) {
+            int piece = Math.min(out.capacity(), frame.length - at);
+            out.clear();
+            out.put(frame, at, piece).flip();
+            try {
+                while (out.hasRemaining()) {
+                    if (channel.write(out) > 0) {
+                        progress.run();
+                    }
+                }
+            } finally {
+                zero(out, piece);
+            }
+            at += piece;
+        }
+    }
+
+    private static final byte[] ZEROS = new byte[4 << 10];
+
+    /** Zeroes {@code out}'s first {@code length} bytes. */
+    private static void zero(ByteBuffer out, int length) {
+        for (int at = 0; at < length; at += ZEROS.length) {
+            out.put(at, ZEROS, 0, Math.min(ZEROS.length, length - at));
         }
     }
 

@@ -21,3 +21,10 @@
 - Cold opens on untrusted devices always hit the desk VM.
 - Two devices arranging at once resolve last-writer-wins; a rare lost arrangement is possible.
 - Alternatives rejected: layout on the Personal desk VM (fails while it sleeps); always caching in the browser (leaks on shared machines); Redux Toolkit (heavier); blank badges for sleeping desks (hides real activity).
+
+## Addendum, 2026-11-12: the layout's mirror goes on every signed-out state, and is kept per account (ISS-67)
+The layout doc's mirror in localStorage is the account's, not the device's, so it doesn't outlive the session it was written under.
+- **What the mirror is:** `ma.layout.v2` (and `ma.layout.v1` from before it), `ma.layout.sync.v1` (the version, ETag and desks not yet on Platform), the document's preferences mirrored for a reload or the first frame (`ma.free.prefs.v1`, `ma.setup.prefs.v1`, `ma.prefs.background`), and `ma.layout.owner.v1`, the token's `sub`. One copy for all of the member's desks, whatever the scope. `LAYOUT_MIRROR_KEYS` in `web/src/state/layoutStore.ts` lists them.
+- **Wiped on every signed-out state:** Sign out and Sign out everywhere (after their last words save the layout), `/signed-out`, a start with nobody signed in, a failed `/auth/callback`, a dead session either way, a 401 a refresh can't mend, a refused account, and another tab's sign-out or refused refresh (the token's BroadcastChannel). A page that has signed out writes none of it again, and none of it is written while no refresh token is kept in the browser.
+- **Per account:** a sign-in as anyone else wipes another account's copy from storage and from the tab's memory. A copy with no owner, from a build before this, is the first account's.
+- **Consequence:** a dead session's unsaved arrangement no longer waits through the trip to sign in; Platform's document stands. Device view state (camera, scope, active desk, window rects) is still per device and stays.

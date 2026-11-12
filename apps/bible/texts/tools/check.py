@@ -270,9 +270,31 @@ def check_code(texts, code, plain):
             chk.err(code + ".tsv", "%s chapters are not 1 to n" % b)
     stats["chapters"] = sum(len(c) for c in chapters.values())
     stats["books"] = len(chapters)
+    check_notice(chk, base)
     if plain is not None:
         check_plain(chk, texts_by_key, plain, book_lines)
     return chk, stats, verses
+
+
+def check_notice(chk, base):
+    """STATEMENT.txt, SOURCE.md and NOTICE.txt are there, and every paragraph of NOTICE.txt (what the app shows) is
+    word for word in STATEMENT.txt."""
+    for name in ("STATEMENT.txt", "SOURCE.md", "NOTICE.txt"):
+        if not os.path.isfile(os.path.join(base, name)):
+            chk.err(name, "is missing")
+    path = os.path.join(base, "NOTICE.txt")
+    if not os.path.isfile(path):
+        return
+    lines = read_lines(chk, path)
+    notice = "\n".join(lines)
+    with open(os.path.join(base, "STATEMENT.txt"), encoding="utf-8") as f:
+        statement = f.read()
+    paragraphs = notice.split("\n\n")
+    for i, para in enumerate(paragraphs, 1):
+        if not para or "\n" in para or para != para.strip():
+            chk.err("NOTICE.txt", "paragraph %d is not one line between single blank lines" % i)
+        elif para not in statement:
+            chk.err("NOTICE.txt", "paragraph %d is not word for word in STATEMENT.txt" % i)
 
 
 def check_plain(chk, texts_by_key, path, book_lines):

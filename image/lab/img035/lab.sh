@@ -17,7 +17,7 @@ set -uo pipefail
 export AWS_DEFAULT_REGION=us-east-1 AWS_PAGER=""
 AMI=${LAB_AMI:-}   # default: ma-desk-0.3.4, looked up by name at up
 TYPE=${LAB_TYPE:-t4g.medium}
-OWNER=syseng-img035
+OWNER=${LAB_OWNER:-syseng-img035}
 ST=${LAB_STATE:-$HOME/work/img035/lab}
 SSH_OPTS=(-o StrictHostKeyChecking=no -o UserKnownHostsFile=/dev/null -o LogLevel=ERROR -o ConnectTimeout=8 -o ServerAliveInterval=15)
 log() { echo "[$(date -u +%H:%M:%S)] $*" >&2; }

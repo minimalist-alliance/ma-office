@@ -2,6 +2,7 @@
 
 **Status:** Proposed (pending the owner's approval of design v1.1)
 **Date:** 2026-11-04
+**Amended (ISSUE-64, docs only):** 24 hours is the default, not the rule for every desk. An Alliance desk stops after 20 idle minutes and a free desk after 30 by default, the free tier's setting (`ma-platform` ADRs 0097, 0111), and "idle" means no open session: an open tab holds a session until it has been hidden 60 minutes or untouched 2 hours (free and Alliance desks, ISS-64b) or 24 hours (any other) (`web/src/desk/idle.ts`). Pre-warm is not built. Design section 10.5 has the corrected rule.
 
 ## Context
 - The owner (2026-11-04, verbatim): "We should not be shutting down desks that are idle, unless they have been inactive for more than 24 hours." Unattended agent work counts as activity, and a cold start may be slower if it shows a clear waking state.

@@ -70,6 +70,10 @@ def shares(k):
         "desk-notebook": ("/run/desk-notebook", "notebook", "desk", 0o2750),
         "desk-audio": ("/run/desk-audio", "desk-snd", "desk-audio", 0o750),
         "desk-ctl": ("/run/desk-ctl", "stream", "stream", 0o700),   # desk-stream's desk-svc listens; the desk's root asks
+        # Links out (desk image 0.3.5, desk-runtime.md section 8.11): the template's tmpfiles line, d /run/desk-links 2750 desk kiosk,
+        # which no systemd-tmpfiles runs in a slot. deskd binds links.sock here (its group kiosk by the setgid bit); Chromium's
+        # xdg-open stand-in, as kiosk in the desk, connects
+        "desk-links": ("/run/desk-links", "desk", "kiosk", 0o2750),
         "x11": ("/tmp/.X11-unix", 0, 0, 0o1777),
     }
 

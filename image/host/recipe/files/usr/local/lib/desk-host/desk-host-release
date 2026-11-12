@@ -131,8 +131,8 @@ class HashingReader:
         return self.h.hexdigest()
 
 
-def write_member(src, path, size, mode, pace):
-    """A regular file written in 1 MiB pieces, paced, never through a link."""
+def write_member(src, path, size, mode, pace, mtime=None):
+    """A regular file written in 1 MiB pieces, paced, never through a link; with its member's mtime when given."""
     fd = os.open(path, os.O_WRONLY | os.O_CREAT | os.O_EXCL | os.O_NOFOLLOW | os.O_CLOEXEC, 0o600)
     try:
         left = size
@@ -144,8 +144,18 @@ def write_member(src, path, size, mode, pace):
             left -= len(b)
             pace.wrote(len(b))
         os.fchmod(fd, mode)
+        if mtime is not None:
+            os.utime(fd, (mtime, mtime))
     finally:
         os.close(fd)
+
+
+# Every file and directory keeps its member's mtime, as tarfile's extractall did before the streamed unpack (the 0.1.11 line still
+# does): deskd's and desk-agent's AppCDS archives (/app/<name>.jsa) record each app jar's size and mtime when they're dumped, and the
+# JVM (-Xshare:auto, its cds log off) drops the archive without a word when one differs. Host images 0.1.12 to 0.1.15 wrote every
+# file at its unpack time, so both JVMs started without their archives: 2,400 to 2,700 more reads from the slot store under the slot's
+# io.max, 0.5 to 0.6 s more CPU each, and a cold wake's hello 7.4 s later on a standard desk, 12.3 s on a free one
+# (docs/sub-status/host-up-norecord.md). tree.sha256 has no times in it, so a release's hash is the same either way.
 
 
 def stream_files(tf, dest, pace, name, stage=None):
@@ -184,9 +194,9 @@ def stream_files(tf, dest, pace, name, stage=None):
         if m.isdir():
             if not os.path.isdir(t):
                 os.mkdir(t, 0o700)
-            dirs.append((t, m.mode & 0o7777))
+            dirs.append((t, m.mode & 0o7777, m.mtime))
         elif m.isfile():
-            write_member(tf.extractfile(m), t, m.size, m.mode & 0o7777, pace)
+            write_member(tf.extractfile(m), t, m.size, m.mode & 0o7777, pace, m.mtime)
         elif m.issym():
             os.symlink(m.linkname, t)
         elif m.islnk():
@@ -194,9 +204,15 @@ def stream_files(tf, dest, pace, name, stage=None):
             if src is None or not os.path.lexists(src):
                 die(f"{name}: {m.name} links to {m.linkname}, outside the root or missing")
             os.link(src, t, follow_symlinks=False)
-    for t, mode in reversed(dirs):
-        os.chmod(t, mode)
+    set_dirs(dirs)
     pace.flush()
+
+
+def set_dirs(dirs):
+    """Each directory a layer (or the artifact) named: its mode, then its mtime, deepest first, once nothing more is written in it."""
+    for t, mode, mtime in reversed(dirs):
+        os.chmod(t, mode)
+        os.utime(t, (mtime, mtime), follow_symlinks=False)
 
 
 def whiteouts(fileobj, rootfs, name):
@@ -295,9 +311,9 @@ def stream_layer(lt, rootfs, pace, name):
         if m.isdir():
             if not os.path.isdir(t):
                 os.mkdir(t, 0o700)
-            dirs.append((t, m.mode & 0o7777))
+            dirs.append((t, m.mode & 0o7777, m.mtime))
         elif m.isfile():
-            write_member(lt.extractfile(m), t, m.size, m.mode & 0o7777, pace)
+            write_member(lt.extractfile(m), t, m.size, m.mode & 0o7777, pace, m.mtime)
         elif m.issym():
             os.symlink(m.linkname, t)
         elif m.islnk():
@@ -307,8 +323,7 @@ def stream_layer(lt, rootfs, pace, name):
             if os.path.lexists(t):
                 remove(t)
             os.link(src, t, follow_symlinks=False)
-    for t, mode in reversed(dirs):
-        os.chmod(t, mode)
+    set_dirs(dirs)
     pace.flush()
 
 

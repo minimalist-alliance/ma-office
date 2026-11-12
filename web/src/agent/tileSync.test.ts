@@ -19,6 +19,20 @@ const { openWindow, useWindowStore } = await import('../state/windowStore');
 const { setCurrentBand } = await import('../platform/age');
 const { noteAgents, useRosterStore, dropRoster, agentAppName, glyphOf } = await import('./roster');
 const { startAgentTiles } = await import('./tileSync');
+// The look's drawing, loaded here once so its first transform isn't timed inside a test: in a full run on a loaded box, that
+// alone took longer than the 1 s `vi.waitFor` gave it. `roster.ts` still asks for it itself, and `lookReady` flips only then.
+await import('./lookChunk');
+
+/** When the roster's state says so: the store's own change, with no deadline of its own. */
+const rosterSays = (ok: (s: ReturnType<typeof useRosterStore.getState>) => boolean): Promise<void> =>
+  new Promise((resolve) => {
+    if (ok(useRosterStore.getState())) return resolve();
+    const off = useRosterStore.subscribe((s) => {
+      if (!ok(s)) return;
+      off();
+      resolve();
+    });
+  });
 
 const agent = (id: string, over: Partial<Agent> = {}): Agent => ({ id, name: id, role: id === 'manager' ? 'manager' : 'staff', lead: id === 'manager', status: 'online', binding: null, badgeHidden: false, badgeNotice: false, unseen: 0, look: { icon: 'spark', tone: 'graphite', png: null }, ...over });
 const apps = (deskId = 'd1'): string[] => useLayoutStore.getState().desks[deskId]!.items.map((i) => i.app);
@@ -42,8 +56,10 @@ describe('agent tiles follow agent.state', () => {
     expect(apps('d2')).toEqual(['chat', 'notebook', 'browser', 'agent']);
     expect(quiet).toEqual([true]);
     expect(agentAppName('agent:ag-scout000001', 'd1')).toBe('Scout');
-    // The look's drawing is its own chunk: blank until it's here, then the tile's own.
-    await vi.waitFor(() => expect(useRosterStore.getState().lookReady).toBe(true));
+    // The look's drawing is its own chunk: blank until it's here, then the tile's own. It lands when its import resolves, which
+    // no clock promises, so this waits for `lookReady` itself.
+    expect(glyphOf('d1', 'agent:ag-scout000001')).toBe('look:');
+    await rosterSays((s) => s.lookReady);
     expect(glyphOf('d1', 'agent:ag-scout000001')).toBe('look:compass:teal:');
     expect(glyphOf('d2', 'agent:ag-gone')).toBe('look:nodes:graphite:');
 

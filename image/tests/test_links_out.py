@@ -115,6 +115,17 @@ class StandIn(unittest.TestCase):
             with self.subTest(args=args):
                 self.assertEqual(self.run_it(*args).returncode, 1)
 
+    def test_a_control_byte_is_not_a_url_and_never_reaches_deskd(self):
+        # Security's image-035 Low 2: any byte below 0x20 or DEL, not only CR and LF. A NUL can't be in an argument at all.
+        t = self.serve(b"ok\n")
+        for url in ("tel:1\r", "tel:1\t2", "tel:1\x1b[2J", "tel:1\x0b", "tel:1\x7f", "tel:\x01"):
+            with self.subTest(url=url):
+                self.assertEqual(self.run_it(url).returncode, 1)
+        self.assertEqual(self.got, [], "nothing was sent to deskd")
+        self.assertEqual(self.run_it("tel:+15550100").returncode, 0, "a clean URL after them still goes")
+        t.join(5)
+        self.assertEqual(self.got, [b"open tel:+15550100\n"])
+
 
 if __name__ == "__main__":
     unittest.main(verbosity=1)

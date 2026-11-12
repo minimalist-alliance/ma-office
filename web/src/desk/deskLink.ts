@@ -3,6 +3,7 @@
 // gateway. Nothing outside `src/desk/` may depend on how a link is carried.
 import type { A2aPage, Agent, AgentCaps, AttachCapsView, AuditPage, KeyMeta, LimitsView, Message, ModelInfo, Proposal, Provider, ThreadSnapshot, Timer, TimerList, WorkspaceFile, WorkspaceView } from '../../agent/src/client/types';
 import type { ActivityRow, NotebookRec, PageRec, SearchHit, TabRec, VersionMeta } from '../../notebook/src/model/types.ts';
+import type { TrafficStop } from './trafficStop';
 import { guildAccess } from '../guild/access';
 import type { GuildHello, GuildSettings, GuildUsage } from '../guild/api';
 
@@ -166,6 +167,17 @@ export interface DeskRpc {
   'browser.minified.site.set': MinifiedSite;
   'browser.minified.sites.list': { sites: MinifiedSite[] };
   'browser.minified.sites.clear': Record<string, never>;
+  // Site sign-ins (#11, deskd API.md section 10 "Signing in"). `browser/extensions/signIns.ts` reads each reply field by
+  // field, so these stay loose. A passwords file's bytes go on `bulk` between `begin` and `finish`, and nowhere else.
+  'browser.extensions.list': { extensions?: unknown };
+  'browser.extension.open': { tabId?: string; page?: string };
+  'browser.extension.close': { closed?: number };
+  'browser.import.begin': { uploadId: string; transferId: number; window: number; size: number };
+  'browser.import.finish': { kind?: string; found?: number; added?: number; alreadySaved?: number; refused?: number };
+  'browser.import.abort': Record<string, never>;
+  /** The spec's Stop (section 9.5), asked of the Desk Engineer: numbers only. `not_found` from a deskd without it. */
+  'browser.passwords.count': { saved?: number };
+  'browser.passwords.clear': { deleted?: number };
   /** ADR 0073's per-site ad switch: proposed in section 14, waiting on the System Engineer's blocklist; `not_found` until then. */
   'browser.adblock.site.set': { host?: string; on?: boolean };
   // A Guild Desk (task 48, contract 3.3 in `~/ma-coord/guild-eng.md`). `settings.*` for the Founder or an Officer with
@@ -174,6 +186,24 @@ export interface DeskRpc {
   'guild.settings.get': GuildSettings;
   'guild.settings.set': GuildSettings;
   'guild.usage.get': GuildUsage;
+  // Desk apps (API.md section 19, ADR 0054). The shapes are read leniently where they're used (`deskapps/`): they're the
+  // desk's word, and an app's results are the app's own.
+  'apps.list': Record<string, unknown>;
+  'apps.catalog.get': Record<string, unknown>;
+  'apps.install': { id: string; version: string; state: string };
+  'apps.remove': Record<string, never>;
+  'apps.start': { id: string; state: string; problem: string | null };
+  'apps.stop': { id: string; state: string; problem: string | null };
+  'apps.view.get': Record<string, unknown>;
+  'apps.call': unknown;
+  'apps.mutate': unknown;
+}
+
+/** One event of a topic as deskd sends it (API.md section 5), unflattened, for a relay that must pass `data` on as it came. */
+export interface RawTopicEvent {
+  type: string;
+  seq: number;
+  data: unknown;
 }
 
 /** An entry of the Files tree: `size` is null for a folder, `mtimeMs` whole milliseconds (files.md section 2). Names are untrusted text. */
@@ -473,6 +503,8 @@ export interface DeskContentionMessage {
 }
 
 export type LinkTopics = {
+  /** Installed apps (API.md section 19): `apps.list`'s result, whole, on every change. Read by `deskapps/door.ts`. */
+  apps: { seq: number; type?: string; available?: unknown; reason?: unknown; apps?: unknown };
   'files.changes': FilesChangesMessage;
   summary: SummaryMessage;
   'desk.attention': DeskAttentionMessage;
@@ -496,6 +528,8 @@ export interface LinkDeskState {
   stopAt: string | null;
   /** Why a stop is announced (`data_guard`, ...), when the platform says. */
   stopReason?: string | null;
+  /** A traffic stop's detail, from `desk.stopping` (TD-162). */
+  stopDetail?: TrafficStop | null;
   /**
    * When the link last heard any of this, on this tab's clock (`Date.now()`). A desk list asked for before then is
    * older, and doesn't overrule it (`setDeskList`). Left out, the list always wins.
@@ -623,6 +657,11 @@ export interface DeskLink {
    * asks again. `onRefused` hears a final no, such as `not_found` for a topic this desk doesn't serve yet.
    */
   subscribe<T extends keyof LinkTopics>(topic: T, fn: (msg: LinkTopics[T]) => void, onRefused?: (code: string) => void): () => void;
+  /**
+   * The same, for a topic named at run time, its events as they came: an app's own topic (`app:<id>:<topic>`), which the
+   * app view's bridge passes on untouched (`deskapps/host/bridge.ts`).
+   */
+  subscribeRaw(topic: string, fn: (e: RawTopicEvent) => void, onRefused?: (code: string) => void): () => void;
 }
 
 export class DeskNotConnected extends Error {

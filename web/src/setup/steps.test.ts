@@ -29,8 +29,8 @@ describe('each tier’s steps (the draft’s table)', () => {
   it('every step has a title, a line and a button, none over 20 words', () => {
     for (const [id, w] of Object.entries(STEP_WORDS)) {
       expect(w.title && w.line && w.button).toBeTruthy();
-      // `agent-key`'s line is the free models spec's, verbatim, at 21 (agent-free-key §8, for Sales; STATUS asks which rule wins).
-      expect(w.line.split(/\s+/).length).toBeLessThanOrEqual(id === 'agent-key' ? 21 : 20);
+      // `agent-key`'s line is the free models spec's, verbatim, at 21 (22 after Sales' 2026-11-12 fix; agent-free-key §8, for Sales; STATUS asks which rule wins).
+      expect(w.line.split(/\s+/).length).toBeLessThanOrEqual(id === 'agent-key' ? 22 : 20);
     }
   });
 });

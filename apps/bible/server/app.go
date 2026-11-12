@@ -9,6 +9,8 @@ import (
 	"os"
 	"runtime/debug"
 	"sync"
+	"sync/atomic"
+	"syscall"
 	"time"
 
 	"github.com/minimalist-alliance/ma-desk/apps/bible/internal/store"
@@ -39,25 +41,35 @@ type app struct {
 	sumLast  []byte
 	sumAt    time.Time
 	sumTimer *time.Timer
+
+	guild   atomic.Int32 // -1 until deskd says (desk.info.get), then 1 on a Guild Desk, 0 on a member's own
+	asks    map[uint32]chan wire.Frame
+	nextAsk uint32
 }
 
 type sub struct {
-	topic string
-	seq   uint32
-	conn  *wire.Conn
+	topic  string
+	caller string // whose marks a bible.marks subscription follows
+	seq    uint32
+	conn   *wire.Conn
 }
 
 // run listens on the app socket and serves deskd until ctx ends. listening, if not nil, is closed once it listens.
 func run(ctx context.Context, cfg config, listening chan<- struct{}) error {
 	a := &app{cfg: cfg, lib: text.NewLibrary(cfg.texts, cfg.manifest), ready: make(chan struct{}),
-		subs: map[uint32]*sub{}, inflight: map[uint32]context.CancelFunc{}, sem: make(chan struct{}, maxInFlight)}
+		subs: map[uint32]*sub{}, inflight: map[uint32]context.CancelFunc{}, sem: make(chan struct{}, maxInFlight),
+		asks: map[uint32]chan wire.Frame{}}
+	a.guild.Store(-1)
 	a.sumLast = a.summaryJSON() // what a subscriber sees before the data has loaded: no rows
 	if err := store.CheckFormat(cfg.data); errors.Is(err, store.ErrNewerFormat) {
 		log.Print("the data is from a newer version of the app; it's left as it is and every HELLO gets 4426")
 		a.newer = true
 	}
 	_ = os.Remove(cfg.socket) // a socket left by a killed run
+	// The socket is born 0660, not left to the umask until the chmod: nothing else runs yet to mind the umask's change.
+	old := syscall.Umask(0o117)
 	ln, err := net.Listen("unix", cfg.socket)
+	syscall.Umask(old)
 	if err != nil {
 		return err
 	}
@@ -177,6 +189,7 @@ func (a *app) serve(c *wire.Conn) {
 	}
 	_ = c.Send(wire.Hello, 0, 0, map[string]any{"appApi": wire.AppAPI, "app": map[string]string{"id": a.cfg.id, "version": a.cfg.version}})
 	_ = c.Raw().SetReadDeadline(time.Time{})
+	go a.askDeskInfo(c)
 
 	for {
 		f, err := wire.Read(c.R)
@@ -188,9 +201,22 @@ func (a *app) serve(c *wire.Conn) {
 			_ = c.Write(wire.Frame{Kind: wire.Pong, ID: f.ID})
 		case wire.Req:
 			a.request(c, f)
+		case wire.Res, wire.Err:
+			// The answer to one of the app's own calls to deskd.
+			a.mu.Lock()
+			ch := a.asks[f.ID]
+			delete(a.asks, f.ID)
+			a.mu.Unlock()
+			if ch != nil {
+				ch <- f
+			}
 		case wire.Sub:
 			a.calls.Add(1)
-			go func() { defer a.calls.Done(); a.subscribe(c, f) }()
+			go func() {
+				defer a.calls.Done()
+				defer a.recovered(c, f.ID)
+				a.subscribe(c, f)
+			}()
 		case wire.Unsub:
 			var u struct {
 				SubID uint32 `json:"subId"`
@@ -214,10 +240,46 @@ func (a *app) serve(c *wire.Conn) {
 	}
 }
 
+// askDeskInfo asks deskd what kind of desk this is (desk.info.get), for the widget: on a Guild Desk it shows nothing.
+func (a *app) askDeskInfo(c *wire.Conn) {
+	a.mu.Lock()
+	a.nextAsk++
+	id := a.nextAsk
+	ch := make(chan wire.Frame, 1)
+	a.asks[id] = ch
+	a.mu.Unlock()
+	if err := c.Send(wire.Req, id, 0, map[string]any{"m": "desk.info.get", "p": map[string]any{}}); err != nil {
+		return
+	}
+	select {
+	case f := <-ch:
+		var info struct {
+			GuildDesk *bool `json:"guildDesk"`
+		}
+		if f.Kind == wire.Res && json.Unmarshal(f.Payload, &info) == nil && info.GuildDesk != nil {
+			g := int32(0)
+			if *info.GuildDesk {
+				g = 1
+			}
+			a.guild.Store(g)
+			a.publishSummary()
+		}
+	case <-time.After(10 * time.Second):
+		a.mu.Lock()
+		delete(a.asks, id)
+		a.mu.Unlock()
+	}
+}
+
 func (a *app) request(c *wire.Conn, f wire.Frame) {
-	var r wire.Request
+	var r request
 	if err := json.Unmarshal(f.Payload, &r); err != nil {
 		_ = c.Send(wire.Err, f.ID, 0, wire.Error{Code: "bad_request", Message: "not JSON", Details: map[string]any{"reason": "json"}})
+		return
+	}
+	who, aerr := whose(r.From.Kind, r.From.Caller)
+	if aerr != nil {
+		_ = c.Send(wire.Err, f.ID, 0, aerr.wire())
 		return
 	}
 	select {
@@ -244,7 +306,8 @@ func (a *app) request(c *wire.Conn, f wire.Frame) {
 			<-a.sem
 			a.calls.Done()
 		}()
-		res, aerr := a.dispatch(ctx, &r)
+		defer a.recovered(c, f.ID)
+		res, aerr := a.dispatch(ctx, &r, who)
 		if aerr == nil && ctx.Err() != nil {
 			aerr = ctxErr(ctx)
 		}
@@ -261,6 +324,15 @@ func (a *app) request(c *wire.Conn, f wire.Frame) {
 	}()
 }
 
+// recovered turns a panic in one call into that call's ERR internal, so a bug in one call never ends the link and
+// every member's session with it.
+func (a *app) recovered(c *wire.Conn, id uint32) {
+	if p := recover(); p != nil {
+		log.Printf("a call failed: %v", p)
+		_ = c.Send(wire.Err, id, 0, wire.Error{Code: "internal", Message: "Internal error"})
+	}
+}
+
 func ctxErr(ctx context.Context) *apiErr {
 	if errors.Is(ctx.Err(), context.DeadlineExceeded) {
 		return &apiErr{code: "deadline_exceeded", msg: "ran out of time"}
@@ -269,13 +341,28 @@ func ctxErr(ctx context.Context) *apiErr {
 }
 
 func (a *app) subscribe(c *wire.Conn, f wire.Frame) {
-	var s wire.Subscribe
+	var s struct {
+		Topic string `json:"topic"`
+		From  struct {
+			Kind   string  `json:"kind"`
+			Caller *caller `json:"caller"`
+		} `json:"from"`
+	}
 	if err := json.Unmarshal(f.Payload, &s); err != nil || (s.Topic != "bible.marks" && s.Topic != "app.summary") {
 		_ = c.Send(wire.Err, f.ID, 0, wire.Error{Code: "not_found", Message: "No such topic", Details: map[string]any{"reason": "topic"}})
 		return
 	}
 	var data any
+	who := ""
 	if s.Topic == "bible.marks" {
+		var aerr *apiErr
+		if who, aerr = whose(s.From.Kind, s.From.Caller); aerr == nil && who == store.Desk {
+			aerr = &apiErr{"forbidden", "caller", "a view's topic"}
+		}
+		if aerr != nil {
+			_ = c.Send(wire.Err, f.ID, 0, aerr.wire())
+			return
+		}
 		ctx, cancel := context.WithTimeout(context.Background(), 10*time.Second)
 		st, aerr := a.waitStore(ctx)
 		cancel()
@@ -283,7 +370,7 @@ func (a *app) subscribe(c *wire.Conn, f wire.Frame) {
 			_ = c.Send(wire.Err, f.ID, 0, aerr.wire())
 			return
 		}
-		data = map[string]uint64{"rev": st.Rev()}
+		data = map[string]uint64{"rev": st.Rev(who)}
 	} else {
 		data = json.RawMessage(a.summaryJSON())
 	}
@@ -296,27 +383,29 @@ func (a *app) subscribe(c *wire.Conn, f wire.Frame) {
 	}
 	a.nextSub++
 	id := a.nextSub
-	x := &sub{topic: s.Topic, conn: c, seq: 1}
+	x := &sub{topic: s.Topic, caller: who, conn: c, seq: 1}
 	a.subs[id] = x
 	_ = c.Send(wire.Res, f.ID, 0, map[string]any{"subId": id, "seq": 0})
 	_ = c.Send(wire.Evt, id, x.seq, map[string]any{"type": "snapshot", "data": data})
 }
 
-// publish sends a patch to every subscription of a topic: values, never increments, since deskd may coalesce them.
-func (a *app) publish(topic string, data any) {
+// publish sends a patch to every subscription of a topic for one caller ("" for the widget): values, never
+// increments, since deskd may coalesce them.
+func (a *app) publish(topic, who string, data any) {
 	a.mu.Lock()
 	defer a.mu.Unlock()
 	for id, s := range a.subs {
-		if s.topic == topic && s.conn == a.conn {
+		if s.topic == topic && s.caller == who && s.conn == a.conn {
 			s.seq++
 			_ = s.conn.Send(wire.Evt, id, s.seq, map[string]any{"type": "patch", "data": data})
 		}
 	}
 }
 
-func (a *app) marksChanged() {
+// marksChanged tells that caller's bible.marks subscriptions, and no one else's.
+func (a *app) marksChanged(who string) {
 	if a.st != nil {
-		a.publish("bible.marks", map[string]uint64{"rev": a.st.Rev()})
+		a.publish("bible.marks", who, map[string]uint64{"rev": a.st.Rev(who)})
 	}
 }
 
@@ -341,7 +430,7 @@ func (a *app) publishSummary() {
 		}
 		a.sumMu.Unlock()
 		if !same {
-			a.publish("app.summary", json.RawMessage(b))
+			a.publish("app.summary", "", json.RawMessage(b))
 		}
 	})
 }

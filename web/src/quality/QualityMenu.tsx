@@ -9,8 +9,8 @@
 //
 // Under 720 px of bar the Browser folds it into More (#9's spec, section 7): the same menu, opened from the More button,
 // starts on a page of its own with "Picture quality" and the level at its end, which turns to the quality pages, with
-// Back. Extensions (#11) come into that first page with their own feature.
-import { useCallback, useEffect, useId, useLayoutEffect, useRef, useState, type CSSProperties, type KeyboardEvent as ReactKeyboardEvent } from 'react';
+// Back. Site sign-ins (#11) put the Extensions menu's rows above it and its note under it (`extras`).
+import { useCallback, useEffect, useId, useLayoutEffect, useRef, useState, type CSSProperties, type KeyboardEvent as ReactKeyboardEvent, type ReactNode } from 'react';
 import { openSettings } from '../settings/settingsStore';
 import { accountUrl } from '../platform/clientConfig';
 import { useSession } from '../platform/session';
@@ -24,7 +24,7 @@ import './quality.css';
 const EDGE = 8;
 const WIDTH = 320;
 
-const ITEMS = '[role="menuitemradio"], [role="menuitem"]';
+const ITEMS = '[role="menuitemradio"], [role="menuitem"], [role="menuitemcheckbox"]';
 
 function SlidersIcon() {
   return (
@@ -61,7 +61,17 @@ type Page = 'app' | 'desk' | 'more';
 /** The menu's way in: its own sliders button, or the Browser's More (under 720 px of bar). */
 export type QualityVariant = 'button' | 'more';
 
-function Menu({ app, deskId, variant, notice: showNotice, className }: { app: string; deskId: string; variant: QualityVariant; notice: boolean; className: string }) {
+/**
+ * What More's first page holds besides Picture quality (#11): rows above it (or under it, `after`), and a note under it, if
+ * any. `close(true)` gives focus back.
+ */
+export interface MoreExtras {
+  rows: (close: (giveBack: boolean) => void) => ReactNode;
+  note: ReactNode | null;
+  after?: boolean;
+}
+
+function Menu({ app, deskId, variant, notice: showNotice, className, extras }: { app: string; deskId: string; variant: QualityVariant; notice: boolean; className: string; extras: MoreExtras | null }) {
   const more = variant === 'more';
   const top: Page = more ? 'more' : 'app';
   const { doc, layered, notice } = useStreamQuality();
@@ -124,6 +134,7 @@ function Menu({ app, deskId, variant, notice: showNotice, className }: { app: st
       open === 'last' ? items[items.length - 1]
       : open === 'desk-row' ? (menu.querySelector<HTMLElement>('[data-testid="quality-desk-row"]') ?? items[0])
       : open === 'more-row' ? (menu.querySelector<HTMLElement>('[data-testid="more-quality"]') ?? items[0])
+      : page === 'more' ? items[0] // a pin's check isn't a level
       : (items.find((i) => i.getAttribute('aria-checked') === 'true') ?? items[0]);
     target?.focus({ preventScroll: true });
   }, [open, page]);
@@ -321,14 +332,34 @@ function Menu({ app, deskId, variant, notice: showNotice, className }: { app: st
               }}
             >
               {page === 'more' ? (
-                <button type="button" role="menuitem" className="xm-item" aria-haspopup="menu" aria-label={`Picture quality: ${LEVEL_INFO[level].name}`} data-testid="more-quality" onClick={() => turn('app')}>
-                  <SlidersIcon />
-                  <span>Picture quality</span>
-                  <span className="xm-end">
-                    {LEVEL_INFO[level].name}
-                    <Chevron />
-                  </span>
-                </button>
+                <>
+                  {extras && !extras.after && (
+                    <>
+                      {extras.rows(close)}
+                      <div role="separator" className="qm-sep" />
+                    </>
+                  )}
+                  <button type="button" role="menuitem" className="xm-item" aria-haspopup="menu" aria-label={`Picture quality: ${LEVEL_INFO[level].name}`} data-testid="more-quality" onClick={() => turn('app')}>
+                    <SlidersIcon />
+                    <span>Picture quality</span>
+                    <span className="xm-end">
+                      {LEVEL_INFO[level].name}
+                      <Chevron />
+                    </span>
+                  </button>
+                  {extras?.after && (
+                    <>
+                      <div role="separator" className="qm-sep" />
+                      {extras.rows(close)}
+                    </>
+                  )}
+                  {extras?.note && (
+                    <>
+                      <div role="separator" className="qm-sep" />
+                      <p className="qm-note" role="none">{extras.note}</p>
+                    </>
+                  )}
+                </>
               ) : page === 'desk' ? (
                 <>
                   <button type="button" role="menuitem" className="qm-back" data-testid="quality-back" onClick={() => turn('app')}>
@@ -420,6 +451,6 @@ export function QualityNotice() {
  * Nothing for an app that doesn't stream, or outside a desk, since a choice here is a desk's. `notice: false` leaves the
  * notice out, for a bar that shows `QualityNotice` once itself; `className` goes on the menu's wrapper.
  */
-export function QualityMenu({ app, deskId, variant = 'button', notice = true, className = '' }: { app: string; deskId: string | undefined; variant?: QualityVariant; notice?: boolean; className?: string }) {
-  return streams(app) && deskId !== undefined ? <Menu app={app} deskId={deskId} variant={variant} notice={notice} className={className} /> : null;
+export function QualityMenu({ app, deskId, variant = 'button', notice = true, className = '', extras = null }: { app: string; deskId: string | undefined; variant?: QualityVariant; notice?: boolean; className?: string; extras?: MoreExtras | null }) {
+  return streams(app) && deskId !== undefined ? <Menu app={app} deskId={deskId} variant={variant} notice={notice} className={className} extras={variant === 'more' ? extras : null} /> : null;
 }

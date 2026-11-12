@@ -181,3 +181,79 @@ describe('the member\'s own session length (auth.md 3.3 item 2)', () => {
     expect([local, session].flatMap((x) => [x.getItem('ma-desk-web-signed-in-at'), x.getItem('ma-desk-web-session-choice')])).toEqual([null, null, null, null]);
   });
 });
+
+describe("another tab's token going (ISS-67)", () => {
+  /** What arrives on this tab's channel from another tab. */
+  let hear: (msg: Moved) => void;
+  let gone: boolean[];
+
+  beforeEach(async () => {
+    vi.stubGlobal(
+      'BroadcastChannel',
+      class {
+        onmessage: ((e: { data: Moved }) => void) | null = null;
+        constructor() {
+          hear = (msg) => this.onmessage?.({ data: msg });
+        }
+        postMessage() {}
+      },
+    );
+    vi.resetModules();
+    store = await import('./tokenStore');
+    gone = [];
+    store.onTokenGoneElsewhere(() => gone.push(store.hasStoredToken()));
+  });
+
+  it("a sign-out or a refused refresh elsewhere: told once this tab's own copy has gone, with nothing left here", async () => {
+    session.setItem(KEY, 'a');
+    await store.readRefreshToken(); // a tab listens from its first read
+    hear({ from: 'a', to: null, where: null });
+    expect(session.getItem(KEY)).toBeNull();
+    expect(gone).toEqual([false]);
+  });
+
+  it('a tab reading the token from localStorage, which the other tab cleared', async () => {
+    local.setItem(KEY, 'a');
+    await store.readRefreshToken();
+    local.removeItem(KEY);
+    hear({ from: 'a', to: null, where: null });
+    expect(gone).toEqual([false]);
+  });
+
+  it('a tab with a token of its own is told too, and finds it still there', async () => {
+    session.setItem(KEY, 'mine');
+    await store.readRefreshToken();
+    hear({ from: 'theirs', to: null, where: null });
+    expect(session.getItem(KEY)).toBe('mine');
+    expect(gone).toEqual([true]);
+  });
+
+  it("the token gone is this tab's own, as it read it, even before the other tab's removal from localStorage reaches it (ISS-89)", async () => {
+    const was: boolean[] = [];
+    store.onTokenGoneElsewhere((w) => was.push(w));
+    local.setItem(KEY, 'a');
+    await store.readRefreshToken();
+    // The channel's message beat the storage: this tab still reads 'a' in localStorage.
+    hear({ from: 'a', to: null, where: null });
+    expect(was).toEqual([true]);
+    expect(gone).toEqual([true]); // what `hasStoredToken` says for now, which alone would leave this tab's keys
+  });
+
+  it("another tab's token going, with this tab's own still here, isn't this tab's", async () => {
+    const was: boolean[] = [];
+    store.onTokenGoneElsewhere((w) => was.push(w));
+    session.setItem(KEY, 'mine');
+    await store.readRefreshToken();
+    hear({ from: 'theirs', to: null, where: null });
+    expect(was).toEqual([false]);
+  });
+
+  it('a rotation or a move between the stores says nothing', async () => {
+    session.setItem(KEY, 'a');
+    await store.readRefreshToken();
+    hear({ from: 'a', to: 'b', where: 'session' });
+    hear({ from: 'b', to: 'b', where: 'local' });
+    hear({ from: 'b', to: 'b', where: 'session' });
+    expect(gone).toEqual([]);
+  });
+});

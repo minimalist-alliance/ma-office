@@ -4,7 +4,7 @@ Scripted Playwright runs against the real test desk on staging (`DeskKind=test`)
 
 **A connected desk's label** is `online · …` until its `desk-agent` answers `agent.state`, and then that word (`no key`, `agent online`, and so on). `waitPanel(/online/)` takes any of them as connected, and `rt-lib.mjs` exports that set as `CONNECTED` (`rt-stage1.mjs` step 2 uses it).
 
-**The layout follows the member** (`shell/layoutSync.ts`): with a bundle that has it, every script but `rt-stage2.mjs` reads its account's real document at load and saves what it changes there, so a run on `desk-1` starts from where the last one left the desks, not from a fresh browser's defaults.
+**The layout follows the member** (`shell/layoutSync.ts`): with a bundle that has it, a script reads its account's real document at load and saves what it changes there, so a run on `desk-1` would start from where the last one left the desks. The scripts that depend on where the desks and apps are (`rt-stage1` to `rt-stage4`, `rt-stack`, `rt-desks`, `rt-hidden`, `rt-carousel`) pass `layoutStandIn: createLayoutStandIn()` to `openSession` (`rt-lib.mjs`): an in-memory `GET`/`PUT /v1/me/desk-layout` that starts never saved, so they start from a fresh layout and `desk-1`'s real document is neither read nor written. The run logs its calls and fails if one got past it. The rest (`rt-agent`, `rt-browser`, `rt-notebook*`, `rt-one-live`, `rt-simple`, `rt-sound-hidden`, `rt-watch`, `rt-wake`, `rt-csp-windows`, `rt-ice`) don't depend on the layout and still use the real document.
 
 Run from `web/` with Node 24 and AWS read access to `/ma/staging/test-users/desk-1`. Output and screenshots go to `test-results/real-desk/`. **Look at a screenshot**: passing checks have missed visual breaks.
 

@@ -24,6 +24,7 @@
 #             rolled-back, and its seq is refused from then on
 #   apt-idle  desk-batch tick runs apt only while idle: not with no idle.json, then once with a fresh one, at nice 19 and the
 #             idle I/O class
+#   apt-forced  after 72 h without a run apt runs with no idle.json, forced, at nice 19 in the idle class; not at 71 h
 set -u
 part=${1:-}
 DB=/usr/local/lib/ma/desk-batch
@@ -104,6 +105,13 @@ print("offer " + json.dumps({"manifest": base64.b64encode(m).decode(), "signatur
 P
 }
 # idle_file <seconds idle> [age of at] [owner]: idle.json as deskd would write it
+# plant_first <hours>: apt's firstSeen that many hours before this box's clock. A fixed date would drift past desk-batch's
+# 72 h force line and make "not with no idle.json" fail by design (0.3.6's first run, 2026-11-12, planted 2026-11-09).
+plant_first() {
+  python3 -I -c 'import json, sys, time
+t = time.strftime("%Y-%m-%dT%H:%M:%SZ", time.gmtime(time.time() - float(sys.argv[1]) * 3600))
+json.dump({"format": 1, "apt": {"firstSeen": t}}, open("/var/lib/ma/batch/state.json", "w"))' "$1"
+}
 idle_file() {
   local since=$1 age=${2:-0} owner=${3:-1100}
   python3 -I -c 'import json, sys, time; n = time.time(); u = lambda t: time.strftime("%Y-%m-%dT%H:%M:%SZ", time.gmtime(t))
@@ -258,7 +266,7 @@ rollback)
   rm -rf "/opt/ma/$B"
   ;;
 apt-idle)
-  python3 -I -c 'import json; json.dump({"format": 1, "apt": {"firstSeen": "2026-11-09T00:00:00Z"}}, open("/var/lib/ma/batch/state.json", "w"))'
+  plant_first 1   # first seen an hour ago, well inside desk-batch's 72 h (APT_FORCE_S) after which apt runs without idle
   rm -f $IDLE
   n0=$(grep -c 'Starting unattended upgrades script' /var/log/unattended-upgrades/unattended-upgrades.log 2>/dev/null)
   $DB tick 2>/dev/null
@@ -275,6 +283,24 @@ apt-idle)
   [ "$n1" -gt "${n0:-0}" ] || bad "unattended-upgrade didn't log a run"
   grep -q '^ *19 idle$' "$W/prio" 2>/dev/null || bad "priority: $(cat "$W/prio" 2>/dev/null)"
   ;;
-*) echo "usage: verify-batch.sh install|apt|closed|socket|idle|prepare|rollback|apt-idle" >&2; exit 2 ;;
+apt-forced)
+  # desk-batch forces apt after 72 h without a run, idle or not (APT_FORCE_S): 71 h doesn't, 73 h does, at nice 19 in the idle class.
+  plant_first 71; rm -f $IDLE
+  $DB tick 2>/dev/null
+  [ "$(st 'd["apt"].get("lastAttempt")')" = None ] || bad "apt ran at 71 h with no idle.json: $(st 'd["apt"]')"
+  plant_first 73
+  n0=$(grep -c 'Starting unattended upgrades script' /var/log/unattended-upgrades/unattended-upgrades.log 2>/dev/null)
+  ( while :; do p=$(pgrep -f '^/usr/bin/python3 /usr/bin/unattended-upgrade$' | head -1); [ -n "$p" ] && { echo "$(ps -o ni= -p $p) $(ionice -p $p)" > "$W/prio"; break; }; sleep 0.2; done ) &
+  watcher=$!
+  $DB tick 2>/dev/null
+  kill $watcher 2>/dev/null
+  n1=$(grep -c 'Starting unattended upgrades script' /var/log/unattended-upgrades/unattended-upgrades.log 2>/dev/null)
+  echo "apt: $(st 'd["apt"]'), unattended-upgrade runs logged $n0 -> $n1, its priority: $(cat "$W/prio" 2>/dev/null)"
+  [ "$(st 'd["apt"]["lastResult"]')" = ok ] || bad "apt didn't run at 73 h: $(st 'd["apt"]')"
+  [ "$(st 'd["apt"]["forced"]')" = True ] || bad "apt ran but not as forced: $(st 'd["apt"]')"
+  [ "$n1" -gt "${n0:-0}" ] || bad "unattended-upgrade didn't log a run"
+  grep -q '^ *19 idle$' "$W/prio" 2>/dev/null || bad "priority: $(cat "$W/prio" 2>/dev/null)"
+  ;;
+*) echo "usage: verify-batch.sh install|apt|closed|socket|idle|prepare|rollback|apt-idle|apt-forced" >&2; exit 2 ;;
 esac
 echo "ran to the end"

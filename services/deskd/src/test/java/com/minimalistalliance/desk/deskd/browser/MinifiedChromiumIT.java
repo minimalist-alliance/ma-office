@@ -414,6 +414,11 @@ class MinifiedChromiumIT {
         if (path.equals("/lazy-code")) {
             page.append("<label>Code <input id=otp autocomplete=\"one-time-code\"></label>");
         }
+        if (path.equals("/lazy-shadow")) {
+            // A component the code field is drawn in later, in its open shadow root (the test adds it). Its size is fixed, so
+            // drawing it moves nothing: no scroll anchoring, so the page's only scroll is its own.
+            page.append("<div id=host style=\"height:40px;overflow:hidden\"></div>");
+        }
         for (int i = 0; i < 80; i++) {
             page.append("<p>").append(PROSE.repeat(3)).append("</p>");
         }
@@ -1768,6 +1773,28 @@ class MinifiedChromiumIT {
         assertThat(prescrolls()).containsEntry("skipped_focus", 1L).containsEntry("capped", 1L);
     }
 
+    /**
+     * Security's S-111 Low 3: a code field that comes in a component's open shadow root after the view's look, before the
+     * pre-scroll starts. deskd's view (looked at before) didn't see it, so the page's own check is the gate here: it looks
+     * into shadow roots as the view's scan does, and nothing scrolls.
+     */
+    @Test
+    void thePreScrollSeesASensitiveFieldInAShadowRoot() throws Exception {
+        String tabId = open("a.test", "/lazy-shadow");
+        await().atMost(Duration.ofSeconds(10)).until(() -> Integer.valueOf(137).equals(pageInt(tabId, "scrollY"))
+                && Integer.valueOf(1).equals(pageInt(tabId, "window.__scrolls")));
+        int own = pageInt(tabId, "window.__scrolls");
+        assertThat(mdoc(tabId)).doesNotContainEntry("sensitive", true);
+        // At once, well inside PRESCROLL_AFTER, and with no look after it: deskd's own sensitive signal stays false.
+        assertThat(pageInt(tabId, "(() => { const r = document.getElementById('host').attachShadow({ mode: 'open' });"
+                + " r.innerHTML = '<label>Code <input autocomplete=\"one-time-code\"></label>'; return 1; })()")).isEqualTo(1);
+        await().atMost(Duration.ofSeconds(10)).untilAsserted(() ->
+                assertThat(rig.module.minified().lastPrescroll(tabId).get("outcome")).isEqualTo("skipped_sensitive"));
+        assertThat(pageInt(tabId, "window.__scrolls")).isEqualTo(own);
+        assertThat(pageInt(tabId, "scrollY")).isEqualTo(137);
+        assertThat(pageInt(tabId, "window.__pressed")).isZero();
+    }
+
     /** The member acts while the page is being scrolled: it goes back at once, and the action runs. */
     @Test
     void anActionStopsThePreScrollAndRunsOnThePageWhereItWas() throws Exception {
@@ -2275,6 +2302,65 @@ class MinifiedChromiumIT {
         assertThat(reading(Json.object(held, "mdoc"))).contains("Brass desk lamp number 3");
         inPage(tabId, "fill('Copper')");
         await().atMost(Duration.ofSeconds(15)).untilAsserted(() -> assertThat(reading(mdoc(tabId))).contains("Copper desk lamp number 3"));
+    }
+
+    /**
+     * S-111: a view held for a long page gone blank goes, to the real page, as the app moves to another route in the same
+     * document, by the History API or by its fragment alone, long before the hold's cap: never the last route's view.
+     */
+    @Test
+    void aHeldViewGoesWithAnAppsRouteChange() throws Exception {
+        aHeldViewGoesWith("history.pushState({}, '', '/r6/redraw?route=2')");
+    }
+
+    @Test
+    void aHeldViewGoesWithARouteChangeByFragment() throws Exception {
+        aHeldViewGoesWith("location.hash = '#/sent'");
+    }
+
+    private void aHeldViewGoesWith(String routeChange) throws Exception {
+        String tabId = open("a.test", "/r6/redraw");
+        assertThat(reading(mdoc(tabId))).contains("Brass desk lamp number 3");
+        // Watched, so a get answers what deskd holds without a look of its own.
+        assertThat(subscribe("browser.minified:" + tabId)).containsEntry("_kind", "RES");
+        inPage(tabId, "blank()");
+        Thread.sleep(1000);
+        assertThat(get(tabId)).containsEntry("view", "simplified");
+
+        // The hold's cap would end it some 4 s from here: this is the route change's doing.
+        long changed = System.nanoTime();
+        inPage(tabId, routeChange);
+        await().atMost(Duration.ofSeconds(10)).until(() -> !"simplified".equals(get(tabId).get("view")));
+        assertThat(Duration.ofNanos(System.nanoTime() - changed)).isLessThan(Duration.ofMillis(2500));
+        assertThat(get(tabId)).containsEntry("view", "stream");
+    }
+
+    /** S-111: a route change before the page goes blank leaves no view to hold, as that view was of the last route. */
+    @Test
+    void aViewOfTheLastRouteIsNeverHeld() throws Exception {
+        String tabId = open("a.test", "/r6/redraw");
+        assertThat(reading(mdoc(tabId))).contains("Brass desk lamp number 3");
+        inPage(tabId, "history.pushState({}, '', '/r6/redraw?route=2')");
+        inPage(tabId, "blank()");
+        Thread.sleep(1000);
+        Map<String, Object> after = get(tabId);
+        assertThat(after).containsEntry("view", "stream");
+        assertThat(Json.object(after, "fallback")).containsEntry("reason", "low_confidence");
+    }
+
+    /** S-111: a page that stays blank, unchanged, gets the real page once the hold's 5 s are up, with nothing else to say so. */
+    @Test
+    void aHeldViewLastsFiveSecondsAtMost() throws Exception {
+        String tabId = open("a.test", "/r6/redraw");
+        assertThat(reading(mdoc(tabId))).contains("Brass desk lamp number 3");
+        assertThat(subscribe("browser.minified:" + tabId)).containsEntry("_kind", "RES");
+        long blanked = System.nanoTime();
+        inPage(tabId, "blank()");
+        Thread.sleep(1500);
+        assertThat(get(tabId)).containsEntry("view", "simplified");
+        await().atMost(Duration.ofSeconds(15)).until(() -> "stream".equals(get(tabId).get("view")));
+        Duration held = Duration.ofNanos(System.nanoTime() - blanked);
+        assertThat(held).isGreaterThan(Duration.ofSeconds(4)).isLessThan(Duration.ofSeconds(9));
     }
 
     @SuppressWarnings("unchecked")

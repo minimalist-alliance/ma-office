@@ -65,7 +65,8 @@ async function arrive(page: Page, request: APIRequestContext, o: Arrive = {}): P
     const token = `${Date.now()}-${Math.random()}`;
     await page.addInitScript(
       ([key, prefs, t]) => {
-        if (sessionStorage.getItem('setup-spec-mirror') === t) return;
+        // Seeded on the first load that's signed in: a start with nobody signed in wipes the layout's mirror (ISS-67).
+        if (sessionStorage.getItem('setup-spec-mirror') === t || !(location.pathname === '/auth/callback' || localStorage.getItem('ma-desk-web-refresh') || sessionStorage.getItem('ma-desk-web-refresh'))) return;
         sessionStorage.setItem('setup-spec-mirror', t as string);
         localStorage.setItem(key as string, JSON.stringify({ who: 'u-test', prefs }));
       },
@@ -221,7 +222,7 @@ test.describe('the setup circle', () => {
     await page.keyboard.press('Space');
     await expect(head('agent-key', 'Give your Agent an AI key')).toHaveAttribute('aria-expanded', 'true');
     await expect(head('browser', 'Open the Browser')).toHaveAttribute('aria-expanded', 'false');
-    await expect(step(page, 'agent-key').getByText('Try free models with no card, or use a key of your own. Either way, the key stays on your desk.')).toBeVisible();
+    await expect(step(page, 'agent-key').getByText('Try free models with no card, or use a key of your own. Either way, the key is kept on your desk.')).toBeVisible();
     // A skipped step says so, and its Undo names the step.
     await expect(step(page, 'files').getByText('Skipped')).toBeVisible();
     await expect(step(page, 'files').getByRole('button', { name: 'Undo: Put a file in Files' })).toBeVisible();

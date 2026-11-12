@@ -46,7 +46,8 @@ test.beforeEach(async ({ request }) => {
 async function open(page: Page, request: APIRequestContext, ids: string[], doc?: Doc, mirror?: string): Promise<void> {
   if (mirror) {
     await page.addInitScript((d) => {
-      if (localStorage.getItem('test.seeded')) return;
+      // Seeded on the first load that's signed in: a start with nobody signed in wipes the layout's mirror (ISS-67).
+      if (localStorage.getItem('test.seeded') || !(location.pathname === '/auth/callback' || localStorage.getItem('ma-desk-web-refresh') || sessionStorage.getItem('ma-desk-web-refresh'))) return;
       localStorage.setItem('test.seeded', '1');
       localStorage.setItem('ma.layout.v2', d);
     }, mirror);
@@ -627,7 +628,8 @@ test.describe('a browser still at an older default', () => {
     await harness(request, { fleet: fleet([A, B]) });
     const first = await secondBrowser(browser);
     await first.addInitScript((d) => {
-      if (!localStorage.getItem('test.seeded')) localStorage.setItem('ma.layout.v2', d);
+      if (localStorage.getItem('test.seeded') || !(location.pathname === '/auth/callback' || localStorage.getItem('ma-desk-web-refresh') || sessionStorage.getItem('ma-desk-web-refresh'))) return;
+      localStorage.setItem('ma.layout.v2', d);
       localStorage.setItem('test.seeded', '1');
     }, oldDefault);
     await signIn(first);
@@ -637,7 +639,8 @@ test.describe('a browser still at an older default', () => {
 
     const second = await secondBrowser(browser);
     await second.addInitScript((d) => {
-      if (!localStorage.getItem('test.seeded')) localStorage.setItem('ma.layout.v2', d);
+      if (localStorage.getItem('test.seeded') || !(location.pathname === '/auth/callback' || localStorage.getItem('ma-desk-web-refresh') || sessionStorage.getItem('ma-desk-web-refresh'))) return;
+      localStorage.setItem('ma.layout.v2', d);
       localStorage.setItem('test.seeded', '1');
     }, arranged);
     await signIn(second);
@@ -707,7 +710,8 @@ test.describe('whose layout it is', () => {
     await expect.poll(() => saved(request).then((d) => d?.layout?.desks[A]!.y), { timeout: 6_000 }).toBe(40);
   });
 
-  test('a dead session with something unsaved: it stays on record through the trip to sign in, and goes when the same member is back', async ({ page, request }) => {
+  test('a dead session with something unsaved: the trip to sign in takes it with the rest of the mirror, and the same member back gets Platform\'s document', async ({ page, request }) => {
+    // ISS-67: every signed-out state wipes the saved layout's mirror, the record of what hasn't reached Platform included.
     await open(page, request, [A], ONE);
     await harness(request, { layoutFail: { status: 503, method: 'PUT' }, signInHolds: true });
     await keyEdit(page, A, 'Shift+ArrowDown', 1);
@@ -717,16 +721,17 @@ test.describe('whose layout it is', () => {
     await harness(request, { refreshFails: true, desksUnauthorized: true });
     await page.evaluate(() => document.dispatchEvent(new Event('visibilitychange')));
     await expect.poll(async () => new URL(page.url()).pathname !== '/' || await page.getByTestId('sign-in').count() > 0, { timeout: 8_000 }).toBe(true);
-    expect(await syncRecord(page)).toMatchObject({ dirty: [A], member: ME });
-    expect((await mirrorOf(page))!.desks[A]!.y).toBe(40);
+    expect(await syncRecord(page)).toBeNull();
+    expect(await mirrorOf(page)).toBeNull();
     expect((await saved(request))!.version).toBe(1);
 
     await harness(request, { refreshFails: false, desksUnauthorized: false, layoutFail: null, signInHolds: false });
     await signIn(page);
     await canvasPainted(page);
-    await expect.poll(() => saved(request).then((d) => d?.layout?.desks[A]!.y), { timeout: 8_000 }).toBe(40);
-    expect((await saved(request))!.version).toBe(2);
-    expect((await putsOf(request)).at(-1)).toMatchObject({ status: 200, user: ME, ifMatch: '"1"' });
+    await expect.poll(() => proxied(page, A), { timeout: 8_000 }).toMatchObject({ x: 0, y: 0, w: 584, h: 236 });
+    await page.waitForTimeout(2_600);
+    expect((await saved(request))!.version).toBe(1);
+    expect((await putsOf(request)).filter((p) => p.status !== 503)).toEqual([]);
   });
 
   /** Signed out of this browser as far as the app can tell, ready for whoever comes next. */
@@ -836,7 +841,9 @@ test.describe('whose layout it is', () => {
     await page.waitForTimeout(2_600);
     open_();
     await expect.poll(() => syncRecord(page).then((r) => [r?.member, r?.dirty]), { timeout: 4_000 }).toEqual(['u-other', []]);
-    expect(await proxied(page, A)).toMatchObject({ x: 0, y: 40 }); // what the dropped answer said never landed
+    // The last member's arrangement went from this tab with the change of member (ISS-67): the desk the list still shows is
+    // at a new desk's place, not where the last member moved it (0, 40), and what the dropped answer said (5, 5) never landed.
+    expect(await proxied(page, A)).toMatchObject({ x: 0, y: 0, w: 584, h: 236 });
     const seen = await server(request);
     expect(seen.layoutPuts).toEqual([]);
     expect(seen.layoutDocs[ME]!.version).toBe(2);

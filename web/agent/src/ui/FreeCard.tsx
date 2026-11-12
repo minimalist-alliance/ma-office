@@ -201,7 +201,7 @@ export function FreeCard({ client, agent, deskId, deskName, onAdded, onActive, o
       <ul className="ag-free-facts">
         <li>Slower than paid models, with a limited number of requests each day.</li>
         <li>Some chat only: they can’t use tools on your desk.</li>
-        <li>The key is yours, from your OpenRouter account, and comes straight to this desk.</li>
+        <li>The key is yours, from your OpenRouter account, and is kept on this desk.</li>
       </ul>
       <p className="ag-free-privacy" data-testid="free-privacy">
         <Icon name="eye" size={14} />

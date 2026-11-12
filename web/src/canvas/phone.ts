@@ -21,3 +21,11 @@ export const useIsPhone = (): boolean => useMatches(PHONE);
 
 /** A screen with no hover, whose controls show with focus and are bigger for a finger. */
 export const useIsTouch = (): boolean => useMatches(TOUCH);
+
+/**
+ * The bars' short-viewport mode (the accessibility audit's finding 6, the Product Designer's spec): under 400 CSS px high,
+ * at any width, as at 400 % zoom or on a phone on its side, each bar is one 44 px row. The scope switch and the zoom fold
+ * into one menu button each. `app.css` uses the same query ("short viewport").
+ */
+const SHORT = '(max-height: 399.98px)';
+export const useIsShort = (): boolean => useMatches(SHORT);

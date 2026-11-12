@@ -38,7 +38,7 @@ class LookIdsTest {
     void theIconsAreTheAppsIcons() throws IOException {
         List<String> app = ids("icons.ts", Pattern.compile("^\\s*\\{ id: '([a-z][a-z0-9-]*)'", Pattern.MULTILINE));
         assertThat(app).isNotEmpty().doesNotHaveDuplicates();
-        assertThat(TeamTools.ICONS).doesNotHaveDuplicates().containsExactlyInAnyOrderElementsOf(app);
+        assertThat(TeamTools.ICONS).doesNotHaveDuplicates().containsExactlyElementsOf(app);
     }
 
     @Test
@@ -52,14 +52,14 @@ class LookIdsTest {
     void theListsAreTheContractsInItsOrder() {
         assertThat(TeamTools.TONES).containsExactly("graphite", "rose", "clay", "amber", "olive", "green", "teal",
                 "cyan", "blue", "indigo", "violet", "plum");
-        assertThat(TeamTools.ICONS).containsExactly("spark", "compass", "book", "pen", "calendar", "clock", "chart",
+        assertThat(TeamTools.ICONS).containsExactly("nodes", "compass", "book", "pen", "calendar", "clock", "chart",
                 "code", "mail", "person", "search", "leaf", "flask", "document", "music", "camera", "plane", "shield",
                 "wallet", "bulb", "home", "bell", "list", "terminal");
     }
 
     @Test
     void eachRetiredIdIsGoneAndMapsToOneThatIsThere() {
-        assertThat(TeamStore.RETIRED_ICONS).containsOnlyKeys("globe", "chat", "heart", "star", "puzzle", "briefcase");
+        assertThat(TeamStore.RETIRED_ICONS).containsOnlyKeys("globe", "chat", "heart", "star", "puzzle", "briefcase", "spark");
         assertThat(TeamStore.RETIRED_TONES).containsOnlyKeys("moss", "sky");
         assertThat(TeamTools.ICONS).doesNotContainAnyElementsOf(TeamStore.RETIRED_ICONS.keySet())
                 .containsAll(TeamStore.RETIRED_ICONS.values());
@@ -67,12 +67,13 @@ class LookIdsTest {
                 .containsAll(TeamStore.RETIRED_TONES.values());
         assertThat(TeamTools.icon("globe")).isEqualTo("plane");
         assertThat(TeamTools.tone("sky")).isEqualTo("blue");
+        assertThat(TeamTools.icon("spark")).isEqualTo("nodes");
         assertThat(TeamTools.icon("leaf")).isEqualTo("leaf");
     }
 
     @Test
     void everyIdIsOneTheAgentCreateAcceptsAndTheLeadsDefaultsAreAmongThem() {
-        assertThat(TeamTools.ICONS).allMatch(id -> Team.LOOK_ID.matcher(id).matches()).contains("spark");
+        assertThat(TeamTools.ICONS).allMatch(id -> Team.LOOK_ID.matcher(id).matches()).contains("nodes");
         assertThat(TeamTools.TONES).allMatch(id -> Team.LOOK_ID.matcher(id).matches()).contains("graphite");
     }
 }

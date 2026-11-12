@@ -371,6 +371,105 @@ test('a forged callback is refused', async ({ page, request }) => {
   expect(new URL(page.url()).pathname).toBe('/');
 });
 
+// ISS-68 (as `ma-platform`'s Platform app): signing in again over a stored session revokes the refresh token it
+// replaced, once the new one is stored, never the new one, and never in the sign-in's way. auth.test.ts has every case.
+test.describe('signing in again, with a session already stored', () => {
+  type Revoke = 'ok' | 'refused' | 'aborted' | 'hangs';
+  const harnessState = async (request: APIRequestContext) => (await (await request.get('/__harness')).json()) as { log: string[]; revoked: string[]; refreshSent: string[] };
+
+  test.beforeEach(async ({ request }) => {
+    await harness(request, { signInPath: null });
+  });
+
+  /**
+   * Back from managed login over `old`'s session (none for null): the pending sign-in seeded, then the fake authorize,
+   * which sends the browser to /auth/callback with a code. `issued` makes the code exchange hand back that refresh token.
+   */
+  async function signInAgain(page: Page, old: string | null, opts: { revoke?: Revoke; issued?: string } = {}) {
+    await page.addInitScript(([token]) => {
+      if (sessionStorage.getItem('seeded')) return;
+      sessionStorage.setItem('seeded', '1');
+      if (token !== null) localStorage.setItem('ma-desk-web-refresh', token);
+      sessionStorage.setItem('ma.auth.pending', JSON.stringify({ state: 's-again', nonce: 'n-again', verifier: 'v' }));
+    }, [old] as const);
+    if (opts.issued) {
+      const issued = opts.issued;
+      await page.route('**/fake-auth/oauth2/token', async (route) => {
+        if (new URLSearchParams(route.request().postData() ?? '').get('grant_type') !== 'authorization_code') return route.continue();
+        const answer = await route.fetch();
+        await route.fulfill({ response: answer, json: { ...(await answer.json()), refresh_token: issued } });
+      });
+    }
+    /** Each revoke: its token, and what this browser had stored as it arrived. */
+    const revokes: { token: string | null; stored: string | null }[] = [];
+    await page.route('**/fake-auth/oauth2/revoke', async (route) => {
+      revokes.push({ token: new URLSearchParams(route.request().postData() ?? '').get('token'), stored: await storedRefreshToken(page) });
+      if (opts.revoke === 'hangs') return; // never answers
+      if (opts.revoke === 'aborted') return route.abort('internetdisconnected');
+      if (opts.revoke === 'refused') return route.fulfill({ status: 400, json: { error: 'unsupported_token_type' } });
+      return route.continue();
+    });
+    const q = new URLSearchParams({ response_type: 'code', client_id: 'c', redirect_uri: '/auth/callback', state: 's-again', nonce: 'n-again', code_challenge: 'x', code_challenge_method: 'S256' });
+    await page.goto(`/fake-auth/oauth2/authorize?${q.toString()}`);
+    return revokes;
+  }
+
+  test('the old session is revoked once the new one is stored, and only the old one', async ({ page, request }) => {
+    const revokes = await signInAgain(page, 'refresh-old');
+    await expect(page.locator('.ma-shell')).toBeVisible();
+    await expect.poll(() => revokes.length).toBe(1);
+    const now = await storedRefreshToken(page);
+    expect(now).toMatch(/^refresh-\d+$/);
+    expect(revokes).toEqual([{ token: 'refresh-old', stored: now }]);
+    const { log, revoked, refreshSent } = await harnessState(request);
+    expect(refreshSent).toEqual([]); // nothing refreshed with the old token
+    expect(log.indexOf('POST /fake-auth/oauth2/revoke')).toBeGreaterThan(log.indexOf('POST /fake-auth/oauth2/token'));
+    expect(revoked).toEqual(['refresh-old']);
+    // The new session is the one that lasts: a reload refreshes with it, and the harness, like Cognito, would refuse the old one.
+    await page.reload();
+    await expect(page.locator('.ma-shell')).toBeVisible();
+    await expect.poll(async () => (await harnessState(request)).refreshSent).toEqual([now]);
+    expect(revokes).toHaveLength(1);
+  });
+
+  for (const [how, revoke] of [['is refused', 'refused'], ['is cut off', 'aborted'], ['never answers', 'hangs']] as const) {
+    test(`a revoke that ${how} changes nothing: in the office, no error, nothing tried again`, async ({ page }) => {
+      const revokes = await signInAgain(page, 'refresh-old', { revoke });
+      await expect(page.locator('.ma-shell')).toBeVisible();
+      await expect.poll(() => revokes.length).toBe(1);
+      await page.waitForTimeout(800); // past the revoke's answer, or its absence
+      await expect(page.getByTestId('sign-in')).toHaveCount(0);
+      expect(revokes.map((r) => r.token)).toEqual(['refresh-old']);
+      expect(await storedRefreshToken(page)).toMatch(/^refresh-\d+$/);
+    });
+  }
+
+  test('the same token handed back is not revoked', async ({ page }) => {
+    const revokes = await signInAgain(page, 'refresh-old', { issued: 'refresh-old' });
+    await expect(page.locator('.ma-shell')).toBeVisible();
+    await page.waitForTimeout(500);
+    expect(revokes).toEqual([]);
+    expect(await storedRefreshToken(page)).toBe('refresh-old');
+  });
+
+  test('a first sign-in, with nothing stored, revokes nothing', async ({ page }) => {
+    const revokes = await signInAgain(page, null);
+    await expect(page.locator('.ma-shell')).toBeVisible();
+    await page.waitForTimeout(500);
+    expect(revokes).toEqual([]);
+  });
+
+  test('a refused code exchange revokes nothing, and keeps the old token', async ({ page, request }) => {
+    await harness(request, { codeExchangeFails: true });
+    const revokes = await signInAgain(page, 'refresh-old');
+    await expect(page.getByTestId('sign-in')).toContainText("didn't complete");
+    await page.waitForTimeout(500);
+    expect(revokes).toEqual([]);
+    expect((await harnessState(request)).revoked).toEqual([]);
+    expect(await storedRefreshToken(page)).toBe('refresh-old');
+  });
+});
+
 test('sign-out revokes, logs out and lands on the signed-out screen', async ({ page, request }) => {
   await harness(request, { signInPath: null });
   await signIn(page);

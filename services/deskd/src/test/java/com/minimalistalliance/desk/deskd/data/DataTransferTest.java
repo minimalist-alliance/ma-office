@@ -388,6 +388,40 @@ class DataTransferTest {
     }
 
     @Test
+    void aBundledAppsDataGoesButItsRegistryAndCacheNever() throws Exception {
+        byte[] marks = "{\"marks\":[]}".getBytes(StandardCharsets.UTF_8);
+        rig.helper.file("desk", "apps/registry.json", "{\"memberKey\":\"k\"}".getBytes(StandardCharsets.UTF_8));
+        rig.helper.file("desk", "apps/.registry.json.tmp", "{}".getBytes(StandardCharsets.UTF_8));
+        rig.helper.file("desk", "apps/com.example.reader/cache/index.bin", "rebuildable".getBytes(StandardCharsets.UTF_8));
+        rig.helper.file("desk", "apps/com.example.reader/member.key", "{\"key\":\"k\"}".getBytes(StandardCharsets.UTF_8));
+        rig.helper.file("apps", "org.example.tally/member.key", "{\"key\":\"k\"}".getBytes(StandardCharsets.UTF_8));
+        rig.helper.file("apps", "org.example.tally/data/tally.json", "{}".getBytes(StandardCharsets.UTF_8));
+        rig.helper.file("desk", "apps/com.example.reader/data/marks.json", marks);
+        rig.helper.file("desk", "apps/com.example.reader/summary.json", "{}".getBytes(StandardCharsets.UTF_8));
+        rig.helper.file("desk", "settings.json", "{}".getBytes(StandardCharsets.UTF_8));
+        TestClient client = rig.export("cs-1");
+        Map<String, Object> page = rig.call(client, "data.manifest", Map.of("part", "desk"));
+        List<Object> paths = DataRig.list(page.get("entries")).stream().map(e -> (Object) ((Map<?, ?>) e).get("path")).toList();
+        assertThat(paths).contains("apps/com.example.reader/data/marks.json", "apps/com.example.reader/summary.json", "settings.json")
+                .doesNotContain("apps/registry.json", "apps/.registry.json.tmp", "apps/com.example.reader/cache/index.bin",
+                        "apps/com.example.reader/member.key");
+        Map<String, Object> apps = rig.call(client, "data.manifest", Map.of("part", "apps"));
+        List<Object> appPaths = DataRig.list(apps.get("entries")).stream().map(e -> (Object) ((Map<?, ?>) e).get("path")).toList();
+        assertThat(appPaths).contains("org.example.tally/data/tally.json").doesNotContain("org.example.tally/member.key");
+        int asked = rig.helper.requests().size();
+        for (String path : List.of("apps/registry.json", "apps/.registry.json.tmp", "apps/com.example.reader/cache/index.bin",
+                "apps/com.example.reader/member.key")) {
+            assertThat(rig.call(client, "data.read", Map.of("part", "desk", "path", path, "offset", 0))).as(path)
+                    .containsEntry("code", "not_found");
+        }
+        assertThat(rig.call(client, "data.read", Map.of("part", "apps", "path", "org.example.tally/member.key", "offset", 0)))
+                .containsEntry("code", "not_found");
+        assertThat(rig.helper.requests()).as("refused before the helper hears of it").hasSize(asked);
+        long id = startRead(client, "desk", "apps/com.example.reader/data/marks.json", 0);
+        assertThat(DataRig.receive(client, id, 0, rig).bytes()).isEqualTo(marks);
+    }
+
+    @Test
     void twelveTransfersAtOnceOnTheWholeDeskAndNoMore() throws Exception {
         rig.helper.file("files", "big.bin", file(2 * MIB, 11));
         TestClient first = rig.owner("cs-1");

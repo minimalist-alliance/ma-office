@@ -58,12 +58,13 @@ def sign(key, data):
 
 
 def tar_bytes(entries, gz=False):
-    """entries: [(name, kind, data/target, mode)] kind file|dir|sym|link."""
+    """entries: [(name, kind, data/target, mode[, mtime])] kind file|dir|sym|link (mtime 0 unless given)."""
     bio = io.BytesIO()
     with tarfile.open(fileobj=bio, mode="w") as tf:
-        for name, kind, data, mode in entries:
+        for name, kind, data, mode, *mt in entries:
             ti = tarfile.TarInfo(name)
             ti.mode = mode
+            ti.mtime = mt[0] if mt else 0
             if kind == "file":
                 ti.size = len(data)
                 tf.addfile(ti, io.BytesIO(data))
@@ -501,6 +502,27 @@ class Unpack(Base):
         self.assertFalse((rel / "image.tar").exists(), "the image tar never lands on the store")
         self.assertEqual(os.listdir(T0 / "var/dl"), [], "nor stays on the host's root")
         self.assertEqual(BT.link("deskd", "current"), "1.0", "a batch's install moves no link")
+
+    def test_every_file_keeps_its_layers_mtime(self):
+        # AppCDS (deskd.jsa, desk-agent.jsa) records each app jar's size and mtime when it's dumped; the JVM drops the archive, silently,
+        # when one differs. 0.1.12 to 0.1.15 wrote every file at its unpack time (both JVMs then started without their archives, a cold
+        # wake's hello 7.5 to 12 s later): this fails there. A later layer's copy of a file brings its own time; a directory gets its own
+        # once the layer has written into it; the release's own files (the artifact's members) keep theirs too.
+        t0, t1 = 1762000000, 1762900000
+        l1 = tar_bytes([("app", "dir", None, 0o755, t0), ("app/deskd.jar", "file", b"jar" * 100, 0o644, t0 + 1), ("app/lib", "dir", None, 0o755, t0 + 2),
+                        ("app/lib/a.jar", "file", b"a", 0o644, t0 + 3), ("app/deskd.jsa", "file", b"jsa", 0o444, t0 + 4)])
+        l2 = tar_bytes([("app", "dir", None, 0o755, t1), ("app/lib", "dir", None, 0o755, t1 + 2), ("app/lib/a.jar", "file", b"A", 0o644, t1 + 3),
+                        ("app/lib/b.jar", "file", b"b", 0o644, t1 + 5)], gz=True)
+        tgz = self.art / "deskd-3.1.tgz"
+        image_tgz(tgz, [l1, l2], extra_members=[("./notes", "file", b"n", 0o644, t0 + 9)])
+        self.manifest_for("deskd", "3.1", tgz)
+        r = self.release("install", "--manifest", str(T0 / "m.json"), "--signature", str(T0 / "m.sig"), str(tgz))
+        self.assertEqual(r.returncode, 0, r.stderr)
+        rel = T0 / "srv/releases/deskd/3.1"
+        got = {p: int(os.stat(rel / "rootfs" / p).st_mtime) for p in ("app/deskd.jar", "app/deskd.jsa", "app/lib/a.jar", "app/lib/b.jar", "app/lib", "app")}
+        self.assertEqual(got, {"app/deskd.jar": t0 + 1, "app/deskd.jsa": t0 + 4, "app/lib/a.jar": t1 + 3, "app/lib/b.jar": t1 + 5, "app/lib": t1 + 2,
+                               "app": t1})
+        self.assertEqual(int(os.stat(rel / "notes").st_mtime), t0 + 9)
 
     def test_the_whole_read_mutation_gives_the_same_tree(self):
         tgz = self.art / "deskd-3.0.tgz"

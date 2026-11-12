@@ -242,6 +242,61 @@ class GuildPurgesTest {
     }
 
     @Test
+    void appsKeepTheMembersTheRosterListsAndThoseInTheirGraceAndNothingIsTrustedWhileAnyPurgeIsHeld() throws Exception {
+        GuildRoster roster = roster();
+        com.minimalistalliance.desk.deskd.apps.AppMembers members = roster.appMembers();
+        java.util.concurrent.atomic.AtomicInteger changes = new java.util.concurrent.atomic.AtomicInteger();
+        members.onChange(changes::incrementAndGet);
+        assertThat(members.retained()).as("no roster known").isNull();
+        serve(roster, body(1, LEAD, A, B, C, D));
+        assertThat(members.retained()).as("a first roster, with nothing before it to guard a drop against").isNull();
+        serve(roster, body(2, LEAD, A, B, C, D));
+        assertThat(members.retained()).containsExactlyInAnyOrder(LEAD, A, B, C, D);
+        assertThat(changes.get()).isPositive();
+        // D leaves: kept through the grace, as the agent purge waits, then not.
+        serve(roster, body(20, LEAD, A, B, C));
+        assertThat(members.retained()).containsExactlyInAnyOrder(LEAD, A, B, C, D);
+        assertThat(members.nextChangeAtMillis()).isEqualTo(clock.millis() + GRACE.toMillis());
+        clock.advance(GRACE);
+        assertThat(members.retained()).containsExactlyInAnyOrder(LEAD, A, B, C);
+        assertThat(members.nextChangeAtMillis()).isEqualTo(Long.MAX_VALUE);
+        // Most gone at once: held, so no app is told anything until a later sound roster confirms.
+        serve(roster, body(30, LEAD));
+        assertThat(members.retained()).isNull();
+        serve(roster, body(40, LEAD, E));
+        assertThat(members.retained()).containsExactlyInAnyOrder(LEAD, E, A, B, C);
+        clock.advance(GRACE);
+        assertThat(members.retained()).containsExactlyInAnyOrder(LEAD, E);
+        // No Founder, or an entry that can't be read: not trusted.
+        serve(roster, body(50, List.of(entry(LEAD, "member"), entry(E, "member"))));
+        assertThat(members.retained()).isNull();
+        Map<String, Object> noId = entry(A, "member");
+        noId.put("memberId", "not-an-id");
+        serve(roster, body(60, List.of(entry(LEAD, "lead"), entry(E, "member"), noId)));
+        assertThat(members.retained()).isNull();
+    }
+
+    @Test
+    void theRosterKeptFromBeforeARestartIsTrustedAsOneComparedWith() throws Exception {
+        GuildRoster first = roster();
+        serve(first, body(1, LEAD, A));
+        first.stop();
+        GuildRoster after = roster();
+        after.loadKept();
+        assertThat(after.appMembers().retained()).containsExactlyInAnyOrder(LEAD, A);
+    }
+
+    @Test
+    void aClosedGuildsAppsAreToldNothing() throws Exception {
+        GuildRoster roster = roster();
+        serve(roster, body(1, LEAD, A));
+        Map<String, Object> closed = body(2, LEAD, A);
+        closed.put("closed", true);
+        serve(roster, closed);
+        assertThat(roster.appMembers().retained()).isNull();
+    }
+
+    @Test
     void aMemberBackBeforeThePurgeRunsKeepsTheirData() throws Exception {
         GuildRoster roster = roster();
         serve(roster, body(1, LEAD, A, B, C, D));

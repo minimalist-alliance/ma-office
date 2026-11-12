@@ -1,0 +1,781 @@
+{
+  "version": 1,
+  "surface": "office",
+  "_doc": "The AI tester fleet's selector map for the office (ma-platform ADR 0134 addendum; ma-platform tests/fleet-mcp, src/domain/office.ts and office-apps.ts, read it). Every sel is from this app's own markup. A change to an element a key names updates its key here in the same commit. Keys by area, each group's as one block: bible.* and office.* are fleet group G4's (checked by tests/e2e/fleet-map.shell.spec.ts, and the Bible's own keys on its real view by apps/bible/view/tests/fleet-map.bible.spec.ts); apps.*, maia.*, notebook.*, files.* and commons.* are G5's (checked by tests/e2e/fleet-map-apps.shell.spec.ts). The routes office (G4's) and apps (G5's) are both the office at /.",
+  "routes": {
+    "office": {
+      "path": "/",
+      "ready": "office.shell"
+    },
+    "apps": {
+      "path": "/",
+      "ready": "apps.office"
+    }
+  },
+  "els": {
+    "bible.frame": {
+      "sel": "css=[data-app=\"app:com.minimalistalliance.bible\"] [data-testid=\"deskapp-frame\"]",
+      "route": "office",
+      "note": "the Bible's sandboxed view (deskapps/host/AppView.tsx), in its window or its open tile; the bible.* keys below are inside it"
+    },
+    "bible.ready": {
+      "sel": "css=#app[data-state=\"ready\"]",
+      "route": "office",
+      "note": "the view's root once it reads (data-state ready)",
+      "check": false,
+      "reason": "inside the real Bible view (apps/bible/view), which the shell harness's mock desk doesn't serve (src/desk/mockDeskApps.ts has a stand-in); checked in apps/bible/view/tests/fleet-map.bible.spec.ts"
+    },
+    "bible.error": {
+      "sel": "css=#app[data-state=\"error\"]",
+      "route": "office",
+      "note": "the view's root when its app isn't answering",
+      "check": false,
+      "reason": "inside the real Bible view, and only when its service doesn't answer; checked in apps/bible/view/tests/fleet-map.bible.spec.ts"
+    },
+    "bible.column": {
+      "sel": "css=#col",
+      "route": "office",
+      "note": "the reading column; data-at is <translation>.<book>.<chapter>",
+      "check": false,
+      "reason": "inside the real Bible view (apps/bible/view), which the shell harness's mock desk doesn't serve (src/desk/mockDeskApps.ts has a stand-in); checked in apps/bible/view/tests/fleet-map.bible.spec.ts"
+    },
+    "bible.chapter": {
+      "sel": "css=#chHead",
+      "route": "office",
+      "note": "the chapter's heading, such as John 3",
+      "check": false,
+      "reason": "inside the real Bible view (apps/bible/view), which the shell harness's mock desk doesn't serve (src/desk/mockDeskApps.ts has a stand-in); checked in apps/bible/view/tests/fleet-map.bible.spec.ts"
+    },
+    "bible.ref": {
+      "sel": "css=#refBtn",
+      "route": "office",
+      "note": "Go to, in the top bar",
+      "check": false,
+      "reason": "inside the real Bible view; checked in apps/bible/view/tests/fleet-map.bible.spec.ts"
+    },
+    "bible.goto": {
+      "sel": "role=dialog[name=\"Go to\"s]",
+      "route": "office",
+      "note": "Go to's popover",
+      "check": false,
+      "reason": "inside the real Bible view, open only after bible.ref; checked in apps/bible/view/tests/fleet-map.bible.spec.ts"
+    },
+    "bible.goto.field": {
+      "sel": "role=textbox[name=\"Go to\"s]",
+      "route": "office",
+      "note": "the reference field in Go to (Enter goes)",
+      "check": false,
+      "reason": "inside the real Bible view, open only after bible.ref; checked in apps/bible/view/tests/fleet-map.bible.spec.ts"
+    },
+    "bible.goto.error": {
+      "sel": "css=.goto .err",
+      "route": "office",
+      "note": "Go to's line for a reference it can't find",
+      "check": false,
+      "reason": "inside the real Bible view, shown only for a bad reference; checked in apps/bible/view/tests/fleet-map.bible.spec.ts"
+    },
+    "bible.translation": {
+      "sel": "css=#trBtn",
+      "route": "office",
+      "note": "the translation button; its name is Translation, <abbreviation>",
+      "check": false,
+      "reason": "inside the real Bible view; checked in apps/bible/view/tests/fleet-map.bible.spec.ts"
+    },
+    "bible.translations": {
+      "sel": "role=dialog[name=\"Translation\"s]",
+      "route": "office",
+      "note": "the translation menu",
+      "check": false,
+      "reason": "inside the real Bible view, open only after bible.translation; checked in apps/bible/view/tests/fleet-map.bible.spec.ts"
+    },
+    "bible.translation.pick": {
+      "sel": "css=.tpick",
+      "route": "office",
+      "note": "one row per translation (a list); its text is the name, then <abbreviation>, <edition>",
+      "check": false,
+      "reason": "inside the real Bible view, open only after bible.translation; checked in apps/bible/view/tests/fleet-map.bible.spec.ts"
+    },
+    "bible.search.open": {
+      "sel": "css=#searchBtn",
+      "route": "office",
+      "note": "Search, in the top bar",
+      "check": false,
+      "reason": "inside the real Bible view; checked in apps/bible/view/tests/fleet-map.bible.spec.ts"
+    },
+    "bible.search.box": {
+      "sel": "role=searchbox[name=\"Search\"s]",
+      "route": "office",
+      "note": "the search field (Enter searches)",
+      "check": false,
+      "reason": "inside the real Bible view, open only after bible.search.open; checked in apps/bible/view/tests/fleet-map.bible.spec.ts"
+    },
+    "bible.search.results": {
+      "sel": "css=.rpanel .search .results",
+      "route": "office",
+      "note": "where the results go",
+      "check": false,
+      "reason": "inside the real Bible view, open only after bible.search.open; checked in apps/bible/view/tests/fleet-map.bible.spec.ts"
+    },
+    "bible.search.count": {
+      "sel": "css=.rpanel .search .count",
+      "route": "office",
+      "note": "<n> verses in <abbreviation>, once there are hits",
+      "check": false,
+      "reason": "inside the real Bible view, shown only after a search with hits; checked in apps/bible/view/tests/fleet-map.bible.spec.ts"
+    },
+    "bible.search.empty": {
+      "sel": "css=.rpanel .search .empty",
+      "route": "office",
+      "note": "the line for a search with no hits",
+      "check": false,
+      "reason": "inside the real Bible view, shown only after a search with no hits; checked in apps/bible/view/tests/fleet-map.bible.spec.ts"
+    },
+    "bible.search.goref": {
+      "sel": "css=.rpanel .search .goref",
+      "route": "office",
+      "note": "Go to <reference>, when what's searched is a reference",
+      "check": false,
+      "reason": "inside the real Bible view, shown only after a search that reads as a reference; checked in apps/bible/view/tests/fleet-map.bible.spec.ts"
+    },
+    "bible.search.all": {
+      "sel": "role=button[name=\"Search all four translations\"s]",
+      "route": "office",
+      "note": "offered when this translation has no hits",
+      "check": false,
+      "reason": "inside the real Bible view, shown only after a search with no hits; checked in apps/bible/view/tests/fleet-map.bible.spec.ts"
+    },
+    "bible.search.hit": {
+      "sel": "css=.rpanel .search .hit",
+      "route": "office",
+      "note": "one hit (a list)",
+      "check": false,
+      "reason": "inside the real Bible view, shown only after a search with hits; checked in apps/bible/view/tests/fleet-map.bible.spec.ts"
+    },
+    "bible.search.hit.ref": {
+      "sel": "css=.sref",
+      "route": "office",
+      "note": "a hit's reference, such as John 3:16 (inside bible.search.hit)",
+      "check": false,
+      "reason": "inside the real Bible view, shown only after a search with hits; checked in apps/bible/view/tests/fleet-map.bible.spec.ts"
+    },
+    "bible.search.hit.text": {
+      "sel": "css=.htx",
+      "route": "office",
+      "note": "a hit's words (inside bible.search.hit)",
+      "check": false,
+      "reason": "inside the real Bible view, shown only after a search with hits; checked in apps/bible/view/tests/fleet-map.bible.spec.ts"
+    },
+    "bible.verse": {
+      "sel": "css=#col .v",
+      "route": "office",
+      "note": "a verse, or a part of one (a list); its data-v is the verse's number",
+      "check": false,
+      "reason": "inside the real Bible view; checked in apps/bible/view/tests/fleet-map.bible.spec.ts"
+    },
+    "bible.verse.text": {
+      "sel": "css=.vt",
+      "route": "office",
+      "note": "a verse's words (inside bible.verse); a press selects the verse; a highlight adds hl-<color>",
+      "check": false,
+      "reason": "inside the real Bible view; checked in apps/bible/view/tests/fleet-map.bible.spec.ts"
+    },
+    "bible.versebar": {
+      "sel": "role=group[name=\"Verse\"s]",
+      "route": "office",
+      "note": "the selected verse's bar",
+      "check": false,
+      "reason": "inside the real Bible view, shown only with a verse selected; checked in apps/bible/view/tests/fleet-map.bible.spec.ts"
+    },
+    "bible.color": {
+      "sel": "role=radiogroup[name=\"Highlight\"s] >> css=[role=\"radio\"][data-c]:not([data-c=\"\"])",
+      "route": "office",
+      "note": "one highlight color (a list, inside bible.versebar); its data-c is the color",
+      "check": false,
+      "reason": "inside the real Bible view, shown only with a verse selected; checked in apps/bible/view/tests/fleet-map.bible.spec.ts"
+    },
+    "office.shell": {
+      "sel": "css=.ma-shell",
+      "route": "office",
+      "note": "the signed-in office (shell/Shell.tsx; what the office's own specs wait on); the Desks landmark inside it has no height of its own"
+    },
+    "office.notice": {
+      "sel": "css=section.desk-notice[data-testid^=\"desks-\"]",
+      "route": "office",
+      "note": "the office's one notice when there are no desks to show (chrome/CalmScreen.tsx): its text says why"
+    },
+    "office.desk": {
+      "sel": "css=.proxy-layer > div[role=\"group\"] > button.proxy:first-child",
+      "route": "office",
+      "note": "a desk's button (a list, a11y/ProxyLayer.tsx): id proxy-<deskId>, name <Name> desk, <n> apps, <status> (desk/agentStatus.ts); pressing it brings the desk to the front and wakes it; m moves, r resizes, . its menu; its style's left, top, width and height are the desk's in world units"
+    },
+    "office.desk.kind": {
+      "sel": "css=.proxy-layer > div[role=\"group\"] > button.proxy[data-desk][data-kind]:first-child",
+      "route": "office",
+      "note": "each desk's button (the same ones as office.desk) with its id and kind, from the office's own desk list (state/deskStore.ts, DeskInfo): data-desk <deskId> (a Guild Desk's guild-<guildId>); data-kind is one of four values: personal, work, guild, custom (DeskKind)"
+    },
+    "office.tile": {
+      "sel": "css=.proxy-layer button.proxy:not(:first-child):not(.proxy-strip)",
+      "route": "office",
+      "note": "an app's tile on a desk (a list): id proxy-<deskId>:<app>, name <App>[, <problem>][, <n> unread]; style left, top, width and height in world units, the desk's own (office.desk) included; m moves, r resizes, . its menu"
+    },
+    "office.home": {
+      "sel": "role=button[name=\"Your office, show all desks\"s]",
+      "route": "office",
+      "note": "the home mark, a button only while a desk is in front and more than one is in scope (chrome/TopBar.tsx)"
+    },
+    "office.desknav": {
+      "sel": "role=group[name=\"Switch desk\"s] >> css=.desk-nav-label",
+      "route": "office",
+      "note": "the bottom bar's desk switch: the active desk's name, then <i> of <n>; only with more than one desk"
+    },
+    "office.window": {
+      "sel": "css=.ma-window[role=\"dialog\"][data-testid^=\"window-\"]",
+      "route": "office",
+      "note": "an app's window (a list, windows/AppWindow.tsx): data-desk, data-app; a parked one (an unseen desk's) is display none"
+    },
+    "office.window.close": {
+      "sel": "css=.window-head >> role=button[name=/^Close /]",
+      "route": "office",
+      "note": "Close <App>, in a window's head (inside office.window)"
+    },
+    "office.opentile": {
+      "sel": "css=[data-testid=\"open-layer\"] [data-testid^=\"open-tile-\"]",
+      "route": "office",
+      "note": "a tile at the open size that's live (a list, opentile/OpenTileLayer.tsx): data-desk, data-item, data-app"
+    },
+    "office.menu.desk": {
+      "sel": "role=menu[name=\"Desk\"s]",
+      "route": "office",
+      "note": "the desk's menu: . on its button (chrome/DeskMenu.tsx)"
+    },
+    "office.menu.apps": {
+      "sel": "data-testid=desk-menu-apps",
+      "route": "office",
+      "note": "Apps, in the desk's menu, where the desk takes apps"
+    },
+    "office.apps.sheet": {
+      "sel": "data-testid=apps-sheet",
+      "route": "office",
+      "note": "the Apps sheet (deskapps/host/AppsSheet.tsx)"
+    },
+    "office.apps.close": {
+      "sel": "css=.dapp-head >> role=button[name=\"Close\"s]",
+      "route": "office",
+      "note": "the sheet's Close (inside office.apps.sheet)"
+    },
+    "office.apps.empty": {
+      "sel": "data-testid=dapp-empty",
+      "route": "office",
+      "note": "the sheet's one line instead of rows: data-state asleep, connecting, off, failed, loading or none; its text is the sheet's words"
+    },
+    "office.apps.row": {
+      "sel": "css=[data-testid^=\"dapp-row-\"]",
+      "route": "office",
+      "note": "one app (a list, inside office.apps.sheet): data-testid dapp-row-<id>, data-installed yes or no"
+    },
+    "office.apps.add": {
+      "sel": "css=[data-testid^=\"dapp-add-\"]",
+      "route": "office",
+      "note": "Add to desk (inside office.apps.row); Adding… while it goes"
+    },
+    "office.apps.open": {
+      "sel": "css=[data-testid^=\"dapp-open-\"]",
+      "route": "office",
+      "note": "Open, once it's on the desk (inside office.apps.row)"
+    },
+    "office.apps.remove": {
+      "sel": "css=[data-testid^=\"dapp-remove-\"]",
+      "route": "office",
+      "note": "Remove (inside office.apps.row); Removing… while it goes"
+    },
+    "office.apps.line": {
+      "sel": "css=.dapp-line[role=\"status\"]",
+      "route": "office",
+      "note": "a row's line after a refusal (inside office.apps.row)",
+      "check": false,
+      "reason": "shows only after the desk refuses an add or a remove, which the map check doesn't make"
+    },
+    "office.account": {
+      "sel": "role=button[name=\"Account\"s]",
+      "route": "office",
+      "note": "the account button in the top bar (chrome/AccountMenu.tsx)"
+    },
+    "office.account.dialog": {
+      "sel": "role=dialog[name=\"Account\"s]",
+      "route": "office",
+      "note": "the account panel, open after office.account"
+    },
+    "office.theme": {
+      "sel": "role=radiogroup[name=\"Theme\"s]",
+      "route": "office",
+      "note": "the Theme radios (inside office.account.dialog); the chosen one is aria-checked"
+    },
+    "office.theme.system": {
+      "sel": "role=radio[name=\"System\"s]",
+      "route": "office",
+      "note": "inside office.theme"
+    },
+    "office.theme.light": {
+      "sel": "role=radio[name=\"Light\"s]",
+      "route": "office",
+      "note": "inside office.theme"
+    },
+    "office.theme.zen": {
+      "sel": "role=radio[name=\"Zen\"s]",
+      "route": "office",
+      "note": "inside office.theme; data-theme dusk"
+    },
+    "office.theme.dark": {
+      "sel": "role=radio[name=\"Dark\"s]",
+      "route": "office",
+      "note": "inside office.theme"
+    },
+    "office.browser.address": {
+      "sel": "data-testid=browser-address",
+      "route": "office",
+      "note": "the Browser's address field (browser/BrowserBar.tsx, inside its office.window); Enter goes"
+    },
+    "office.browser.video": {
+      "sel": "data-testid=browser-video",
+      "route": "office",
+      "note": "the desk's picture of the page; playing once its videoWidth is over 0"
+    },
+    "office.browser.tab": {
+      "sel": "data-testid=browser-tab",
+      "route": "office",
+      "note": "one tab on the desk (a list); the active one has class active"
+    },
+    "office.browser.tab.title": {
+      "sel": "css=.br-tab-title",
+      "route": "office",
+      "note": "a tab's title button (inside office.browser.tab); aria-current on the active one"
+    },
+    "office.browser.simple": {
+      "sel": "data-testid=browser-simple-on",
+      "route": "office",
+      "note": "Simplified, a radio in the bar (simple/BarSwitch.tsx); aria-checked while the page is simplified"
+    },
+    "office.browser.panel": {
+      "sel": "data-testid=browser-panel",
+      "route": "office",
+      "note": "the panel over the picture while the Browser starts, the desk sleeps or the picture can't show: data-panel says which",
+      "check": false,
+      "reason": "shows only while there's no picture; the harness's mock desk plays at once"
+    },
+    "apps.office": {
+      "sel": "css=.ma-shell",
+      "route": "apps",
+      "note": "the office, once signed in (src/shell/Shell.tsx)"
+    },
+    "apps.desk": {
+      "sel": "css=button.proxy[id^=\"proxy-\"]:not([id*=\":\"])",
+      "route": "apps",
+      "note": "each desk's own button in the canvas's accessible mirror (src/a11y/ProxyLayer.tsx): its id is proxy-<deskId>, a Guild Desk's proxy-guild-<guildId>, and its name '<Name> desk, N apps, <status>'"
+    },
+    "apps.live": {
+      "sel": "data-testid=live-region",
+      "route": "apps",
+      "note": "the office's polite live region, what a screen reader hears: Files says '<folder>, N items' there once a folder has loaded (src/a11y/LiveRegion.tsx)"
+    },
+    "apps.deskGroup": {
+      "sel": "role=group[name=/ desk$/]",
+      "route": "apps",
+      "note": "each desk's group, '<Name> desk', holding its button and its tiles' buttons (ProxyLayer.tsx)",
+      "check": false,
+      "reason": "a wrapper with no box of its own (its buttons are placed absolutely), so never visible itself: the tools find a desk's by its apps.desk button inside, and the map check scopes the tiles to it"
+    },
+    "notebook.tile": {
+      "sel": "role=button[name=/^Notebook/]",
+      "route": "apps",
+      "note": "a desk's Notebook tile, inside its apps.deskGroup"
+    },
+    "notebook.view": {
+      "sel": "css=.ma-window[data-app=\"notebook\"]:not(.parked)",
+      "route": "apps",
+      "note": "the Notebook on screen, in a window or an open tile (src/windows/AppWindow.tsx, LiveWindow.tsx); data-desk is its desk"
+    },
+    "notebook.app": {
+      "sel": "data-testid=notebook",
+      "route": "apps",
+      "note": "the Notebook itself, once its desk answers (web/notebook/src/ui/Notebook.tsx)"
+    },
+    "notebook.panel": {
+      "sel": "data-testid=notebook-panel",
+      "route": "apps",
+      "note": "what's in the way instead of the Notebook: a desk asleep, waking or unreachable (src/notebook/NotebookApp.tsx)",
+      "check": false,
+      "reason": "shows only while the desk can't answer; the harness's desks answer at once"
+    },
+    "notebook.editor": {
+      "sel": "data-testid=note-editor",
+      "route": "apps",
+      "note": "the page's text, ProseMirror's editor; its first line with text is the page's title (web/notebook/src/ui/Editor.tsx)"
+    },
+    "notebook.newPage": {
+      "sel": "data-testid=new-page",
+      "route": "apps",
+      "note": "New page, in the page list (TabView.tsx)"
+    },
+    "notebook.page": {
+      "sel": "css=.nb-pages .nb-page-btn",
+      "route": "apps",
+      "note": "each page in the list; aria-current on the open one, data-page-id its id (TabView.tsx)"
+    },
+    "notebook.page.title": {
+      "sel": "css=.nb-page-title",
+      "route": "apps",
+      "note": "a page's title, inside notebook.page"
+    },
+    "notebook.tab": {
+      "sel": "role=tab",
+      "route": "apps",
+      "note": "each tab of the open notebook, aria-selected on the open one, inside the tablist 'Tabs in <notebook>' (TabView.tsx)"
+    },
+    "notebook.line": {
+      "sel": "data-testid=notebook-line",
+      "route": "apps",
+      "note": "the line under the Notebook when something isn't saved yet or the desk isn't there (NotebookApp.tsx)",
+      "check": false,
+      "reason": "shows only while what was typed hasn't reached the desk"
+    },
+    "notebook.notice": {
+      "sel": "data-testid=notebook-notice",
+      "route": "apps",
+      "note": "a line in the page list saying why something didn't work (a page that couldn't be made, a space the member can't change) (TabView.tsx)",
+      "check": false,
+      "reason": "only after the desk refused something"
+    },
+    "files.tile": {
+      "sel": "role=button[name=/^Files/]",
+      "route": "apps",
+      "note": "a desk's Files tile, inside its apps.deskGroup (shown while client-config's files block is on)"
+    },
+    "files.view": {
+      "sel": "css=.ma-window[data-app=\"files\"]:not(.parked)",
+      "route": "apps",
+      "note": "Files on screen, in a window or an open tile; data-desk is its desk"
+    },
+    "files.body": {
+      "sel": "data-testid=files-body",
+      "route": "apps",
+      "note": "the Files app itself (src/apps/files/FilesBody.tsx)"
+    },
+    "files.unsupported": {
+      "sel": "data-testid=files-unsupported",
+      "route": "apps",
+      "note": "the one line a desk that can't do Files shows",
+      "check": false,
+      "reason": "only on a desk without Files (an older deskd, or a guild's)"
+    },
+    "files.list": {
+      "sel": "data-testid=files-list",
+      "route": "apps",
+      "note": "the folder's listbox 'Files in <folder>' (FileList.tsx)"
+    },
+    "files.empty": {
+      "sel": "data-testid=files-empty",
+      "route": "apps",
+      "note": "the line an empty folder shows instead of the list",
+      "check": false,
+      "reason": "only in an empty folder; the mock desk's top folder has files"
+    },
+    "files.row": {
+      "sel": "data-testid=files-row",
+      "route": "apps",
+      "note": "each row, with data-name and data-type (file or dir)"
+    },
+    "files.row.size": {
+      "sel": "css=.c-size",
+      "route": "apps",
+      "note": "a row's size, empty for a folder"
+    },
+    "files.crumb": {
+      "sel": "css=.files-crumbs li",
+      "route": "apps",
+      "note": "each step of the folder path 'Files / a / b'; the last is the folder open now"
+    },
+    "files.actions": {
+      "sel": "role=group[name=\"Actions\"]",
+      "route": "apps",
+      "note": "the toolbar: Upload files, New folder, then Download, Rename, Move to… and Delete for a selection"
+    },
+    "files.upload": {
+      "sel": "role=button[name=\"Upload files\"]",
+      "route": "apps",
+      "note": "Upload files, which opens the browser's file chooser"
+    },
+    "files.xfer": {
+      "sel": "data-testid=files-xfer",
+      "route": "apps",
+      "note": "each transfer in the tray, data-name its file and data-state where it is (done, failed, rejected or cancelled once over) (Tray.tsx)",
+      "check": false,
+      "reason": "only once something is uploading or downloading"
+    },
+    "files.xfer.words": {
+      "sel": "css=.files-xfer-words",
+      "route": "apps",
+      "note": "what a transfer says, inside files.xfer",
+      "check": false,
+      "reason": "only once something is uploading or downloading"
+    },
+    "files.newFolder": {
+      "sel": "role=button[name=\"New folder\"]",
+      "route": "apps",
+      "note": "New folder, which opens files.nameDialog"
+    },
+    "files.delete": {
+      "sel": "role=button[name=\"Delete\"s]",
+      "route": "apps",
+      "note": "Delete, shown once a row is selected: to the Trash, which keeps it 30 days"
+    },
+    "files.backToFiles": {
+      "sel": "role=button[name=\"Back to files\"]",
+      "route": "apps",
+      "note": "back to the folders from the Trash or a search",
+      "check": false,
+      "reason": "only in the Trash or a search"
+    },
+    "files.nameDialog": {
+      "sel": "data-testid=files-name-dialog",
+      "route": "apps",
+      "note": "the dialog New folder and Rename open (Dialogs.tsx)"
+    },
+    "files.nameDialog.input": {
+      "sel": "role=textbox",
+      "route": "apps",
+      "note": "the name's field, inside files.nameDialog"
+    },
+    "files.nameDialog.submit": {
+      "sel": "css=button[type=\"submit\"]",
+      "route": "apps",
+      "note": "Create (or Rename), inside files.nameDialog"
+    },
+    "files.nameDialog.error": {
+      "sel": "role=alert",
+      "route": "apps",
+      "note": "why a name can't be used, inside files.nameDialog (empty until then)"
+    },
+    "files.notice": {
+      "sel": "data-testid=files-notice",
+      "route": "apps",
+      "note": "a line about what didn't work (an upload refused, a folder to drop into)",
+      "check": false,
+      "reason": "only after something didn't work"
+    },
+    "files.usage": {
+      "sel": "data-testid=files-usage-words",
+      "route": "apps",
+      "note": "how much of the drive is used, '1.4 GB of 25 GB used'"
+    },
+    "maia.widget": {
+      "sel": "data-testid=maia",
+      "route": "apps",
+      "note": "Maia's corner, shown only where client-config has a maia block and her state says enabled (src/maia/MaiaWidget.tsx)"
+    },
+    "maia.launcher": {
+      "sel": "role=button[name=\"Maia, AI assistant\"]",
+      "route": "apps",
+      "note": "her bubble, which opens and hides her panel"
+    },
+    "maia.panel": {
+      "sel": "css=#maia-panel",
+      "route": "apps",
+      "note": "her panel, a dialog titled by maia.title"
+    },
+    "maia.title": {
+      "sel": "css=#maia-title",
+      "route": "apps",
+      "note": "which view the panel shows: 'Maia' (the chat), 'Your chats' or 'What Maia remembers'"
+    },
+    "maia.composer": {
+      "sel": "role=textbox[name=\"Message to Maia\"]",
+      "route": "apps",
+      "note": "the message box; Enter sends"
+    },
+    "maia.send": {
+      "sel": "css=.maia-send",
+      "route": "apps",
+      "note": "Send; aria-disabled=false once she's done answering"
+    },
+    "maia.item": {
+      "sel": "css=.maia-log > .maia-msg, .maia-log > .maia-note",
+      "route": "apps",
+      "note": "each thing in the chat, in order: the member's message (.maia-me), hers (.maia-her) and her notices (.maia-note)"
+    },
+    "maia.mine": {
+      "sel": "css=.maia-me",
+      "route": "apps",
+      "note": "each of the member's messages"
+    },
+    "maia.mine.text": {
+      "sel": "css=.maia-me-text",
+      "route": "apps",
+      "note": "the member's words, inside maia.mine"
+    },
+    "maia.hers": {
+      "sel": "css=.maia-her",
+      "route": "apps",
+      "note": "each of her messages, the one being written included"
+    },
+    "maia.busy": {
+      "sel": "css=.maia-msg[aria-busy=\"true\"]",
+      "route": "apps",
+      "note": "her message while she's still writing it"
+    },
+    "maia.reply": {
+      "sel": "css=.maia-md",
+      "route": "apps",
+      "note": "her words, inside a maia.hers"
+    },
+    "maia.stop": {
+      "sel": "css=.maia-stop",
+      "route": "apps",
+      "note": "why she stopped (a refusal, a limit), inside a maia.hers"
+    },
+    "maia.card": {
+      "sel": "css=.maia-card",
+      "route": "apps",
+      "note": "a suggestion she makes, inside a maia.hers: its name is its title, data-action its kind (src/maia/Card.tsx)"
+    },
+    "maia.note": {
+      "sel": "css=.maia-note",
+      "route": "apps",
+      "note": "a notice in the chat, such as the model changing or free Maia"
+    },
+    "maia.free": {
+      "sel": "data-testid=maia-free",
+      "route": "apps",
+      "note": "'Free Maia until …', above the composer while she answers on her free model",
+      "check": false,
+      "reason": "only past the member's Maia allowance"
+    },
+    "maia.newChat": {
+      "sel": "role=button[name=\"New chat\"]",
+      "route": "apps",
+      "note": "New chat, in the chat view; disabled while the chat is empty or she's answering"
+    },
+    "maia.chatsButton": {
+      "sel": "role=button[name=\"Your chats\"]",
+      "route": "apps",
+      "note": "Your chats, in the chat view"
+    },
+    "maia.back": {
+      "sel": "role=button[name=\"Back to the chat\"]",
+      "route": "apps",
+      "note": "back to the chat, from Your chats or What Maia remembers"
+    },
+    "maia.chat": {
+      "sel": "css=.maia-chat-open",
+      "route": "apps",
+      "note": "each chat in Your chats; aria-current on the one open now"
+    },
+    "maia.chat.title": {
+      "sel": "css=.maia-mem-text",
+      "route": "apps",
+      "note": "a chat's title, inside maia.chat"
+    },
+    "maia.intro": {
+      "sel": "css=.maia-intro",
+      "route": "apps",
+      "note": "'Loading…', or the words Your chats shows when there are none"
+    },
+    "maia.line": {
+      "sel": "css=.maia-panel .maia-line",
+      "route": "apps",
+      "note": "a status line in her panel, such as a chat that couldn't load or a message that couldn't go",
+      "check": false,
+      "reason": "only after something didn't work"
+    },
+    "commons.tile": {
+      "sel": "role=button[name=/^Commons/]",
+      "route": "apps",
+      "note": "a Guild Desk's Commons tile, inside its apps.deskGroup"
+    },
+    "commons.view": {
+      "sel": "css=.ma-window[data-app=\"commons\"]:not(.parked)",
+      "route": "apps",
+      "note": "Commons on screen, in a window or an open tile; data-desk is the Guild Desk's panel, guild-<guildId>"
+    },
+    "commons.app": {
+      "sel": "data-testid=commons-app",
+      "route": "apps",
+      "note": "the room itself, once the Guild Desk answers (src/guild/CommonsBody.tsx)"
+    },
+    "commons.panel": {
+      "sel": "data-testid=commons-panel",
+      "route": "apps",
+      "note": "what's in the way instead of the room: a Guild Desk waking or asleep (src/guild/CommonsWindow.tsx)",
+      "check": false,
+      "reason": "shows only while the Guild Desk can't answer; the harness's is running"
+    },
+    "commons.showChannels": {
+      "sel": "role=button[name=\"Show channels\"]",
+      "route": "apps",
+      "note": "brings the channel list back after Hide channels (apps/commons/web/src/ui/Commons.tsx)",
+      "check": false,
+      "reason": "only after the member hid the channels"
+    },
+    "commons.showChat": {
+      "sel": "role=button[name=\"Show chat\"]",
+      "route": "apps",
+      "note": "brings the chat back after Hide chat",
+      "check": false,
+      "reason": "only after the member hid the chat"
+    },
+    "commons.channel": {
+      "sel": "css=.ma-cm-chan",
+      "route": "apps",
+      "note": "each channel in 'Channels': data-here=1 on the one open, data-unread=1 on one with unread messages (ui/Channels.tsx)"
+    },
+    "commons.channel.name": {
+      "sel": "css=.ma-cm-chan-name",
+      "route": "apps",
+      "note": "a channel's name, inside commons.channel"
+    },
+    "commons.channel.open": {
+      "sel": "css=.ma-cm-chan-btn",
+      "route": "apps",
+      "note": "the button that opens a channel, inside commons.channel"
+    },
+    "commons.chat.title": {
+      "sel": "css=.ma-cm-chat-title",
+      "route": "apps",
+      "note": "the channel the chat is for (ui/Chat.tsx)"
+    },
+    "commons.chat": {
+      "sel": "role=log",
+      "route": "apps",
+      "note": "the channel's chat thread, inside commons.app"
+    },
+    "commons.chat.loaded": {
+      "sel": "css=.ma-cm-chat-start, .ma-cm-chat-older",
+      "route": "apps",
+      "note": "the thread's top: 'This is the start of #<channel>', or Earlier messages; shows once the thread has loaded"
+    },
+    "commons.msg": {
+      "sel": "css=.ma-cm-msg",
+      "route": "apps",
+      "note": "each message; data-pending=1 until the Guild Desk numbers it, data-head=1 where a name shows above it"
+    },
+    "commons.msg.name": {
+      "sel": "css=.ma-cm-msg-name",
+      "route": "apps",
+      "note": "who wrote it, inside a commons.msg that heads a group"
+    },
+    "commons.msg.text": {
+      "sel": "css=.ma-cm-msg-text",
+      "route": "apps",
+      "note": "its words, inside commons.msg"
+    },
+    "commons.msg.time": {
+      "sel": "css=.ma-cm-msg-time",
+      "route": "apps",
+      "note": "when, inside a commons.msg that heads a group: its datetime is the ISO time"
+    },
+    "commons.composer": {
+      "sel": "role=textbox[name=/^Message #/]",
+      "route": "apps",
+      "note": "the message box, 'Message #<channel>'; Enter sends"
+    }
+  }
+}

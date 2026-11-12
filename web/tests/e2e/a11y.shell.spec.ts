@@ -190,10 +190,11 @@ test.describe('the focus ring', () => {
       expect(ring.out).toBeCloseTo(4, 2); // 2 px of gap, then 2 px of ring
       expect(ring.across).toBeCloseTo(8, 1);
     }
-    // A keyboard edit's ring stays dashed and a little heavier.
+    // A keyboard edit's ring stays dashed and a little heavier, on the tile while the edit's row has the keyboard.
+    const tile = page.locator(`[id="${await app.getAttribute('id')}"]`);
     await page.keyboard.press('m');
-    await expect(app).toHaveClass(/\bediting\b/);
-    const editing = await ringOf(app);
+    await expect(tile).toHaveClass(/\bediting\b/);
+    const editing = await ringOf(tile);
     expect(editing.style).toBe('dashed');
     expect(editing.width).toBeCloseTo(3, 2);
     await page.keyboard.press('Escape');

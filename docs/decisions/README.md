@@ -32,7 +32,7 @@ One file per decision: `NNNN-short-title.md`, numbered in order. Never edit an a
 | [0023](0023-desk-data-channel-protocol.md) | Desk data-channel protocol: channels, framing, RPC and subscriptions, backpressure, resume | Proposed. Built: `desk-rtc` and `deskd` (`docs/interfaces/desk-runtime.md` §4) | 2026-11-04 |
 | [0024](0024-guild-host-and-member-sync.md) | Guild host: the leader's Guild Desk hosts guild spaces; member Guild Desks are light replicas synced desk-to-desk | Superseded by 0080 | 2026-11-04 |
 | [0025](0025-guild-desk-sizing.md) | Guild Desk sizing: lighter member class and host tiers by member count (pending benchmark) | Superseded by 0080 | 2026-11-04 |
-| [0026](0026-idle-24-hour-rule.md) | Idle stop: the 24-hour rule, activity signals and wake | Proposed. Built: Platform's sweeper. An Alliance desk stops after 20 idle minutes and a free desk after 30 (Platform's tiers) | 2026-11-04 |
+| [0026](0026-idle-24-hour-rule.md) | Idle stop: the 24-hour rule, activity signals and wake | Proposed. Built: Platform's sweeper. An Alliance desk stops after 20 idle minutes and a free desk after 30 (Platform's tiers). An open tab holds a session until 60 min hidden, or 2 h untouched on free and Alliance desks (24 h otherwise; ISS-64b) | 2026-11-04 |
 | [0027](0027-always-on-cost-envelope.md) | Always-on cost envelope under flat pricing: plan at 730 h, contain CPU surplus on the desk, never throttle | Proposed | 2026-11-04 |
 | [0028](0028-quality-bar-never-sluggish.md) | Quality bar: "never sluggish" budgets, enforced by a perf CI | Proposed. The perf CI isn't built; `e2e/` gates releases to the test desk | 2026-11-04 |
 | [0029](0029-themes-light-dusk-dark.md) | Themes: Light, Dusk and Dark from one semantic token set shared by CSS and Konva | Proposed (amended by 0050: neutral Dusk whites; by 0093: Dusk is Zen). Built | 2026-11-04 |
@@ -59,6 +59,8 @@ One file per decision: `NNNN-short-title.md`, numbered in order. Never edit an a
 | [0050](0050-dusk-neutral-whites.md) | Dusk uses neutral whites, not warm off-white | Accepted for the owner's desk (amended by 0093: Zen's text is warm linen) | 2026-11-05 |
 | [0051](0051-bandwidth-circle-and-streamed-app-pause.md) | The bandwidth circle, and the Browser pausing at a limit | Proposed | 2026-11-06 |
 | [0052](0052-account-settings-modal.md) | Account settings is a full-screen modal over the office, framing the Platform account page beside "Your data" | Accepted (the owner's order) | 2026-11-09 |
+| [0053](0053-open-tiles.md) | Open tiles: an app enlarged on its desk is the live app there | Accepted (the owner's ask; the calls are the UI/UX Engineer's). Amends 0062 and 0064 | 2026-11-11 |
+| [0054](0054-desk-app-host.md) | The desk app host: the Apps sheet, one tap to add, and the sandboxed window | Proposed (the UI/UX Engineer's half of launch row S-97) | 2026-11-11 |
 | [0060](0060-brand-kit.md) | Brand: adopt the owner's brand kit | Accepted (lockups amended by 0061; the mark replaced by 0066) | 2026-11-05 |
 | [0061](0061-full-logo-jost-caps.md) | Full logo: the name in Jost capitals | Accepted (the mark inside it replaced by 0066) | 2026-11-05 |
 | [0062](0062-desk-surface-etched-name-and-cleanup.md) | The desk's surface: etched name, cleanup, and nothing else unless there's a problem | Accepted | 2026-11-05 |
@@ -79,7 +81,7 @@ One file per decision: `NNNN-short-title.md`, numbered in order. Never edit an a
 | [0078](0078-service-releases-on-shared-hosts.md) | Shared-host desks take the same signed service batches as desks of their own: unpacked once into each host's release store, switched live in each slot at idle | Proposed. Built on `sub/host-batches` (lab only; the live switch off until the Security Analyst's read; host 0.1.12, not baked) | 2026-11-11 |
 | [0079](0079-each-desk-has-its-own-chat-address.md) | Each desk has its own chat address | Accepted (the owner, design Q3; its guild half changed by 0080). Not built | 2026-11-11 |
 | [0080](0080-guild-shared-desk.md) | A guild is one shared desk on its own server, up to 200 members | Accepted (supersedes 0024, 0025). Built: the Guild Desk kind (image 0.3.0 on) and `commons-server` (image 0.3.1 on) | 2026-11-07 |
-| [0090](0090-free-tier-desk.md) | The free tier on the desk: Browser time a day, a Files cap, limits that change live | Proposed. Built: in image 0.3.3's `deskd`; Platform's free tier waits for shared hosts | 2026-11-09 |
+| [0090](0090-free-tier-desk.md) | The free tier on the desk: Browser time a day, a Files cap, limits that change live | Proposed. Built: in image 0.3.3's `deskd`; Platform's free tier waits for shared hosts. Amended by ISS-64b (a visible tab lets go after 2 h untouched) | 2026-11-09 |
 | [0091](0091-notebook-colors.md) | Notebook colors: the tabs' six names in the page, labels in the page row | Proposed. Built in the Notebook app | 2026-11-10 |
 | [0092](0092-browser-downloads-and-tab-order.md) | The Browser says when a download starts and ends, and keeps its tab order across a stop and a wake | Proposed. Built on `sub/ls-31-36` | 2026-11-10 |
 | [0093](0093-zen-theme.md) | Dusk becomes Zen: the name, a natural palette, natural desk textures | Accepted (the owner; amends 0029, 0050) | 2026-11-10 |

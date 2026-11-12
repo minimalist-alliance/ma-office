@@ -13,7 +13,10 @@ import { applyDeskProgress, useDeskStore } from '../state/deskStore';
 import { getView, useViewStore } from '../state/viewStore';
 import { holdClose, letClose } from '../shell/closeGuard';
 import { dropRoster, noteAgents } from '../agent/roster';
+import { host as appsHost, noteApps } from '../deskapps/door';
 import { agentsSeen, watchUploads } from '../setup/used';
+import { isLimitedDesk } from './limited';
+import { trafficHold } from './trafficStop';
 import { activityOfAgents, deskSummary } from './agentStatus';
 import { lookedAtDesk, shownDesk } from './attention';
 import { LastSound } from './sound';
@@ -186,6 +189,7 @@ const idle = new IdleRule({
   resume: (id) => links.get(id)?.link?.reopen(),
   deskIds: () => links.keys(),
   media: (id) => links.get(id)?.link?.media(),
+  limited: isLimitedDesk,
 });
 let idleTimer = 0;
 document.addEventListener('visibilitychange', () => idle.setHidden(document.hidden));
@@ -250,9 +254,14 @@ export function useDeskLink(deskId: string): DeskLink | null {
   return links.get(deskId)?.link ?? null;
 }
 
+/** Stopped for its traffic and not yet clear. `stopDetail` is only ever set while a desk is stopping or stopped. */
+const heldForTraffic = (deskId: string): boolean => !!trafficHold(useDeskStore.getState().desks.find((d) => d.id === deskId)?.stopDetail);
+
 /** The member focused this desk or opened one of its apps. The link decides whether that wakes it. */
 export function wakeDesk(deskId: string): void {
   if (sendsNothing(deskId)) return; // they start on their own, or can't be opened
+  // Stopped for its traffic and not yet clear: a start would only be stopped again, so none is sent (TD-162).
+  if (heldForTraffic(deskId)) return;
   if (deskClosed(deskId) === 'membership' || deskClosed(deskId) === 'data_guard') {
     // Never `connect`, which would only say no again: perhaps they've paid, or the owner cleared the data guard, so read the membership.
     void recheckMembership().then((back) => back && links.get(deskId)?.link?.wake());
@@ -349,17 +358,21 @@ function applyDetails(link: DeskLink): void {
   }
 }
 
+/** One desk's link closed and gone, as for a desk the list no longer has. A link still on its way is never kept (`syncLinks`). */
+function dropLink(id: string, entry: { link: DeskLink | null; unsub: () => void }): void {
+  entry.unsub();
+  entry.link?.close();
+  links.delete(id);
+  dropRoster(id);
+  appsHost?.dropApps(id);
+  idle.forget(id);
+  heard.delete(id);
+}
+
 /** Keep one link per given desk: open new ones, close the rest. */
 export async function syncLinks(deskIds: readonly string[]): Promise<void> {
   for (const [id, entry] of links) {
-    if (!deskIds.includes(id)) {
-      entry.unsub();
-      entry.link?.close();
-      links.delete(id);
-      dropRoster(id);
-      idle.forget(id);
-      heard.delete(id);
-    }
+    if (!deskIds.includes(id)) dropLink(id, entry);
   }
   for (const id of wakeOnceLinked) {
     if (!deskIds.includes(id)) wakeOnceLinked.delete(id);
@@ -421,6 +434,8 @@ export async function syncLinks(deskIds: readonly string[]): Promise<void> {
     const offAttention = link.subscribe('desk.attention', (msg) => {
       if (typeof msg.frozen === 'boolean') setAttention(id, msg.seen === true, msg.frozen);
     });
+    // Installed apps (ADR 0054): their tiles' widgets and the desk menu's Apps row. A deskd before API.md section 19 refuses it.
+    const offApps = link.subscribe('apps', (msg) => noteApps(id, msg), () => appsHost?.noteAppsRefused(id));
     links.set(id, {
       link,
       unsub: () => {
@@ -429,6 +444,7 @@ export async function syncLinks(deskIds: readonly string[]): Promise<void> {
         offSummary();
         dropAgents();
         offAttention();
+        offApps();
       },
       dropAgents,
     });
@@ -438,9 +454,28 @@ export async function syncLinks(deskIds: readonly string[]): Promise<void> {
     const wakeAsked = wakeOnceLinked.delete(id);
     if (sendsNothing(id)) continue; // its link waits for the list to say it runs, and an early focus is forgotten
     link.connect();
-    if (wakeAsked) link.wake();
+    if (wakeAsked && !heldForTraffic(id)) link.wake();
     wakeWithOffice(id);
   }
+}
+
+/**
+ * The links of the desks `which` names, closed and gone with what their sessions said here (the panel's link state, summary
+ * and refusal, About, attention), whatever the list says. For a change of account in this tab: a Guild Desk's panel id is the
+ * guild's, the same for every member in it, so a link kept by its id would go on as the last member, on their guild token,
+ * and their words would stay on the panel (`guild/guildStore.ts`). The next `syncLinks` that names it makes a new link.
+ */
+export function forgetLinks(which: (deskId: string) => boolean): void {
+  for (const [id, entry] of links) if (which(id)) dropLink(id, entry);
+  for (const id of wakeOnceLinked) if (which(id)) wakeOnceLinked.delete(id);
+  for (const id of pending.keys()) if (which(id)) pending.delete(id);
+  const others = <T>(desks: Record<string, T>): Record<string, T> => Object.fromEntries(Object.entries(desks).filter(([id]) => !which(id)));
+  // After anything a moving camera holds back, so a word their last session sent can't land after this.
+  whenStill(() => {
+    useLiveStore.setState((s) => ({ desks: others(s.desks) }));
+    useAboutStore.setState((s) => ({ desks: others(s.desks) }));
+    useAttentionStore.setState((s) => ({ desks: others(s.desks) }));
+  });
 }
 
 /** The office is over for this member: signed out, refused, or gone to sign in. Nothing left can reach a desk, so nothing holds the page. */

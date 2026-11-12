@@ -8,6 +8,7 @@ import { isPhone } from '../canvas/phone';
 import { AppGlyph, Icon } from '../chrome/icons';
 import { appDef } from '../apps/registry';
 import { useRosterAgent } from '../agent/roster';
+import { useFree } from '../free/door';
 import { focusProxy } from '../shell/actions';
 import { reducedMotion } from '../lib/util';
 import { useLayoutStore } from '../state/layoutStore';
@@ -57,6 +58,8 @@ export function AppWindow({ win, deskName, active, parked, forceFull }: {
   const def = appDef(win.app, win.deskId);
   const full = forceFull || win.mode === 'full';
   const opened = useRef(false);
+  // A free member's time ring, while this Browser covers the office's (walk L13): nothing for anyone else, so no shift.
+  const FreeRing = useFree((s) => (win.app === 'browser' ? s.WindowRing : undefined));
 
   // Open: a FLIP from the tile. This runs in the same task as the click, so the first animation
   // frame is the next frame (budget B4).
@@ -125,7 +128,7 @@ export function AppWindow({ win, deskName, active, parked, forceFull }: {
   // ----- drag by the title bar
   const onTitlePointerDown = useCallback((e: ReactPointerEvent<HTMLElement>) => {
     const el = ref.current;
-    if (!el || full || e.button !== 0 || (e.target as HTMLElement).closest('button')) return;
+    if (!el || full || e.button !== 0 || (e.target as HTMLElement).closest('button, [data-no-drag]')) return;
     const startX = e.clientX;
     const startY = e.clientY;
     const head = e.currentTarget;
@@ -209,10 +212,14 @@ export function AppWindow({ win, deskName, active, parked, forceFull }: {
         data-testid={`window-${win.app}`}
         data-desk={win.deskId}
         data-app={win.app}
+        // What covers the office's corner, by this name (`free/cover.ts`).
+        data-cover={win.key}
         onPointerDown={() => raiseWindow(win.key)}
         onKeyDown={onKeyDown}
       >
-        <div className="window-head" onPointerDown={onTitlePointerDown} onDoubleClick={() => toggleFull(win.key)}>
+        <div className="window-head" onPointerDown={onTitlePointerDown} onDoubleClick={(e) => {
+          if (!(e.target as HTMLElement).closest('[data-no-drag]')) toggleFull(win.key);
+        }}>
           <button type="button" className="window-back" onClick={close} aria-label={`Back from ${def.name}`}>
             <Icon name="back" />
           </button>
@@ -221,6 +228,7 @@ export function AppWindow({ win, deskName, active, parked, forceFull }: {
             {def.name}
             <span className="window-desk">{deskName}</span>
           </h2>
+          {FreeRing && <FreeRing cover={win.key} />}
           <div className="window-controls">
             <button type="button" className="icon-btn sm hide-narrow" onClick={() => toggleFull(win.key)} aria-label={full ? 'Restore window' : 'Fill the screen'} title={full ? 'Restore' : 'Fill the screen'}>
               <Icon name={full ? 'windowRestore' : 'windowFull'} />

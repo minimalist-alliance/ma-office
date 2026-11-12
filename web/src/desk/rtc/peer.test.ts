@@ -9,6 +9,8 @@ class FakeChannel {
   binaryType = '';
   bufferedAmount = 0;
   readonly sent: Uint8Array[] = [];
+  /** What `send` was handed, as it is now: a real channel copies the bytes at `send`, so the caller may then reuse them. */
+  readonly handed: Uint8Array[] = [];
   onopen: (() => void) | null = null;
   onclose: (() => void) | null = null;
   onmessage: ((e: { data: ArrayBuffer }) => void) | null = null;
@@ -19,7 +21,8 @@ class FakeChannel {
   ) {}
 
   send(d: Uint8Array): void {
-    this.sent.push(d);
+    this.sent.push(d.slice());
+    this.handed.push(d);
   }
 
   /** A frame from the desk. */
@@ -205,6 +208,8 @@ describe('bulk (channel 5): CHUNK in, CREDIT out', () => {
     expect(peer.bulk.send(7, 0, new Uint8Array([1, 2, 3]))).toBe(true);
     const sent = decodeFrame(channel('bulk').sent[0] as Uint8Array<ArrayBuffer>);
     expect([sent.kind, sent.flags, sent.id, sent.seq, [...sent.payload]]).toEqual([Kind.CHUNK, FLAG_BIN, 7, 0, [1, 2, 3]]);
+    // The frame's own copy of the file is zeroed once `send` has taken it (a passwords file's bytes, #11).
+    expect(channel('bulk').handed[0]?.every((b) => b === 0)).toBe(true);
     const heard: [number, unknown][] = [];
     peer.bulk.onCredit = (id, msg) => void heard.push([id, msg]);
     channel('bulk').deliver(encodeJson(Kind.CREDIT, 7, { bytes: 262144, committed: 262144 })[0]!);

@@ -4,8 +4,9 @@
 //
 //	go run ./tools/measure -bin dist/files/bin/bible-app -texts texts [-fill notes|highlights] [-data DIR]
 //
-// -fill fills the store to its cap first, through the socket; -data keeps the data folder, so a second run without
-// -fill measures the same store loaded from disk.
+// -fill fills the store to its cap first, through the socket; -members N fills N members' buckets of a Guild Desk
+// instead of the owner's, each to its cap or until the desk's is reached; -data keeps the data folder, so a second
+// run without -fill measures the same store loaded from disk.
 package main
 
 import (
@@ -28,10 +29,11 @@ import (
 )
 
 type link struct {
-	c    *wire.Conn
-	mu   sync.Mutex
-	next uint32
-	wait map[uint32]chan wire.Frame
+	c     *wire.Conn
+	mu    sync.Mutex
+	next  uint32
+	wait  map[uint32]chan wire.Frame
+	guild bool
 }
 
 func (l *link) read() {
@@ -39,6 +41,10 @@ func (l *link) read() {
 		f, err := wire.Read(l.c.R)
 		if err != nil {
 			return
+		}
+		if f.Kind == wire.Req { // the app's desk.info.get
+			_ = l.c.Send(wire.Res, f.ID, 0, map[string]any{"appApi": "1.0", "deskApi": "1.4", "timeZone": "UTC", "guildDesk": l.guild})
+			continue
 		}
 		l.mu.Lock()
 		ch := l.wait[f.ID]
@@ -50,14 +56,23 @@ func (l *link) read() {
 	}
 }
 
-func (l *link) call(m string, p any) (json.RawMessage, error) {
+var ownerCaller = map[string]any{"kind": "owner"}
+
+func memberCaller(i int) map[string]any {
+	return map[string]any{"kind": "guild_member", "member": fmt.Sprintf("p-member%016d", i), "role": "member", "grants": []string{}, "teen": false}
+}
+
+func (l *link) call(m string, p any) (json.RawMessage, error) { return l.callAs(ownerCaller, m, p) }
+
+func (l *link) callAs(caller map[string]any, m string, p any) (json.RawMessage, error) {
 	l.mu.Lock()
 	l.next++
 	id := l.next
 	ch := make(chan wire.Frame, 1)
 	l.wait[id] = ch
 	l.mu.Unlock()
-	if err := l.c.Send(wire.Req, id, 0, map[string]any{"m": m, "p": p, "deadlineMs": 30000, "idem": fmt.Sprintf("measure-%d", id)}); err != nil {
+	if err := l.c.Send(wire.Req, id, 0, map[string]any{"m": m, "p": p, "deadlineMs": 30000, "idem": fmt.Sprintf("measure-%d", id),
+		"from": map[string]any{"kind": "view", "caller": caller}}); err != nil {
 		return nil, err
 	}
 	f := <-ch
@@ -122,6 +137,7 @@ func main() {
 	runs := flag.Int("runs", 20, "runs per search")
 	fill := flag.String("fill", "", "notes or highlights: fill the store to its cap first")
 	data := flag.String("data", "", "the data folder to use and keep (default: a temporary one)")
+	members := flag.Int("members", 0, "with -fill: fill this many Guild Desk members' data instead of the owner's")
 	flag.Parse()
 	dir, _ := os.MkdirTemp("", "bibm")
 	defer os.RemoveAll(dir)
@@ -141,6 +157,7 @@ func main() {
 	}
 	defer cmd.Process.Kill()
 	p := proc{cmd.Process.Pid}
+	fatal := func(v ...any) { _ = cmd.Process.Kill(); log.Fatal(v...) }
 	var nc net.Conn
 	for {
 		var err error
@@ -148,14 +165,14 @@ func main() {
 			break
 		}
 		if time.Since(t0) > 5*time.Second {
-			log.Fatal("no socket")
+			fatal("no socket")
 		}
 		time.Sleep(time.Millisecond)
 	}
-	l := &link{c: wire.NewConn(nc), wait: map[uint32]chan wire.Frame{}}
+	l := &link{c: wire.NewConn(nc), wait: map[uint32]chan wire.Frame{}, guild: *members > 0}
 	_ = l.c.Send(wire.Hello, 0, 0, map[string]any{"appApi": "1.0", "deskApi": "1.4"})
 	if f, err := wire.Read(l.c.R); err != nil || f.Kind != wire.Hello {
-		log.Fatalf("hello: %v", err)
+		fatal("hello: ", err)
 	}
 	fmt.Printf("HELLO %s after exec\n", ms(time.Since(t0)))
 	go l.read()
@@ -165,34 +182,49 @@ func main() {
 	must := func(m string, prm any) json.RawMessage {
 		b, err := l.call(m, prm)
 		if err != nil {
-			log.Fatal(err)
+			fatal(err)
 		}
 		return b
 	}
 	if *fill != "" {
 		tf := time.Now()
 		puts := 0
-		for i := 0; ; i++ {
-			b := canonIDs[i%len(canonIDs)]
-			p := map[string]any{"mark": map[string]any{"kind": "highlight", "book": b, "chapter": 1 + (i/len(canonIDs))%chapters[b],
-				"verse": 1, "verseEnd": 176, "color": "amber"}}
-			if *fill == "notes" {
-				text := (strconv.Itoa(i) + " " + strings.Repeat("A note written while reading, long. ", 280))[:10000]
-				p = map[string]any{"mark": map[string]any{"kind": "note", "book": b, "chapter": 1, "verse": 1 + i%176, "text": text}}
+		callers := []map[string]any{ownerCaller}
+		if *members > 0 {
+			callers = nil
+			for i := 0; i < *members; i++ {
+				callers = append(callers, memberCaller(i))
 			}
-			if _, err := l.call("bible.mark.put", p); err != nil {
-				if !strings.Contains(err.Error(), `"full"`) {
-					log.Fatal(err)
+		}
+		for ci, caller := range callers {
+			for i := ci * 7919; ; i++ {
+				b := canonIDs[i%len(canonIDs)]
+				p := map[string]any{"mark": map[string]any{"kind": "highlight", "book": b, "chapter": 1 + (i/len(canonIDs))%chapters[b],
+					"verse": 1, "verseEnd": 176, "color": "amber"}}
+				if *fill == "notes" {
+					text := (strconv.Itoa(i) + " " + strings.Repeat("A note written while reading, long. ", 280))[:10000]
+					p = map[string]any{"mark": map[string]any{"kind": "note", "book": b, "chapter": 1, "verse": 1 + i%176, "text": text}}
 				}
-				break
+				if _, err := l.callAs(caller, "bible.mark.put", p); err != nil {
+					if !strings.Contains(err.Error(), `"full"`) {
+						fatal(err)
+					}
+					break
+				}
+				puts++
 			}
-			puts++
 		}
-		var list struct {
-			Total int `json:"total"`
+		total := 0
+		for _, caller := range callers {
+			var list struct {
+				Total int `json:"total"`
+			}
+			b, _ := l.callAs(caller, "bible.marks.list", map[string]any{"limit": 1})
+			_ = json.Unmarshal(b, &list)
+			total += list.Total
 		}
-		_ = json.Unmarshal(must("bible.marks.list", map[string]any{"limit": 1}), &list)
-		fmt.Printf("filled with %s to the cap: %d marks in %d puts, %v; %s\n", *fill, list.Total, puts, time.Since(tf).Round(time.Millisecond), p.mem())
+		fmt.Printf("filled with %s for %d callers to the caps: %d marks in %d puts, %v; %s\n", *fill, len(callers), total, puts,
+			time.Since(tf).Round(time.Millisecond), p.mem())
 	}
 	t1 := time.Now()
 	must("bible.state", map[string]any{})

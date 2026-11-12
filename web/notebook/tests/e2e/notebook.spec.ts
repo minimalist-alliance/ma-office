@@ -1,7 +1,8 @@
 // The demo page in headless Chromium, with the Desk harness's CSP. Each test gets a fresh browser
 // context, so a fresh IndexedDB, which the demo seeds with its fake notes.
 import { expect, test, type Page } from '@playwright/test';
-import { readFileSync } from 'node:fs';
+import { mkdirSync, readFileSync } from 'node:fs';
+import { NOTEBOOK_SCHEME } from '../../src/ui/palette.ts';
 
 const MOD = process.platform === 'darwin' ? 'Meta' : 'Control';
 
@@ -123,7 +124,38 @@ test('binder tabs: switch, page across tab boundaries, add a tab at a page, drag
   await expect(page.getByRole('tab', { name: 'Reading' })).toHaveAttribute('data-color', 'violet');
 });
 
-test('Light, Dusk and Dark each restyle the page from tokens', async ({ page }) => {
+test('every unselected binder tab has the same cool fill, whatever its color; the dot carries the color', async ({ page }) => {
+  await open(page);
+  const lum = (c: number[]) => {
+    const f = (v: number) => ((v /= 255) <= 0.03928 ? v / 12.92 : ((v + 0.055) / 1.055) ** 2.4);
+    return 0.2126 * f(c[0]!) + 0.7152 * f(c[1]!) + 0.0722 * f(c[2]!);
+  };
+  const nums = (c: string) => (c.match(/[\d.]+/g) ?? []).slice(0, 3).map(Number);
+  for (const [name, id] of [['Light', 'light'], ['Zen', 'dusk'], ['Dark', 'dark']] as const) {
+    await page.getByRole('radio', { name }).click();
+    await expect(page.locator('html')).toHaveAttribute('data-theme', id);
+    const tabs = await page.locator('.nb-tab:not(.on):not(.add)').evaluateAll((els) =>
+      els.map((el) => ({ bg: getComputedStyle(el).backgroundColor, fg: getComputedStyle(el).color, dot: getComputedStyle(el, '::before').backgroundColor, color: el.getAttribute('data-color') })),
+    );
+    expect(tabs.length).toBeGreaterThanOrEqual(2);
+    expect(new Set(tabs.map((t) => t.color)).size).toBe(tabs.length); // different tab colors
+    expect(new Set(tabs.map((t) => t.dot)).size).toBe(tabs.length); // the dots differ
+    expect(new Set(tabs.map((t) => t.bg)).size).toBe(1); // the fills don't
+    const w = NOTEBOOK_SCHEME[id].window;
+    expect(tabs[0]!.bg).toBe(`rgb(${[1, 3, 5].map((i) => parseInt(w.slice(i, i + 2), 16)).join(', ')})`);
+    const [a, b] = [lum(nums(tabs[0]!.fg)), lum(nums(tabs[0]!.bg))];
+    const ratio = (Math.max(a, b) + 0.05) / (Math.min(a, b) + 0.05);
+    if (process.env['NB_SHOTS']) console.log(`TABCONTRAST ${id} ${ratio.toFixed(2)} ${tabs[0]!.bg}`);
+    expect(ratio).toBeGreaterThanOrEqual(4.5);
+    if (process.env['NB_SHOTS']) {
+      mkdirSync(`${process.env['NB_SHOTS']}/tabs`, { recursive: true });
+      const bx = (await page.locator('.nb-tab.on').boundingBox())!;
+      await page.screenshot({ clip: { x: Math.max(0, bx.x - 24), y: bx.y - 12, width: 460, height: bx.height + 24 }, path: `${process.env['NB_SHOTS']}/tabs/tabs-${id}.png`, animations: 'disabled' });
+    }
+  }
+});
+
+test('Light, Zen and Dark each restyle the page from tokens', async ({ page }) => {
   const problems = await open(page);
   const look = () =>
     page.evaluate(() => {
@@ -133,18 +165,20 @@ test('Light, Dusk and Dark each restyle the page from tokens', async ({ page }) 
       return { paper: paper.backgroundColor, tab: tab.backgroundColor, text: text.color, font: text.fontFamily };
     });
   const seen = new Set<string>();
-  for (const name of ['Light', 'Dusk', 'Dark']) {
+  // The picker says Zen; the id is still `dusk` (ADR 0093).
+  for (const [name, id] of [['Light', 'light'], ['Zen', 'dusk'], ['Dark', 'dark']] as const) {
     await page.getByRole('radio', { name }).click();
-    await expect(page.locator('html')).toHaveAttribute('data-theme', name.toLowerCase());
+    await expect(page.locator('html')).toHaveAttribute('data-theme', id);
     const l = await look();
     expect(l.font).toContain('Nunito Variable');
     expect(l.tab).not.toBe('rgba(0, 0, 0, 0)');
     seen.add(`${l.paper}|${l.text}`);
   }
   expect(seen.size).toBe(3);
-  // The brand kit's Light paper is pure white tile; Dusk's tile is #4D5461.
-  await page.getByRole('radio', { name: 'Dusk' }).click();
-  expect((await look()).paper).toBe('rgb(77, 84, 97)');
+  // The paper is the brand kit's surface.tile. In Zen (id `dusk`) that's #474D5B, ADR 0093's cool slate
+  // (addendum, Nov 10); #4D5461 was Dusk's before Zen.
+  await page.getByRole('radio', { name: 'Zen' }).click();
+  expect((await look()).paper).toBe('rgb(71, 77, 91)');
   await page.reload();
   await expect(page.locator('html')).toHaveAttribute('data-theme', 'dusk');
   expect(problems).toEqual([]);

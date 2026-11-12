@@ -939,7 +939,8 @@ test.describe('growing a desk', () => {
   test('a real saved layout from before migrates with nothing lost, and the old copy stays for a rollback', async ({ page, request }) => {
     const errors = watchConsole(page);
     await page.addInitScript((doc) => {
-      if (!localStorage.getItem('ma.layout.seeded')) {
+      // Seeded on the first load that's signed in: a start with nobody signed in wipes the layout's mirror (ISS-67).
+      if (!localStorage.getItem('ma.layout.seeded') && (location.pathname === '/auth/callback' || localStorage.getItem('ma-desk-web-refresh') || sessionStorage.getItem('ma-desk-web-refresh'))) {
         localStorage.setItem('ma.layout.v1', doc);
         localStorage.setItem('ma.layout.seeded', '1');
       }
@@ -985,7 +986,7 @@ test.describe('the etched strip', () => {
   async function seed(page: Page, request: APIRequestContext, desks: Seed[], names?: Record<string, string>): Promise<void> {
     const doc = { desks: Object.fromEntries(desks.map((d) => [d.id, d])), z: desks.map((d) => d.id) };
     await page.addInitScript((d) => {
-      if (localStorage.getItem('test.seeded')) return;
+      if (localStorage.getItem('test.seeded') || !(location.pathname === '/auth/callback' || localStorage.getItem('ma-desk-web-refresh') || sessionStorage.getItem('ma-desk-web-refresh'))) return;
       localStorage.setItem('test.seeded', '1');
       localStorage.setItem('ma.layout.v2', JSON.stringify(d));
     }, doc);
@@ -1086,7 +1087,7 @@ test.describe('the etched strip', () => {
 
   test('the smallest desk fits every status line, with no cut, so hiding the name is all it takes', async ({ page, request }) => {
     await page.addInitScript(({ id }) => {
-      if (localStorage.getItem('test.seeded')) return;
+      if (localStorage.getItem('test.seeded') || !(location.pathname === '/auth/callback' || localStorage.getItem('ma-desk-web-refresh') || sessionStorage.getItem('ma-desk-web-refresh'))) return;
       localStorage.setItem('test.seeded', '1');
       localStorage.setItem('ma.layout.v2', JSON.stringify({ desks: { [id]: { id, x: 0, y: 0, w: 100, h: 124, items: [] } }, z: [id] }));
     }, { id: PERSONAL });
@@ -1196,7 +1197,7 @@ test.describe('the etched strip', () => {
     const small = { id: PERSONAL, x: 0, y: 0, w: G_MIN_DESK_W, h: 124, items: [{ id: `${PERSONAL}:chat`, app: 'chat', x: 24, y: 24, w: 56, h: 56 }] };
     const wide = { id: WORK, x: 300, y: 0, w: 584, h: 144, items: [] };
     await page.addInitScript(({ doc }) => {
-      if (!localStorage.getItem('test.seeded')) {
+      if (!localStorage.getItem('test.seeded') && (location.pathname === '/auth/callback' || localStorage.getItem('ma-desk-web-refresh') || sessionStorage.getItem('ma-desk-web-refresh'))) {
         localStorage.setItem('test.seeded', '1');
         localStorage.setItem('ma.layout.v2', JSON.stringify(doc));
       }
@@ -1943,7 +1944,7 @@ test.describe('the etched strip', () => {
     const long = 'A rather long name for this one desk';
     const seeds = [{ id: PERSONAL, x: 0, y: 0, w: 584, h: 300, items: [] }];
     await page.addInitScript((d) => {
-      if (localStorage.getItem('test.seeded')) return;
+      if (localStorage.getItem('test.seeded') || !(location.pathname === '/auth/callback' || localStorage.getItem('ma-desk-web-refresh') || sessionStorage.getItem('ma-desk-web-refresh'))) return;
       localStorage.setItem('test.seeded', '1');
       localStorage.setItem('ma.layout.v2', JSON.stringify(d));
     }, { desks: Object.fromEntries(seeds.map((d) => [d.id, d])), z: [PERSONAL] });
@@ -2019,7 +2020,7 @@ test.describe('the etched strip', () => {
     });
     const doc = { desks: { [PERSONAL]: BIG(PERSONAL) }, z: [PERSONAL] };
     await page.addInitScript((d) => {
-      if (localStorage.getItem('test.seeded')) return;
+      if (localStorage.getItem('test.seeded') || !(location.pathname === '/auth/callback' || localStorage.getItem('ma-desk-web-refresh') || sessionStorage.getItem('ma-desk-web-refresh'))) return;
       localStorage.setItem('test.seeded', '1');
       localStorage.setItem('ma.layout.v2', JSON.stringify(d));
     }, doc);
@@ -2117,7 +2118,7 @@ test.describe('moving and resizing apps', () => {
    */
   async function seeded(page: Page, request: APIRequestContext, at: Partial<Record<string, Box>> = {}, stack?: unknown, list: readonly string[] = []): Promise<void> {
     await page.addInitScript(({ id, chat, notebook, browser, agent, at: over, stack: order, list: listed }) => {
-      if (localStorage.getItem('test.seeded')) return;
+      if (localStorage.getItem('test.seeded') || !(location.pathname === '/auth/callback' || localStorage.getItem('ma-desk-web-refresh') || sessionStorage.getItem('ma-desk-web-refresh'))) return;
       localStorage.setItem('test.seeded', '1');
       const place = (key: string, app: string, x: number): Record<string, unknown> => ({ id: key, app, x, y: 24, w: 76, h: 76, ...over[key] });
       const items = [place(chat, 'chat', 24), place(notebook, 'notebook', 300), place(browser, 'browser', 500), place(agent, 'agent', 650)];
@@ -3095,7 +3096,8 @@ test.describe('moving and resizing apps', () => {
     expect(clear(await placeOf(page, CHAT), await placeOf(page, NOTEBOOK))).toBe(false);
     expect(await placeOf(page, NOTEBOOK)).toEqual({ x: 300, y: 24, w: 76, h: 76 });
     expect(await onTop(page)).toBe(CHAT);
-    await expect(tile).toBeFocused(); // its place in reading order changed, and the button held still
+    // The edit's row has the keyboard (`EditBar.tsx`) while the keys move it; the tile's button holds still meanwhile.
+    await expect(page.getByRole('group', { name: /^Moving / }).getByRole('button', { name: 'Move left' })).toBeFocused();
 
     await page.keyboard.press('Shift+ArrowUp');
     expect((await placeOf(page, CHAT)).y).toBe(8);
@@ -3414,7 +3416,7 @@ test.describe('moving and resizing apps', () => {
       const scattered = (id: string, x: number): Record<string, unknown> => ({ id, x, y: 0, w: 500, h: 400, items: [{ id: `${id}:chat`, app: 'chat', x: 200, y: 100, w: 76, h: 76 }] });
       const tidy = { id: GUILD, x: 1100, y: 0, w: 500, h: 400, items: [{ id: `${GUILD}:chat`, app: 'chat', x: 24, y: 24, w: 76, h: 76 }] };
       await page.addInitScript((doc) => {
-        if (localStorage.getItem('test.seeded')) return;
+        if (localStorage.getItem('test.seeded') || !(location.pathname === '/auth/callback' || localStorage.getItem('ma-desk-web-refresh') || sessionStorage.getItem('ma-desk-web-refresh'))) return;
         localStorage.setItem('test.seeded', '1');
         localStorage.setItem('ma.layout.v2', JSON.stringify(doc));
       }, { desks: { [PERSONAL]: scattered(PERSONAL, 0), [WORK]: scattered(WORK, 550), [GUILD]: tidy }, z: [PERSONAL, WORK, GUILD] });
@@ -3536,7 +3538,7 @@ test.describe('moving and resizing apps', () => {
     test('a desk too small grows downward by what it needs, keeps its width and camera, and undo shrinks it back', async ({ page, request }) => {
       const id = PERSONAL;
       await page.addInitScript((doc) => {
-        if (localStorage.getItem('test.seeded')) return;
+        if (localStorage.getItem('test.seeded') || !(location.pathname === '/auth/callback' || localStorage.getItem('ma-desk-web-refresh') || sessionStorage.getItem('ma-desk-web-refresh'))) return;
         localStorage.setItem('test.seeded', '1');
         localStorage.setItem('ma.layout.v2', JSON.stringify(doc));
       }, { desks: { [id]: { id, x: 0, y: 36, w: 400, h: 300, items: [
@@ -3662,10 +3664,12 @@ test.describe('moving and resizing apps', () => {
       await expect(menu.getByRole('menuitem', { name: 'Move' })).toBeFocused();
       await page.keyboard.press('Enter');
       await expect(tile).toHaveClass(/editing/);
-      await expect(tile).toBeFocused();
+      // The keyboard is on the edit's own row (`EditBar.tsx`), and the keys are the edit's as ever; it comes back to the tile.
+      await expect(page.getByRole('group', { name: /^Moving / }).getByRole('button', { name: 'Move left' })).toBeFocused();
       await page.keyboard.press('ArrowRight');
       await page.keyboard.press('Enter');
       expect((await placeOf(page, NOTEBOOK)).x).toBe(before[NOTEBOOK]!.x + 8);
+      await expect(tile).toBeFocused();
     });
 
     test('right click: on a desk its menu, on an app its own, and on the empty canvas nothing of ours', async ({ page, request }) => {
@@ -3770,7 +3774,7 @@ test.describe('moving and resizing apps', () => {
       await page.request.post('/__harness', { data: { reset: true } });
       await page.request.post('/__harness', { data: { fleet: [personal('running')] } });
       await page.addInitScript((doc) => {
-        if (localStorage.getItem('test.seeded')) return;
+        if (localStorage.getItem('test.seeded') || !(location.pathname === '/auth/callback' || localStorage.getItem('ma-desk-web-refresh') || sessionStorage.getItem('ma-desk-web-refresh'))) return;
         localStorage.setItem('test.seeded', '1');
         localStorage.setItem('ma.layout.v2', JSON.stringify(doc));
       }, { desks: { [PERSONAL]: { id: PERSONAL, x: 0, y: 0, w: 800, h: 500, items: [{ id: CHAT, app: 'chat', x: 300, y: 200, w: 76, h: 76 }] } }, z: [PERSONAL] });
@@ -3844,7 +3848,7 @@ test.describe('moving and resizing apps', () => {
       const ids = { personal: 'd-test5i2qpxd', work: 'd-test9w4kzt7', guild: 'd-test3hqr8xb' };
       const v1 = '{"desks":{"d-test5i2qpxd":{"id":"d-test5i2qpxd","x":0,"y":36,"cols":7,"rows":3,"items":[{"id":"d-test5i2qpxd:chat","app":"chat","size":"small"},{"id":"d-test5i2qpxd:notebook","app":"notebook","size":"icon"},{"id":"d-test5i2qpxd:browser","app":"browser","size":"icon"},{"id":"d-test5i2qpxd:agent","app":"agent","size":"icon"}]},"d-test9w4kzt7":{"id":"d-test9w4kzt7","x":728,"y":128,"cols":6,"rows":1,"items":[{"id":"d-test9w4kzt7:chat","app":"chat","size":"icon"},{"id":"d-test9w4kzt7:notebook","app":"notebook","size":"icon"},{"id":"d-test9w4kzt7:browser","app":"browser","size":"icon"},{"id":"d-test9w4kzt7:agent","app":"agent","size":"icon"}]},"d-test3hqr8xb":{"id":"d-test3hqr8xb","x":1312,"y":36,"cols":6,"rows":1,"items":[{"id":"d-test3hqr8xb:agent","app":"agent","size":"icon"},{"id":"d-test3hqr8xb:chat","app":"chat","size":"icon"},{"id":"d-test3hqr8xb:notebook","app":"notebook","size":"icon"},{"id":"d-test3hqr8xb:browser","app":"browser","size":"icon"}]}},"z":["d-test3hqr8xb","d-test9w4kzt7","d-test5i2qpxd"]}';
       await page.addInitScript((doc) => {
-        if (localStorage.getItem('test.seeded')) return;
+        if (localStorage.getItem('test.seeded') || !(location.pathname === '/auth/callback' || localStorage.getItem('ma-desk-web-refresh') || sessionStorage.getItem('ma-desk-web-refresh'))) return;
         localStorage.setItem('test.seeded', '1');
         localStorage.setItem('ma.layout.v1', doc);
       }, v1);
@@ -4530,7 +4534,7 @@ test.describe('moving and resizing apps', () => {
     const list = [AGENT, CHAT, BROWSER, NOTEBOOK];
     const items = [{ id: AGENT, app: 'agent', ...pile }, { id: CHAT, app: 'chat', ...pile }, { id: BROWSER, app: 'browser', ...pile }, { id: NOTEBOOK, app: 'notebook', ...pile }];
     await page.addInitScript((doc) => {
-      if (localStorage.getItem('test.seeded')) return;
+      if (localStorage.getItem('test.seeded') || !(location.pathname === '/auth/callback' || localStorage.getItem('ma-desk-web-refresh') || sessionStorage.getItem('ma-desk-web-refresh'))) return;
       localStorage.setItem('test.seeded', '1');
       localStorage.setItem('ma.layout.v2', JSON.stringify(doc));
     }, { desks: { [PERSONAL]: { id: PERSONAL, x: 0, y: 36, w: 800, h: 500, items } }, z: [PERSONAL] });

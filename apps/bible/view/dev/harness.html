@@ -1,0 +1,34 @@
+<!doctype html>
+<!-- The Bible view's dev harness: a test aid, never shipped. It plays the Desk app's side for the view (harness.js) and
+     draws a stand-in for the office's window head, so shots read like the window. Query: ?theme=light|dusk|dark,
+     &w=1000&h=720 (the window), &phone=1 (the whole viewport, a phone's head), &font=0 (no Inter),
+     &clip=0 (no clipboard-write, as an older office). -->
+<html lang="en">
+<head>
+<meta charset="utf-8">
+<meta name="viewport" content="width=device-width, initial-scale=1">
+<title>Bible view harness</title>
+<style>
+  html, body { margin: 0; height: 100%; }
+  body { background: var(--canvas); font: 14px/1.4 system-ui, sans-serif; color: var(--text); display: grid; place-items: center; }
+  .win { display: flex; flex-direction: column; background: var(--head); border-radius: 14px; overflow: hidden;
+    box-shadow: 0 24px 64px rgba(20, 30, 50, .22), 0 0 0 1px var(--border); }
+  .head { flex: none; height: 44px; display: flex; align-items: center; gap: 8px; padding: 0 14px; border-bottom: 1px solid var(--border); }
+  .glyph { width: 16px; height: 16px; border: 1.5px solid var(--soft); border-radius: 4px; }
+  .head b { font-weight: 600; }
+  .head span { color: var(--soft); font-size: 13px; }
+  iframe { flex: 1; border: 0; display: block; width: 100%; background: transparent; }
+  body.phone { display: block; }
+  body.phone .win { width: 100vw; height: 100vh; border-radius: 0; box-shadow: none; }
+  body.phone .head { height: 52px; padding: 0 12px; }
+  .back { width: 20px; color: var(--text); font-size: 20px; }
+</style>
+</head>
+<body>
+  <div class="win" id="win">
+    <div class="head"><span class="back" id="back" hidden>&#8249;</span><span class="glyph"></span><b>Bible</b><span>Personal</span></div>
+    <iframe id="frame" title="Bible" sandbox="allow-scripts" referrerpolicy="no-referrer"></iframe>
+  </div>
+  <script src="/harness.js"></script>
+</body>
+</html>

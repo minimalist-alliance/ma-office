@@ -11,15 +11,21 @@ export type DetailLevel = 'icon' | 'small' | 'wide' | 'large' | 'open';
 export type CoreAppId = 'notebook' | 'browser' | 'chat' | 'agent' | 'commons' | 'files';
 /** Every other agent is its own app (task 49 item 6): `agent:<agentId>`. See `agentTiles.ts`. */
 export type AgentAppId = `agent:${string}`;
-export type AppId = CoreAppId | AgentAppId;
+/** An app installed from the Apps sheet (the desk app contract, S-97): `app:<manifest id>`. See `deskapps/door.ts`. */
+export type DeskAppId = `app:${string}`;
+export type AppId = CoreAppId | AgentAppId | DeskAppId;
 
 const AGENT_APP = /^agent:[a-z0-9][a-z0-9_-]{0,63}$/;
 /** An agent's own app, with an id as desk-agent makes them (`ag-` and 12 base32 characters), or a test's. */
 export const isAgentApp = (app: unknown): app is AgentAppId => typeof app === 'string' && AGENT_APP.test(app);
 export const agentApp = (agentId: string): AgentAppId => `agent:${agentId}`;
 export const agentIdOf = (app: string): string | null => (isAgentApp(app) ? app.slice('agent:'.length) : null);
-/** What kind of app this is: an agent's own app is an Agent, with its window and its size. */
-export const baseApp = (app: AppId): CoreAppId => (isAgentApp(app) ? 'agent' : app);
+/** A desk app's id is its manifest's (deskd `AppManifest.ID`: reverse DNS, lower case, at most 64 characters); the host checks it. */
+const DESK_APP = /^app:[a-z][a-z0-9.-]{4,63}$/;
+export const isDeskApp = (app: unknown): app is DeskAppId => typeof app === 'string' && DESK_APP.test(app);
+/** What kind of app this is: an agent's own app is an Agent, with its window and its size; an installed app is a `deskapp`. */
+export type BaseAppId = CoreAppId | 'deskapp';
+export const baseApp = (app: AppId): BaseAppId => (isAgentApp(app) ? 'agent' : isDeskApp(app) ? 'deskapp' : app);
 
 export interface Rect {
   x: number;
@@ -96,7 +102,7 @@ export const CELLS: Record<DetailLevel, { w: number; h: number }> = {
  * Where a tile turns `open` (ADR 0053), in cells: 6 x 5, or an app's own minimum where its window needs more. The registry
  * entry reads it as `openMin` (`apps/registry.tsx`); it's here because this file is pure and the registry holds the windows.
  */
-const OPEN_MIN: Partial<Record<CoreAppId, { w: number; h: number }>> = { browser: { w: 7, h: 5 } };
+const OPEN_MIN: Partial<Record<BaseAppId, { w: number; h: number }>> = { browser: { w: 7, h: 5 } };
 export const openMin = (app?: AppId): { w: number; h: number } => (app && OPEN_MIN[baseApp(app)]) || CELLS.open;
 
 let openLevel = true;

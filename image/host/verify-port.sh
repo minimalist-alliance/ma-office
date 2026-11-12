@@ -28,6 +28,8 @@
 #   5. the mutation pass: every check broken must FAIL, then put back must PASS.
 #   6. Platform's reclaim wave (verify-wave.sh), as verify.sh's.
 #   7. slot-datadirs (verify-links.sh), as verify.sh's.
+#   8. desk image 0.3.5 in a slot (verify-parity.sh), as verify.sh's.
+#   9. a start on a slot with no record and the JVMs' archives (verify-wake.sh), as verify.sh's.
 # Evidence: image/host/evidence/verify-port-<ami>.txt (addresses replaced). Creates only tagged temporary resources, removed on exit.
 set -euo pipefail
 HERE=$(cd "$(dirname "$0")" && pwd)
@@ -700,6 +702,37 @@ result "slot-datadirs: a link the Browser's user put at /data/browser/home befor
 R "sudo bash -s -- mutation $D1 $VOL1 $IP" < "$HERE/verify-links.sh" > $WORKDIR/l2 2>&1 && rc=0 || rc=$?
 { grep -q '^MUTATED LINKS FAIL' $WORKDIR/l2 && grep -qx 'RESTORE PASS' $WORKDIR/l2; } || rc=1
 result "that check fails with 0.1.11.1's desk-init (the mutation: the link's target handed to kiosk); the real desk-init, put back, passes it again" $rc < $WORKDIR/l2
+
+# ---- 8. desk image 0.3.5 in a slot (verify-parity.sh, sub/host-parity-035): slot 1 started by hand; links out (the slot's /run/desk-links
+# share, deskd's links.sock, the xdg-open stand-in as kiosk counted by deskd), the Browser's policy before each start (teen, adult, a band
+# that isn't one, and failing closed) and JPEG XL off in the running Chromium; then the mutations: 0.1.14's desk-init.py, wallspec.py and
+# svc-spec.py (from git, OLD_PARITY_REF: the last commit with them) must fail links out and the policy, the slot's desk-browser-start
+# without the switch must fail jxl, and the real ones, put back, pass again.
+OLD_PARITY_REF=950995e2
+R 'sudo rm -rf /root/parity-old && sudo install -d -m 700 /root/parity-old/desk'
+for f in desk/desk-init.py wallspec.py svc-spec.py; do
+  git -C "$HERE" show "$OLD_PARITY_REF:image/host/recipe/files/usr/local/lib/desk-host/$f" | R "sudo tee /root/parity-old/$f >/dev/null"
+done
+R "sudo bash -s -- real $D1 $VOL1 $IP" < "$HERE/verify-parity.sh" > $WORKDIR/p1 2>&1 && rc=0 || rc=$?
+grep -qx 'PARITY PASS' $WORKDIR/p1 || rc=1
+result "desk image 0.3.5 in a slot: links out (the slot's desk:kiosk 2750 /run/desk-links in the desk and deskd's sandbox, a tel: link from kiosk's stand-in counted by deskd), desk-browser-policy before each Chromium start (teen lock, adult allowlist, a band that isn't one locked, a lock it can't trust: no Chromium, then up by the retry), JPEG XL off in the running Chromium" $rc < $WORKDIR/p1
+R "sudo bash -s -- mutation $D1 $VOL1 $IP" < "$HERE/verify-parity.sh" > $WORKDIR/p2 2>&1 && rc=0 || rc=$?
+{ grep -q '^MUTATED LINKS-OUT FAIL' $WORKDIR/p2 && grep -q '^MUTATED POLICY FAIL' $WORKDIR/p2 && grep -q '^MUTATED JXL FAIL' $WORKDIR/p2 && grep -qx 'RESTORE PASS' $WORKDIR/p2; } || rc=1
+result "those checks fail with 0.1.14's desk-init, wallspec and svc-spec (links out and the policy) and with the slot's desk-browser-start without the switch (jxl); put back, they pass again" $rc < $WORKDIR/p2
+
+# ---- 9. a start on a slot with no record, and the JVMs' archives (verify-wake.sh, sub/host-up-norecord): slot 1's record moved aside (as a
+# prepare refused for room leaves it), then a start must prepare the slot and start it; deskd's and desk-agent's JVMs must map their AppCDS
+# archives (the store keeps the jars' times). Then the mutations: 0.1.15's desk-host (from git, OLD_UP_REF: the last commit with it) must end
+# that start with nothing on stderr, and the slot's app jars touched to now must run both JVMs without their archives; put back (the real
+# desk-host, a prepare from the store), both pass again.
+OLD_UP_REF=5fd4f891
+git -C "$HERE" show "$OLD_UP_REF:image/host/recipe/files/usr/local/lib/desk-host/desk-host" | R 'sudo tee /root/desk-host.old >/dev/null'
+R "sudo bash -s -- real $D1 $VOL1 $IP" < "$HERE/verify-wake.sh" > $WORKDIR/k1 2>&1 && rc=0 || rc=$?
+{ grep -qx 'NORECORD PASS' $WORKDIR/k1 && grep -qx 'CDS PASS' $WORKDIR/k1; } || rc=1
+result "a start on a slot with no record (its record moved aside, as a prepare refused for room leaves it) prepares the slot and starts it; deskd's and desk-agent's JVMs map their AppCDS archives (the release store keeps each jar's time)" $rc < $WORKDIR/k1
+R "sudo bash -s -- mutation $D1 $VOL1 $IP" < "$HERE/verify-wake.sh" > $WORKDIR/k2 2>&1 && rc=0 || rc=$?
+{ grep -q '^MUTATED NORECORD FAIL' $WORKDIR/k2 && grep -q '^MUTATED CDS FAIL' $WORKDIR/k2 && grep -qx 'RESTORE PASS' $WORKDIR/k2; } || rc=1
+result "those checks fail with 0.1.15's desk-host (the start ends with nothing on stderr) and with the slot's app jars at a new time (both JVMs without their archives); put back, they pass again" $rc < $WORKDIR/k2
 
 say "RESULT: $PASS passed, $FAILN failed ($AMI on $TYPE, SlotMode=port)"
 [ "$FAILN" = 0 ]

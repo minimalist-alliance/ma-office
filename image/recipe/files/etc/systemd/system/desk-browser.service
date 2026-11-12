@@ -2,6 +2,9 @@
 Description=Chromium kiosk (sandbox on, CDP on 127.0.0.1:9222)
 Requires=desk-datadirs.service desk-xorg.service desk-audio.service
 After=desk-datadirs.service desk-xorg.service desk-audio.service
+# Never before the outbound shaper is up (ADR 0036; Security's NET031-5): deskd, which starts the Browser, waits for it already,
+# and this holds for any other start too. Only ordering: a desk with no desk-egress, or one whose start failed, still gets a Browser.
+After=desk-egress.service
 # On the way down deskd stops first, so nothing asks for Chromium again while it writes its session (task 33 item 3).
 # Only ordering: desk-browser still starts on demand, and neither pulls in the other.
 Before=deskd.service

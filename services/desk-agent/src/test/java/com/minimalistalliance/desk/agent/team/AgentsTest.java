@@ -54,7 +54,7 @@ class AgentsTest {
             assertThat(lead).containsEntry("id", "manager").containsEntry("name", "Lead")
                     .containsEntry("role", "manager").containsEntry("lead", true).containsEntry("solo", true)
                     .containsEntry("purpose", "");
-            assertThat(map(lead.get("look"))).containsEntry("icon", "spark").containsEntry("tone", "graphite")
+            assertThat(map(lead.get("look"))).containsEntry("icon", "nodes").containsEntry("tone", "graphite")
                     .containsEntry("png", null);
             assertThat(lead.get("links")).isEqualTo(List.of());
             assertThat(lead.get("timers")).isEqualTo(0);
@@ -399,7 +399,7 @@ class AgentsTest {
     void aGuildMembersAgentIdIsRefusedByEveryTeamMethod() throws Exception {
         String member = "gm-member01";
         desk.team.teamStore().createAgent(member, "Theirs", desk.clock.millis(), new com.minimalistalliance.desk.agent
-                .store.TeamStore.Extras(member, "", "spark", "rose", null, true, null, List.of()));
+                .store.TeamStore.Extras(member, "", "nodes", "rose", null, true, null, List.of()));
         String a = desk.agent("Mine");
 
         for (String method : List.of("agent.delete", "agent.timer.list", "agent.workspace.get", "agent.icon.get",

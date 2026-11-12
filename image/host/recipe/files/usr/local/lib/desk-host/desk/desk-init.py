@@ -25,6 +25,12 @@ the wall test's desk-init (spikes/shared-host-wall/wall/desk-init.py, runs 1 and
 - ADR 0036 per container (ADR 0072 section 8, TD-223): the host's desk-egress for this slot names desk-stream's profile in
   /run/desk-host/egress/profile (the host's file, read-only; desk-stream's sandbox reads it at /run/desk-egress when it starts),
   and this restarts a running desk-stream when it changes, as desk-egress's try-restart does on a desk of its own.
+- Desk image 0.3.5 in a slot (sub/host-parity-035): desk-browser.service's ExecStartPre=+ desk-browser-policy runs here, as the desk's
+  root, before every start of Chromium (a teen's lock, or an adult's allowlist of password managers, from deskd's age-band), and a
+  helper that fails stops that start and is tried again after the back-off's wait, as the unit's Restart= does. Chromium's command
+  line is the template's desk-browser-start's (--disable-features=JXLImageFormat with it). Links out: /run/desk-links is the
+  slot's share (wallspec.py), desk:kiosk 2750 from the host before any desk process, in this desk and deskd's sandbox, so
+  Chromium's xdg-open stand-in (kiosk, PATH's /usr/local/bin) reaches deskd's links.sock.
 - WR2-01: no CDP forward. A test host (only) mounts its tools at /desk-host-test and says so in /run/desk-host/test-cdp;
   then, and only then, this loads its forward, which listens on the desk's own address for the host's side of the veth alone.
 - The desk's root never acts on a name inside a directory a desk user owns (EXP-7's class, slot-datadirs): as root, a name there
@@ -135,6 +141,8 @@ SHUTTING_DOWN = threading.Event()
 BROWSER_STOPPING = threading.Event()
 XAUTH = "/run/desk-xorg/auth"
 BROWSER_START = "/usr/local/lib/ma/desk-browser-start"
+BROWSER_POLICY = "/usr/local/lib/ma/desk-browser-policy"   # the template's: a teen's lock or an adult's allowlist (desk image 0.3.5)
+POLICY_TIMEOUT = 30
 SLOT = os.environ.get("DESK_HOST_SLOT", "0")
 TEST_DIR = "/desk-host-test"
 
@@ -463,6 +471,9 @@ class BrowserUnit:
                 return
             wait = self.backoff.next_delay()
             log(f"desk-browser restarts in {wait:.1f} s (restart {self.backoff.n} in a row)")
+        self._again(wait)
+
+    def _again(self, wait):
         time.sleep(wait)
         with self.lock:
             if self.wanted and self.pid is None and not SHUTTING_DOWN.is_set() and not BROWSER_STOPPING.is_set():
@@ -472,6 +483,15 @@ class BrowserUnit:
     def _spawn(self):
         out = os.open(f"{LOG_DIR}/desk-browser.log", os.O_WRONLY | os.O_APPEND | os.O_CREAT | os.O_CLOEXEC, 0o640)
         os.write(out, f"--- start {time.strftime('%F %T')}\n".encode())
+        if not browser_policy(out):
+            # As desk-browser.service's ExecStartPre=+ failing on a desk of its own: no Chromium, and Restart=on-failure tries
+            # the whole start again after the back-off's wait (from 3 s to 30 s), so a lock that can go on later clears by itself.
+            os.close(out)
+            wait = self.backoff.next_delay()
+            log(f"desk-browser: not started, its policy isn't in place (desk-browser-policy); tried again in {wait:.1f} s "
+                f"(restart {self.backoff.n} in a row)")
+            threading.Thread(target=self._again, args=(wait,), daemon=True).start()
+            return False
         with self.cv:
             self.replies.clear()
             _send_fd(self.sock, b"start", out)
@@ -724,6 +744,24 @@ def thaw_browser():
 
 
 UNIT_LOCK = threading.Lock()   # one units.sock request at a time, so a stop can wait for one in flight
+
+
+def browser_policy(out):
+    """desk-browser.service's ExecStartPre=+/usr/local/lib/ma/desk-browser-policy on a desk of its own (desk image 0.3.5): the
+    template's helper, as the desk's root (under the unit filter, as every helper), before every start of Chromium, crash restarts
+    included. It reads deskd's /data/desk/age-band without following a link or blocking, and puts a teen's lock in place or an adult's
+    allowlist of the three password managers (ma-adult.json only for exactly "adult\\n"), never both. Its lines go to the Browser's
+    log (out). True only when it exits 0: exit 1 (the lock should be on and isn't, or the allowlist should be off and isn't), a
+    helper that can't run or doesn't end in POLICY_TIMEOUT is no start, failing closed as the unit does."""
+    try:
+        r = run_helper([BROWSER_POLICY], stdout=out, stderr=out, timeout=POLICY_TIMEOUT)
+    except (OSError, subprocess.SubprocessError) as e:
+        os.write(out, f"desk-init: desk-browser-policy didn't run ({type(e).__name__}): Chromium not started\n".encode())
+        return False
+    if r.returncode != 0:
+        os.write(out, f"desk-init: desk-browser-policy exited {r.returncode}: Chromium not started\n".encode())
+        return False
+    return True
 
 
 def browser_refusal():

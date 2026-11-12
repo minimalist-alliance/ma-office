@@ -22,6 +22,11 @@ export interface FreeParts {
   Account?: ComponentType<{ className?: string; testId?: string }>;
   /** In a Browser window's bar. */
   BrowserLine?: ComponentType<{ deskId?: string }>;
+  /**
+   * In a Browser's title bar, left of its buttons (walk L13): the meter, compact, only while that Browser covers the bar's.
+   * `cover` is the same name the window or a phone's carousel gives itself in `data-cover`.
+   */
+  WindowRing?: ComponentType<{ cover: string }>;
   /** Unset, as `Canvas` above. */
   frames?: () => Rect[];
   /** Its words for a Browser it paused at the day's limit, or null for any other pause. */

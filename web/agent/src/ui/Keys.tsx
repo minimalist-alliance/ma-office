@@ -373,7 +373,7 @@ export function KeySetup({
         ) : showFree ? (
           <>
             <h3>Give {agent.name} a key</h3>
-            <p className="ag-muted">{agent.name} wakes once it has an AI key, and the key stays on this desk.</p>
+            <p className="ag-muted">{agent.name} wakes once it has an AI key, and the key is kept on this desk.</p>
           </>
         ) : (
           <>

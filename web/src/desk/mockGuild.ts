@@ -25,8 +25,8 @@ export interface MockGuildControl {
   room: { name: string; in: boolean; muted: boolean; speaking?: boolean }[];
   /** Fill the Notebook, Commons and the Agent with an engineering team's demo content on first open. */
   seed: boolean;
-  /** Every `guild.*` call, in order. */
-  calls: { m: string; p: Record<string, unknown> }[];
+  /** Every `guild.*` call, in order. `as`: who the session it came on was opened for, as deskd reads it from the guild token. */
+  calls: { m: string; p: Record<string, unknown>; as?: { name: string; deskId: string } }[];
   /** deskd closes this member's session, as on a roster change (contract 3.3): the link asks for a fresh token. */
   kick(deskId: string): void;
 }
@@ -98,16 +98,30 @@ export function guildCaller(deskId: string): { memberId: string; name: string } 
   return { memberId: `gm-${name.toLowerCase().replace(/[^a-z0-9]/g, '').slice(0, 12) || 'member'}`, name };
 }
 
-/** deskd's `guild.*`, checking the caller's role as deskd does from the token. */
-export function answerGuild(deskId: string, method: string, params: Record<string, unknown>): Promise<unknown> {
-  guildControl.calls.push({ m: method, p: params });
+/** Who a Guild Desk session is for: deskd reads it from the guild token as the session starts, and nothing the office does later changes it. */
+export interface GuildSessionMember {
+  name: string;
+  role: GuildRole;
+  grants: string[];
+}
+
+/** The member signed in now, as a session opened now would be for. */
+export function guildSessionMember(deskId: string): GuildSessionMember {
+  const name = guildControl.myName ?? useSession.getState().me?.displayName ?? 'Member';
+  return { name, ...whoAmI(guildIdOfPanel(deskId) ?? '') };
+}
+
+/** deskd's `guild.*`, checking the caller's role as deskd does from the token. `session`: who the session was opened for. */
+export function answerGuild(deskId: string, method: string, params: Record<string, unknown>, session: GuildSessionMember | null = null): Promise<unknown> {
+  guildControl.calls.push({ m: method, p: params, ...(session ? { as: { name: session.name, deskId } } : {}) });
   const guildId = guildIdOfPanel(deskId);
   if (!guildId) return Promise.reject(refused('not_found'));
   const me = whoAmI(guildId);
   switch (method) {
     case 'guild.hello': {
-      const name = guildControl.myName ?? useSession.getState().me?.displayName ?? 'Member';
-      return Promise.resolve({ guildId, memberId: 'gm-thismember01', role: me.role, grants: me.grants, name, apps: ['commons', 'notebook', 'agent'] } satisfies GuildHello);
+      // The session's member, as its token says, so a session the office kept past a change of account says so.
+      const who = session ?? guildSessionMember(deskId);
+      return Promise.resolve({ guildId, memberId: 'gm-thismember01', role: who.role, grants: who.grants, name: who.name, apps: ['commons', 'notebook', 'agent'] } satisfies GuildHello);
     }
     case 'guild.settings.get':
       // Any member may read them; only the Founder or `manage_agents` may set them (deskd API.md section 14).

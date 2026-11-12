@@ -269,12 +269,16 @@ test('a whole turn: she thinks, speaks, plays her score, offers a card, and the 
   await arrive(page, request, '/?fixture=three', { enabled: true, slow: 60 });
   await openPanel(page);
 
+  // The stub holds her turn after its status line until we let it go, so what shows while she answers is checked
+  // while it shows, not raced against a reply of a few hundred ms (TD-239).
+  await harness(request, { maiaHold: true });
   await composer(page).fill('Can you open my work desk? [stub:status] [stub:desk:d-work]');
   await composer(page).press('Enter');
   // The composer won't send again while she answers.
   await expect(page.locator('.maia-send')).toHaveAttribute('aria-disabled', 'true');
   await expect(page.locator('.maia-status')).toHaveText('Looking that up…');
-  await expect.poll(async () => (await stats(page)).state).toMatch(/thinking|speaking/);
+  await expect.poll(async () => (await stats(page)).state).toBe('thinking');
+  await harness(request, { maiaHold: false });
   await expect(page.locator('.maia-send')).toHaveAttribute('aria-disabled', 'false', { timeout: 10_000 });
 
   const reply = lastReply(page);
@@ -461,12 +465,15 @@ test('free Maia (ma-platform ADR 0104): the notice once, with Upgrade; a quiet l
 test('free Maia is slow to start: a calm thinking line until her first words, then her answer, and she thinks meanwhile', async ({ page, request }) => {
   await arrive(page, request, '/?fixture=three', { enabled: true, freeFirstMs: 2500 });
   await openPanel(page);
+  // Held before her first words until the checks are done, as in the whole turn above (TD-239).
+  await harness(request, { maiaHold: true });
   await composer(page).fill('Help me [stub:free]');
   await composer(page).press('Enter');
   const waiting = page.locator('.maia-msg[aria-busy="true"] .maia-status');
   await expect(waiting).toHaveText('Free Maia is thinking. This can take a minute.');
   await expect(page.locator('.maia-dots')).toHaveCount(0);
   await expect.poll(async () => (await stats(page)).state).toBe('thinking');
+  await harness(request, { maiaHold: false });
   await expect(lastReply(page).locator('.maia-md')).toContainText('You asked: Help me.', { timeout: 10_000 });
   await expect(page.locator('.maia-status')).toHaveCount(0);
   await expect(page.locator('.maia-msg[aria-busy="true"]')).toHaveCount(0, { timeout: 10_000 });

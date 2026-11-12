@@ -237,8 +237,9 @@ machine or whoever holds the volume can, as with everything else on a desk. ADR 
   one. Adding is recorded in the audit log first, and refused if it can't be.
 - **In use, a lease.** A call borrows a heap copy (`KeyLease`), zeroed when the lease closes.
 - **Where it becomes a `String`, which can't be zeroed:** `KeyLease.headerValue`, because the JDK's `HttpClient`
-  takes header values only as strings. That string, and the client's own copies on the way to TLS, stay in the heap,
-  unreachable, until the collector reuses the memory. Spring AI would hold the key as a `String` for the client's
+  takes header values only as strings. It joins the prefix and the key as bytes in an array it zeroes, so a call makes
+  one such `String`, not two (ISS-20). That string, held by the request for the call, and the client's own copies on
+  the way to TLS, stay in the heap, unreachable, until the collector reuses the memory. Spring AI would hold the key as a `String` for the client's
   whole life (`spikes/spring-ai-footprint/`). Writing HTTP/1.1 by hand over an `SSLSocket` would remove the
   `String`, not JSSE's buffers.
 - **Copies the collector made.** A heap `byte[]` or `char[]` can be copied by SerialGC before it's zeroed, and the old
@@ -249,7 +250,11 @@ machine or whoever holds the volume can, as with everything else on a desk. ADR 
   can't be zeroed, until the collector reuses the memory.
 - **On the way in from deskd.** The agent socket carries a key in its own binary frame, read straight into a direct
   buffer and handed to `KeyRing` without a heap copy, then zeroed (`AgentSocketServer`, `KeyRing.put(ByteBuffer)`).
-  desk-agent never makes a `String` of one but in `headerValue`. deskd will, as jackson-jr parses the client's JSON.
+  desk-agent never makes a `String` of one but in `headerValue`. deskd does, as jackson-jr parses the client's JSON,
+  but its `rtc.sock` read buffer zeroes what it has handled, its request parse has buffers of its own rather than the
+  shared pool's, and its link writes the KEY frame from a direct buffer it zeroes, so NIO keeps no copy (ISS-20,
+  `docs/sub-status/iss20-key-zeroing-finding.md`). `scripts/test-release-scripts.sh` fails if anything a desk runs
+  turns on the HTTP client's or TLS's logging, which would write the header.
 - **Its last four characters** are kept, as Platform's metadata does (design 9.5), so the member can tell keys apart.
 - **Around it:** `-XX:+DisableAttachMechanism`, no heap dump on OOM, no core file (`-XX:-CreateCoredumpOnCrash` and
   `--ulimit core=0`), a crash report only in the container's `/tmp` (RAM), and the image's zram-only swap (ADR 0007).

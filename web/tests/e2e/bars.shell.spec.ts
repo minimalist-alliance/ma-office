@@ -112,7 +112,7 @@ test.describe('320 px', () => {
 });
 
 test.describe('1024 px', () => {
-  test('four desks: the hints stay on one line, at rest, with the canvas focused and in a keyboard edit', async ({ page, request }) => {
+  test('four desks: the hints stay on one line, at rest and with the canvas focused; a keyboard edit has its own row', async ({ page, request }) => {
     await arriveWith(page, request, 4, { width: 1024, height: 768 });
     const oneLine = async (when: string): Promise<void> => {
       const hints = await box(page, '.hints');
@@ -124,15 +124,21 @@ test.describe('1024 px', () => {
     await page.locator('.canvas-wrap').focus();
     await expect(page.locator('.hints')).toContainText('\\ privacy');
     await oneLine('canvas focused');
+    // A move or a resize: the bar's row is the edit's own (`EditBar.tsx`, a11y 2.5.7), every button of it on screen and on top.
     await page.getByRole('button', { name: /^Personal desk/ }).focus();
-    await page.keyboard.press('r');
-    await expect(page.locator('.hints')).toContainText('esc restores');
-    await oneLine('resizing');
-    await page.keyboard.press('Escape');
-    await page.keyboard.press('m');
-    await expect(page.locator('.hints')).toContainText('arrows move');
-    await oneLine('moving');
-    await page.keyboard.press('Escape');
+    for (const [key, kind] of [['r', 'Resize'], ['m', 'Move']] as const) {
+      await page.keyboard.press(key);
+      await expect(page.getByRole('group', { name: kind === 'Move' ? /^Moving / : /^Resizing / })).toBeVisible();
+      await expect(page.locator('.hints')).toHaveCount(0);
+      const seen = await controls(page, '.bottombar');
+      expect(seen.map((c) => c.name.replace(/^\d+:/, ''))).toEqual(kind === 'Move'
+        ? ['Move left', 'Move up', 'Move down', 'Move right', 'Keep', 'Restore']
+        : ['Narrower', 'Shorter', 'Taller', 'Wider', 'Keep', 'Restore']);
+      expect(seen.filter((c) => !c.shown).map((c) => c.name), kind).toEqual([]);
+      expect(await noSideScroll(page)).toBe(true);
+      await page.keyboard.press('Escape');
+    }
+    await oneLine('after the edit');
     await everyControlShown(page);
     await page.screenshot({ path: 'test-results/shots/bars-1024-4.png' });
   });
@@ -144,25 +150,21 @@ test.describe('1024 px', () => {
     await expect(page.locator('.hint-switch')).toBeHidden();
   });
 
-  test('a keyboard resize says "shift 40" where there is room, and never loses "esc restores" to the ellipsis', async ({ page, request }) => {
-    const resize = async (): Promise<void> => {
+  test('a keyboard edit\'s row: its six on screen and on top beside the circle, with four desks and with one, at 1440 and 1024 px', async ({ page, request }) => {
+    for (const [desks, size] of [[4, { width: 1440, height: 900 }], [4, { width: 1024, height: 768 }], [1, { width: 1024, height: 768 }]] as const) {
+      await arriveWith(page, request, desks, size);
       await page.getByRole('button', { name: /^Personal desk/ }).focus();
       await page.keyboard.press('r');
-      await expect(page.locator('.hints')).toContainText('esc restores');
-    };
-    await arriveWith(page, request, 4, { width: 1440, height: 900 });
-    await resize();
-    await expect(page.locator('.hints')).toHaveText('arrows resize · shift 40 · enter keeps · esc restores');
-    expect(await whole(page)).toBe(true);
-    await page.setViewportSize({ width: 1024, height: 768 });
-    await expect(page.locator('.hint-shift')).toBeHidden();
-    expect(await whole(page)).toBe(true);
-    await page.keyboard.press('Escape');
-    // One desk: no switch beside the hints, so there's room for all of it.
-    await arriveWith(page, request, 1, { width: 1024, height: 768 });
-    await resize();
-    await expect(page.locator('.hint-shift')).toBeVisible();
-    expect(await whole(page)).toBe(true);
+      await expect(page.getByRole('group', { name: /^Resizing / })).toBeVisible();
+      const seen = await controls(page, '.bottombar');
+      expect(seen.length, `${desks} at ${size.width}`).toBe(6);
+      expect(seen.filter((c) => !c.shown).map((c) => c.name), `${desks} at ${size.width}`).toEqual([]);
+      if (await page.getByTestId('bandwidth-button').isVisible()) {
+        expect((await box(page, '.edit-bar')).right).toBeLessThanOrEqual((await box(page, '[data-testid="bandwidth-button"]')).left);
+      }
+      expect(await noSideScroll(page)).toBe(true);
+      await page.keyboard.press('Escape');
+    }
   });
 });
 
@@ -201,11 +203,12 @@ test.describe('with Support Maia on', () => {
           expect(hints.height).toBeLessThanOrEqual(30);
           expect(clear(bubble, hints)).toBe(true);
           if (desks > 1) expect(hints.right).toBeLessThanOrEqual((await box(page, '.desk-nav')).left);
+          // A keyboard resize's own row (`EditBar.tsx`) is clear of her and of the circle too.
           await page.getByRole('button', { name: /^Personal desk/ }).focus();
           await page.keyboard.press('r');
-          await expect(page.locator('.hints')).toContainText('esc restores');
-          expect(await whole(page)).toBe(true);
-          expect(clear(bubble, await box(page, '.hints'))).toBe(true);
+          await expect(page.getByRole('group', { name: /^Resizing / })).toBeVisible();
+          expect(clear(bubble, await box(page, '.edit-bar'))).toBe(true);
+          expect(clear(circle, await box(page, '.edit-bar'))).toBe(true);
           await page.keyboard.press('Escape');
         }
         await everyControlShown(page);

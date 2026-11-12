@@ -59,6 +59,18 @@ class KeyRingTest {
     }
 
     @Test
+    void aHeaderValueIsThePrefixThenTheKeyAndLeavesTheLeasesBytesAsTheyWere() {
+        ring.put("k1", ProviderId.OPENAI, bytes(KEY));
+        KeyLease lease = ring.lend("k1");
+        assertThat(lease.headerValue("Bearer ")).isEqualTo("Bearer " + KEY);
+        // A provider may build its request twice on one lease, as OpenRouter's retry without tools does.
+        assertThat(lease.headerValue("")).isEqualTo(KEY);
+        assertThat(lease.bytes()).isEqualTo(bytes(KEY));
+        lease.close();
+        assertThatThrownBy(() -> lease.headerValue("Bearer ")).isInstanceOf(IllegalStateException.class);
+    }
+
+    @Test
     void replacingAKeyZeroesTheOldOne() {
         ring.put("k1", ProviderId.OPENAI, bytes(KEY));
         ByteBuffer old = ring.heldBuffer("k1");

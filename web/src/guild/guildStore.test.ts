@@ -1,6 +1,7 @@
 // The guild store: the list becomes panels in the office, a guild that goes is said rather than vanishing, a refusal reads
-// the list again, `?guild=` opens that Guild Desk, and the session's end forgets it all. Platform's API, the links, the layout
-// and the camera are faked; the guild store and the desk store are the real code.
+// the list again, `?guild=` opens that Guild Desk, and the session's end forgets it all, as does a change of account in the
+// tab, Guild Desk links and all. Platform's API, the links, the layout and the camera are faked; the guild store and the desk
+// store are the real code.
 import { afterEach, beforeEach, describe, expect, it, vi } from 'vitest';
 
 const h = vi.hoisted(() => {
@@ -33,6 +34,9 @@ const m = vi.hoisted(() => ({
   setView: vi.fn(),
   layout: {} as Record<string, unknown>,
   links: new Map<string, { status: () => string; call: ReturnType<typeof vi.fn> }>(),
+  /** `onMemberChange`'s listeners other than the session's (`platform/auth.ts`). */
+  memberChange: [] as ((sub: string, before: string | null) => void)[],
+  forgetLinks: vi.fn(),
 }));
 
 vi.mock('./api', () => ({ getGuilds: m.getGuilds, getGuildDesk: m.getGuildDesk }));
@@ -43,7 +47,13 @@ vi.mock('../platform/api', () => ({
     }
   },
 }));
-vi.mock('../platform/auth', () => ({ SignInRequired: class extends Error {} }));
+vi.mock('../platform/auth', () => ({
+  SignInRequired: class extends Error {},
+  onMemberChange: (fn: (sub: string, before: string | null) => void) => {
+    m.memberChange.push(fn);
+    return () => {};
+  },
+}));
 vi.mock('../platform/clientConfig', () => ({ loadedConfig: () => null }));
 vi.mock('../platform/session', async () => {
   const { create: make } = await import('zustand');
@@ -51,14 +61,25 @@ vi.mock('../platform/session', async () => {
 });
 vi.mock('../desk/liveStore', async () => {
   const { create: make } = await import('zustand');
-  return { syncLinks: m.syncLinks, linkOf: (id: string) => m.links.get(id) ?? null, useLiveStore: make(() => ({ desks: {} as Record<string, { link: string }> })) };
+  const useLiveStore = make(() => ({ desks: {} as Record<string, { link: string }> }));
+  return {
+    syncLinks: m.syncLinks,
+    linkOf: (id: string) => m.links.get(id) ?? null,
+    useLiveStore,
+    // As the real one: those links closed and gone, and what their sessions said with them.
+    forgetLinks: (which: (deskId: string) => boolean) => {
+      m.forgetLinks(which);
+      for (const id of [...m.links.keys()]) if (which(id)) m.links.delete(id);
+      useLiveStore.setState((s) => ({ desks: Object.fromEntries(Object.entries(s.desks).filter(([id]) => !which(id))) }));
+    },
+  };
 });
 vi.mock('../shell/actions', () => ({ focusDesk: m.focusDesk }));
 vi.mock('../state/viewStore', () => ({ setView: m.setView }));
 vi.mock('../state/layoutStore', () => ({ reconcileLayout: m.reconcileLayout, useLayoutStore: { getState: () => ({ desks: m.layout }) } }));
 
-const { useGuildStore, dismissRemoved, resetGuildsForTest, startGuilds } = await import('./guildStore');
-const { useDeskStore } = await import('../state/deskStore');
+const { useGuildStore, askGuildLimits, chooseLinkDesk, dismissRemoved, openGuildSheet, resetGuildsForTest, setGuildCaps, startGuilds } = await import('./guildStore');
+const { dropDeskList, useDeskStore } = await import('../state/deskStore');
 const { useSession } = await import('../platform/session');
 const { useLiveStore } = await import('../desk/liveStore');
 const { ApiError: RealApiError } = await import('../platform/api');
@@ -85,6 +106,7 @@ beforeEach(() => {
   m.getGuildDesk.mockReset();
   m.getGuildDesk.mockImplementation(() => Promise.resolve({ status: 200, data: { deskId: 'd-g1', state: 'stopped' } }));
   m.syncLinks.mockReset();
+  m.forgetLinks.mockReset();
   m.reconcileLayout.mockReset();
   m.focusDesk.mockReset();
   m.setView.mockReset();
@@ -276,5 +298,147 @@ describe('with the session', () => {
     expect(useGuildStore.getState().guilds).toEqual([]);
     await settle(10 * 60_000);
     expect(m.getGuilds).toHaveBeenCalledTimes(1);
+  });
+});
+
+describe('a change of account in this tab (a sign-in as someone else in another tab)', () => {
+  /**
+   * This tab's tokens become `to`'s. The session's own listener runs first, as it's registered first (`platform/session.ts`):
+   * the last member's desk list goes, and `me` with it until `/v1/me` answers for the new one. Then the guild store's own.
+   */
+  function becomes(to: string, from: string): void {
+    dropDeskList();
+    useSession.setState({ me: null });
+    for (const fn of m.memberChange) fn(to, from);
+  }
+  /** `/v1/me` answers for them, and the guild store starts for them. */
+  const meIs = (userId: string): void => useSession.setState({ status: 'signedIn', me: { userId } });
+  const hello = (name: string, role: string) => vi.fn(() => Promise.resolve({ guildId: 'gu-two', memberId: `gm-${name.toLowerCase()}`, role, grants: role === 'lead' ? ['manage_agents'] : [], name }));
+
+  beforeEach(() => {
+    live({});
+  });
+  afterEach(() => {
+    useSession.setState({ status: 'booting', me: null });
+    live({});
+  });
+
+  it('every Guild Desk’s link closes at once, so the new member’s opens on a guild token of their own: a guild’s panel is the same for every member in it', async () => {
+    m.getGuilds.mockImplementation(() => listed(ONE, TWO));
+    meIs('u-a');
+    await settle();
+    const call = vi.fn(() => new Promise(() => {}));
+    for (const id of ['d-1', 'guild-gu-one', 'guild-gu-two']) m.links.set(id, { status: () => 'open', call });
+    becomes('u-b', 'u-a');
+    // The member's own desks' links are the session's: the new member's list closes them, as their ids are the last member's alone.
+    expect([...m.links.keys()]).toEqual(['d-1']);
+  });
+
+  it('the first token, or a sign-in in this tab, closes nothing', async () => {
+    m.getGuilds.mockImplementation(() => listed(TWO));
+    meIs('u-a');
+    await settle();
+    m.links.set('guild-gu-two', { status: () => 'open', call: vi.fn(() => new Promise(() => {})) });
+    for (const fn of m.memberChange) fn('u-a', null);
+    expect([...m.links.keys()]).toEqual(['guild-gu-two']);
+    expect(m.forgetLinks).not.toHaveBeenCalled();
+    expect(guildDesks()).toHaveLength(1);
+  });
+
+  it('nothing the last member’s Guild Desk session says lands in the new member’s office, in a guild they’re both in', async () => {
+    m.getGuilds.mockImplementation(() => listed(TWO));
+    meIs('u-a');
+    await settle();
+    const a = hello('Dana', 'lead');
+    m.links.set('guild-gu-two', { status: () => 'open', call: a });
+    live({ 'guild-gu-two': { link: 'open' } });
+    await settle();
+    expect(useGuildStore.getState().hello['gu-two']).toMatchObject({ name: 'Dana', role: 'lead' });
+
+    becomes('u-b', 'u-a');
+    expect(useGuildStore.getState().hello).toEqual({});
+    meIs('u-b'); // B's list: the same guild, as a plain member
+    await settle();
+    // The office goes on (B's own desk's link opens, say), which the store hears.
+    live({ ...useLiveStore.getState().desks, 'd-b': { link: 'open' } });
+    await settle();
+    expect(a).toHaveBeenCalledTimes(1); // never asked again, on the last member's session
+    expect(useGuildStore.getState().hello['gu-two']).toBeUndefined();
+
+    // B's own session on it, opened with B's guild token, says who B is.
+    const b = hello('Robin', 'member');
+    m.links.set('guild-gu-two', { status: () => 'open', call: b });
+    live({ ...useLiveStore.getState().desks, 'guild-gu-two': { link: 'connecting' } });
+    live({ ...useLiveStore.getState().desks, 'guild-gu-two': { link: 'open' } });
+    await settle();
+    expect(b).toHaveBeenCalledTimes(1);
+    expect(useGuildStore.getState().hello['gu-two']).toMatchObject({ name: 'Robin', role: 'member' });
+  });
+
+  it('none of the last member’s Guild Desks, nor a word that they left a guild, show for the new member, before or after the new member’s list', async () => {
+    m.getGuilds.mockImplementation(() => listed(ONE, TWO));
+    meIs('u-a');
+    await settle();
+    expect(guildDesks()).toHaveLength(2);
+    // A's next read of the list is on its way at the change, and answers after it.
+    let lateA: (v: unknown) => void = () => {};
+    m.getGuilds.mockImplementationOnce(() => new Promise((done) => (lateA = done)));
+    await settle(60_000);
+
+    becomes('u-b', 'u-a');
+    expect(guildDesks()).toEqual([]);
+    expect(useGuildStore.getState()).toMatchObject({ status: 'idle', guilds: [], desks: {}, hello: {}, removed: {} });
+    let listB: (v: unknown) => void = () => {};
+    m.getGuilds.mockImplementationOnce(() => new Promise((done) => (listB = done)));
+    meIs('u-b');
+    await settle();
+    lateA(await listed(ONE, TWO));
+    await settle();
+    expect(guildDesks()).toEqual([]);
+    expect(useGuildStore.getState().guilds).toEqual([]);
+
+    // B is in Design review alone: Platform team is A's, and B never left it.
+    listB(await listed(TWO));
+    await settle();
+    expect(guildDesks().map((d) => [d.id, d.name, d.removed])).toEqual([['guild-gu-two', 'Design review', undefined]]);
+    expect(useGuildStore.getState().removed).toEqual({});
+
+    // A late word on A's Guild Desk, from a link that was on its way: not one of B's guilds, so nothing.
+    m.getGuildDesk.mockImplementation(() => Promise.resolve({ status: 200, data: { deskId: 'd-g1', state: 'stopped' } }));
+    const { GuildAccess } = await import('./access');
+    await new GuildAccess('gu-one').connect(false, 'sha-256 AA');
+    expect(useGuildStore.getState().desks).not.toHaveProperty('gu-one');
+    expect(guildDesks().map((d) => d.id)).toEqual(['guild-gu-two']);
+  });
+
+  it('what the last member had open or asked for goes: the settings sheet, a link waiting for a desk, the caps and the Guild limits asks', async () => {
+    m.getGuilds.mockImplementation(() => listed(ONE));
+    meIs('u-a');
+    await settle();
+    openGuildSheet('gu-one', 'usage');
+    chooseLinkDesk('https://example.org/from-a-guild-page');
+    setGuildCaps('gu-one', { runsPerDay: 5, usdPerDay: 1, usdPerMonth: 10 });
+    askGuildLimits('guild-gu-one');
+    becomes('u-b', 'u-a');
+    expect(useGuildStore.getState()).toMatchObject({ sheet: null, linkChoice: null, caps: {}, limitsAsk: {} });
+    meIs('u-b');
+    await settle();
+    expect(useGuildStore.getState()).toMatchObject({ sheet: null, linkChoice: null, caps: {}, limitsAsk: {} });
+  });
+
+  it('a `?guild=` the last member’s list hadn’t reached yet isn’t opened for the new member, and the address loses it', async () => {
+    resetGuildsForTest('?guild=gu-two');
+    m.layout['guild-gu-two'] = { id: 'guild-gu-two' };
+    m.getGuilds.mockImplementationOnce(() => new Promise(() => {})).mockImplementation(() => listed(ONE, TWO));
+    meIs('u-a');
+    await settle();
+    becomes('u-b', 'u-a');
+    meIs('u-b');
+    await settle();
+    useDeskStore.setState({ status: 'ready' }); // B's own list lands
+    await settle();
+    expect(m.focusDesk).not.toHaveBeenCalled();
+    expect(m.setView).not.toHaveBeenCalled();
+    expect(h.replaced).toEqual(['/?fixture=one']);
   });
 });

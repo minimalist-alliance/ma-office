@@ -8,10 +8,12 @@ import { useWindowStore } from '../state/windowStore';
 import { shownDesk } from '../desk/attention';
 import { camera } from '../canvas/controller';
 import { countSlotW, deskGeometry, isAgentApp, slotRight, STRIP, stripTarget, switchFits, type LayoutDesk } from '../canvas/layout';
+import { host, useDoor } from '../deskapps/door';
 import { rosterAgent, teamWaiting, useRosterStore } from '../agent/roster';
 import { stripControlSize } from '../canvas/etch';
 import { isPhone, useIsPhone, useIsTouch } from '../canvas/phone';
 import { statusLine } from '../desk/agentStatus';
+import { trafficHold } from '../desk/trafficStop';
 import { liveStatusInput, useLive } from '../desk/liveStore';
 import { useFree } from '../free/door';
 import { useDeskStore, type DeskInfo } from '../state/deskStore';
@@ -49,8 +51,9 @@ function HiddenRing() {
 /** Memoized per desk, so moving the focus or the active desk re-renders only the desks it touches. */
 const DeskProxies = memo(function DeskProxies({ desk, layout, stop, covered }: { desk: DeskInfo; layout: LayoutDesk; stop: string | null; covered: string }) {
   const live = useLive(desk.id);
-  // Agents' names label their own tiles (task 49): a rename on the desk is a new label here.
+  // Agents' names label their own tiles (task 49): a rename on the desk is a new label here. So do installed apps' (ADR 0054).
   useRosterStore((s) => s.desks[desk.id]);
+  useDoor((s) => s.rev);
   const phone = useIsPhone();
   const touch = useIsTouch();
   const geo = deskGeometry(layout, phone);
@@ -106,7 +109,7 @@ const DeskProxies = memo(function DeskProxies({ desk, layout, stop, covered }: {
     if (!control && getView().kbFocus === controlId) focusProxy(desk.id);
   }, [control, controlId, desk.id]);
   const status = statusLine({
-    vm: desk.vm, phase: desk.phase, queuePosition: desk.queuePosition, givebackUntil: desk.givebackUntil, stopReason: desk.stopReason,
+    vm: desk.vm, phase: desk.phase, queuePosition: desk.queuePosition, givebackUntil: desk.givebackUntil, stopReason: desk.stopReason, trafficStop: !!trafficHold(desk.stopDetail),
     ...liveStatusInput(live),
   }).label;
   return (
@@ -115,6 +118,8 @@ const DeskProxies = memo(function DeskProxies({ desk, layout, stop, covered }: {
         type="button"
         id={`proxy-${desk.id}`}
         className={proxyClass(desk.id)}
+        data-desk={desk.id}
+        data-kind={desk.kind}
         tabIndex={stop === desk.id ? 0 : -1}
         aria-keyshortcuts={keys}
         aria-label={`${desk.name} desk, ${layout.items.length} apps, ${status}`}
@@ -126,7 +131,11 @@ const DeskProxies = memo(function DeskProxies({ desk, layout, stop, covered }: {
         const it = byId.get(id);
         const slot = geo.slots[id];
         if (!it || !slot) return null;
-        const deskCount = live.apps[it.app]?.badge ?? desk.badges[it.app] ?? 0;
+        // An installed app's (`app:` ids, none of the desk's `summary`) comes from the desk app host.
+        const sum = live.apps[it.app] ?? host?.summary(desk.id, it.app);
+        const deskCount = sum?.badge ?? desk.badges[it.app] ?? 0;
+        // An installed app that's stopped by a problem says so in its name, in the contract's words (section 2.6).
+        const problem = (sum as { problem?: string } | undefined)?.problem;
         // The lead's tile counts the team's waiting requests where the desk's own word says fewer (S-14), as the canvas does.
         const count = (isAgentApp(it.app) ? rosterAgent(it.app, desk.id)?.unseen : undefined) ?? (it.app === 'agent' ? Math.max(deskCount, teamWaiting(desk.id)) : deskCount);
         // The lead's tile speaks for the team's approvals; an agent's own counts its unseen replies.
@@ -148,7 +157,7 @@ const DeskProxies = memo(function DeskProxies({ desk, layout, stop, covered }: {
             className={proxyClass(it.id)}
             tabIndex={stop === it.id && !covered.split(',').includes(it.id) ? 0 : -1}
             aria-keyshortcuts={keys}
-            aria-label={`${appLabel(it.app, desk.id)}${suffix}`}
+            aria-label={`${appLabel(it.app, desk.id)}${problem ? `, ${problem}` : ''}${suffix}`}
             style={{ left: layout.x + slot.x, top: layout.y + slot.y, width: slot.w, height: slot.h }}
             onFocus={() => appFocused(desk.id, it.id)}
             onClick={() => openItem(desk.id, it.id)}

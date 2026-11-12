@@ -44,8 +44,20 @@ export interface ClientConfig {
    * this device (the address's button) stays: it needs nothing from anyone.
    */
   browserLinks?: { enabled?: boolean };
+  /**
+   * Desk apps (S-97, ADR 0054): the Apps sheet, adding an app and its window. A kill switch: absent is on, `{ enabled: false }`
+   * hides every desk's Apps row and leaves installed apps' tiles as their widget, with no window (`deskapps/door.ts`).
+   */
+  deskApps?: { enabled?: boolean };
+  /**
+   * Site sign-ins on desks (#11, S-142): the Browser bar's key, Extensions and the Passwords and sign-ins panel. A kill
+   * switch: absent is on, `{ enabled: false }` is off (`browser/extensions/signIns.ts` `signInsOn`).
+   */
+  siteSignIns?: { enabled?: boolean };
   /** Open tiles (ADR 0053): an app enlarged on its desk is the live app there. A kill switch: absent is on (`opentile/door.ts`). */
   openTiles?: { enabled?: boolean };
+  /** `{name, domain}`, in prod only (ma-platform contract auth.md section 3.4): the landing's signed-in cookie (`signedInCookie.ts`). Absent: none set or cleared. */
+  signedInCookie?: unknown;
 }
 
 /** The member's account page on the Platform app, if client-config gives a good one. */

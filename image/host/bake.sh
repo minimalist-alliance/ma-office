@@ -21,6 +21,14 @@ BUILDER_TYPE=${BUILDER_TYPE:-c7g.large}
 REPO=$(cd "$IMG/.." && pwd)
 INSTANCE_ID=; AMI_ID=; BAKE_OK=0; SG_ID=; KEY_NAME=; WORKDIR=
 
+# A release bake (ma-shared-host-) is made from committed files only (Security's ADR 0077 Low 2, Nov 11): a changed or untracked file
+# under image/ would bake the working tree's template key, anchor or recipe into a host every slot on it trusts. A test bake may, and
+# its Git SHA says +dirty.
+if [[ $PREFIX == ma-shared-host-* ]]; then
+  DIRTY=$(git -C "$REPO" status --porcelain --untracked-files=all -- image) || die "can't read the image/ tree's git status: no release bake"
+  [ -z "$DIRTY" ] || die "a release bake ($PREFIX) needs a clean image/ tree; commit or remove: $(head -5 <<<"$DIRTY" | tr '\n' ' ')"
+fi
+
 cleanup() {
   local rc=$?
   trap - EXIT
@@ -68,7 +76,9 @@ done
 
 # ADR 0077 PU-9: the template signing key, before anything is launched. The committed key must be exactly its committed anchor
 # (recipe/template-keys.sha256; recipe/build.sh checks it again on the builder, staged and installed) and alias/ma-host-template's
-# public half as KMS's GetPublicKey gives it (compared as DER). A role without kms:GetPublicKey skips only the KMS half, loudly.
+# public half as KMS's GetPublicKey gives it (compared as DER). The KMS half is the one check that catches a key and its anchor changed
+# together in git, so a role without kms:GetPublicKey stops the bake too, unless ALLOW_NO_KMS_COMPARE=1 says to bake on the anchor
+# alone, loudly (Security's ADR 0077 Low 1, Nov 11).
 TK_DIR=$HERE/recipe/files/etc/desk-host/template-keys; TK_ANCHOR=$HERE/recipe/template-keys.sha256
 python3 -I "$HERE/recipe/template-key-check" "$TK_DIR" "$TK_ANCHOR" >&2 || die "the committed template key isn't exactly its anchor (recipe/template-keys.sha256)"
 TK_DER=$(mktemp); TK_ERR=$(mktemp)
@@ -76,8 +86,11 @@ if aws kms get-public-key --key-id alias/ma-host-template --query PublicKey --ou
    && [ -s "$TK_DER" ]; then
   python3 -I "$HERE/recipe/template-key-check" "$TK_DIR" "$TK_ANCHOR" --kms-der "$TK_DER" >&2 \
     || { rm -f "$TK_DER" "$TK_ERR"; die "the committed template key isn't alias/ma-host-template's public half (KMS GetPublicKey differs): no bake"; }
+elif grep -q 'AccessDenied' "$TK_ERR" && [ "${ALLOW_NO_KMS_COMPARE:-0}" = 1 ]; then
+  log "WARNING: ==== the template key was NOT compared with KMS (ALLOW_NO_KMS_COMPARE=1): this role lacks kms:GetPublicKey on alias/ma-host-template. Only the committed anchor is checked in this bake ===="
 elif grep -q 'AccessDenied' "$TK_ERR"; then
-  log "WARNING: ==== the template key was NOT compared with KMS: this role lacks kms:GetPublicKey on alias/ma-host-template. Only the committed anchor is checked in this bake ===="
+  rm -f "$TK_DER" "$TK_ERR"
+  die "this role lacks kms:GetPublicKey on alias/ma-host-template, so the committed template key can't be compared with KMS: no bake (ALLOW_NO_KMS_COMPARE=1 bakes on the committed anchor alone)"
 else
   e=$(grep -o '[A-Za-z]*Exception' "$TK_ERR" | head -1 || true); rm -f "$TK_DER" "$TK_ERR"
   die "KMS GetPublicKey on alias/ma-host-template failed (${e:-no error class}): no bake"

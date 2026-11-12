@@ -14,6 +14,7 @@ The BSB is the modern default. Each folder holds:
 - `<code>.tsv`: the text, in the format below.
 - `books.tsv`: the 66 books with this translation's own short names and chapter counts.
 - `STATEMENT.txt`: the publisher's own public-domain statements, quoted word for word, each with the page it came from and the date it was read.
+- `NOTICE.txt`: what the app shows a member in the translation's About sheet: only the publisher's own paragraphs from `STATEMENT.txt`, each word for word (no rulers, source or read lines, hashes, site footers or donation appeals), one blank line between paragraphs, UTF-8, LF, a newline at the end. `check.py` checks each paragraph is in `STATEMENT.txt`.
 - `SOURCE.md`: the edition, every file fetched with its size and SHA-256, what normalizing kept and left out, counts, spot checks and rights notes.
 
 ## Canon

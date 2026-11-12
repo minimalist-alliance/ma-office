@@ -19,7 +19,9 @@
 #   table that brings a slot's replies to the demux's transparent sockets (nftables.conf's divert), and the one accept in
 #   host_in for TCP 443 on that address and interface.
 set -euo pipefail
-conf() { sed -n "s/^$1=//p" /etc/desk-host/desk-host.conf 2>/dev/null | tail -1 | tr -d '"'; }
+# a key's value, or nothing; a conf that isn't there is every default, as desk-host-check, the link and preread.py read it (under pipefail
+# sed's exit 2 alone ended every command with no message)
+conf() { sed -n "s/^$1=//p" /etc/desk-host/desk-host.conf 2>/dev/null | tail -1 | tr -d '"' || true; }
 log() { echo "desk-host-boot: $*"; }
 DH=/srv/desk-host; V=/var/lib/desk-host
 # Every directory desk-host-check dirs requires, at its mode: install -d -m sets the mode of a directory that exists too (and the
@@ -133,8 +135,8 @@ while ip rule del fwmark 0x4430 lookup 4430 2>/dev/null; do :; done
 ip route flush table 4430 2>/dev/null || true
 rm -rf "${DMX:?}"
 if [ "$mode" = port ]; then
-  dev=$(ip -4 -j route show default | python3 -I -c 'import json,sys; r=[x for x in json.load(sys.stdin) if x.get("dev")]; print(min(r, key=lambda x: x.get("metric", 0))["dev"] if r else "")')
-  addr=$(ip -4 -j addr show dev "$dev" 2>/dev/null | python3 -I -c 'import json,sys; a=[i["local"] for l in json.load(sys.stdin) for i in l.get("addr_info", []) if i.get("family") == "inet"]; print(a[0] if a else "")')
+  dev=$(ip -4 -j route show default | python3 -I -c 'import json,sys; r=[x for x in json.load(sys.stdin) if x.get("dev")]; print(min(r, key=lambda x: x.get("metric", 0))["dev"] if r else "")') || dev=""
+  addr=$(ip -4 -j addr show dev "$dev" 2>/dev/null | python3 -I -c 'import json,sys; a=[i["local"] for l in json.load(sys.stdin) for i in l.get("addr_info", []) if i.get("family") == "inet"]; print(a[0] if a else "")' 2>/dev/null) || addr=""   # no route: ip prints nothing, and the line below says so
   [ -n "$dev" ] && [ -n "$addr" ] || { log "SlotMode=port: no address of the host's own (default route: ${dev:-none})"; exit 1; }
   getent group desk-dmx >/dev/null || { log "SlotMode=port: no desk-dmx group (the host recipe makes it)"; exit 1; }
   install -d -m 755 -o root -g root $DMX; install -d -m 750 -o root -g desk-dmx $DMX/slots

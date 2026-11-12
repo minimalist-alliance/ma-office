@@ -1,0 +1,115 @@
+/* Site sign-ins (#11, S-142): the Extensions menu's rows and the rows More folds in, from the Product Designer's
+   desk-browser.css section 4 as written (`.xm-item` is in bar.css with More). The menus reuse the quality menu's
+   `.qm-menu`, `.qm-title`, `.qm-sep` and `.qm-note`. Every color is a token, every size final. In the Browser window's
+   chunk. Two changes: the pin is a menu's checkbox item, so `aria-checked` shows it's in the bar where the spec's mock
+   button had `aria-pressed`; and the row's ring follows its name's `:focus-visible`, not `:focus-within`, so a menu opened
+   by a press or a tap shows no ring, as the quality menu's items don't, and the pin's own ring isn't doubled. */
+.xm-row {
+  display: flex;
+  align-items: center;
+  gap: 10px;
+  padding: 6px 6px 6px 10px;
+  border-radius: 10px;
+}
+.xm-row:hover {
+  background: var(--ma-surface-sunken);
+}
+.xm-chip {
+  flex: none;
+  display: grid;
+  place-items: center;
+  width: 30px;
+  height: 30px;
+  border-radius: 9px;
+  background: var(--ma-surface-sunken);
+  color: var(--ma-glyph);
+}
+.xm-row:hover .xm-chip {
+  background: var(--ma-surface-fill);
+}
+.xm-open {
+  flex: 1;
+  min-width: 0;
+  display: grid;
+  gap: 1px;
+  padding: 2px 0;
+  border: 0;
+  background: none;
+  color: inherit;
+  font: inherit;
+  text-align: left;
+  cursor: pointer;
+}
+.xm-name {
+  font-size: 14px;
+  line-height: 20px;
+  font-weight: 500;
+}
+.xm-by {
+  font-size: 12.5px;
+  line-height: 17px;
+  color: var(--ma-text-secondary);
+}
+.xm-state {
+  font-size: 12.5px;
+  line-height: 17px;
+  color: var(--ma-text-tertiary);
+}
+.xm-pin {
+  flex: none;
+  display: grid;
+  place-items: center;
+  width: 32px;
+  height: 32px;
+  padding: 0;
+  border: 0;
+  border-radius: 8px;
+  background: none;
+  color: var(--ma-text-tertiary);
+  cursor: pointer;
+}
+.xm-pin:hover {
+  background: var(--ma-surface-fill-strong);
+  color: var(--ma-text-primary);
+}
+.xm-pin[aria-checked='true'] {
+  color: var(--ma-accent);
+}
+.xm-add {
+  flex: none;
+  height: 30px;
+  padding: 0 12px;
+  border: 1px solid var(--ma-border-strong);
+  border-radius: 10px;
+  background: var(--ma-surface-window);
+  color: var(--ma-text-primary);
+  font: inherit;
+  font-size: 13px;
+  font-weight: 500;
+  cursor: pointer;
+}
+.xm-add:hover {
+  background: var(--ma-surface-sunken);
+}
+.xm-row:has(.xm-open:focus-visible),
+.xm-pin:focus-visible,
+.xm-add:focus-visible {
+  outline: 2px solid var(--ma-focus-ring);
+  outline-offset: -2px;
+}
+/* The row's ring is the name's. */
+.xm-open:focus-visible {
+  outline: none;
+}
+@media (pointer: coarse) {
+  .xm-row,
+  .xm-item {
+    min-height: 48px;
+  }
+  .xm-pin,
+  .xm-add {
+    min-width: 44px;
+    min-height: 44px;
+  }
+}
+

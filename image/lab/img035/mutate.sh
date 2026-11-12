@@ -40,7 +40,7 @@ run() { local name=$1 what=$2 want=$3 setup=$4 extra=${5:-} o=$S/m/$1.txt got ok
   printf '%-30s %-6s expected %-22s %-4s got: %s\n' "$name" "$what" "${want:-nothing}" "$ok" "$got" | tee -a "$OUT"
 }
 POL='python3 -I -c "import json,sys; p=sys.argv[1]; d=json.load(open(p)); exec(sys.argv[2]); json.dump(d, open(p, \"w\"), indent=2)"'
-for p in links click bands keys jxl; do run "pristine-first-$p" $p "" "true"; done
+for p in links click bands keys blocklist jxl; do run "pristine-first-$p" $p "" "true"; done
 run pristine-first-filter af "" "true"
 run stand-in-gone              links FAILED "rm -f /usr/local/bin/xdg-open /usr/local/bin/xdg-email"
 run stand-in-gone              click FAILED "rm -f /usr/local/bin/xdg-open /usr/local/bin/xdg-email"
@@ -55,11 +55,12 @@ run helper-allows-every-band   bands FAILED "sed -i 's/^        remove(ADULT)\$/
 run empty-allowlist            bands FAILED "$POL /etc/ma/chromium-adult.json 'd[\"ExtensionInstallAllowlist\"] = []'"
 run ma-json-no-blocklist       bands FAILED "$POL /etc/chromium/policies/managed/ma.json 'del d[\"ExtensionInstallBlocklist\"]'"
 run teen-file-shares-a-key     keys  FAILED "$POL /etc/ma/chromium-teen.json 'd[\"ExtensionInstallAllowlist\"] = []'"
+run staging-host-unlisted      blocklist FAILED "$POL /etc/chromium/policies/managed/ma.json 'd[\"URLBlocklist\"].remove(\"office.staging.minimalistalliance.com\")'"
 run jxl-switch-gone            jxl   FAILED "sed -i 's/ --disable-features=JXLImageFormat//' /usr/local/lib/ma/desk-browser-start; grep -c JXLImageFormat /usr/local/lib/ma/desk-browser-start"
 run jxl-second-disable-features jxl  FAILED "sed -i 's/--remote-debugging-port=9222/--remote-debugging-port=9222 --disable-features=MaVerifyNothing/' /usr/local/lib/ma/desk-browser-start"
 run openrouter-unlisted        af    F-UNIT,F-PROV,F-PLACE "sed -i '/^openrouter.ai\$/d' /etc/ma/agent-egress.conf; systemctl restart desk-agent-filter; sleep 1"
 run a-fifth-name-listed        af    F-UNIT,F-CF "echo www.cloudflare.com >> /etc/ma/agent-egress.conf; systemctl restart desk-agent-filter; sleep 1"
-for p in links click bands keys jxl; do run "pristine-last-$p" $p "" "true"; done
+for p in links click bands keys blocklist jxl; do run "pristine-last-$p" $p "" "true"; done
 run pristine-last-filter af "" "true"
 $L sh 'rm -rf /var/tmp/mut'
 echo "mutations: $(grep -c ' yes ' "$OUT") of $(grep -c ' expected ' "$OUT") as expected" | tee -a "$OUT"

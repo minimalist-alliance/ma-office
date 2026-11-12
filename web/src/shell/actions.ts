@@ -2,7 +2,8 @@
 // they can't drift. Component code calls these; these call the camera and the stores.
 import { zoomedInOn } from '../canvas/camera';
 import { camera } from '../canvas/controller';
-import { deskBounds, detailLevel, isAgentApp, unionBounds, type AppId, type CoreAppId, type LayoutItem, type Rect } from '../canvas/layout';
+import { deskBounds, detailLevel, isAgentApp, isDeskApp, unionBounds, type AppId, type CoreAppId, type LayoutItem, type Rect } from '../canvas/layout';
+import { host } from '../deskapps/door';
 import { agentAppName } from '../agent/roster';
 import { isPhone } from '../canvas/phone';
 import { deskClosed, wakeDesk } from '../desk/liveStore';
@@ -242,6 +243,8 @@ export function cycleDesk(dir: 1 | -1): void {
 }
 
 function launch(deskId: string, item: LayoutItem): void {
+  // An installed app with apps switched off here (client-config's kill switch, or deskd's) is its widget alone, with no window.
+  if (isDeskApp(item.app) && host?.openable(deskId) === false) return;
   const opened = openWindow(deskId, item.app, item.id);
   const desk = useLayoutStore.getState().desks[deskId];
   if (opened === 'carousel' && desk) {
@@ -252,8 +255,8 @@ function launch(deskId: string, item: LayoutItem): void {
 }
 
 const LABELS: Record<CoreAppId, string> = { notebook: 'Notebook', browser: 'Browser', chat: 'Chat', agent: 'Agent', commons: 'Commons', files: 'Files' };
-/** An app's name. An agent's own app (task 49) is its agent's name, on this desk where it's given. */
-export const appLabel = (app: AppId, deskId?: string): string => (isAgentApp(app) ? agentAppName(app, deskId) : LABELS[app]);
+/** An app's name. An agent's own app (task 49) is its agent's name, on this desk where it's given; an installed app's is its own. */
+export const appLabel = (app: AppId, deskId?: string): string => (isAgentApp(app) ? agentAppName(app, deskId) : isDeskApp(app) ? (host?.name(app, deskId) ?? 'App') : LABELS[app]);
 
 export function openItem(deskId: string, itemId: string): void {
   const layout = useLayoutStore.getState().desks[deskId];

@@ -2,8 +2,9 @@
 // own chunk, loaded by `session.ts` only once `GET /v1/me` says `membership.tier: "free"`, which hands its parts to the
 // few places that show them (`door.ts`). "Visible everywhere, spoken rarely": the meter, Maia asleep and the account
 // menu's tier line show it (the Work desk offer and See membership are the setup circle's after-setup card now), and
-// the office speaks up at most once a day, only when the day's Browser time is nearly or wholly used. No modals, no red, no counts, no badges or padlocks; nothing in Chat, Agent or Notebook; nothing in
-// full screen; never on the sign-in pages; and nothing while a desk wakes.
+// the office speaks up at most once a day, only when the day's Browser time is nearly or wholly used. No modals, no red, no counts, no badges or padlocks; nothing in Chat, Agent or Notebook; nothing said in
+// full screen (the meter stays in view there, in the title bar of a Browser that covers it: walk L13); never on the
+// sign-in pages; and nothing while a desk wakes.
 //
 // The upgrade happens in place: paying is on the membership page in its own tab, and coming back to this one re-reads
 // `/v1/me`. The new tier plays one beat (about 600 ms, instant under reduced motion): the meter fills back up and hands
@@ -22,7 +23,8 @@ import { setDeskListDirect, useDeskStore } from '../state/deskStore';
 import { reconcileLayout } from '../state/layoutStore';
 import { useFree } from './door';
 import { FreeAccount, FreeBrowserLine, FreeNotices } from './Lines';
-import { FreeMeter } from './Meter';
+import { watchCover } from './cover';
+import { FreeMeter, FreeWindowRing } from './Meter';
 import { SAID_ON, readPref, writePref } from './prefs';
 import { BEAT_MS, HEADS_UP_MS, showNotice, UPGRADED_MS, useFreeState } from './state';
 import { allianceDrive, CONTENTION_TOPIC, devBrowserTime, isFree, membershipUrl, paidTier, readBrowserTime, readHeld, secondsLeft, usedUp, type BrowserTime } from './wire';
@@ -76,6 +78,7 @@ export function open(again: () => Promise<void>): void {
     Notices: FreeNotices,
     Account: FreeAccount,
     BrowserLine: FreeBrowserLine,
+    WindowRing: FreeWindowRing,
     pause,
     drive: () => {
       const cfg = useSession.getState().config;
@@ -86,6 +89,9 @@ export function open(again: () => Promise<void>): void {
   watchMe();
   watchReturn();
   watchHeld();
+  watchCover((cover) => {
+    if (useFreeState.getState().cover !== cover) useFreeState.setState({ cover });
+  });
   if (import.meta.env.MODE !== 'production') devHooks();
 }
 
@@ -208,9 +214,9 @@ function upgrade(withWork: boolean): void {
 
 /** After the beat: the bandwidth circle is back, Maia is asked again (and wakes), and nothing of the free tier speaks. */
 function finish(): void {
-  useFreeState.setState({ phase: 'after' });
+  useFreeState.setState({ phase: 'after', cover: null });
   const maia = (useFree.getState().maia ?? 0) + 1;
-  useFree.setState({ free: false, meter: false, Account: undefined, BrowserLine: undefined, pause: undefined, drive: undefined, maia });
+  useFree.setState({ free: false, meter: false, Account: undefined, BrowserLine: undefined, WindowRing: undefined, pause: undefined, drive: undefined, maia });
   window.clearTimeout(pauseTimer);
   window.clearTimeout(speakTimer);
   if (paused.size) liftPauses();

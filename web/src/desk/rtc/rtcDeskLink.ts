@@ -1,11 +1,12 @@
 // The real link: `connect` on api., `session.open` and `signal` on the gateway, then one WebRTC
 // PeerConnection to the desk (design 4.2.1, 4.2.2, 4.2.7). This file is the policy; `peer.ts` holds
 // the connection and `gateway.ts` the WebSocket. Nothing here runs per frame.
+import { trafficStopOf } from '../trafficStop';
 import { api, ApiError } from '../../platform/api';
 import { SignInRequired } from '../../platform/auth';
 import type { GuildAccess } from '../../guild/access';
 import { ATTENTION_DEADLINE_MS, AttentionSignal } from '../attention';
-import { DeskNotConnected, type BrowserInput, type BrowserMedia, type PhoneDevice, type BulkChannel, type CollabChannel, type DeskLink, type DeskRefusal, type DeskRpc, type LinkDetails, type LinkState, type LinkTopics, type RpcOptions } from '../deskLink';
+import { DeskNotConnected, type BrowserInput, type BrowserMedia, type PhoneDevice, type BulkChannel, type CollabChannel, type DeskLink, type DeskRefusal, type DeskRpc, type LinkDetails, type LinkState, type LinkTopics, type RawTopicEvent, type RpcOptions } from '../deskLink';
 import { backoffMs } from './backoff';
 import { gateway, GatewayError, type GatewayListener, type GatewayMessage } from './gateway';
 import { tabIdentity } from './identity';
@@ -352,6 +353,10 @@ export class RtcDeskLink implements DeskLink, GatewayListener {
       },
       ...(onRefused ? { refused: onRefused } : {}),
     });
+  }
+
+  subscribeRaw(topic: string, fn: (e: RawTopicEvent) => void, onRefused?: (code: string) => void): () => void {
+    return this.subs.subscribe(topic, {}, { event: ({ type, seq, data }) => fn({ type, seq, data }), ...(onRefused ? { refused: onRefused } : {}) });
   }
 
   // ----- state and what shows
@@ -984,7 +989,7 @@ export class RtcDeskLink implements DeskLink, GatewayListener {
         break;
       case 'desk.stopping':
         this.stopping = true;
-        this.patchDesk({ state: 'stopping', stopAt: m.stopAt ?? null, stopReason: m.reason ?? null });
+        this.patchDesk({ state: 'stopping', stopAt: m.stopAt ?? null, stopReason: m.stopReason ?? m.reason ?? null, stopDetail: trafficStopOf(m.stopDetail) });
         break;
       default:
     }

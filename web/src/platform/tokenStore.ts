@@ -12,6 +12,8 @@
 // Before this, the token was in IndexedDB (`ma-desk`, store `kv`, key `refresh`). A token found only there moves to
 // localStorage on first read, so nobody is signed out by the update, and the old sign-in pages' handoff still lands.
 
+import { keepSignedIn } from './signedInCookie';
+
 /** Platform's `preferences.staySignedIn` (`GET /v1/me`). */
 export type StaySignedIn = '30d' | '7d' | '1d' | 'browser';
 const CHOICES: readonly string[] = ['30d', '7d', '1d', 'browser'];
@@ -68,6 +70,19 @@ export function follow(mine: string | null, msg: Moved): string | null | undefin
 }
 
 let channel: BroadcastChannel | null | undefined;
+const goneElsewhere = new Set<(wasThis: boolean) => void>();
+
+/**
+ * Told when another tab says its token is gone (`to: null`: a sign-out, or a refused refresh), once this tab's own copy
+ * has followed, so `hasStoredToken` then says whether anything is left here. `wasThis`: the token gone is the one this
+ * tab read, as it read it just before. That holds even where the other tab's removal from localStorage hasn't reached
+ * this tab yet, which the channel's message can beat (ISS-89). Never for a rotation or a move between the stores. A tab
+ * hears from its first read of the token (`listen`).
+ */
+export function onTokenGoneElsewhere(fn: (wasThis: boolean) => void): () => void {
+  goneElsewhere.add(fn);
+  return () => goneElsewhere.delete(fn);
+}
 
 /** This tab listens from its first read, which is at boot (`hasStoredSession`). */
 function listen(): BroadcastChannel | null {
@@ -75,8 +90,10 @@ function listen(): BroadcastChannel | null {
   channel = typeof BroadcastChannel === 'function' ? new BroadcastChannel(REFRESH_KEY) : null;
   if (channel) {
     channel.onmessage = (e: MessageEvent<Moved>) => {
+      const was = get('session') ?? get('local');
       const next = follow(get('session'), e.data);
       if (next !== undefined) put('session', next);
+      if (e.data && e.data.to === null) for (const fn of goneElsewhere) fn(was !== null && was === e.data.from);
     };
   }
   return channel;
@@ -327,6 +344,8 @@ export function readChoice(): { staySignedIn: StaySignedIn | null; staySignedInS
 export function rememberChoice(prefs: { staySignedIn?: unknown; staySignedInSince?: unknown }): void {
   if (get('session') === null && get('local') === null) return;
   setExtra(CHOICE_KEY, JSON.stringify({ staySignedIn: staySignedInOf(prefs.staySignedIn), staySignedInSince: typeof prefs.staySignedInSince === 'string' ? prefs.staySignedInSince : null }));
+  // The landing's signed-in cookie follows the choice as the token does: a managed-login sign-in learns it here, and so does a change.
+  keepSignedIn(staySignedInOf(prefs.staySignedIn));
 }
 
 /**

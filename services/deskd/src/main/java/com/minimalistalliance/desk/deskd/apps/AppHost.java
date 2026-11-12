@@ -5,14 +5,15 @@ import java.nio.file.Path;
 /**
  * What runs an app for deskd: the System Engineer's root helper, {@code desk-apps} (the desk app contract, section 9, and the
  * Desk Engineer's review, "deskd and the helper"). It makes an app's directories with its uid and disk quota, starts and stops
- * its sandboxed unit in {@code apps.slice}, says how it last ended, and removes it. deskd never runs an app itself, and the
- * helper never parses a package: deskd has verified and placed the release, and the helper reads only
- * {@code /data/apps/<id>/current/ma-app.json} to build the unit, holding it to the first-party ceilings and the uid range
- * whatever it says.
+ * its sandboxed unit in {@code apps.slice}, says how it last ended, and removes it. deskd never runs a catalog app itself
+ * (only the first-party apps in its own image, below), and the helper never parses a package: deskd has verified and placed
+ * the release, and the helper reads only {@code /data/apps/<id>/current/ma-app.json} to build the unit, holding it to the
+ * first-party ceilings and the uid range whatever it says.
  *
  * <p>{@link HelperAppHost} is the real one, over {@code /run/desk/apps.sock}. No image has the helper yet, so on a desk today
- * {@link #unavailable} says {@code no_sandbox} and nothing installs or starts. Tests use a double that runs a fake app in
- * the test's own JVM.
+ * {@link #unavailable} says {@code no_sandbox} and no catalog app installs or starts. {@link BundledAppHost} runs the
+ * first-party apps bundled in deskd's own image, as deskd's children, until the helper exists. Tests use a double that runs
+ * a fake app in the test's own JVM.
  */
 public interface AppHost {
 
@@ -65,6 +66,12 @@ public interface AppHost {
 
     /** The uid deskd must see at the app's socket ({@code SO_PEERCRED}): the app's own on a desk. */
     int peerUid(int appUid);
+
+    /**
+     * deskd is stopping. The helper's units run on, and the next deskd connects to them again, so this does nothing for it;
+     * {@link BundledAppHost}'s apps are deskd's own children, and stop.
+     */
+    default void close() {}
 
     /** The helper said no, failed, or couldn't be reached. {@link #code} is a word the client may be told. */
     final class AppHostException extends Exception {

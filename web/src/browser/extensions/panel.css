@@ -1,0 +1,226 @@
+/* Passwords and sign-ins (#11, S-142), the panel over the picture's right side: the Product Designer's desk-browser.css
+   section 5 as written, plus what the build needs that the stills don't draw (the phone's Back in the head, the hidden
+   file input, a line that says why an import didn't go). Every color is a token. In the panel's own chunk. */
+.pw-panel {
+  position: absolute;
+  top: 0;
+  right: 0;
+  bottom: 0;
+  z-index: 3; /* over the picture card (2) */
+  display: flex;
+  flex-direction: column;
+  width: min(400px, 100%);
+  border-left: 1px solid var(--ma-border);
+  background: var(--ma-surface-window);
+  box-shadow: var(--ma-elevation-menu);
+  color: var(--ma-text-primary);
+  animation: pw-in 180ms ease-out;
+}
+@keyframes pw-in {
+  from {
+    transform: translateX(16px);
+    opacity: 0;
+  }
+}
+.pw-head {
+  flex: none;
+  display: flex;
+  align-items: center;
+  gap: 8px;
+  height: 48px;
+  padding: 0 8px 0 20px;
+  border-bottom: 1px solid var(--ma-border-hairline);
+}
+.pw-head h2 {
+  flex: 1;
+  margin: 0;
+  font-size: 15px;
+  line-height: 22px;
+  font-weight: 600;
+}
+.pw-body {
+  flex: 1;
+  min-height: 0;
+  overflow-y: auto;
+  overscroll-behavior: contain;
+  padding: 4px 20px 20px;
+}
+.pw-sec {
+  padding: 16px 0;
+  border-bottom: 1px solid var(--ma-border-hairline);
+}
+.pw-sec:last-child {
+  border-bottom: 0;
+}
+.pw-h {
+  margin: 0 0 6px;
+  font-size: 13px;
+  line-height: 18px;
+  font-weight: 600;
+  color: var(--ma-text-primary);
+}
+.pw-p {
+  margin: 0 0 10px;
+  font-size: 13px;
+  line-height: 19px;
+  color: var(--ma-text-secondary);
+}
+.pw-p:last-child {
+  margin-bottom: 0;
+}
+.pw-list .xm-row {
+  padding-right: 10px;
+}
+.pw-quiet {
+  font-size: 12.5px;
+  line-height: 17px;
+  color: var(--ma-text-tertiary);
+}
+.pw-list {
+  display: grid;
+  gap: 2px;
+  margin: 0 -10px 8px;
+}
+.pw-link {
+  padding: 0;
+  border: 0;
+  background: none;
+  color: var(--ma-text-link);
+  font: inherit;
+  font-size: 13px;
+  line-height: 19px;
+  text-decoration: underline;
+  text-underline-offset: 2px;
+  cursor: pointer;
+}
+.pw-link.danger {
+  color: var(--ma-text-danger);
+}
+.pw-btn {
+  display: inline-flex;
+  align-items: center;
+  gap: 6px;
+  height: 34px;
+  padding: 0 14px;
+  border: 1px solid var(--ma-border-strong);
+  border-radius: 10px;
+  background: var(--ma-surface-window);
+  color: var(--ma-text-primary);
+  font: inherit;
+  font-size: 13px;
+  font-weight: 500;
+  cursor: pointer;
+}
+.pw-btn:hover {
+  background: var(--ma-surface-sunken);
+}
+.pw-btn.primary {
+  border-color: var(--ma-accent);
+  background: var(--ma-accent);
+  color: var(--ma-text-on-accent);
+}
+.pw-btn.danger {
+  border-color: var(--ma-text-danger);
+  color: var(--ma-text-danger);
+}
+.pw-result {
+  display: flex;
+  gap: 10px;
+  margin: 0 0 10px;
+  padding: 10px 12px;
+  border-radius: 10px;
+  background: var(--ma-surface-sunken);
+  font-size: 13px;
+  line-height: 19px;
+}
+.pw-result .icon {
+  flex: none;
+  margin-top: 1px;
+  color: var(--ma-status-online);
+}
+.pw-ask {
+  margin: 4px 0 0;
+  padding: 12px;
+  border: 1px solid var(--ma-border);
+  border-radius: 12px;
+  background: var(--ma-surface-sunken);
+}
+.pw-ask .pw-p {
+  color: var(--ma-text-primary);
+}
+.pw-acts {
+  display: flex;
+  flex-wrap: wrap;
+  gap: 8px;
+  margin-top: 10px;
+}
+.pw-link:focus-visible,
+.pw-btn:focus-visible {
+  outline: 2px solid var(--ma-focus-ring);
+  outline-offset: 2px;
+}
+@media (max-width: 599px) {
+  .pw-panel {
+    width: 100%;
+    border-left: 0;
+  }
+  .pw-head {
+    padding-left: 4px;
+  }
+  .pw-body {
+    padding-inline: 16px;
+    padding-bottom: calc(20px + env(safe-area-inset-bottom, 0px));
+  }
+}
+@media (pointer: coarse) {
+  .pw-btn {
+    min-height: 44px;
+  }
+  .pw-link {
+    min-height: 44px;
+  }
+}
+
+/* ------------------------------------------------------------ the build's own */
+/* A phone has Back where a computer has ✕ (spec section 9). */
+.pw-back {
+  display: none;
+}
+@media (max-width: 599px) {
+  .pw-back {
+    display: inline-grid;
+  }
+  .pw-x {
+    display: none;
+  }
+}
+.pw-head h2:focus {
+  outline: none;
+}
+.pw-head h2:focus-visible {
+  outline: 2px solid var(--ma-focus-ring);
+  outline-offset: 2px;
+  border-radius: 4px;
+}
+.pw-ask .pw-h:focus {
+  outline: none;
+}
+.pw-file {
+  display: none;
+}
+.pw-btn .icon {
+  flex: none;
+}
+.pw-btn:disabled {
+  cursor: default;
+  opacity: 0.6;
+}
+.pw-quiet.below {
+  margin-top: 8px;
+}
+.pw-err {
+  color: var(--ma-text-primary);
+}
+.pw-list .xm-state {
+  color: var(--ma-text-tertiary);
+}

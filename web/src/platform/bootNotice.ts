@@ -7,11 +7,17 @@
 // away). This tab keeps, per desk, the last boot it has told the member about (localStorage, a convenience: with it
 // gone, only a boot from the last day is told). A boot while the office was closed is told when it next opens. A cloud
 // desk has none of these fields, so nothing is said for it.
+//
+// What's told is the member's, so it goes with the layout's mirror on every signed-out state and is written only while
+// that may be (`MEMBER_CACHE_KEYS` in `state/layoutStore.ts`, ISS-89). A sign-in that wiped it tells a boot from the last
+// day again, once.
 import { create } from 'zustand';
+import { layoutMirrorWritable } from '../state/layoutStore';
 import { useDeskStore, type DeskInfo } from '../state/deskStore';
 import { readJson, writeJson } from '../lib/util';
+import { onMemberChange } from './auth';
 
-const SEEN_KEY = 'ma.boots.seen.v1';
+export const SEEN_KEY = 'ma.boots.seen.v1';
 /** With nothing remembered, a boot older than this is old news. */
 export const FRESH_MS = 24 * 60 * 60_000;
 /** The platform's own window for "is trying to start now" (selfhost.md §4). */
@@ -93,7 +99,7 @@ function check(desks: readonly DeskInfo[]): void {
   const { notices, seen } = newBoots(desks, prior);
   // A desk missing from the list this time keeps its record.
   const merged = { ...prior, ...seen };
-  if (JSON.stringify(merged) !== JSON.stringify(prior)) writeJson(SEEN_KEY, merged);
+  if (JSON.stringify(merged) !== JSON.stringify(prior) && layoutMirrorWritable()) writeJson(SEEN_KEY, merged);
   add(notices);
   const refused = refusedCopies(desks).filter((n) => !putAway.has(`${n.deskId}@${n.at}`));
   const live = useBootNotices.getState().notices;
@@ -114,5 +120,15 @@ export function watchBoots(): () => void {
     check(desks);
   };
   run();
-  return useDeskStore.subscribe(run);
+  const stop = useDeskStore.subscribe(run);
+  // This tab's tokens became someone else's: the last member's notices, desk names and all, go from the tab (ISS-89).
+  const off = onMemberChange((_sub, before) => {
+    if (before === null) return;
+    putAway.clear();
+    useBootNotices.setState({ notices: [] });
+  });
+  return () => {
+    stop();
+    off();
+  };
 }

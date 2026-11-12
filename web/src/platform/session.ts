@@ -4,8 +4,8 @@ import { create } from 'zustand';
 import { dropLastMeter, showLastMeter } from '../bandwidth/store';
 import { initialsOf } from '../chrome/avatar';
 import { closeAllLinks, dropAdultOnlySummaries, syncLinks } from '../desk/liveStore';
-import { clearDeskMirror, dropMirroredDesks, guildDeskIds, renameDeskInStore, setDeskList, setDeskListDirect, setDeskListError, setUnpaid, useDeskStore, type DeskInfo } from '../state/deskStore';
-import { fitLayoutToBand, reconcileLayout, useLayoutStore } from '../state/layoutStore';
+import { clearDeskMirror, dropDeskList, dropMirroredDesks, guildDeskIds, renameDeskInStore, setDeskList, setDeskListDirect, setDeskListError, setUnpaid, useDeskStore, type DeskInfo } from '../state/deskStore';
+import { fitLayoutToBand, forgetLayoutMirror, layoutMirrorFor, mirrorFollowsToken, reconcileLayout, useLayoutStore } from '../state/layoutStore';
 import { closeAdultOnlyWindows } from '../state/windowStore';
 import { ageBandOf, ageRulesOn, awaitingParent, currentBand, setCurrentBand } from './age';
 import { ApiError, getDesks, getMe, postSignOut, type DesksResponse, type Me } from './api';
@@ -16,7 +16,8 @@ import { linkFromAddress, linksOn } from '../open/intent';
 import { clearLastScreens, keepLastScreens } from '../browser/lastScreen';
 import { checkedConfig, checkedLastMe, forgetLastKnown, lastKnownFor, lastMeOf, readLastKnown, rememberLastKnown } from './lastKnown';
 import { signInAddress } from './signInAddress';
-import { placeTokenFor } from './tokenStore';
+import { hasStoredToken, onTokenGoneElsewhere, placeTokenFor } from './tokenStore';
+import { announce } from '../shell/announce';
 
 export type SessionStatus = 'booting' | 'signedOut' | 'signedIn' | 'refused';
 
@@ -65,12 +66,27 @@ export function retryConfig(): void {
   void loadConfig();
 }
 
-/** What this browser keeps of a member for a quick start, which whoever signs in next mustn't see. */
+/**
+ * What this browser keeps of a member for a quick start, which whoever signs in next mustn't see: the desk list's mirror,
+ * the last-known record, the saved layout's mirror (ISS-67) and the kept pictures. Every signed-out state comes here, or
+ * does the same (`refused`, `signOut`).
+ */
 function forgetMember(): Promise<void> {
   clearDeskMirror();
   forgetLastKnown();
+  forgetLayoutMirror();
   return forAtMost(clearLastScreens());
 }
+
+/**
+ * Another tab signed out, or had its refresh refused, and this tab has no token left: the saved layout's mirror goes now,
+ * with whatever this tab wrote to it meanwhile, and without a token it can't be written again (`layoutMirrorWritable`).
+ * The rest of this tab ends as it always has, at its next call (`sessionOver`).
+ */
+onTokenGoneElsewhere((wasThis) => {
+  if (wasThis || !hasStoredToken()) forgetLayoutMirror(false);
+});
+mirrorFollowsToken(hasStoredToken);
 
 function goSignedOut(notice: string | null): void {
   stopPolling();
@@ -86,6 +102,7 @@ function refused(): void {
   closeAllLinks();
   clearDeskMirror();
   forgetLastKnown();
+  forgetLayoutMirror();
   set({ status: 'refused' });
 }
 
@@ -195,11 +212,16 @@ let renames = 0;
 const withName = (res: DesksResponse, deskId: string, name: string): DesksResponse =>
   ({ ...res, desks: res.desks.map((d) => (d.deskId === deskId ? { ...d, name } : d)) });
 
+/** Goes up when this tab's tokens become another account's: a list asked for before is the last member's. */
+let members = 0;
+
 async function pollOnce(): Promise<number> {
+  const era = members;
   try {
     const asked = renames;
     const askedAt = Date.now();
     const r = await getDesks(etag);
+    if (era !== members) return -1; // the poll the change started carries on
     lastAskedAt = askedAt;
     if (r.data) {
       etag = r.etag;
@@ -213,6 +235,7 @@ async function pollOnce(): Promise<number> {
     if (meFailed || awaitingParent(me)) void loadMe();
     return (waitingForBand && meFailed ? RETRY_MS / 1000 : lastList?.pollAfterSeconds ?? 60) * 1000;
   } catch (err) {
+    if (era !== members) return -1;
     if (err instanceof SignInRequired) {
       await sessionOver();
       return -1;
@@ -314,7 +337,16 @@ function meUnknown(): void {
 onMemberChange((sub, before) => {
   void keepExportFor(sub);
   if (!lastKnownFor(sub)) dropLastKnown();
+  // Another account's saved layout goes, from storage and from this tab (ISS-67). The desks the list shows now keep a
+  // layout of their own, at a new desk's places, so any the new account's list names again draw at once.
+  layoutMirrorFor(sub, useDeskStore.getState().desks.map((d) => d.id));
   if (before === null || useSession.getState().status !== 'signedIn') return;
+  // The last member's desk list goes from the tab at once, and an answer asked for them is dropped (ISS-89).
+  members += 1;
+  renamedHere.clear();
+  dropDeskList();
+  announce(''); // the shell's live region keeps its last line, which can name the last member's desk
+  if (polling) startPolling();
   meIsLastKnown = false;
   set({ me: null, meFailed: false });
   void loadMe();
@@ -568,6 +600,7 @@ export async function signOut(opts: { everywhere?: boolean } = {}): Promise<void
   closeAllLinks();
   clearDeskMirror();
   forgetLastKnown();
+  forgetLayoutMirror(); // after the last words, which saved the layout; nothing writes it again from this page
   await forAtMost(clearLastScreens()); // the next person on this computer sees none of the kept pictures
   const cfg = useSession.getState().config ?? (await loadConfig());
   await endSession(cfg);

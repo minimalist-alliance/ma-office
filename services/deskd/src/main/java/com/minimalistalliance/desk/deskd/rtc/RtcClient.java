@@ -737,6 +737,50 @@ public final class RtcClient implements AutoCloseable {
         return (long) header.get(1) << 32 | header.getInt(4) & 0xFFFFFFFFL;
     }
 
+    /** One envelope off {@code rtc.sock}, its type read: the body is {@code in} from its position to {@code end}. */
+    @FunctionalInterface
+    interface EnvelopeHandler {
+        void handle(int type, ByteBuffer in, int end);
+    }
+
+    /**
+     * Hands each whole envelope in {@code in}, flipped after a read, to {@code handler}, then moves what's left of a
+     * partial one to the front for the next read, and zeroes the bytes after it that this read brought. The buffer lives
+     * as long as the connection, and a later, shorter read covers only its start, so an envelope already handled, a key's
+     * {@code agent.key.add} among them, would otherwise stay in it (ISS-20). Past those bytes it's zeros already: it
+     * starts so, and each drain leaves it so.
+     *
+     * @throws IOException on an envelope length out of range
+     */
+    static void drain(ByteBuffer in, EnvelopeHandler handler) throws IOException {
+        while (in.remaining() >= RtcEnvelope.LENGTH_BYTES) {
+            int length = in.getInt(in.position());
+            if (length < 1 || length > RtcEnvelope.MAX_LENGTH) {
+                throw new IOException("bad envelope length");
+            }
+            if (in.remaining() < RtcEnvelope.LENGTH_BYTES + length) {
+                break;
+            }
+            in.position(in.position() + RtcEnvelope.LENGTH_BYTES);
+            int end = in.position() + length;
+            int type = in.get() & 0xFF;
+            handler.handle(type, in, end);
+            in.position(end);
+        }
+        int filled = in.limit();
+        in.compact();
+        zero(in, in.position(), filled);
+    }
+
+    private static final byte[] ZEROS = new byte[4 << 10];
+
+    /** Zeroes {@code buffer}'s bytes from {@code from} to {@code to}, which its limit must reach. */
+    private static void zero(ByteBuffer buffer, int from, int to) {
+        for (int at = from; at < to; at += ZEROS.length) {
+            buffer.put(at, ZEROS, 0, Math.min(ZEROS.length, to - at));
+        }
+    }
+
     private static final class MessageQueue {
         final ArrayDeque<byte[]> frames = new ArrayDeque<>(2);
         long bytes;
@@ -1111,34 +1155,28 @@ public final class RtcClient implements AutoCloseable {
 
         private boolean readLoop() throws IOException {
             ByteBuffer in = ByteBuffer.allocateDirect(RtcEnvelope.LENGTH_BYTES + RtcEnvelope.MAX_LENGTH);
-            while (true) {
-                if (channel.read(in) < 0) {
-                    if (!stopped) {
-                        log.info("rtc socket closed by desk-rtc");
+            try {
+                while (true) {
+                    if (channel.read(in) < 0) {
+                        if (!stopped) {
+                            log.info("rtc socket closed by desk-rtc");
+                        }
+                        return configured;
                     }
-                    return configured;
+                    in.flip();
+                    drain(in, (type, envelope, end) -> {
+                        switch (type) {
+                            case RtcEnvelope.TYPE_JSON -> onJson(envelope, end);
+                            case RtcEnvelope.TYPE_DATA -> onData(envelope, end);
+                            case RtcEnvelope.TYPE_CREDIT -> onCredit(envelope, end);
+                            default -> log.debug("ignoring rtc envelope type {}", type);
+                        }
+                    });
                 }
-                in.flip();
-                while (in.remaining() >= RtcEnvelope.LENGTH_BYTES) {
-                    int length = in.getInt(in.position());
-                    if (length < 1 || length > RtcEnvelope.MAX_LENGTH) {
-                        throw new IOException("bad envelope length");
-                    }
-                    if (in.remaining() < RtcEnvelope.LENGTH_BYTES + length) {
-                        break;
-                    }
-                    in.position(in.position() + RtcEnvelope.LENGTH_BYTES);
-                    int end = in.position() + length;
-                    int type = in.get() & 0xFF;
-                    switch (type) {
-                        case RtcEnvelope.TYPE_JSON -> onJson(in, end);
-                        case RtcEnvelope.TYPE_DATA -> onData(in, end);
-                        case RtcEnvelope.TYPE_CREDIT -> onCredit(in, end);
-                        default -> log.debug("ignoring rtc envelope type {}", type);
-                    }
-                    in.position(end);
-                }
-                in.compact();
+            } finally {
+                // However the connection ends, nothing it read outlives it: native memory is freed without zeroing.
+                in.clear();
+                zero(in, 0, in.capacity());
             }
         }
 

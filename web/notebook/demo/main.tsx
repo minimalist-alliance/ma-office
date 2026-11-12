@@ -54,7 +54,8 @@ async function start(): Promise<LocalBackend> {
 
 const THEMES: { id: DemoTheme; label: string }[] = [
   { id: 'light', label: 'Light' },
-  { id: 'dusk', label: 'Dusk' },
+  // Zen, as the office says it (ADR 0093: `THEME_LABELS.dusk` in web/src/theme/tokens.ts); the id stays `dusk`, so saved choices hold.
+  { id: 'dusk', label: 'Zen' },
   { id: 'dark', label: 'Dark' },
 ];
 

@@ -139,7 +139,7 @@ class TeamSchemaTest {
         assertThat(userVersion()).isEqualTo(1);
         assertThat(names("SELECT text FROM messages")).containsExactly("Hi");
         assertThat(names("SELECT purpose || '|' || icon || '|' || tone || '|' || solo || '|' || shared_with"
-                + " FROM agents")).containsExactly("|spark|graphite|1|[]");
+                + " FROM agents")).containsExactly("|nodes|graphite|1|[]");
         assertThat(names("SELECT unseen FROM agents")).containsExactly("2");
     }
 
@@ -201,14 +201,15 @@ class TeamSchemaTest {
                 "INSERT INTO agents (id, name, role, created_at, icon, tone) VALUES ('e', 'E', 'staff', 5, 'puzzle', 'plum')",
                 "INSERT INTO agents (id, name, role, created_at, icon, tone) VALUES ('f', 'F', 'staff', 6, 'briefcase',"
                         + " 'graphite')",
-                "INSERT INTO agents (id, name, role, created_at, icon, tone) VALUES ('g', 'G', 'staff', 7, 'png', 'clay')");
+                "INSERT INTO agents (id, name, role, created_at, icon, tone) VALUES ('g', 'G', 'staff', 7, 'png', 'clay')",
+                "INSERT INTO agents (id, name, role, created_at, icon, tone) VALUES ('h', 'H', 'staff', 8, 'spark', 'blue')");
 
         open();
         open();
 
         assertThat(names("SELECT id || ':' || icon || ':' || tone FROM agents WHERE role = 'staff' ORDER BY id"))
                 .containsExactly("a:plane:green", "b:person:blue", "c:wallet:teal", "d:bulb:rose", "e:terminal:plum",
-                        "f:document:graphite", "g:png:clay");
-        assertThat(names("SELECT icon || ':' || tone FROM agents WHERE id = 'manager'")).containsExactly("spark:graphite");
+                        "f:document:graphite", "g:png:clay", "h:nodes:blue");
+        assertThat(names("SELECT icon || ':' || tone FROM agents WHERE id = 'manager'")).containsExactly("nodes:graphite");
     }
 }

@@ -204,6 +204,36 @@ public final class GuildPurges implements MemberPurges {
         return due;
     }
 
+    /**
+     * Members whose purge is owed but still in its grace, whom apps keep data for a while yet; or null while any purge is
+     * held, when nothing may be deleted on this roster's word (API.md section 19, "Members leaving").
+     */
+    synchronized java.util.Set<String> inGrace() {
+        long now = clock.millis();
+        java.util.Set<String> out = new java.util.TreeSet<>();
+        for (Entry entry : entries.values()) {
+            if (entry.state() == State.HELD) {
+                return null;
+            }
+            if (entry.state() == State.OWED && entry.dueAtMillis() > now) {
+                out.add(entry.memberId());
+            }
+        }
+        return out;
+    }
+
+    /** When the next owed purge's grace ends, in the clock's millis, or {@link Long#MAX_VALUE}: then {@link #inGrace} shrinks. */
+    synchronized long nextGraceEndMillis() {
+        long now = clock.millis();
+        long next = Long.MAX_VALUE;
+        for (Entry entry : entries.values()) {
+            if (entry.state() == State.OWED && entry.dueAtMillis() > now) {
+                next = Math.min(next, entry.dueAtMillis());
+            }
+        }
+        return next;
+    }
+
     @Override
     public synchronized long nextDueAtMillis() {
         long next = Long.MAX_VALUE;

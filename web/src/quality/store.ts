@@ -20,9 +20,10 @@
 import { useSyncExternalStore } from 'react';
 import { readJson, writeJson } from '../lib/util';
 import { api } from '../platform/api';
+import { onMemberChange } from '../platform/auth';
 import { decodeJwtPayload } from '../platform/pkce';
 import { placeTokenFor } from '../platform/tokenStore';
-import { isSavingLayout } from '../state/layoutStore';
+import { isSavingLayout, layoutMirrorWritable } from '../state/layoutStore';
 import {
   asDesks,
   deskLevelsToMove,
@@ -140,8 +141,16 @@ function setNotice(text: string | null): void {
   emit();
 }
 
+/**
+ * Both mirrors go with the layout's on every signed-out state (`MEMBER_CACHE_KEYS`, ISS-89), and are written only while it
+ * may be: never from a tab that has signed out, or that another tab's sign-out left with no token.
+ */
+function keep(key: string, value: Mirror | DeskMirror): void {
+  if (layoutMirrorWritable()) writeJson(key, value);
+}
+
 function writeMirror(): void {
-  if (typeof member === 'string') writeJson(MIRROR_KEY, { sub: member, doc: confirmed, ...(layered !== null ? { layered } : {}) } satisfies Mirror);
+  if (typeof member === 'string') keep(MIRROR_KEY, { sub: member, doc: confirmed, ...(layered !== null ? { layered } : {}) });
 }
 
 /** This member's desk levels as this browser has them, from any tab. */
@@ -153,7 +162,7 @@ function storedDesks(who: string): DeskLevels {
 /** One desk's change, over what this browser has now, so another tab's change to another desk isn't lost. */
 function writeDeskChange(deskId: string, app: string, level: Level | null): void {
   if (typeof member !== 'string' || !onPlatform()) return;
-  writeJson(DESK_MIRROR_KEY, { sub: member, desks: withDeskLevel(storedDesks(member), deskId, app, level) } satisfies DeskMirror);
+  keep(DESK_MIRROR_KEY, { sub: member, desks: withDeskLevel(storedDesks(member), deskId, app, level) });
 }
 
 /**
@@ -168,7 +177,7 @@ function moveDeskLevels(): void {
   const who = member;
   const done = (): void => {
     localDesks = {};
-    writeJson(DESK_MIRROR_KEY, { sub: who, desks: {} } satisfies DeskMirror);
+    keep(DESK_MIRROR_KEY, { sub: who, desks: {} });
   };
   if (!body) {
     done();
@@ -248,7 +257,7 @@ function checkToken(token: string): void {
   if (who !== member) throw new OtherMember();
 }
 
-/** Someone else's token: everything here was the last member's. */
+/** Someone else's token: everything here was the last member's. Found by a call, or told at once (below). */
 function startOver(): void {
   epoch += 1;
   member = undefined;
@@ -373,6 +382,11 @@ function onStorage(e: StorageEvent): void {
 function start(): void {
   if (started) return;
   started = true;
+  // This tab's tokens became someone else's (a sign-in in another tab): the last member's levels go now, before any
+  // stream is set by them or an answer to their call lands, not at this store's next call (ISS-89).
+  onMemberChange((sub) => {
+    if (typeof member === 'string' && sub !== member) startOver();
+  });
   if (!onPlatform()) {
     // The fixtures keep every layer in memory, as Platform would.
     layered = true;

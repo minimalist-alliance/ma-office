@@ -5,6 +5,7 @@ import java.io.ByteArrayOutputStream;
 import java.io.IOException;
 import java.io.InputStream;
 import java.nio.charset.StandardCharsets;
+import java.nio.file.Path;
 import java.security.KeyPair;
 import java.security.KeyPairGenerator;
 import java.security.MessageDigest;
@@ -120,6 +121,58 @@ final class TestApps {
         }
         m.put("files", list);
         return m;
+    }
+
+    // ---- a bundled app
+
+    /** The id of the app tests bundle: Tally again, as a first-party app in deskd's image. */
+    static final String BUNDLED_ID = "com.minimalistalliance.sample.tally";
+
+    /** Lays out a bundled app as the image's build does: {@code <root>/<id>/ma-app.json}, with every file's hash, and {@code files/}. */
+    Path bundle(Path root, String version) throws IOException {
+        return bundle(root, version, files(), m -> {});
+    }
+
+    /** A bundled Tally that also keeps notes per member, for a guild desk ({@link FakeApp}'s {@code notes.*}). */
+    Path bundleWithNotes(Path root, String version) throws IOException {
+        return bundle(root, version, files(), m -> {
+            List<Object> methods = new ArrayList<>((List<?>) m.get("methods"));
+            methods.add(Map.of("name", "notes.put", "mutation", true));
+            methods.add(Map.of("name", "notes.list", "mutation", false));
+            m.put("methods", methods);
+            m.put("topics", List.of("tally", "notes"));
+        });
+    }
+
+    Path bundle(Path root, String version, Map<String, byte[]> files, java.util.function.Consumer<Map<String, Object>> edit)
+            throws IOException {
+        Map<String, Object> m = manifest(version, files);
+        m.put("id", BUNDLED_ID);
+        m.put("publisher", "Minimalist Alliance");
+        edit.accept(m);
+        Path dir = root.resolve((String) m.get("id"));
+        Path filesDir = dir.resolve(BundledApps.FILES);
+        java.nio.file.Files.createDirectories(filesDir);
+        for (Map.Entry<String, byte[]> f : files.entrySet()) {
+            Path file = filesDir.resolve(f.getKey());
+            java.nio.file.Files.createDirectories(file.getParent());
+            java.nio.file.Files.write(file, f.getValue());
+            java.nio.file.Files.setPosixFilePermissions(file, java.nio.file.attribute.PosixFilePermissions.fromString(
+                    f.getKey().startsWith("bin/") ? "rwxr-xr-x" : "rw-r--r--"));
+        }
+        java.nio.file.Files.write(dir.resolve(BundledApps.MANIFEST), Json.bytes(m));
+        // As the image's build leaves them, whatever this machine's umask: no group or other write.
+        java.nio.file.Files.setPosixFilePermissions(root, java.nio.file.attribute.PosixFilePermissions.fromString("rwxr-xr-x"));
+        try (java.util.stream.Stream<Path> all = java.nio.file.Files.walk(dir)) {
+            for (Path p : all.toList()) {
+                if (java.nio.file.Files.isDirectory(p)) {
+                    java.nio.file.Files.setPosixFilePermissions(p, java.nio.file.attribute.PosixFilePermissions.fromString("rwxr-xr-x"));
+                } else if (p.getFileName().toString().equals(BundledApps.MANIFEST)) {
+                    java.nio.file.Files.setPosixFilePermissions(p, java.nio.file.attribute.PosixFilePermissions.fromString("rw-r--r--"));
+                }
+            }
+        }
+        return dir;
     }
 
     byte[] signatures(byte[] manifest, KeyPair developerKey, KeyPair reviewKey) {

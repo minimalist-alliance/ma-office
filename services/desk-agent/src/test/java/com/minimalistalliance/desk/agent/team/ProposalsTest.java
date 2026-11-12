@@ -232,7 +232,7 @@ class ProposalsTest {
     @Test
     void aTakenNameIsRefusedWhenTheLeadProposesIt() throws Exception {
         desk.provider.then(Step.calls(USAGE, List.of(
-                call("t1", "propose_agent", "name", "researcher", "purpose", "x", "icon", "spark", "tone", "teal"),
+                call("t1", "propose_agent", "name", "researcher", "purpose", "x", "icon", "nodes", "tone", "teal"),
                 call("t2", "propose_agent_change", "agent", researcher, "name", "Lead"),
                 call("t3", "propose_agent_change", "agent", researcher, "name", "RESEARCHER")))).then(Step.answer(USAGE,
                 "Ok."));
@@ -252,7 +252,7 @@ class ProposalsTest {
     void aNameTwoOldAgentsShareIsRefusedAndTheirIdsWork() throws Exception {
         String twin = "ag-twin00000000";
         desk.team.teamStore().createAgent(twin, "researcher", desk.clock.millis(), new com.minimalistalliance.desk
-                .agent.store.TeamStore.Extras(twin, "", "spark", "rose", null, true, null, List.of()));
+                .agent.store.TeamStore.Extras(twin, "", "nodes", "rose", null, true, null, List.of()));
         desk.provider.then(Step.calls(USAGE, List.of(call("t1", "propose_agent_removal", "agent", "Researcher"),
                 call("t2", "propose_agent_removal", "agent", twin)))).then(Step.answer(USAGE, "Ok."));
 
@@ -322,7 +322,7 @@ class ProposalsTest {
     void aModelTheKeysProviderDoesntListIsRefusedWhenProposed() throws Exception {
         desk.provider.then(Step.calls(USAGE, List.of(
                 call("t1", "propose_agent_change", "agent", researcher, "model", "gpt-6-luna"),
-                call("t2", "propose_agent", "name", "Scout", "purpose", "x", "icon", "spark", "tone", "teal", "model",
+                call("t2", "propose_agent", "name", "Scout", "purpose", "x", "icon", "nodes", "tone", "teal", "model",
                         "fake-modle")))).then(Step.answer(USAGE, "None."));
 
         Map<String, Object> reply = desk.ask(AgentStore.MANAGER, "Switch models.");
@@ -354,7 +354,7 @@ class ProposalsTest {
                         "Morning brief", "kind", "repeat", "days", List.of(1, 2, 3, 4, 5), "time", "08:00", "prompt",
                         "Brief me.")),
                 call("c4", "propose_agent_removal", "agent", researcher),
-                call("c5", "propose_agent", "name", "Scout", "purpose", "x", "icon", "spark", "tone", "rose"))))
+                call("c5", "propose_agent", "name", "Scout", "purpose", "x", "icon", "nodes", "tone", "rose"))))
                 .then(Step.answer(USAGE, "Five."));
 
         List<Map<String, Object>> cards = proposalsOf(desk.ask(AgentStore.MANAGER, "Rework Researcher."));
@@ -373,7 +373,7 @@ class ProposalsTest {
         Map<String, Object> removal = map(cards.get(3).get("before"));
         assertThat(((Number) removal.get("usedBytes")).longValue()).isPositive();
         assertThat(removal).containsEntry("name", "Researcher")
-                .containsEntry("look", m("icon", "spark", "tone", "teal", "png", null))
+                .containsEntry("look", m("icon", "nodes", "tone", "teal", "png", null))
                 .containsEntry("links", List.of(m("to", other, "rules", "Ask Other.")))
                 .containsEntry("incoming", List.of(m("from", other, "rules", "Ask Researcher.")));
         assertThat(list(removal.get("timers"))).singleElement().satisfies(t -> assertThat(t)
@@ -419,7 +419,7 @@ class ProposalsTest {
     @Test
     void aStaffAgentThatCallsAProposeToolAnywayIsRefused() throws Exception {
         desk.provider.then(Step.calls(USAGE, List.of(call("t1", "propose_agent", "name", "Sneak", "purpose", "x",
-                "icon", "spark", "tone", "teal"), call("t2", "desk_agents")))).then(Step.answer(USAGE, "Ok."));
+                "icon", "nodes", "tone", "teal"), call("t2", "desk_agents")))).then(Step.answer(USAGE, "Ok."));
 
         Map<String, Object> reply = desk.ask(researcher, "Make a new agent.");
 
@@ -437,12 +437,12 @@ class ProposalsTest {
     void badProposalsComeBackAsErrorResultsNotAsRpcErrors() throws Exception {
         desk.provider.then(Step.calls(USAGE, List.of(
                 call("t1", "propose_agent", "name", "A", "purpose", "x", "icon", "nope", "tone", "teal"),
-                call("t2", "propose_agent", "name", "A", "purpose", "x", "icon", "spark", "tone", "nope"),
-                call("t3", "propose_agent", "name", "A", "purpose", "x", "icon", "spark", "tone", "teal", "links",
+                call("t2", "propose_agent", "name", "A", "purpose", "x", "icon", "nodes", "tone", "nope"),
+                call("t3", "propose_agent", "name", "A", "purpose", "x", "icon", "nodes", "tone", "teal", "links",
                         List.of(m("to", "Nobody", "rules", "Hi."))),
-                call("t4", "propose_agent", "name", "A", "purpose", "x", "icon", "spark", "tone", "teal", "links",
+                call("t4", "propose_agent", "name", "A", "purpose", "x", "icon", "nodes", "tone", "teal", "links",
                         List.of(m("to", researcher, "rules", "r".repeat(501)))),
-                call("t5", "propose_agent", "name", "", "purpose", "x", "icon", "spark", "tone", "teal"),
+                call("t5", "propose_agent", "name", "", "purpose", "x", "icon", "nodes", "tone", "teal"),
                 call("t6", "propose_agent_removal", "agent", "manager"),
                 call("t7", "propose_agent_change", "agent", researcher),
                 call("t8", "propose_nothing"),
@@ -475,7 +475,7 @@ class ProposalsTest {
     void aProposalToCreateOverTheCapIsAnErrorResult() throws Exception {
         desk.tier(m("agentCap", 2));
         desk.provider.then(Step.calls(USAGE, List.of(call("t1", "propose_agent", "name", "Third", "purpose", "x",
-                "icon", "spark", "tone", "teal")))).then(Step.answer(USAGE, "Full."));
+                "icon", "nodes", "tone", "teal")))).then(Step.answer(USAGE, "Full."));
 
         Map<String, Object> reply = desk.ask(AgentStore.MANAGER, "One more agent.");
 

@@ -214,7 +214,7 @@ describe('what the desk said, in the spec’s words (§2.4)', () => {
     expect(deskFailure(new AgentError('unavailable', { reason: 'unavailable', detail: 'unavailable' }))).toBe(CONNECT_WORDS.deskUnreachable + UNUSED);
     expect(deskFailure(new AgentError('unavailable', { mayHaveApplied: true }))).toBe(CONNECT_WORDS.dropped);
     expect(deskFailure({ inFlight: true })).toBe(CONNECT_WORDS.dropped);
-    expect(CONNECT_WORDS.mismatch).toBe('That answer from OpenRouter didn’t match this window, so nothing was added. Connect again.');
+    expect(CONNECT_WORDS.mismatch).toBe("That answer from OpenRouter didn't match, so nothing was added. Connect again.");
     expect(Object.values(CONNECT_WORDS).join(' ')).not.toMatch(/\$0/);
   });
 });

@@ -7,6 +7,7 @@ import { Icon } from '../chrome/icons';
 import { openInDeskBrowser } from '../notebook/openLink';
 import { useTierNames } from '../platform/useTiers';
 import { ownDesks, useDeskStore } from '../state/deskStore';
+import { layoutMirrorWritable } from '../state/layoutStore';
 import { useViewStore } from '../state/viewStore';
 import { useWindowStore } from '../state/windowStore';
 import { clearLinkChoice, useGuildStore } from './guildStore';
@@ -42,7 +43,8 @@ export function GuildPrivacy() {
   if (seen || !(onGuild || guildWindow)) return null;
   const dismiss = (): void => {
     try {
-      window.localStorage.setItem(PRIVACY_KEY, '1');
+      // Never after another tab signed this browser out (ISS-89 wipes the key there): the dismissal then lasts this page only.
+      if (layoutMirrorWritable()) window.localStorage.setItem(PRIVACY_KEY, '1');
     } catch {
       // Private browsing: it goes for this page, and comes back on the next.
     }

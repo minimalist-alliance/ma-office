@@ -5,7 +5,8 @@
 // leaves the page. Until a desk has said, its agent tiles draw the default mark and read "Agent".
 import { create } from 'zustand';
 import type { Agent } from '../../agent/src/client/types';
-import { agentIdOf, isAgentApp, type AppId, type CoreAppId } from '../canvas/layout';
+import { agentIdOf, isAgentApp, isDeskApp, type AppId, type CoreAppId } from '../canvas/layout';
+import { host } from '../deskapps/door';
 
 export interface RosterAgent {
   id: string;
@@ -164,9 +165,11 @@ export const agentAppName = (app: AppId, deskId?: string): string => rosterAgent
  * What a tile's glyph is: a core app's own, or for an agent `look:<icon>:<tone>:<mask key>`. The sprite caches key on it, so a
  * new icon, tone or upload is a new bitmap and nothing else has to be told.
  */
-export type GlyphId = CoreAppId | `look:${string}`;
+export type GlyphId = CoreAppId | `look:${string}` | `dapp:${string}`;
 
 export function glyphOf(deskId: string, app: AppId, state: RosterState = useRosterStore.getState()): GlyphId {
+  // An installed app (ADR 0054): a first-party one's own glyph, or the generic app glyph.
+  if (isDeskApp(app)) return `dapp:${host?.glyphFor(app.slice(4)) ?? ''}`;
   if (!isAgentApp(app)) return app;
   // Until the drawing is here the tile is blank, and the key says so, so it draws again once it is.
   if (!state.lookReady) {

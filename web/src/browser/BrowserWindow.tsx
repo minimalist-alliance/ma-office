@@ -1,8 +1,9 @@
 // The Browser app's calm states: waking, the way back in, and what each panel says. The window itself, with the driver, the
 // address bar and the picture, is `BrowserApp.tsx`, a chunk of its own; Notebook, Agent and Commons borrow these states.
-import { useEffect, useState } from 'react';
+import { lazy, Suspense, useEffect, useState, type ReactNode } from 'react';
 import { useAbout, wakeDesk } from '../desk/liveStore';
 import { DATA_GUARD_STOP_REASON, DATA_GUARD_STOPPING } from '../desk/dataGuardWords';
+import { TRAFFIC_STOP_REASON, trafficHold, type TrafficStop } from '../desk/trafficStop';
 import { useDeskStore } from '../state/deskStore';
 import type { BrowserDriver } from './driver';
 import type { BrowserPanel } from './panel';
@@ -15,10 +16,27 @@ export const CLOSED_PANELS: ReadonlySet<BrowserPanel['kind']> = new Set(['asleep
 /** No estimate until we've measured more than one kind of wake: a desk asleep for a day may be well slower. */
 const STILL_MS = 45_000;
 
+const TrafficView = lazy(() => import('../chrome/trafficView'));
+/** The traffic stop's words, a lazy chunk (`chrome/trafficView.tsx`) so the first load keeps only the hold check. */
+function TrafficStopView(props: { stop: TrafficStop; mode: 'hold' | 'stopping' }) {
+  return (
+    <Suspense fallback={null}>
+      <TrafficView {...props} />
+    </Suspense>
+  );
+}
+
 /** The stop notice: the data guard's reason when the platform gave it, else the usual words. */
 function StoppingBody({ deskId, fallback }: { deskId: string; fallback: string }) {
-  const reason = useDeskStore((s) => s.desks.find((d) => d.id === deskId)?.stopReason);
-  return <h3>{reason === DATA_GUARD_STOP_REASON ? DATA_GUARD_STOPPING : fallback}</h3>;
+  const desk = useDeskStore((s) => s.desks.find((d) => d.id === deskId));
+  if (desk?.stopReason === TRAFFIC_STOP_REASON) return <TrafficStopView stop={desk.stopDetail ?? { scope: 'desk', clearsAt: null }} mode="stopping" />;
+  return <h3>{desk?.stopReason === DATA_GUARD_STOP_REASON ? DATA_GUARD_STOPPING : fallback}</h3>;
+}
+
+/** The asleep panel, or the traffic stop's words in place of its Start while the stop holds (TD-162). */
+export function AsleepBody({ deskId, children }: { deskId: string; children: ReactNode }) {
+  const stop = useDeskStore((s) => trafficHold(s.desks.find((d) => d.id === deskId)?.stopDetail));
+  return stop ? <TrafficStopView stop={stop} mode="hold" /> : <>{children}</>;
 }
 
 /** A quiet word after a long wait, with no promise about how long. */
@@ -83,11 +101,11 @@ export function PanelBody({ panel, deskId, driver, asleepLine = 'Your tabs are s
       return <DataGuardNotice message={panel.message} resumesAt={panel.resumesAt} guild={guild} />;
     case 'asleep':
       return (
-        <>
+        <AsleepBody deskId={deskId}>
           <h3>{words.asleep}</h3>
           <p>{guild ? 'Everything in it is safe, and comes back when it wakes.' : asleepLine}</p>
           <button type="button" className="btn primary" onClick={() => wakeDesk(deskId)}>{words.wake}</button>
-        </>
+        </AsleepBody>
       );
     case 'failed':
       return (

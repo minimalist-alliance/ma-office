@@ -9,7 +9,9 @@ import { loadBrowser } from './chunks';
 import { FilesWindow } from './files/FilesWindow';
 import { pausable } from '../bandwidth/StreamPause';
 import { agentAppName } from '../agent/roster';
-import { isAgentApp, type AppId, type CoreAppId } from '../canvas/layout';
+import { isAgentApp, isDeskApp, type AppId, type CoreAppId } from '../canvas/layout';
+import { DeskAppWindow } from '../deskapps/DeskAppWindow';
+import { host } from '../deskapps/door';
 import { BillingLink, DataGuardNotice, MEMBERSHIP_LINE, SETTING_UP_LINE, SupportAddress } from '../chrome/DeskClosed';
 import { useLive } from '../desk/liveStore';
 import { CommonsWindow } from '../guild/CommonsWindow';
@@ -102,7 +104,11 @@ export const APPS: Record<CoreAppId, AppDef> = Object.fromEntries(defs.map((def)
  * Any app's identity and window. An agent's own app (task 49) is the Agent app focused on that agent, under the agent's name
  * once its desk has said it, in the Agent's window (`guildWindow`'s too, so a Guild Desk's says the same of it).
  */
+/** An installed app's window (ADR 0054), through `guildWindow` as every window. */
+const DESK_APP_WINDOW = guildWindow('app:window', DeskAppWindow);
+
 export function appDef(app: AppId, deskId?: string): AppDef {
+  if (isDeskApp(app)) return { id: app, name: host?.name(app, deskId) ?? 'App', blurb: '', Window: DESK_APP_WINDOW };
   if (!isAgentApp(app)) return APPS[app];
   return { id: app, name: agentAppName(app, deskId), blurb: 'One of your agents, with its own thread and settings.', Window: APPS.agent.Window };
 }

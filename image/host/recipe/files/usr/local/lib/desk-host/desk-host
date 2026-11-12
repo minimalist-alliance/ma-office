@@ -90,7 +90,9 @@ log() { echo "[desk-host $(date -u +%T)] $*"; }
 mb() { awk -v b="$1" 'BEGIN {printf "%.1f", b / 1e6}'; }
 die() { echo "desk-host: $*" >&2; exit 1; }
 [ "$(id -u)" = 0 ] || die "root only"
-conf() { sed -n "s/^$1=//p" /etc/desk-host/desk-host.conf 2>/dev/null | tail -1 | tr -d '"'; }
+# a key's value, or nothing; a conf that isn't there is every default, as desk-host-check, the link and preread.py read it (under pipefail
+# sed's exit 2 alone ended every command with no message)
+conf() { sed -n "s/^$1=//p" /etc/desk-host/desk-host.conf 2>/dev/null | tail -1 | tr -d '"' || true; }
 CT_DESK=$(conf CT_DESK); CT_DESK=${CT_DESK:-4096}
 CT_HOST=$(conf CT_HOST); CT_HOST=${CT_HOST:-4608}
 QUOTA_HEAD_MB=$(conf QUOTA_HEAD_MB); QUOTA_HEAD_MB=${QUOTA_HEAD_MB:-1024}
@@ -152,7 +154,7 @@ if choice:
 json.dump(r, open(out, "w"))' "$1" "$2" "$3" "$4" "${5:-}" "${6:-}" "${7:-}" "$(date -u +%FT%TZ)" "${REC:?}/$1.json.tmp" "${REC:?}/$1.json"
   chmod 600 "${REC:?}/$1.json.tmp"; mv "${REC:?}/$1.json.tmp" "${REC:?}/$1.json"
 }
-rec_field() { python3 -I -c 'import json,sys; v = json.load(open(sys.argv[1])).get(sys.argv[2]); print("" if v is None else v)' "$REC/$1.json" "$2" 2>/dev/null; }
+rec_field() { python3 -I -c 'import json,sys; v = json.load(open(sys.argv[1])).get(sys.argv[2]); print("" if v is None else v)' "$REC/$1.json" "$2" 2>/dev/null || true; }   # a record that isn't there reads as a field that isn't
 json_field() { python3 -I -c 'import json,sys; v = json.loads(sys.argv[1]).get(sys.argv[2]); print("" if v is None else str(v).lower() if isinstance(v, bool) else v)' "$1" "$2"; }
 
 # The host's one turn for a copy onto the store (templates.py CopyTurn): a background re-root or unpack holds it as its process group;
@@ -243,10 +245,10 @@ prepare_root() {   # prepare <k> [<gen>]: from the current generation unless giv
   prep_old_root "$k" "$old" || return 1
   prep_turn "$k" "$gen" || return $?
   PREP_NEW=$new
-  mkdir -m 711 "$new" && mkdir "$new/rootfs" "$new/rel" "$new/svc" && chmod 711 "$new/rel" "$new/svc" || return 1
+  mkdir -m 711 "$new" && mkdir "$new/rootfs" "$new/rel" "$new/svc" && chmod 711 "$new/rel" "$new/svc" || { echo "slot $k: making its new tree failed" >&2; return 1; }
   tar -C "$T" --exclude=./.complete -cf - . | tar -C "$new/rootfs" -xpf - --numeric-owner || { echo "slot $k: copying the template ($gen) failed" >&2; return 1; }
-  python3 -I $LIB/shift.py "$new/rootfs" "$base" >/dev/null || return 1
-  echo "desk-$k" > "$new/rootfs/etc/hostname" || return 1
+  python3 -I $LIB/shift.py "$new/rootfs" "$base" >/dev/null || { echo "slot $k: shifting the new root's owners failed" >&2; return 1; }
+  echo "desk-$k" > "$new/rootfs/etc/hostname" || { echo "slot $k: writing the new root's hostname failed" >&2; return 1; }
   # the project ID on every directory (inherited, +P) and regular file (links and sockets can't carry one), checked
   find "$new/rootfs" -xdev -type d -print0 | xargs -0 -r chattr +P -p "$proj" || { echo "slot $k: project ID on directories failed" >&2; return 1; }
   find "$new/rootfs" -xdev -type f -print0 | xargs -0 -r chattr -p "$proj" || { echo "slot $k: project ID on files failed" >&2; return 1; }
@@ -254,20 +256,20 @@ prepare_root() {   # prepare <k> [<gen>]: from the current generation unless giv
   for svc in deskd desk-agent desk-notebook desk-rtc desk-stream; do   # RC-01: the host's own store, never the desk's /opt/ma
     cp -a "$DH/releases/$svc/current/." "$new/rel/$svc" || { echo "slot $k: copying $svc's release failed" >&2; return 1; }
   done
-  sed -n 's/^version=/DESKD_IMAGE_VERSION=/p' "$T/etc/ma-release" > "$new/rel/deskd/version.env" || return 1
+  sed -n 's/^version=/DESKD_IMAGE_VERSION=/p' "$T/etc/ma-release" > "$new/rel/deskd/version.env" || { echo "slot $k: writing deskd's version.env failed" >&2; return 1; }
   [ "${CRASH_AT:-}" = copy ] && { log "slot $k: CRASH_AT=copy, stopping after the copy"; kill -9 $$; }
   local used inodes; read -r used inodes <<<"$(du -s --block-size=1K "$new/rootfs" | cut -f1) $(find "$new/rootfs" -xdev | wc -l)"
   if python3 -I $TT halted "$gen"; then   # halted (a rollback) during the copy: fails closed (prep_drop), and the next prepare takes the current one
     echo "slot $k: $gen was halted while the root was copied from it; not prepared" >&2; return 1
   fi
-  setquota -P "$proj" 0 $((used + QUOTA_HEAD_MB * 1024)) 0 $((inodes + QUOTA_HEAD_INODES)) $DH || return 1
-  if [ -d "$S/$k" ]; then mv "$S/$k" "$old" || return 1; fi   # only when prep_old_root is off: the old order (verify-wave.sh's mutation)
-  mv "$new" "$S/$k" || return 1
+  setquota -P "$proj" 0 $((used + QUOTA_HEAD_MB * 1024)) 0 $((inodes + QUOTA_HEAD_INODES)) $DH || { echo "slot $k: setting its quota failed" >&2; return 1; }
+  if [ -d "$S/$k" ]; then mv "$S/$k" "$old" || { echo "slot $k: moving its old root aside failed" >&2; return 1; }; fi   # only when prep_old_root is off: the old order (verify-wave.sh's mutation)
+  mv "$new" "$S/$k" || { echo "slot $k: renaming the new root into place failed" >&2; return 1; }
   PREP_NEW=""; copy_done
   [ "${CRASH_AT:-}" = rename ] && { log "slot $k: CRASH_AT=rename, stopping after the rename"; kill -9 $$; }
   [ -d "$old" ] && rm -rf --one-file-system "${old:?}"
   write_record "$k" fresh "" "$gen" || { echo "slot $k: its record wasn't written" >&2; return 1; }
-  python3 -I $BT record "$k" fresh || return 1   # ADR 0078: its rel/ is the store's current
+  python3 -I $BT record "$k" fresh || { echo "slot $k: its record's releases weren't written" >&2; return 1; }   # ADR 0078: its rel/ is the store's current
   log "slot $k: prepared fresh from template generation $gen and the release store in $(( $(date +%s) - t0 )) s; quota $((used / 1024 + QUOTA_HEAD_MB)) MiB, $((inodes + QUOTA_HEAD_INODES)) inodes"
 }
 
@@ -366,17 +368,18 @@ rr_swap() {   # rr_swap <k> <new dir> <gen> <state> <desk> <epoch> <vol> <used> 
 reroot() {   # reroot <k> [--prebuild]: in desk-host-upd (desk-host-template upd), never holding the slot's lock while it copies
   local k=$1 mode=${2:-} rst desk gen epoch vol recsum choice target t0 new out used inodes old why trial
   t0=$(date +%s)
-  read -r rst gen <<<"$(record_state "$k")"; desk=$(record_desk "$k"); epoch=$(rec_field "$k" epoch); vol=$(rec_field "$k" volumeId)
+  read -r rst gen <<<"$(record_state "$k")"
+  case "$rst" in desk|fresh) ;; *) log "slot $k: no root to re-root (record $rst)"; return 0 ;; esac   # before the fields: none without a record
+  desk=$(record_desk "$k"); epoch=$(rec_field "$k" epoch); vol=$(rec_field "$k" volumeId)
   [ "$desk" = none ] && desk=""
-  case "$rst" in desk|fresh) ;; *) log "slot $k: no root to re-root (record $rst)"; return 0 ;; esac
   if [ "$mode" != --prebuild ] && { runc state dh-desk-$k >/dev/null 2>&1 || [ -s "$RUN/op/$k" ]; }; then log "slot $k: running or busy, not re-rooted"; return 0; fi
-  recsum=$(sha256sum "$REC/$k.json" | cut -d' ' -f1)
-  if [ "$rst" = fresh ]; then target=$(cur_gen); choice=""
+  recsum=$(sha256sum "$REC/$k.json" 2>/dev/null | cut -d' ' -f1) || { log "slot $k: its record went (a prepare): not re-rooted"; return 0; }
+  if [ "$rst" = fresh ]; then target=$(cur_gen) || { log "slot $k: no current template generation: not re-rooted"; return 1; }; choice=""
   else
     trial=--trial-at-stop; [ "$mode" = --prebuild ] && trial=--trial
     choice=$(python3 -I $TT choose "$k" reroot $trial) || { log "slot $k: no choice of generation, not re-rooted"; return 1; }
     target=$(json_field "$choice" gen)
-    recsum=$(sha256sum "$REC/$k.json" | cut -d' ' -f1)   # choose wrote the read of Last Version into the record
+    recsum=$(sha256sum "$REC/$k.json" 2>/dev/null | cut -d' ' -f1) || { log "slot $k: its record went (a prepare): not re-rooted"; return 0; }   # choose wrote the read of Last Version into the record
   fi
   if [ -z "$target" ] || [ "$target" = "$gen" ]; then log "slot $k: on $gen, which is its generation ($(json_field "${choice:-{\}}" reason 2>/dev/null || echo current)); nothing to do"; [ "$mode" = --prebuild ] && echo "none"; return 0; fi
   gen_ok "$target" || { log "slot $k: $target isn't sealed"; return 1; }
@@ -567,7 +570,7 @@ up_one() {
   $LIB/desk-host-check --quick >/dev/null || { echo "slot $k: the host's own checks fail (desk-host check): refused" >&2; return 1; }
   left=$(leftovers "$k"); [ -z "$left" ] || { echo "slot $k: refused, the last desk's state remains: $left" >&2; return 1; }
   abort_reroot "$k"   # a wake starts at once on the root its record names; a re-root of it copying in the background is dropped
-  batch_cutoff "$k"   # ADR 0078 3.4: a switch or a stop path's swap cut off half way is put back by renames first
+  batch_cutoff "$k"   # ADR 0078 3.4: a switch or a stop path's swap cut off half way is put back by renames first (none with no record)
   read -r state tmpl <<<"$(record_state "$k")"
   cur=$(cur_gen) || { echo "slot $k: no current template generation: refused" >&2; return 1; }
   # ADR 0077 section 2: a wake on a root its record names keeps that root and its generation (its Last Version can't have moved);
@@ -586,7 +589,8 @@ up_one() {
       write_record "$k" desk "$desk" "$gen" "$epoch" "$vol" "$choice"; log "slot $k: claimed a fresh root on $gen for $desk"
     else
       log "slot $k: record is $state $(record_desk "$k") on $tmpl, starting $desk: preparing from $gen first ($(json_field "$choice" reason))"
-      prepare "$k" "$gen" || { echo "slot $k: prepare failed, refused" >&2; return 1; }
+      prepare "$k" "$gen" || { local prc=$?   # its own line on stderr says why (75: refused for room, nothing copied)
+        echo "slot $k: prepare failed (exit $prc$([ "$prc" = 75 ] && echo ", no room on the slot store")), refused" >&2; return 1; }
       write_record "$k" desk "$desk" "$gen" "$epoch" "$vol" "$choice"; log "slot $k: claimed for $desk on $gen"
     fi
   fi
@@ -1081,7 +1085,7 @@ relroot() {
   batch_job "$k"
   p=$(bt plan "$k") || { log "slot $k: no batch due"; return 0; }
   bt may-copy "$k" "$p" || { log "slot $k: batch $(pj "$p" seq)'s copy failed 3 times, or less than an hour ago: not now"; return 0; }
-  recsum=$(sha256sum "$REC/$k.json" | cut -d' ' -f1)
+  recsum=$(sha256sum "$REC/$k.json" 2>/dev/null | cut -d' ' -f1) || { log "slot $k: its record went (a prepare): no swap at a stop"; return 0; }
   install -d -m 700 $RUN/batch $RUN/reroot $RUN/lock; me=$(ps -o pgid= -p $$ | tr -d ' '); t0=$(date +%s.%N)
   echo "$me" > "$RUN/reroot/$k.pgid"; : > "$RUN/batch/$k.copying"
   trap 'rm -f "$RUN/batch/'"$k"'.copying"; [ "$(cat "$RUN/reroot/'"$k"'.pgid" 2>/dev/null)" = "'"$me"'" ] && rm -f "$RUN/reroot/'"$k"'.pgid"; [ "$(cat "$RUN/copy.holder" 2>/dev/null)" = "'"$me"'" ] && rm -f "$RUN/copy.holder"' EXIT
@@ -1111,14 +1115,23 @@ BT.record_update(k, f)' "$LIB" "$k" "$p"
   log "slot $k: batch $(pj "$p" seq) ($(pj "$p" role)) swapped in at a stop in $(awk -v a="$t0" -v b="$(date +%s.%N)" 'BEGIN {printf "%.1f", b - a}') s ($(plan_names "$p")); its first run is the next start, smoke-tested then"
 }
 # 3.4, a stopped slot: before its next start, a switch or a stop path's swap that was cut off half way is put back by renames, and the record
-# names the old set again. A cut-off isn't the release's failure: the next idle tries again. Under the slot's lock (up's).
+# names the old set again. A cut-off isn't the release's failure: the next idle tries again. Under the slot's lock (up's), called bare so
+# set -e holds inside: a rename back or the record's rewrite that fails refuses the start, saying why, rather than start a mixed set.
+# A slot with no record has nothing to put back: only its record names a cut-off, and up prepares a slot with no record (or one it can't
+# read: record_state reads it as none) again first (ADR 0072, WALL-04), which copies the store's current rel/ (ADR 0078 2.4). Host images
+# 0.1.12 to 0.1.15 read the record here with no fallback, so set -e ended `desk-host up` on such a slot with exit 1 and no message, and a
+# prepare refused for room (it removes the record first) left the slot that way (docs/sub-status/host-up-norecord.md).
 batch_cutoff() {
   local k=$1 f p cur svc
+  [ -e "$REC/$k.json" ] || return 0
   for f in switching verify; do
-    p=$(python3 -I -c 'import json,sys; v=json.load(open(sys.argv[1])).get(sys.argv[2]); print(json.dumps(v) if v else "")' "$REC/$k.json" "$f" 2>/dev/null)
+    p=$(python3 -I -c 'import json,sys; v=json.load(open(sys.argv[1])).get(sys.argv[2]); print(json.dumps(v) if v else "")' "$REC/$k.json" "$f" 2>/dev/null) \
+      || { log "slot $k: its record can't be read: no cut-off to put back (the start prepares the slot again)"; return 0; }
     [ -n "$p" ] || continue
     [ "$f" = verify ] && [ "$(pj "$p" phase)" = swapped ] && continue   # a whole swap at a stop: its first run is this start
-    for svc in $(pj "$p" done) $(pj "$p" current); do rel_swap_back "$k" "$svc"; done
+    for svc in $(pj "$p" done) $(pj "$p" current); do
+      rel_swap_back "$k" "$svc" || { echo "slot $k: a cut-off batch's $svc couldn't be put back to its old copy: refused" >&2; return 1; }
+    done
     python3 -I -c 'import json,sys; sys.path.insert(0, sys.argv[1]); import batches as BT
 k, f, p = int(sys.argv[2]), sys.argv[3], json.loads(sys.argv[4])
 def g(r):
@@ -1126,7 +1139,7 @@ def g(r):
     b = r.get("batch") or {}
     r["batch"] = {"seq": b["fromSeq"] if f == "verify" and isinstance(b.get("fromSeq"), int) else BT.rec_seq(r), "state": "behind", "at": BT.utc(), "why": "cut off; tried again"}
     r.pop(f, None)
-BT.record_update(k, g)' "$LIB" "$k" "$f" "$p"
+BT.record_update(k, g)' "$LIB" "$k" "$f" "$p" || { echo "slot $k: a cut-off batch was put back, but its record wasn't rewritten: refused" >&2; return 1; }
     rel_tidy "$k"; python3 -I $TT unhold "$k"   # the cut-off switch's hold goes with it
     log "slot $k: a ${f/verify/stop path swap} of batch $(pj "$p" seq) was cut off at $(pj "$p" current) ($(pj "$p" phase)): put back by renames; it's tried again"
   done

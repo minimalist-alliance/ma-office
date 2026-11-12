@@ -2,7 +2,7 @@
 // bottom right, its list brings the app to the front, and Cleanup clears it. Only the allowed desk is touched, and
 // the desk must already be running.
 import { mkdirSync } from 'node:fs';
-import { ALLOWED, events, getDesk, log, openSession, S, shot, shutdown, wait, waitPanel } from './rt-lib.mjs';
+import { ALLOWED, createLayoutStandIn, events, getDesk, log, openSession, S, shot, shutdown, wait, waitPanel } from './rt-lib.mjs';
 
 const EXPECTED = process.env.MA_EXPECT_VERSION;
 if (!EXPECTED) throw new Error('Set MA_EXPECT_VERSION to the bundle version you expect on staging');
@@ -18,7 +18,7 @@ const step = (n, ok, text) => {
   log(`STEP ${n} ${ok ? 'PASS' : 'FAIL'} ${text}`);
 };
 
-await openSession();
+await openSession({ layoutStandIn: createLayoutStandIn() });
 const p = S.page;
 const btn = p.locator(`#proxy-${ALLOWED}`);
 await btn.waitFor({ state: 'attached', timeout: 60_000 });

@@ -1,6 +1,6 @@
 // The idle rule (design 4.2.8, 10.5): a forgotten tab mustn't keep a desk awake, because an open session is what
 // counts as a client being there. So a tab closes a desk's sessions after 60 minutes hidden, or after 24 hours
-// with no input on that desk even if visible, and keeps only its watches. Watches never keep a desk awake, and
+// with no input on that desk even if visible (2 hours on a free or an Alliance desk, which stop soon after, ISS-64b), and keeps only its watches. Watches never keep a desk awake, and
 // nothing here can wake one: `rest` and `resume` both go `connect {start: false}`. The 60 minutes wait while the
 // desk plays sound (`sound.ts`, ADR 0038), so music in a hidden tab plays on; the 24 hours don't.
 //
@@ -11,6 +11,8 @@ import { LastSound, SOUND_QUIET_MS } from './sound';
 
 export const HIDDEN_CLOSE_MS = 60 * 60 * 1000;
 export const NO_INPUT_CLOSE_MS = 24 * 60 * 60 * 1000;
+/** A visible tab with no input on a desk that has an idle limit (free and Alliance, ADR 0090 addendum) lets go after this, not 24 hours. */
+export const LIMITED_NO_INPUT_CLOSE_MS = 2 * 60 * 60 * 1000;
 export const IDLE_CHECK_MS = 60_000;
 
 export interface IdleTarget {
@@ -26,6 +28,12 @@ export interface IdleTarget {
    * open in a hidden tab and counts as input, so neither rule closes it. A paused transfer is not running.
    */
   busy?(deskId: string): boolean;
+  /**
+   * This desk has a short idle limit on the Platform (a free or an Alliance desk), so a visible, untouched tab lets go of it
+   * after `LIMITED_NO_INPUT_CLOSE_MS` instead of `NO_INPUT_CLOSE_MS`. Absent or false: the 24 hours, as for an Officer, Founder (role lead),
+   * Guild or self-hosted desk.
+   */
+  limited?(deskId: string): boolean;
 }
 
 export class IdleRule {
@@ -84,7 +92,10 @@ export class IdleRule {
     }
     const sound = this.soundPlaying(deskId);
     const hiddenTooLong = this.hiddenSince !== null && now - this.hiddenSince >= HIDDEN_CLOSE_MS && !sound;
-    if (hiddenTooLong || now - last >= NO_INPUT_CLOSE_MS) {
+    // A limited desk's 2 hours wait while it plays sound (the same signal as the hidden rule's), so music in a visible tab goes on;
+    // the 24 hours then still close it, as for every desk.
+    const noInputMs = this.target.limited?.(deskId) && !sound ? LIMITED_NO_INPUT_CLOSE_MS : NO_INPUT_CLOSE_MS;
+    if (hiddenTooLong || now - last >= noInputMs) {
       this.resting.add(deskId);
       this.target.rest(deskId);
     } else if (this.resting.delete(deskId)) {

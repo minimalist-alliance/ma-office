@@ -1,7 +1,6 @@
-// The Notebook's colors: its own scheme ("Paper and ink") and the organizing colors a note's highlight, text color, callout
+// The Notebook's colors: its own scheme ("Navy ink") and the organizing colors a note's highlight, text color, callout
 // and page label map to. Values from the Product Designer, ~/ma-coord/design-drafts/app-colors/ (tokens.json,
-// `apps.notebook` and `notebookColors`), Nov 10: their picks, to build on while the owner chooses from the stills. Another
-// pick changes only the values below (the Designer's src/make_tokens.py writes them).
+// `apps.notebook` and `notebookColors`), Nov 10; the scheme is Navy ink, Nov 11. Another pick changes only the values below (the Designer's src/make_tokens.py writes them).
 //
 // Notes store a color's name, the binder tabs' six (`blue`, `green`, `amber`, `rose`, `violet`, `slate`; `model/colors.ts`),
 // never a value, so a change here restyles every note in every theme and rewrites none (ADR 0091). Amber comes first in the
@@ -84,7 +83,7 @@ export const PALETTE: readonly PaletteEntry[] = [
 ];
 
 /**
- * The Notebook's own scheme, "Paper and ink": the office's blue turned a little toward indigo, on surfaces a hair warm.
+ * The Notebook's own scheme, "Navy ink": the office's blue turned a little toward navy, on cool surfaces (hue 255, accent 262).
  * Each value re-declares one office property inside the Notebook (the Designer's table, and the Desk app's `AppInk`):
  * `window` is `--ma-surface-window`, `sidebar` `--ma-surface-sunken`, the accents `--ma-accent*` and `--ma-focus-ring`,
  * `accentSubtle` `--ma-accent-subtle`, `onAccent` `--ma-text-on-accent`, `link` `--ma-text-link`. Text, borders, status and
@@ -100,11 +99,11 @@ export interface NotebookInk {
   onAccent: string;
   link: string;
 }
-export const NOTEBOOK_SCHEME_NAME = 'Paper and ink';
+export const NOTEBOOK_SCHEME_NAME = 'Navy ink';
 export const NOTEBOOK_SCHEME: Record<ThemeId, NotebookInk> = {
-  light: { window: '#FFFCF6', sidebar: '#F6F2EA', accent: '#5C639F', accentHover: '#4F548F', accentPressed: '#424680', accentSubtle: '#E6EAFE', onAccent: '#FFFFFF', link: '#5C639F' },
-  dusk: { window: '#4B5162', sidebar: '#444A5A', accent: '#BCC4F4', accentHover: '#CAD1FE', accentPressed: '#B0B7E7', accentSubtle: '#41445C', onAccent: '#1E232B', link: '#CAD1FE' },
-  dark: { window: '#282724', sidebar: '#22201D', accent: '#9AA1D0', accentHover: '#A9B1E0', accentPressed: '#8B92BF', accentSubtle: '#30334A', onAccent: '#14171B', link: '#9AA1D0' },
+  light: { window: '#FBFCFE', sidebar: '#EFF3F8', accent: '#536992', accentHover: '#455B82', accentPressed: '#384D73', accentSubtle: '#E1ECFF', onAccent: '#FFFFFF', link: '#536992' },
+  dusk: { window: '#4B5160', sidebar: '#444A59', accent: '#B6C8E9', accentHover: '#C2D5F6', accentPressed: '#A9BBDC', accentSubtle: '#3B475C', onAccent: '#1B2029', link: '#C2D5F6' },
+  dark: { window: '#24272C', sidebar: '#1D2126', accent: '#94A5C5', accentHover: '#A3B5D5', accentPressed: '#8496B5', accentSubtle: '#2A354A', onAccent: '#14171B', link: '#94A5C5' },
 };
 
 const BY_ID = new Map<string, PaletteEntry>(PALETTE.map((p) => [p.id, p]));

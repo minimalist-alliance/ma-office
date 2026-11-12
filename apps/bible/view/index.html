@@ -1,0 +1,20 @@
+<div id="app" class="app" data-state="starting">
+  <header class="tbar" id="tbar">
+    <button type="button" class="tb" id="refBtn" aria-haspopup="dialog" aria-expanded="false" aria-label="Go to" title="Go to (G)" disabled><span id="refLabel"></span><svg class="chev" width="16" height="16" viewBox="0 0 24 24" aria-hidden="true"><path d="M7 10l5 5 5-5"/></svg></button>
+    <button type="button" class="tb tr" id="trBtn" aria-haspopup="dialog" aria-expanded="false" aria-label="Translation" title="Translation" disabled><span id="trLabel"></span><svg class="chev" width="16" height="16" viewBox="0 0 24 24" aria-hidden="true"><path d="M7 10l5 5 5-5"/></svg></button>
+    <span class="sp"></span>
+    <button type="button" class="tbi" id="searchBtn" aria-label="Search" title="Search (/)" aria-expanded="false" disabled><svg width="20" height="20" viewBox="0 0 24 24" aria-hidden="true"><circle cx="10.5" cy="10.5" r="6.25"/><path d="M15.3 15.3 20 20"/></svg></button>
+    <button type="button" class="tbi wide-only" id="savedBtn" aria-label="Saved" title="Saved" aria-expanded="false" disabled><svg width="20" height="20" viewBox="0 0 24 24" aria-hidden="true"><path d="M6.75 3.75h10.5v16.5L12 16.4l-5.25 3.85z"/></svg></button>
+    <button type="button" class="tbi aa wide-only" id="textBtn" aria-label="Text" title="Text" aria-haspopup="dialog" aria-expanded="false" disabled>Aa</button>
+    <button type="button" class="tbi phone-only" id="moreBtn" aria-label="More" title="More" aria-haspopup="menu" aria-expanded="false" disabled><svg width="22" height="22" viewBox="0 0 24 24" aria-hidden="true"><circle class="dot" cx="5.5" cy="12" r="1.6"/><circle class="dot" cx="12" cy="12" r="1.6"/><circle class="dot" cx="18.5" cy="12" r="1.6"/></svg></button>
+  </header>
+  <div class="body">
+    <main class="scroll" id="scroll" tabindex="-1">
+      <article class="col" id="col" aria-busy="true"></article>
+    </main>
+    <aside class="rpanel" id="panel" hidden></aside>
+  </div>
+  <div class="layer" id="layer"></div>
+  <div class="toast" id="toast" role="status" aria-live="polite"></div>
+  <div class="vh" id="said" role="status" aria-live="polite"></div>
+</div>

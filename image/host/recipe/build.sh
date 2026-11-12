@@ -192,8 +192,11 @@ echo "template keys pinned: $(wc -l < $LIB/template-keys.sha256), the committed 
 # alias/ma-desk-batch's public half; no drop-in. batch-baseline (1.3 step 2): the newest batch whose releases this image's pin holds,
 # from bake.sh's BATCH_BASELINE (none: no file, 0), so no older signed batch can be replayed onto a host born on this image.
 [ "$(ls -A /etc/desk-host/batch-keys)" = ma-desk-batch-2026-11.pem ] || die "/etc/desk-host/batch-keys isn't exactly the batch key"
-cmp -s /etc/desk-host/batch-keys/ma-desk-batch-2026-11.pem "$HERE/../ma-recipe/files/opt/ma/etc/batch-keys/ma-desk-batch-2026-11.pem" 2>/dev/null \
-  || [ ! -d "$HERE/../ma-recipe/files/opt/ma/etc/batch-keys" ] || die "the host's batch key isn't the desk image's"
+# Compared with the desk image's own copy as the template holds it: the desk recipe removes bake.sh's staged copy of itself
+# (/home/admin/ma-recipe) as it ends, so a check against that copy was always skipped. No escape: a missing copy stops the bake
+# (Security's ADR 0077 Low 3, Nov 11).
+cmp -s /etc/desk-host/batch-keys/ma-desk-batch-2026-11.pem "$T/opt/ma/etc/batch-keys/ma-desk-batch-2026-11.pem" \
+  || die "the host's batch key isn't the desk image's (the template's /opt/ma/etc/batch-keys), or the template has none: no bake"
 (cd /etc/desk-host/batch-keys && for f in *.pem; do [ -f "$f" ] && echo "$(sha256sum "$f" | cut -d' ' -f1)  $f"; done; true) > $LIB/batch-keys.sha256
 chmod 644 $LIB/batch-keys.sha256
 if [ -n "${BATCH_BASELINE:-}" ]; then

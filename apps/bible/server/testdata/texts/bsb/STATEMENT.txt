@@ -1,1 +1,2 @@
 Fixture for the Bible app's tests: not a publisher's statement.
+Source: a fixture, as an audit line the notice leaves out

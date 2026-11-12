@@ -180,6 +180,17 @@ class AgentBrowsingChromiumIT {
                     + "<p><label>Code <input id=flip onfocus=\"this.type='password'\"></label></p>"
                     + "<p><label>Echo <input id=echo oninput=\"document.getElementById('echoed').textContent='Echoed: '+this.value\"></label></p>"
                     + "<p id=echoed>Echoed: none</p></main><form id=f1 action=\"/sent\" method=get></form>";
+            // Boxes the page made read-only, each telling of any input it gets, and one beside them that isn't.
+            case "/readonly" -> "<title>Read only</title><main><h1>Read only</h1><p>" + PROSE.repeat(6) + "</p><p>" + PROSE.repeat(6) + "</p>"
+                    + "<p><label>Account <input id=acct readonly value=\"A-123\" oninput=\"touched('acct')\"></label></p>"
+                    + "<p><label>Plan <input id=plan aria-readonly=true value=\"Basic\" oninput=\"touched('plan')\"></label></p>"
+                    + "<p><label>Terms <textarea id=terms readonly oninput=\"touched('terms')\">As agreed</textarea></label></p>"
+                    + "<fieldset disabled><p><label>Old address <input id=old value=\"1 Lamp St\" oninput=\"touched('old')\"></label></p></fieldset>"
+                    + "<div role=textbox aria-label=\"Signed note\" contenteditable=true aria-readonly=true oninput=\"touched('note')\">Signed</div>"
+                    + "<div contenteditable=false><span role=textbox tabindex=0 aria-label=\"Mention\" oninput=\"touched('mention')\">@ann</span></div>"
+                    + "<p><label>Echo <input id=echo oninput=\"document.getElementById('echoed').textContent='Echoed: '+this.value\"></label></p>"
+                    + "<p id=echoed>Echoed: none</p><p id=t>Touched: none</p><p>" + PROSE.repeat(6) + "</p></main>"
+                    + "<script>function touched(w){document.getElementById('t').textContent='Touched: '+w}</script>";
             case "/sent" -> "<title>Sent</title><main><h1>Sent</h1><p id=m>Nothing</p><p>" + PROSE.repeat(3) + "</p></main>"
                     + "<script>document.getElementById('m').textContent='Sent: '+new URLSearchParams(location.search).get('msg')</script>";
             // A frame of another site, in a process of its own, with a local host in it; a local host straight in a frame; and
@@ -451,6 +462,36 @@ class AgentBrowsingChromiumIT {
         // And Backspace's own edit, as a key.
         exec("run-1", "browser_press", Map.of("tabId", tab, "ref", ref(text("run-1", tab), "Echo"), "key", "Backspace"));
         assertThat(text("run-1", tab)).contains("Echoed: " + typed.substring(0, typed.length() - 1)).doesNotContain(typed);
+    }
+
+    /**
+     * Security (Nov 11): the type gate refuses a box the page made read-only (readonly, aria-readonly, a disabled fieldset's
+     * field, and rich text inside contenteditable="false"), for typing, emptying and keys alike, so the Agent can't change
+     * what a person couldn't; a box beside them still takes both.
+     */
+    @Test
+    void securityAReadOnlyBoxTakesNoTypingAndNoKeys() throws Exception {
+        String tab = (String) ((Map<String, Object>) exec("run-1", "browser_open", Map.of("url", url("a.test", "/readonly"))).content()).get("tabId");
+        String page = text("run-1", tab);
+        for (String label : List.of("Account", "Plan", "Terms", "Old address", "Signed", "@ann")) {
+            String box = ref(page, label);
+            for (Map<String, Object> args : List.of(
+                    Map.<String, Object>of("tabId", tab, "ref", box, "text", "changed by the agent"),
+                    Map.<String, Object>of("tabId", tab, "ref", box, "text", ""))) {
+                assertThatThrownBy(() -> exec("run-1", "browser_type", args)).as("%s %s", label, args.get("text"))
+                        .isInstanceOfSatisfying(ToolFailure.class, e -> assertThat(e.reason()).isIn("kind", "changed"));
+            }
+            assertThatThrownBy(() -> exec("run-1", "browser_press", Map.of("tabId", tab, "ref", box, "key", "Backspace"))).as(label)
+                    .isInstanceOfSatisfying(ToolFailure.class, e -> assertThat(e.reason()).isIn("kind", "changed"));
+        }
+        String after = text("run-1", tab);
+        assertThat(after).contains("Touched: none").doesNotContain("changed by the agent");
+        assertThat(after).contains("A-123", "Basic", "As agreed", "1 Lamp St", "Signed", "@ann");
+
+        HostedTool.Result echo = exec("run-1", "browser_type", Map.of("tabId", tab, "ref", ref(after, "Echo"), "text", "still types"));
+        assertThat((Map<String, Object>) echo.content()).containsEntry("done", true);
+        exec("run-1", "browser_press", Map.of("tabId", tab, "ref", ref(text("run-1", tab), "Echo"), "key", "Backspace"));
+        assertThat(text("run-1", tab)).contains("Echoed: still type").doesNotContain("Echoed: still types").contains("Touched: none");
     }
 
     @Test

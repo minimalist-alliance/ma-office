@@ -1,6 +1,7 @@
 Minimalist Alliance apps: WCAG contrast, Today against Final (2026-11-05)
 Computed from web/src/theme/tokens.ts on main (Today) and tokens.json (Final). Translucent colors are composited over their surface; a translucent surface sits on surface.worldBase.
 Bar: 4.5:1 for text, 3:1 for focus rings, active-desk rings, control borders and glyphs. "<<" marks a miss. Today is shown for reference, and Today's own misses are not marked.
+Light text.link's Final is #355F91 since 2026-11-11 (one link blue on every Light surface; see NOTES): its six rows were recomputed by hand, the rest is unchanged.
 
 PANEL TO GROUND
           stop          Today  Final
@@ -38,12 +39,12 @@ PANEL TO GROUND
     text.tertiary on surface.overlay                5.50  5.75  small labels, About keys, tile foot
     text.tertiary on surface.chrome                 5.29  5.61  small labels, About keys, tile foot
     text.tertiary on surface.sunken                 5.00  5.17  small labels, About keys, tile foot
-    text.link on surface.panel                      5.11  5.28  links
-    text.link on surface.tile                       5.20  5.38  links
-    text.link on surface.window                     5.20  5.38  links
-    text.link on surface.overlay                    5.20  5.38  links
-    text.link on surface.sunken                     4.73  4.83  links
-    text.link on accent.subtle                      4.54  4.56  links
+    text.link on surface.panel                      5.11  6.45  links
+    text.link on surface.tile                       5.20  6.57  links
+    text.link on surface.window                     5.20  6.57  links
+    text.link on surface.overlay                    5.20  6.57  links
+    text.link on surface.sunken                     4.73  5.90  links
+    text.link on accent.subtle                      4.54  5.58  links
     text.onAccent on accent.default                 5.20  4.65  primary button
     text.onAccent on accent.hover                   6.57  5.45  primary button
     text.onAccent on accent.pressed                 8.28  6.52  primary button
@@ -297,7 +298,7 @@ PANEL TO GROUND
     etch.wall on etch.fill                          3.54  8.88  etch upper wall against fill
 
 LOWEST LEFT IN FINAL
-  light  text 4.56 (text.link on accent.subtle); non-text 3.04 (ring.activeDesk on surface.worldLo)
+  light  text 4.61 (text.disabled on surface.overlay); non-text 3.04 (ring.activeDesk on surface.worldLo)
   dusk   text 4.53 (text.disabled on surface.overlay); non-text 3.15 (border.strong on surface.fill)
   dark   text 4.57 (text.disabled on surface.overlay); non-text 3.16 (border.strong on surface.fill)
 
@@ -431,6 +432,7 @@ NOTES
 - text.disabled meets 4.5 even though WCAG exempts it. In Dusk and Dark it sits close to text.tertiary; a disabled menu item still reads paler than its text.primary neighbours.
 - .btn:disabled uses opacity 0.45, so a disabled button drops below the bar. WCAG exempts it, and it is not a token. The app shows it only for a moment, while client-config loads.
 - accent.subtle and text.link have no use in the app's CSS today. They are held to the bar for when they do.
+- 2026-11-11: Light text.link moved from #476C9E to #355F91, the office's accent.hover, so the account site, the Management Console, the sign-in pages and the kit share one Light link (the Product Designer's pick; held by web/src/theme/linkToken.test.ts here and ma-platform's web/platform/src/linkParity.test.ts). Its lowest Light pair is now 4.86 on surface.worldLo, where the account site and the sign-in pages put links; #476C9E was 4.42 on surface.worldBase and 3.97 on surface.worldLo. Zen and Dark are unchanged.
 - Dusk's panel to ground stays about 1.05 at the middle stop, the same as today. The brief set a floor for Light only; Dusk's desks rely on a hairline and a shadow, as they do now.
 - Google button on Dusk's card, the one miss: Google's border #8E918F is 2.39:1 on the card, and the README's #131314 fill is 2.44:1 against it. Neither can move without leaving the README's fill or Google's stroke. It affects every screen with the Google button on Dusk: Sign in, Confirm (Google account) and their errors. The label is 14.5:1, so the button still reads. The fix is the README's own fallback, a #F2F2F2 fill at about 6.8:1, which is the coordinator's and owner's call.
 - Light's etch highlight (#FFFFFF on #FDFDFB) is close to invisible, as ADR 0064 said it would be. The wall carries the depth there.

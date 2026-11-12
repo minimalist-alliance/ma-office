@@ -4,6 +4,7 @@
 // shows it: a desk shows nothing unless there's a problem or the member is waiting on it.
 import { SUPPORT_ADDRESS } from '../platform/clientConfig';
 import { DATA_GUARD_STOP_REASON, DATA_GUARD_STOPPING } from './dataGuardWords';
+import { TRAFFIC_STOP_REASON, TRAFFIC_STRIP } from './trafficStop';
 import type { AgentActivity, AgentStateMessage, DeskRefusal, DeskStatus, LinkState } from './deskLink';
 
 export type StatusDot = 'pulse' | 'warn' | 'error';
@@ -33,6 +34,8 @@ export interface StatusInput {
   stopInSec?: number | null;
   /** Why it is announced (`data_guard`); anything else keeps the usual words. */
   stopReason?: string | null;
+  /** A traffic stop that still holds: the strip says so in place of "asleep" (TD-162). */
+  trafficStop?: boolean;
   givebackUntil?: string | null;
   link: LinkState;
   /** False until this desk's link exists. */
@@ -87,10 +90,12 @@ export function statusLine(i: StatusInput): StatusLine {
   if (i.refusal) return { dot: 'warn', label: 'membership not active' };
   if (i.vm === 'error' || i.phase === 'failed') return { dot: 'error', label: "couldn't wake · Retry" };
   if (i.vm === 'stopping') {
+    if (i.stopReason === TRAFFIC_STOP_REASON) return { dot: 'warn', label: i.stopInSec != null ? `${TRAFFIC_STRIP} · ${clockMinSec(i.stopInSec)}` : TRAFFIC_STRIP };
     if (i.stopReason === DATA_GUARD_STOP_REASON) return { dot: 'warn', label: i.stopInSec != null ? `${DATA_GUARD_STOPPING} ${clockMinSec(i.stopInSec)}` : DATA_GUARD_STOPPING };
     return { dot: 'warn', label: i.stopInSec != null ? `going to sleep · ${clockMinSec(i.stopInSec)}` : 'going to sleep' };
   }
   if (i.vm === 'stopped') {
+    if (i.trafficStop) return { dot: null, label: TRAFFIC_STRIP };
     return { dot: null, label: i.givebackUntil ? `asleep · Give Back until ${i.givebackUntil}` : 'asleep' };
   }
   if (i.vm === 'starting') {

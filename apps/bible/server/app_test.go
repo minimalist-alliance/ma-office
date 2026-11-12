@@ -88,6 +88,7 @@ type client struct {
 	early   map[uint32][]event
 	closed  chan struct{}
 	closeF  *wire.Frame
+	guild   bool // what this stand-in for deskd answers to desk.info.get
 }
 
 type event struct {
@@ -103,12 +104,18 @@ func (e *callErr) Error() string { return e.e.Code + " " + fmt.Sprint(e.e.Detail
 
 func dial(t *testing.T, s *server, hello map[string]any) (*client, map[string]any, error) {
 	t.Helper()
+	return dialDesk(t, s, hello, false)
+}
+
+// dialDesk is dial as the deskd of a Guild Desk (guild) or of a member's own desk.
+func dialDesk(t *testing.T, s *server, hello map[string]any, guild bool) (*client, map[string]any, error) {
+	t.Helper()
 	nc, err := net.Dial("unix", s.cfg.socket)
 	if err != nil {
 		return nil, nil, err
 	}
 	c := &client{c: wire.NewConn(nc), pending: map[uint32]chan wire.Frame{}, events: map[uint32]chan event{},
-		early: map[uint32][]event{}, closed: make(chan struct{})}
+		early: map[uint32][]event{}, closed: make(chan struct{}), guild: guild}
 	t.Cleanup(func() { nc.Close() })
 	if hello == nil {
 		hello = map[string]any{"appApi": "1.0", "deskApi": "1.4", "app": map[string]string{"id": s.cfg.id, "version": "1.0.0"},
@@ -161,6 +168,17 @@ func (c *client) read() {
 			if ch != nil {
 				ch <- e
 			}
+		case wire.Req:
+			// The app's own calls to deskd: desk.info.get, as deskd answers it.
+			var r struct {
+				M string `json:"m"`
+			}
+			_ = json.Unmarshal(f.Payload, &r)
+			if r.M == "desk.info.get" {
+				_ = c.c.Send(wire.Res, f.ID, 0, map[string]any{"appApi": "1.0", "deskApi": "1.4", "timeZone": "UTC", "guildDesk": c.guild})
+			} else {
+				_ = c.c.Send(wire.Err, f.ID, 0, map[string]any{"code": "not_found"})
+			}
 		case wire.Close:
 			c.closeF = &f
 			return
@@ -194,8 +212,23 @@ func (c *client) round(kind byte, payload any) (wire.Frame, error) {
 	}
 }
 
+var owner = map[string]any{"kind": "owner"}
+
+func member(id string) map[string]any {
+	return map[string]any{"kind": "guild_member", "member": id, "role": "member", "grants": []string{}, "teen": false}
+}
+
 func (c *client) call(m string, p any, idem string) (json.RawMessage, error) {
-	req := map[string]any{"m": m, "p": p, "deadlineMs": 5000, "from": map[string]any{"kind": "view", "session": "p-test", "caller": map[string]string{"kind": "owner"}}}
+	return c.callFrom(map[string]any{"kind": "view", "session": "p-test", "caller": owner}, m, p, idem)
+}
+
+// callAs is a view's call for a caller.
+func (c *client) callAs(who map[string]any, m string, p any, idem string) (json.RawMessage, error) {
+	return c.callFrom(map[string]any{"kind": "view", "session": "p-test", "caller": who}, m, p, idem)
+}
+
+func (c *client) callFrom(from any, m string, p any, idem string) (json.RawMessage, error) {
+	req := map[string]any{"m": m, "p": p, "deadlineMs": 5000, "from": from}
 	if idem != "" {
 		req["idem"] = idem
 	}
@@ -234,7 +267,15 @@ func errReason(err error) string {
 
 func (c *client) subscribe(t *testing.T, topic string) chan event {
 	t.Helper()
-	f, err := c.round(wire.Sub, map[string]any{"topic": topic, "from": map[string]string{"kind": "desk"}})
+	if topic == "app.summary" {
+		return c.subscribeFrom(t, topic, map[string]any{"kind": "desk"})
+	}
+	return c.subscribeFrom(t, topic, map[string]any{"kind": "view", "caller": owner})
+}
+
+func (c *client) subscribeFrom(t *testing.T, topic string, from any) chan event {
+	t.Helper()
+	f, err := c.round(wire.Sub, map[string]any{"topic": topic, "from": from})
 	if err != nil || f.Kind != wire.Res {
 		t.Fatalf("SUB %s: %v %s", topic, err, f.Payload)
 	}
@@ -373,7 +414,9 @@ func TestReading(t *testing.T) {
 	}
 	var about map[string]any
 	c.must(t, "bible.about", map[string]any{"translation": "kjv"}, "", &about)
-	if about["abbreviation"] != "KJV" || !strings.HasPrefix(about["statement"].(string), "Fixture") || about["sourceUrl"] != "https://ebible.org/find/details.php?id=eng-kjv2006" {
+	notice, _ := os.ReadFile(textsDir + "/kjv/NOTICE.txt")
+	if about["abbreviation"] != "KJV" || about["statement"] != string(notice) || strings.Contains(about["statement"].(string), "Source:") ||
+		about["sourceUrl"] != "https://ebible.org/find/details.php?id=eng-kjv2006" {
 		t.Fatalf("about %v", about)
 	}
 	var lk map[string]map[string]any
@@ -716,5 +759,211 @@ func TestManifestMatches(t *testing.T) {
 	}
 	if len(m.Methods) != 14 || strings.Join(m.Topics, ",") != "bible.marks" || !m.Views.Widget {
 		t.Fatalf("manifest %+v", m)
+	}
+}
+
+const (
+	memberA = "p-AAAAAAAAAAAAAAAAAAAAAA"
+	memberB = "p-BBBBBBBBBBBBBBBBBBBBBB"
+)
+
+func TestCallerRequired(t *testing.T) {
+	s := start(t, t.TempDir(), nil)
+	c, _, err := dial(t, s, nil)
+	if err != nil {
+		t.Fatal(err)
+	}
+	for name, from := range map[string]any{
+		"no caller":       map[string]any{"kind": "view", "session": "p-x"},
+		"no from":         nil,
+		"a stranger":      map[string]any{"kind": "view", "caller": map[string]any{"kind": "stranger"}},
+		"a bad member id": map[string]any{"kind": "view", "caller": map[string]any{"kind": "guild_member", "member": "alice"}},
+		"deskd, a view's": map[string]any{"kind": "desk"},
+	} {
+		if _, err := c.callFrom(from, "bible.info", map[string]any{}, ""); errReason(err) != "forbidden:caller" {
+			t.Errorf("%s: %v", name, err)
+		}
+	}
+	if _, err := c.call("app.members.retain", map[string]any{"members": []string{}}, "r"); errReason(err) != "forbidden:caller" {
+		t.Errorf("a view's retain: %v", err)
+	}
+	f, err := c.round(wire.Sub, map[string]any{"topic": "bible.marks", "from": map[string]any{"kind": "view"}})
+	if err != nil || f.Kind != wire.Err || !strings.Contains(string(f.Payload), "forbidden") {
+		t.Errorf("a SUB with no caller: %v %s", err, f.Payload)
+	}
+}
+
+// TestGuildMembers: on a Guild Desk each member has their own marks, prefs and topic; deskd's retain removes those
+// who left and leaves the rest.
+func TestGuildMembers(t *testing.T) {
+	data := t.TempDir()
+	s := start(t, data, nil)
+	c, _, err := dialDesk(t, s, nil, true)
+	if err != nil {
+		t.Fatal(err)
+	}
+	a, b := member(memberA), member(memberB)
+	evA := c.subscribeFrom(t, "bible.marks", map[string]any{"kind": "view", "caller": a})
+	evB := c.subscribeFrom(t, "bible.marks", map[string]any{"kind": "view", "caller": b})
+	for _, ev := range []chan event{evA, evB} {
+		if e := next(t, ev, time.Second); e.Type != "snapshot" || string(e.Data) != `{"rev":0}` {
+			t.Fatalf("snapshot %s", e.Data)
+		}
+	}
+	put := func(who map[string]any, text, idem string) {
+		t.Helper()
+		if _, err := c.callAs(who, "bible.mark.put", map[string]any{"mark": map[string]any{"kind": "note", "book": "JHN", "chapter": 3, "verse": 16, "text": text}}, idem); err != nil {
+			t.Fatal(err)
+		}
+	}
+	put(a, "A's note", "same-key")
+	put(b, "B's note", "same-key") // the same key, another member: its own action
+	put(b, "B's second", "k2")
+	if e := next(t, evA, time.Second); string(e.Data) != `{"rev":1}` {
+		t.Fatalf("A's patch %s", e.Data)
+	}
+	if e := next(t, evB, time.Second); string(e.Data) != `{"rev":1}` {
+		t.Fatalf("B's first patch %s", e.Data)
+	}
+	if e := next(t, evB, time.Second); string(e.Data) != `{"rev":2}` {
+		t.Fatalf("B's second patch %s", e.Data)
+	}
+	select {
+	case e := <-evA:
+		t.Fatalf("A heard about B: %s", e.Data)
+	case <-time.After(200 * time.Millisecond):
+	}
+	marksOf := func(who map[string]any) []string {
+		var r struct {
+			Marks []struct{ Text string } `json:"marks"`
+		}
+		raw, err := c.callAs(who, "bible.marks.chapter", map[string]any{"book": "JHN", "chapter": 3}, "")
+		if err != nil {
+			t.Fatal(err)
+		}
+		_ = json.Unmarshal(raw, &r)
+		var out []string
+		for _, m := range r.Marks {
+			out = append(out, m.Text)
+		}
+		return out
+	}
+	if got := marksOf(a); strings.Join(got, ",") != "A's note" {
+		t.Fatalf("A sees %v", got)
+	}
+	if got := marksOf(b); len(got) != 2 {
+		t.Fatalf("B sees %v", got)
+	}
+	if got := marksOf(owner); len(got) != 0 {
+		t.Fatalf("the owner bucket sees %v", got)
+	}
+	retain := func(members []string, idem string) string {
+		t.Helper()
+		raw, err := c.callFrom(map[string]any{"kind": "desk"}, "app.members.retain", map[string]any{"members": members}, idem)
+		if err != nil {
+			t.Fatal(err)
+		}
+		return string(raw)
+	}
+	if got := retain([]string{memberA}, "r1"); got != `{"removed":1}` {
+		t.Fatalf("retain %s", got)
+	}
+	if got := marksOf(b); len(got) != 0 {
+		t.Fatalf("B's marks after B left: %v", got)
+	}
+	if got := marksOf(a); strings.Join(got, ",") != "A's note" {
+		t.Fatalf("A's marks after B left: %v", got)
+	}
+	if got := retain([]string{memberA}, "r1"); got != `{"removed":1}` {
+		t.Fatalf("a replay %s", got)
+	}
+	if _, err := c.callFrom(map[string]any{"kind": "desk"}, "app.members.retain", map[string]any{}, "r3"); errReason(err) != "bad_request:members" {
+		t.Fatalf("no list: %v", err)
+	}
+	b2, _ := os.ReadFile(filepath.Join(data, "state.jsonl"))
+	j2, _ := os.ReadFile(filepath.Join(data, "journal.jsonl"))
+	if strings.Contains(string(b2)+string(j2), "B's") {
+		t.Fatal("B's notes are still in the files")
+	}
+}
+
+// TestGuildWidget: on a Guild Desk the tile never shows a member's place.
+func TestGuildWidget(t *testing.T) {
+	s := start(t, t.TempDir(), nil)
+	c, _, err := dialDesk(t, s, nil, true)
+	if err != nil {
+		t.Fatal(err)
+	}
+	evs := c.subscribe(t, "app.summary")
+	if e := next(t, evs, time.Second); string(e.Data) != `{"rows":[]}` {
+		t.Fatalf("snapshot %s", e.Data)
+	}
+	for _, who := range []map[string]any{member(memberA), owner} {
+		if _, err := c.callAs(who, "bible.prefs.set", map[string]any{"place": map[string]any{"translation": "bsb", "book": "JHN", "chapter": 3, "verse": 16}}, ""); err != nil {
+			t.Fatal(err)
+		}
+	}
+	select {
+	case e := <-evs:
+		if strings.Contains(string(e.Data), "John") {
+			t.Fatalf("a place on a shared tile: %s", e.Data)
+		}
+	case <-time.After(3 * s.cfg.summaryEvery):
+	}
+}
+
+// TestRetainNeedsAll: an empty list is refused unless all: true says to remove every member, never the owner.
+func TestRetainNeedsAll(t *testing.T) {
+	s := start(t, t.TempDir(), nil)
+	c, _, err := dialDesk(t, s, nil, true)
+	if err != nil {
+		t.Fatal(err)
+	}
+	for _, who := range []map[string]any{owner, member(memberA), member(memberB)} {
+		if _, err := c.callAs(who, "bible.mark.put", map[string]any{"mark": map[string]any{"kind": "bookmark", "book": "GEN", "chapter": 1, "verse": 1}}, ""); err != nil {
+			t.Fatal(err)
+		}
+	}
+	desk := map[string]any{"kind": "desk"}
+	for p, want := range map[string]string{
+		`{"members":[]}`: "bad_request:empty",
+		`{"members":["` + memberA + `"],"all":true}`: "bad_request:all",
+		`{}`: "bad_request:members",
+	} {
+		if _, err := c.callFrom(desk, "app.members.retain", json.RawMessage(p), "k-"+p); errReason(err) != want {
+			t.Errorf("%s: %v, want %s", p, err, want)
+		}
+	}
+	raw, err := c.callFrom(desk, "app.members.retain", map[string]any{"members": []string{}, "all": true}, "all")
+	if err != nil || string(raw) != `{"removed":2}` {
+		t.Fatalf("all: %s %v", raw, err)
+	}
+	var mine struct {
+		Marks []any `json:"marks"`
+	}
+	c.must(t, "bible.marks.chapter", map[string]any{"book": "GEN", "chapter": 1}, "", &mine)
+	if len(mine.Marks) != 1 {
+		t.Fatal("all: true touched the owner's data")
+	}
+}
+
+// TestPanicStaysInItsCall: a bug in one call answers that call with internal and leaves the link and everyone else's
+// calls working.
+func TestPanicStaysInItsCall(t *testing.T) {
+	s := start(t, t.TempDir(), nil)
+	c, _, err := dial(t, s, nil)
+	if err != nil {
+		t.Fatal(err)
+	}
+	panicOn = "bible.info"
+	defer func() { panicOn = "" }()
+	if _, err := c.call("bible.info", map[string]any{}, ""); errReason(err) != "internal:<nil>" {
+		t.Fatalf("the panicking call: %v", err)
+	}
+	if _, err := c.call("bible.books", map[string]any{"translation": "bsb"}, ""); err != nil {
+		t.Fatalf("the next call: %v", err)
+	}
+	if fi, err := os.Stat(s.cfg.socket); err != nil || fi.Mode().Perm() != 0o660 {
+		t.Fatalf("socket mode %v %v", fi.Mode(), err)
 	}
 }

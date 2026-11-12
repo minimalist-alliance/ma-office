@@ -1,6 +1,6 @@
-// The Browser window's glyphs for Links in and out (#9), on the office's 24 grid at a 1.7 stroke, from the Product
-// Designer's `mocks.mjs` (`P`; `out` there is `openOut` here). They live in the Browser window's chunk, not in
-// `chrome/icons.tsx`, so nothing of them is in the first load.
+// The Browser window's glyphs for Links in and out (#9) and site sign-ins (#11), on the office's 24 grid at a 1.7 stroke,
+// from the Product Designer's `mocks.mjs` (`P`; `out` there is `openOut` here). They live in the Browser window's chunk,
+// not in `chrome/icons.tsx`, so nothing of them is in the first load.
 import type { JSX } from 'react';
 
 const PATHS = {
@@ -37,6 +37,24 @@ const PATHS = {
       <path d="M4.5 10h15M8.5 3.5v4M15.5 3.5v4" />
     </>
   ),
+  key: (
+    <>
+      <circle cx="7.5" cy="12" r="4.5" />
+      <path d="M12 12h8.5M17 12v3.5M20.5 12v3" />
+    </>
+  ),
+  puzzle: <path transform="translate(-0.6 -0.4)" d="M5 9h4.3a2.2 2.2 0 1 1 2.4 0H16v3.3a2.2 2.2 0 1 1 0 2.4V20H5Z" />,
+  pin: <path d="M9.5 4.5h5M10.5 4.5v5l-3 3v1.5h9v-1.5l-3-3v-5M12 14v5.5" />,
+  file: (
+    <>
+      <path d="M7 4.5h7l4 4v11H7Z" />
+      <path d="M14 4.5v4h4" />
+    </>
+  ),
+  check: <path d="m5.5 12.5 4.2 4.2 8.8-9.2" />,
+  // The office's own back and close, here too so the Passwords panel's chunk needs nothing of the first load's icons.
+  back: <path d="M19 12H5.5M11 6.5 5.5 12l5.5 5.5" />,
+  close: <path d="M6.5 6.5 17.5 17.5M17.5 6.5 6.5 17.5" />,
 } satisfies Record<string, JSX.Element>;
 
 export type LinkIconName = keyof typeof PATHS;

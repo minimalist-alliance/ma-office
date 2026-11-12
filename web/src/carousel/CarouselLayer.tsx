@@ -24,6 +24,8 @@ import { useCameraRest, type RestCam } from '../canvas/useCameraRest';
 import type { AppId, LayoutDesk } from '../canvas/layout';
 import { useIsPhone } from '../canvas/phone';
 import { AppGlyph, Icon } from '../chrome/icons';
+import { useDoor } from '../deskapps/door';
+import { useFree } from '../free/door';
 import { shownDesk } from '../desk/attention';
 import { reducedMotion } from '../lib/util';
 import { appLabel, inScopeDesks } from '../shell/actions';
@@ -55,6 +57,9 @@ function scrollsSideways(from: EventTarget | null, stop: HTMLElement, dir: numbe
   return false;
 }
 
+/** What a phone's stage calls itself as a cover of the office's corner (`free/cover.ts`), and the Browser slide's ring asks for. */
+const phoneCover = (deskId: string): string => `carousel:${deskId}`;
+
 /** Where a desk's stage is on screen, for the camera at `rest`. */
 const stageBox = (desk: Pick<LayoutDesk, 'x' | 'y' | 'w' | 'h'>, rest: Cam, at = { x: desk.x, y: desk.y }) => stageOnScreen({ ...desk, ...at }, rest);
 
@@ -70,6 +75,8 @@ function Slide({ deskId, deskName, app, index, count, leaving, phone, titleId, s
   slideRef?: (el: HTMLDivElement | null) => void;
 }) {
   const label = appLabel(app, deskId);
+  // A free member's time ring, while the phone's carousel on the Browser covers the office's (walk L13).
+  const FreeRing = useFree((s) => (phone && app === 'browser' ? s.WindowRing : undefined));
   return (
     <LiveWindow
       ref={slideRef}
@@ -95,6 +102,7 @@ function Slide({ deskId, deskName, app, index, count, leaving, phone, titleId, s
             {label}
             <span className="window-desk">{deskName}</span>
           </h2>
+          {FreeRing && <FreeRing cover={phoneCover(deskId)} />}
         </div>
       )}
     </LiveWindow>
@@ -121,6 +129,7 @@ function DeskGlyph() {
 function ThumbRow({ deskId, apps, index, panelId, tabId }: { deskId: string; apps: AppId[]; index: number; panelId: string; tabId: (n: number) => string }) {
   const listRef = useRef<HTMLDivElement>(null);
   const count = apps.length;
+  const appsHost = useDoor((s) => s.host);
 
   // The focus follows the shown app while it's in the row, as a tablist's does; the one shown stays in view.
   useEffect(() => {
@@ -173,6 +182,8 @@ function ThumbRow({ deskId, apps, index, panelId, tabId }: { deskId: string; app
           </button>
         ))}
       </div>
+      {/* Phones have no desk menu: the Apps sheet's way in is here (ADR 0054), wherever the menu's Apps row would show. */}
+      {appsHost && <appsHost.AppsThumb deskId={deskId} />}
       <span className="thumb-sep" aria-hidden="true" />
       <button type="button" className="thumb-desk" aria-label="Back to the desk" onClick={() => backToDesk(deskId)}>
         <DeskGlyph />
@@ -424,6 +435,9 @@ function CarouselStage({ deskId, deskName, desk, rest, phone }: { deskId: string
         tabIndex={-1}
         data-testid="carousel-stage"
         data-desk={deskId}
+        // It covers the whole screen, the office's corner included: by this name, with the app it shows (`free/cover.ts`).
+        data-cover={phoneCover(deskId)}
+        data-app={cur}
         onKeyDown={onKeyDown}
       >
         <div className="carousel-track" role="tabpanel" id={panelId} aria-labelledby={tabId(shownAt)}>

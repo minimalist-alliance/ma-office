@@ -103,8 +103,8 @@ try {
   await page.getByRole('button', { name: 'Previous day with notes' }).click();
   await pause(900);
 
-  // Dusk and Dark.
-  await page.getByRole('radio', { name: 'Dusk' }).click();
+  // Zen and Dark.
+  await page.getByRole('radio', { name: 'Zen' }).click();
   await pause(1100);
   await page.getByRole('radio', { name: 'By tab' }).click();
   await pause(1000);

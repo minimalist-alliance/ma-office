@@ -130,6 +130,7 @@ public final class AgeBand {
 
     private final Path file;
     private final List<Runnable> lockBegins = new CopyOnWriteArrayList<>();
+    private final List<Runnable> unlocked = new CopyOnWriteArrayList<>();
     private final List<Runnable> settled = new CopyOnWriteArrayList<>();
     private volatile State state;
     /** Only the boot thread touches these three. */
@@ -142,6 +143,11 @@ public final class AgeBand {
     public AgeBand(Path file) {
         this.file = file;
         this.state = new State(null, read(file), false);
+    }
+
+    /** deskd's data directory, where the file is: deskd's alone. */
+    public Path directory() {
+        return file.toAbsolutePath().getParent();
     }
 
     /** The band as far as deskd knows, or null while that's unknown. Never blocks. */
@@ -171,6 +177,16 @@ public final class AgeBand {
      */
     public void onLockBegins(Runnable listener) {
         lockBegins.add(listener);
+    }
+
+    /**
+     * Runs on the boot thread as the file comes to say {@code adult} where it said anything else, no file included, with the
+     * band {@code adult}: a Chromium that started before still has the teen lock, as the image sets the lock or the
+     * allowlist only as Chromium starts. After the write, so a start from here reads {@code adult}, and before
+     * {@link #onSettled}. Must not block.
+     */
+    public void onUnlocked(Runnable listener) {
+        unlocked.add(listener);
     }
 
     /** Runs on the boot thread each time the Platform's word has been dealt with, the write's outcome included. Must not block. */
@@ -233,6 +249,9 @@ public final class AgeBand {
             onDisk = write(next) ? OnDisk.holding(next) : read(file);
         }
         state = new State(next, onDisk, before.unsaid());
+        if (next == Band.ADULT && onDisk == OnDisk.ADULT && before.onDisk() != OnDisk.ADULT) {
+            unlocked.forEach(Runnable::run);
+        }
         settled.forEach(Runnable::run);
     }
 
@@ -271,6 +290,9 @@ public final class AgeBand {
         unsaidLogged = true;
         if (next == Band.TEEN && previous != Band.TEEN) {
             lockBegins.forEach(Runnable::run);
+        }
+        if (next == Band.ADULT && after.onDisk() == OnDisk.ADULT && before.onDisk() != OnDisk.ADULT) {
+            unlocked.forEach(Runnable::run);
         }
         settled.forEach(Runnable::run);
     }

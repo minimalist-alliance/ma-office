@@ -107,17 +107,17 @@ async function arrive(page: Page, request: APIRequestContext, opts: { theme?: Th
   return errors;
 }
 
-async function axe(page: Page): Promise<string[]> {
+async function axe(page: Page, layers: string[] = ['.open-layer', '.proxy-layer']): Promise<string[]> {
   await page.evaluate(AXE);
-  return page.evaluate(async () => {
+  return page.evaluate(async (include) => {
     interface Rule { id: string; nodes: { target: string[] }[] }
     const w = window as unknown as { axe: { run: (ctx: unknown, opts: unknown) => Promise<{ violations: Rule[] }> } };
-    const res = await w.axe.run({ include: ['.open-layer', '.proxy-layer'] }, {
+    const res = await w.axe.run({ include }, {
       runOnly: { type: 'tag', values: ['wcag2a', 'wcag2aa', 'wcag21a', 'wcag21aa', 'wcag22aa', 'best-practice'] },
       resultTypes: ['violations'],
     });
     return res.violations.map((v) => `${v.id}: ${v.nodes.map((n) => n.target.join(' ')).join(', ')}`);
-  });
+  }, layers);
 }
 
 async function shot(page: Page, name: string): Promise<void> {
@@ -491,6 +491,53 @@ for (const theme of THEMES) {
   });
 }
 
+// The accessibility pass of Nov 11 (docs/sub-status/lsub-a11y-desk.md): axe beyond the first desk, in each theme.
+for (const theme of THEMES) {
+  test(`${theme}: axe on the Work and Studio desks' live tiles, and with a tile's app opened in its window`, async ({ page, request }) => {
+    await page.setViewportSize({ width: 1280, height: 800 });
+    const errors = await arrive(page, request, { theme, desks: { [PERSONAL]: personal(), [WORK]: work(1400), [STUDIO]: studio(2800) } });
+    await expect(tile(page, 'notebook').getByTestId('note-editor')).toBeVisible();
+    await tile(page, 'notebook').getByRole('button', { name: 'Open in its window' }).click();
+    await expect(page.getByRole('dialog', { name: /Notebook/ })).toBeVisible();
+    expect(await axe(page, ['.open-layer', '.proxy-layer', '.window-layer'])).toEqual([]);
+    // Esc closes the window, and the keyboard is back on the tile's stop on the desk.
+    await page.keyboard.press('Escape');
+    await expect(page.getByRole('dialog', { name: /Notebook/ })).toHaveCount(0);
+    await expect(proxy(page, 'notebook')).toBeFocused();
+    for (const key of ['2', '3']) {
+      await focusCanvas(page);
+      await page.keyboard.press(key);
+      await settled(page);
+      await expect(page.locator('.open-tile').first()).toBeVisible();
+      expect(await axe(page), `desk ${key}`).toEqual([]);
+    }
+    expect(errors).toEqual([]);
+  });
+}
+
+test('the keyboard in and out of live tiles: Shift+Tab from the app\'s first stop is its proxy; the Browser\'s keys box keeps Tab for the page, says how to leave (its description and the bar), and Shift+Esc leaves', async ({ page, request }) => {
+  await page.setViewportSize({ width: 1280, height: 800 });
+  const errors = await arrive(page, request);
+  await expect(tile(page, 'notebook').getByTestId('note-editor')).toBeVisible();
+  await proxy(page, 'notebook').focus();
+  await page.keyboard.press('Enter');
+  expect(await inApp(page)).toBe(true);
+  await page.keyboard.press('Shift+Tab');
+  await expect(proxy(page, 'notebook')).toBeFocused();
+  // The Browser: its keys box is the page's, so Tab stays there, and it says how to leave, to a screen reader always and
+  // on the bar while it has the keyboard.
+  const keys = tile(page, 'browser').getByTestId('browser-keys');
+  await expect(keys).toHaveAccessibleDescription('Typing goes to the page. Ctrl+L to leave.');
+  await keys.focus();
+  await expect(tile(page, 'browser').getByTestId('browser-focus-hint')).toHaveText('Typing goes to the page · Ctrl+L to leave');
+  await page.keyboard.press('Tab');
+  await expect(keys).toBeFocused();
+  await page.keyboard.press('Shift+Escape');
+  await expect(proxy(page, 'browser')).toBeFocused();
+  await expect(tile(page, 'browser')).toHaveClass(/\bring\b/);
+  expect(errors).toEqual([]);
+});
+
 test('a desk dragged by its panel takes its live tiles with it, and nothing remounts', async ({ page, request }) => {
   const errors = await arrive(page, request);
   const before = (await tile(page, 'notebook').boundingBox())!;
@@ -536,6 +583,40 @@ test('the tile\'s stop on the desk is its proxy: m and the arrows move it, as th
   expect(await mounts(page, `${PERSONAL}:notebook`)).toBe(1);
   expect(errors).toEqual([]);
 });
+
+// Moved from the keyboard, the edit's own row has the keyboard (`chrome/EditBar.tsx`, a11y 2.5.7), and the proxy's ring is under
+// the frame, so the frame draws it, dashed, whatever has focus, until the edit ends.
+for (const theme of THEMES) {
+  test(`${theme}: an open tile mid-move from the keyboard: its frame's ring is dashed while the edit's row has the keyboard`, async ({ page, request }) => {
+    await page.setViewportSize({ width: 1280, height: 800 });
+    const errors = await arrive(page, request, { theme });
+    await expect(tile(page, 'notebook').getByTestId('note-editor')).toBeVisible();
+    const was = (await tile(page, 'notebook').boundingBox())!;
+    await proxy(page, 'notebook').focus();
+    await page.keyboard.press('m');
+    await expect(page.getByRole('group', { name: 'Moving Notebook' }).getByRole('button', { name: 'Move left' })).toBeFocused();
+    await page.keyboard.press('ArrowDown');
+    await page.keyboard.press('ArrowRight');
+    await expect.poll(async () => (await tile(page, 'notebook').boundingBox())!.y).toBeGreaterThan(was.y);
+    await expect(tile(page, 'notebook')).toHaveClass(/\bring\b.*\bediting\b/);
+    const ring = await tile(page, 'notebook').evaluate((el) => {
+      const probe = document.body.appendChild(document.createElement('span'));
+      probe.style.color = 'var(--ma-focus-ring)';
+      const token = getComputedStyle(probe).color;
+      probe.remove();
+      const s = getComputedStyle(el);
+      return { style: s.outlineStyle, width: s.outlineWidth, token: s.outlineColor === token };
+    });
+    expect(ring).toEqual({ style: 'dashed', width: '3px', token: true });
+    await shot(page, `${theme === 'dusk' ? 'zen' : theme}-open-tile-moving-1280`);
+    // Esc puts it back and ends the edit: the keyboard is on the tile's stop again, and the frame's ring is the solid one.
+    await page.keyboard.press('Escape');
+    await expect(proxy(page, 'notebook')).toBeFocused();
+    await expect(tile(page, 'notebook')).not.toHaveClass(/editing/);
+    await expect(tile(page, 'notebook')).toHaveClass(/\bring\b/);
+    expect(errors).toEqual([]);
+  });
+}
 
 test('from the overview, a press on an open tile brings its desk in and opens it in place; no window', async ({ page, request }) => {
   const errors = await arrive(page, request, { desks: { [PERSONAL]: personal(), [WORK]: work(1400) } });

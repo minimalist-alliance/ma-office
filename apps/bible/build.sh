@@ -1,6 +1,6 @@
 #!/usr/bin/env bash
 # Builds the Bible app's packages (desk app contract §1): static linux/arm64 (desks) and linux/amd64 (tests) builds of
-# bible-app, files/ assembled (bin, texts with STATEMENT.txt and SOURCE.md, view), packed with tools/pack, dev-signed
+# bible-app, files/ assembled (bin, texts with STATEMENT.txt, SOURCE.md and NOTICE.txt, view), packed with tools/pack, dev-signed
 # with throwaway Ed25519 keys made fresh in a scratch folder, and checked with the contract sample's ma-app verify.
 #
 #   apps/bible/build.sh [--dev] [--out DIR] [--texts DIR]
@@ -41,7 +41,7 @@ for f in index.html view.js view.css; do
   [ -f "$view/$f" ] || { echo "build: $view/$f is missing" >&2; exit 1; }
 done
 for code in bsb web kjv asv; do
-  for f in "$code.tsv" books.tsv STATEMENT.txt SOURCE.md; do
+  for f in "$code.tsv" books.tsv STATEMENT.txt SOURCE.md NOTICE.txt; do
     [ -f "$texts/$code/$f" ] || { echo "build: $texts/$code/$f is missing" >&2; exit 1; }
   done
   head -1 "$texts/$code/$code.tsv" | grep -qx "# ma-bible-text 2 $code" ||
@@ -70,7 +70,8 @@ for arch in arm64 amd64; do
   cp "$view/index.html" "$view/view.js" "$view/view.css" "$stage/view/"
   for code in bsb web kjv asv; do
     mkdir -p "$stage/texts/$code"
-    cp "$texts/$code/$code.tsv" "$texts/$code/books.tsv" "$texts/$code/STATEMENT.txt" "$texts/$code/SOURCE.md" "$stage/texts/$code/"
+    cp "$texts/$code/$code.tsv" "$texts/$code/books.tsv" "$texts/$code/STATEMENT.txt" "$texts/$code/SOURCE.md" \
+      "$texts/$code/NOTICE.txt" "$stage/texts/$code/"
   done
   chmod 0644 "$stage"/view/* "$stage"/texts/*/*
   chmod 0755 "$stage/bin/bible-app"

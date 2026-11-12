@@ -317,6 +317,9 @@ class Prepare(unittest.TestCase):
         self.assertEqual(r.returncode, 75, r.stdout + r.stderr)
         self.assertIn("slot 4: refused for room: the store has", r.stderr)
         self.assertIn("nothing copied", r.stderr)
+        # the record is removed first (ADR 0072 WALL-04), so a refused prepare leaves a slot with none: `desk-host up` must prepare such a
+        # slot, not end silently (0.1.15's batch_cutoff, test_up_norecord.py)
+        self.assertFalse(os.path.exists(f"{self.st.rec}/4.json"))
         self.assertEqual(self.st.copies(), [], "a copy began")
         self.assertEqual(self.st.partials(), [])
         self.assertTrue(self.turn_free())

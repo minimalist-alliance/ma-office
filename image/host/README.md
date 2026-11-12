@@ -18,7 +18,11 @@ Analyst clears the wall as built and ADR 0072 is accepted (its section 14).
    `recipe/files/etc/desk-host/template-keys/` must be exactly the committed anchor, `recipe/template-keys.sha256`
    (`recipe/template-key-check`: the anchored names and nothing else, no link, the anchor's SHA-256, P-256), and the key must be
    `alias/ma-host-template`'s public half as KMS's `GetPublicKey` gives it (compared as DER). Either differing stops the bake before
-   anything is launched. A role without `kms:GetPublicKey` skips only the KMS half, with a `WARNING` naming the permission.
+   anything is launched. A role without `kms:GetPublicKey` stops the bake too: that compare is the one check that catches a key
+   and its anchor changed together in git. `ALLOW_NO_KMS_COMPARE=1` bakes on the anchor alone, with a `WARNING` naming the
+   permission. A **release bake** (`HOST_AMI_PREFIX=ma-shared-host-`) also needs a clean `image/` tree, no changed and no
+   untracked file under it, so it's made from committed files only; a test bake may be dirty, and its SHA says `+dirty`
+   (Security's ADR 0077 Lows 1 and 2, Nov 11).
 2. Launches a `c7g.large` builder from Debian 13's arm64 AMI with two volumes: the root (16 GB) and the **slot store**
    (`/dev/sdf`, 12 GB).
 3. Runs the **desk recipe** (`image/recipe/build.sh`) unchanged: the builder's root is then exactly a desk image.
@@ -35,6 +39,9 @@ Analyst clears the wall as built and ADR 0072 is accepted (its section 14).
      the desk recipe's files and users from the host's own root and masks every desk unit;
    - checks the staged template key against the anchor before it makes anything, and the installed one again before it pins
      it: `/usr/local/lib/desk-host/template-keys.sha256` is the anchor itself. No key, or any other, and the bake stops;
+   - holds the host's batch key (`/etc/desk-host/batch-keys/`) to the desk image's own copy in the template
+     (`/opt/ma/etc/batch-keys/`), and stops if they differ or the template has none (Security's ADR 0077 Low 3, Nov 11: the
+     check used to compare with bake.sh's staged desk recipe, which the desk recipe removes as it ends, so it never ran);
    - installs the host's files (`recipe/files/`): `desk-host` and its helpers, the host's own ruleset, sysctls, the boot and
      shutdown units, `desk-host.conf`;
    - blacklists 64 protocol modules and every tty line discipline the kernel ships (`install <m> /bin/false`), and sets
@@ -433,8 +440,12 @@ the host has no Docker, so it unpacks the layers itself, **streamed** (ADR 0078 
 `image.tar` goes to the host's root beside the download (never the store), then each layer is read in 1 MiB pieces, its whiteouts
 applied in a pass of its headers first, hashed as it's extracted against its own digest, every write paced for `desk-host-upd`'s
 `io.max`; no layer is ever held whole. Each member goes through tarfile's `tar` filter (nothing outside the root, no set-id bits, no
-device files); the image ID is the config blob's digest. desk-rtc and desk-stream are kept as shipped. A release lands under a new name
-and is renamed into place. Each keeps `artifact.sha256` and `tree.sha256`.
+device files); the image ID is the config blob's digest. **Every file and directory keeps its member's time** (`sub/host-up-norecord`): deskd's
+and desk-agent's AppCDS archives (`/app/<name>.jsa`) record each app jar's size and time, and the JVM drops an archive whose jars differ,
+saying nothing; the streamed unpack of 0.1.12 to 0.1.15 wrote every file at its unpack time, so both JVMs started without their archives
+and a cold wake's hello came 7 to 12 s later (`docs/sub-status/host-up-norecord.md`; `verify.sh` section 9 checks the maps). desk-rtc and
+desk-stream are kept as shipped. A release lands under a new name and is renamed into place. Each keeps `artifact.sha256` and
+`tree.sha256` (no times in it).
 
 **Links** (1.4): `current` (what every prepare and re-root copies, what the host has promoted), `previous` (the one before, kept so a
 rollback batch needs no download) and `candidate` (installed, not yet promoted). A version is deleted only when no link, no slot's
@@ -442,6 +453,12 @@ record and no switch in flight names it (`desk-host-batch gc`). `desk-host-relea
 host's batch state (`/var/lib/desk-host/batch/state.json`), or `releases.pin` until a batch is promoted; the store no longer has to
 equal the template's `/opt/ma` (ADR 0078 finding 3). `prepare` copies `current` into each slot's `rel/` and its record names those
 versions (`releases`); nothing a desk writes is read.
+
+**Desk image 0.3.5 in a slot (`sub/host-parity-035`, from host 0.1.15).** A slot's root is the template, so it has 0.3.5's files, but no systemd runs there: what 0.3.5 does in a unit, the slot does its own way.
+- **Links out** (runtime spec 8.11): `/run/desk-links` is one of the slot's `/run` shares (`wallspec.py`), `desk:kiosk` 2750 as the template's tmpfiles line says, made by the host on the slot's fresh tmpfs before any desk process and bound into the desk (where Chromium's `xdg-open` stand-in runs as `kiosk`, first on its `PATH`) and into `deskd`'s sandbox alone, where `deskd` binds `links.sock`. Up to 0.1.14 a slot had neither, so the stand-in exited 3 and links out did nothing.
+- **The Browser's policy:** `desk-init` runs the template's `desk-browser-policy` as the desk's root (under the unit filter, as every helper) before every start of Chromium, crash restarts included, as `desk-browser.service`'s `ExecStartPre=+` does: a teen's lock, or an adult's allowlist of the three password managers (`ma-adult.json` only for exactly `adult\n` in `deskd`'s `/data/desk/age-band`), its lines in the desk's `/data/logs/desk-browser.log`. A helper that exits 1, can't run or takes over 30 s is no start (`units.sock` answers the error), and the start is tried again after the Browser's back-off (3 s to 30 s), as the unit's `Restart=` does, so a lock that can go on later clears by itself. Up to 0.1.14 a slot never ran it: a teen's slot had no lock and an adult's no allowlist.
+- **JPEG XL off** comes with the template: the launcher runs the template's `desk-browser-start`, which has `--disable-features=JXLImageFormat`. **OpenRouter** in the Agent's egress too (`/etc/ma/agent-egress.conf`, read by the slot's own `desk-agent-filter`).
+- **Not done here:** `desk-adblock render` (the unit's other `ExecStartPre`, the ad blocker's per-site off list, ADR 0076) doesn't run before a slot's Chromium starts, and `desk-adblock` isn't a unit `units.sock` takes in a slot, so a member's per-site switch doesn't apply on a shared host. The blocker itself is on there (the template's `ma-adblock.json`, rendered at bake with no list). From desk image 0.3.1, not 0.3.5; for a later host change.
 
 ## Verify
 
@@ -498,10 +515,12 @@ root-owned mode 000 tmpfs over `deskd`'s `/data/files`. Evidence: `evidence/veri
 
 **Section 7, `slot-datadirs`** (both scripts, `verify-links.sh` on the host, last; from main's first host bake with this change, and 0.1.11.2 on the 0.1.11 line): slot 1 started by hand, the desk's root makes `/data/.verify-links` (0755) and the Browser's user (`kiosk`) puts a link to it at `/data/browser/home` (through the slot's host-owned mount namespace bind, as the desk's own uids: a test host's tools, never a member's desk); after a restart the target must still be the desk's root's 0755, `home` still the link, `desk-init` must say it couldn't make `home` as `kiosk`, and `units.sock` must be `desk:desk` 0600. Its mutation: the same start with 0.1.11.1's `desk-init` (from git, `OLD_INIT_REF` in each script) must fail it (the target handed to `kiosk`, 0700), and the real one, put back, passes again. Each run leaves slot 1 stopped and its `home` as it was.
 
+**Section 8, desk image 0.3.5 in a slot** (both scripts, `verify-parity.sh` on the host, after section 7; from host 0.1.15): slot 1 started by hand, and through its host-owned mount namespace bind as the desk's own uids: **links out** (the share `desk:kiosk` 2750, `deskd`'s `links.sock` there as `kiosk`'s group 0660, the stand-in run as `kiosk` with a `tel:` link answered `dropped nobody` by `deskd`, which counts it in `/health`'s `browser.links`), **the policy** (Chromium started through `units.sock` as `deskd`'s uid with the band `teen`, `adult` and `Adult`: the lock, the template's bytes and the slot root's 0644, for teen and a band that isn't one, the allowlist and no lock for adult, each helper's line in the Browser's log; the template's lock made group-writable: the start refused, no Chromium, `LOCK NOT IN PLACE` logged, then put right and Chromium brought up by the start's own retry with the lock) and **`jxl`** (the running Chromium is the launcher's child, its last `--disable-features` naming `JXLImageFormat`). Its mutations: 0.1.14's `desk-init.py`, `wallspec.py` and `svc-spec.py` (from git, `OLD_PARITY_REF`) for one start must fail links out and the policy; the slot's own `desk-browser-start` without the switch must fail `jxl`; the real ones, put back, pass all three. Each run leaves slot 1 stopped, no band file, the policy files as they were and the script unchanged.
+
 ## Files
 
 `bake.sh`, `verify.sh`, `verify-port.sh` (and the steps they run on the host: `verify-batches.sh`, `verify-wave.sh`, `verify-links.sh`,
-`verify-template-anchor.sh`), `recipe/build.sh`, `recipe/template-keys.sha256` (the template key's committed trust anchor) and
+`verify-parity.sh`, `verify-template-anchor.sh`), `recipe/build.sh`, `recipe/template-keys.sha256` (the template key's committed trust anchor) and
 `recipe/template-key-check` (its check, `image/tests/test_host_template_anchor.py`), `recipe/files/` (the host's own), `desk-svc/` (process 1 of each sandbox, Go),
 `desk-ice-demux/` (SlotMode=port's TCP 443, Go), `tests/` (the link's tests and fakes, and `demuxprobe.py`, one ordinary
 connection to a host's 443; never on an image).

@@ -140,7 +140,20 @@
     return el.getAttribute('aria-checked') === 'true';
   }
   function isDisabled(el) {
-    return !!el.disabled || el.getAttribute('aria-disabled') === 'true';
+    if (el.disabled || el.getAttribute('aria-disabled') === 'true') return true;
+    // A field in a disabled fieldset is disabled too, with its own disabled false.
+    try { return el.matches(':disabled'); } catch (e) { return false; }
+  }
+  // Security (Nov 11): a box the page made read-only takes no keys from here, as a person's would put nothing in it:
+  // readonly, aria-readonly="true", or, for anything but a form field, rich text whose nearest contenteditable says false
+  // (a mention or an embed inside an editor). A form field inside such rich text is still a person's to type in.
+  function readOnly(el) {
+    const ln = el.localName;
+    if ((ln === 'input' || ln === 'textarea') && el.readOnly) return true;
+    if (el.getAttribute('aria-readonly') === 'true') return true;
+    if (ln === 'input' || ln === 'textarea' || ln === 'select') return false;
+    const host = el.closest ? el.closest('[contenteditable]') : null;
+    return !!host && String(host.getAttribute('contenteditable')).trim().toLowerCase() === 'false';
   }
   function valueOf(el) {
     if (el.localName === 'input' || el.localName === 'textarea') return el.value || '';
@@ -878,8 +891,8 @@
     switch (action) {
       case 'click': return true;
       case 'check': return isChecky(el);
-      case 'fill': return isTextEntry(el);
-      case 'press': return isTextEntry(el) || el.localName === 'select';
+      case 'fill': return isTextEntry(el) && !readOnly(el);
+      case 'press': return (isTextEntry(el) || el.localName === 'select') && !readOnly(el);
       default: return false;
     }
   }
@@ -927,9 +940,10 @@
       if (!owns(el, act)) el.focus({ preventScroll: true });
       if (a.action === 'fill') selectAll(el);
       if (!owns(el, deepActive())) return { refused: 'focus' };
-      // A page can turn a field into a password one as it gets focus.
+      // A page can turn a field into a password one as it gets focus, or a read-only one.
       const flipped = sensitiveKind(el);
       if (flipped) return { refused: 'sensitive', kind: flipped };
+      if (!fits(el, a.action)) return { refused: 'kind' };
       if (see(el) !== a.fp) return { refused: 'changed' };
     }
     armed = {
@@ -992,11 +1006,21 @@
   let prescrolling = false;
   let prescrollStopped = false;
   const sleep = (ms) => new Promise((r) => setTimeout(r, ms));
-  /** A password, card or code field the member can see: the view's own sensitive signal (scanPage's), never a hidden one. */
+  /**
+   * A password, card or code field the member can see: the view's own sensitive signal (scanPage's), never a hidden one. In
+   * the document and its open shadow roots, as scanPage looks (Security's S-111 Low 3): a field a site draws in a component
+   * counts as one in the page. The first 3000 fields.
+   */
   function sensitiveOnPage() {
-    const all = document.querySelectorAll('input,select');
-    for (let i = 0; i < all.length && i < 3000; i++) if (sensitiveKind(all[i]) && visible(all[i])) return true;
-    return false;
+    let fields = 0, found = false;
+    forEachDeep((el) => {
+      const ln = el.localName;
+      if (ln !== 'input' && ln !== 'select') return false;
+      if (++fields > 3000) return true;
+      found = !!sensitiveKind(el) && visible(el);
+      return found;
+    }, 50000);
+    return found;
   }
   function locked() {
     for (const el of [document.documentElement, document.body]) {
@@ -1332,6 +1356,8 @@
   /** Backspace's own edit of a plain field, after a beforeinput the page may cancel. A rich editor gets the events only. */
   function deleteBack(el) {
     if (el.localName !== 'input' && el.localName !== 'textarea') return;
+    // The page's keydown ran just now, and can have made it read-only (Security, Nov 11).
+    if (readOnly(el) || isDisabled(el)) return;
     const opts = { inputType: 'deleteContentBackward', bubbles: true, composed: true };
     if (!el.dispatchEvent(new InputEvent('beforeinput', Object.assign({ cancelable: true }, opts)))) return;
     const v = String(el.value);
@@ -1360,9 +1386,10 @@
     if (!owns(el, deepActive())) el.focus({ preventScroll: true });
     const target = deepActive();
     if (!owns(el, target)) return { refused: 'focus' };
-    // A page can turn a field into a password one as it gets focus.
+    // A page can turn a field into a password one as it gets focus, or a read-only one.
     const flipped = sensitiveKind(el);
     if (flipped) return { refused: 'sensitive', kind: flipped };
+    if (!fits(el, 'press')) return { refused: 'kind' };
     if (see(el) !== a.fp) return { refused: 'changed' };
     const sub = a.key === 'Enter' ? implicitSubmission(el) : null;
     const url = sub ? sub.url : null;
@@ -1395,6 +1422,8 @@
     const el = g.el;
     const sk = sensitiveKind(el);
     if (sk) return { refused: 'sensitive', kind: sk };
+    // What prepare checked, again: the page had a turn since, and a value set here would pass readonly by.
+    if (!fits(el, 'fill') || isDisabled(el)) return { refused: 'kind' };
     if (el.localName === 'input' || el.localName === 'textarea') {
       const opts = { inputType: 'deleteContentBackward', bubbles: true, composed: true };
       if (el.dispatchEvent(new InputEvent('beforeinput', Object.assign({ cancelable: true }, opts)))) {

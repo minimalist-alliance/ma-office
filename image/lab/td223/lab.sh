@@ -6,16 +6,20 @@
 #   TD_WORK=<dir outside the repo> HOST_AMI=... SHIM_BIN=... BBB_CLIP=... lab.sh
 #     h17 <args>                 h17.sh itself (infra-up, client-up, host-up, desks up|down <k>, hours, left, down, sh ...)
 #     overlay                    this tree's host files onto the host (no desk up), the unit reloaded; the lab tools to /var/tmp/td223
+#     tools                      only the lab tools (up.py, shaperlog.py) to /var/tmp/td223: a host from a baked image that has the shaper
+#                                (0.1.11 on), where overlay is skipped
 #     sink                       net.py's tcp-sink on the client's TCP 443, and the group opened to it from the host's address only
 #     row <label> <secs> <load>[,<load>...]   ADR 0036's test 1 on a shared host, one row: slot 1 plays the clip (probe5, role
 #                                video) for <secs> while slots 2, 3, ... each send their <load>: none, or <uid>:<pace Mbit, 0 flat
 #                                out> (uid kiosk, desk or root), an ordinary TCP upload to the sink from that slot's network namespace
 #                                as the desk's own uid (the s35 kit's flooder step, for the host image); the host samples every
-#                                slot's classes, its out_<k> and veth each second
+#                                slot's classes, its out_<k> and veth each second. LEAD (100) is the probe's lead; FLOOD_EARLY=1 starts
+#                                the uploads before the probe's session, so its first frame after `live` (B13) is taken under them,
+#                                and runs them for LEAD + secs + 30 s (default: from 40 s before the window to 40 s after it)
 set -euo pipefail
 H=$(cd "$(dirname "$0")" && pwd); R=$(cd "$H/../../.." && pwd)
 W=${TD_WORK:?set TD_WORK to a directory outside the repo}; mkdir -p "$W"
-export SA_WORK=$W SA_OWNER=syseng-td223
+export SA_WORK=$W SA_OWNER=${SA_OWNER:-syseng-td223}   # the Guild Engineer's run on 0.1.11: SA_OWNER=guild-td223 SA_PURPOSE=td223-shared SA_SLOTS=6
 H17="$R/spikes/host-0.1.7/h17.sh"
 st() { set +u; source "$W/state.env"; set -u; }
 log() { echo "[td223 $(date +%H:%M:%S)] $*" >&2; }
@@ -31,6 +35,9 @@ overlay)
     sudo install -d -m 755 /var/tmp/td223; sudo install -m 755 ~/td/up.py ~/td/shaperlog.py /var/tmp/td223/
     sudo systemctl daemon-reload; echo "overlay: $(cd ~/td/ov && find . -type f | sort | tr "\n" " ")"
     sudo /usr/local/lib/desk-host/desk-host-check --only shaper --allow-verify-access' ;;
+tools)
+  tar -C "$H" -czf - up.py shaperlog.py | "$H17" sh 'set -e; rm -rf ~/td && mkdir -p ~/td && tar -C ~/td -xzf -
+    sudo install -d -m 755 /var/tmp/td223; sudo install -m 755 ~/td/up.py ~/td/shaperlog.py /var/tmp/td223/; ls /var/tmp/td223' ;;
 sink)
   st
   aws ec2 authorize-security-group-ingress --group-id "$SGID" --ip-permissions "IpProtocol=tcp,FromPort=443,ToPort=443,IpRanges=[{CidrIp=$SERVER_IP/32}]" >/dev/null 2>&1 || true
@@ -38,14 +45,15 @@ sink)
   "$H17" csh 'sudo systemctl stop td-sink 2>/dev/null; sudo systemctl reset-failed td-sink 2>/dev/null; sudo systemd-run --unit=td-sink python3 -I /home/ubuntu/td/net.py tcp-sink 443 >/dev/null && sleep 1 && systemctl is-active td-sink' ;;
 row)
   st; label=$2; secs=$3; loads=$4; dest="$W/results/$label"; mkdir -p "$dest"
-  lead=100; IFS=, read -r -a L <<<"$loads"; n=$(( ${#L[@]} + 1 ))
+  lead=${LEAD:-100}; IFS=, read -r -a L <<<"$loads"; n=$(( ${#L[@]} + 1 ))
+  if [ "${FLOOD_EARLY:-0}" = 1 ]; then wait0=0; dur=$((lead + secs + 30)); else wait0=$((lead - 40)); dur=$((secs + 80)); fi
   "$H17" sh "sudo systemd-run --quiet --unit=td-log-$label --property=StandardOutput=file:/var/tmp/td223/$label.log python3 -I /var/tmp/td223/shaperlog.py $((secs + lead + 60)) $(seq -s ' ' 1 "$n")"
   for i in "${!L[@]}"; do
     k=$((i + 2)); load=${L[$i]}; [ "$load" = none ] && continue
     who=${load%%:*}; pace=${load#*:}; u=$(uid_of "$who"); hu=$((100000 + k * 65536 + u))
-    "$H17" sh "sudo systemd-run --quiet --unit=td-up-$label-$k --property=StandardOutput=file:/var/tmp/td223/$label.up$k.json /bin/sh -c 'sleep $((lead - 40)); \
-      exec nsenter --net=/run/desk-host/ns/$k/net setpriv --reuid=$hu --regid=$hu --clear-groups python3 -I /var/tmp/td223/up.py $CLIENT_IP 443 $((secs + 80)) $([ "$pace" != 0 ] && echo "--pace-mbps $pace")'"
-    log "slot $k: $who (host uid $hu) uploads from $((lead - 40)) s for $((secs + 80)) s, pace ${pace} Mbit"
+    "$H17" sh "sudo systemd-run --quiet --unit=td-up-$label-$k --property=StandardOutput=file:/var/tmp/td223/$label.up$k.json /bin/sh -c 'sleep $wait0; \
+      exec nsenter --net=/run/desk-host/ns/$k/net setpriv --reuid=$hu --regid=$hu --clear-groups python3 -I /var/tmp/td223/up.py $CLIENT_IP 443 $dur $([ "$pace" != 0 ] && echo "--pace-mbps $pace")'"
+    log "slot $k: $who (host uid $hu) uploads from $wait0 s for $dur s, pace ${pace} Mbit"
   done
   LEAD=$lead "$H17" run "$label" "$secs" video
   sleep 30

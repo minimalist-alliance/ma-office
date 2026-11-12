@@ -82,6 +82,7 @@ On Platform's `batch_target` (PB-2), in `desk-host-upd` (ADR 0077 section 4). Ea
    - **One change it needs: the unpack must stream.** Today it reads each image layer whole into memory (`blob()`), so it needs about the largest layer's size.
    - A JVM release's largest layer is probably 100 to 200 MB (an estimate), more than `desk-host-upd`'s 192 MiB.
    - Instead, the `.tgz`'s `image.tar` is unpacked onto the host's root beside the download, then each layer is hashed and extracted in 1 MiB reads.
+   - **Each file and directory keeps its member's time,** as the old `extractall` did (added 2026-11-11, `sub/host-up-norecord`). The JVMs' AppCDS archives record each app jar's time, and the JVM runs without an archive whose jars differ, silently. The first streamed unpack (host images 0.1.12 to 0.1.15) wrote the unpack's time, and a cold wake's hello came 7 to 12 s later (`docs/sub-status/host-up-norecord.md`).
 7. **Keep the batch.**
    - The manifest and its signature go to `/var/lib/desk-host/batch/<seq>.json` and `.sig` on the host's root, so `desk-host-check` can verify them again at any time.
    - The store's `candidate` link is set for each component, and so is `state.json`'s `candidate`.
@@ -208,6 +209,8 @@ A host reboot, a crash of `desk-host` or a kill can stop a switch part way. The 
 - **If the slot is still running** (only `desk-host`'s own process died): the next `desk-host switch` smoke-tests what's running, then finishes or rolls back as in 3.1, as desk-batch's `resume` does.
 
 Either way, `desk-host-check releases` then finds every slot's `rel/` equal, by tree hash, to the set its record names.
+
+Two notes from the build (2026-11-11, `sub/host-up-norecord`): a slot with no record has nothing to put back, since only its record names a cut-off, and `up` prepares such a slot again first (ADR 0072, WALL-04), copying the store's `current` (2.4); and a switch cut off between its two renames (`rel/<svc>` already `.old-`, the new copy not yet in place) is put back like any other. A put-back that can't be made refuses the start and says why, rather than start a mixed set.
 
 #### 3.5 Going back
 There's no rollback order, as for desks of their own. The System Engineer signs a rollback batch: a higher `seq` naming the older versions (contract 13.5). The store still holds them as `previous`, so nothing is downloaded, and each slot copies and switches at its idle as for any batch.

@@ -12,6 +12,7 @@ import { deskStyles } from '../theme/deskStyles';
 import { DeskStylePicker } from './DeskStylePicker';
 import { useMyTier } from '../platform/useTiers';
 import { openGuildSheet, useGuildStore } from '../guild/guildStore';
+import { useDoor } from '../deskapps/door';
 import { putAway } from '../guild/GuildWindow';
 import { guildIdOfPanel, mayManageAgents, maySeeUsage } from '../guild/panel';
 import { useDeskStore } from '../state/deskStore';
@@ -34,6 +35,10 @@ function MenuBody({ at }: { at: DeskMenuAt }) {
   const desk = useLayoutStore((s) => s.desks[at.deskId]);
   const info = useDeskStore((s) => s.desks.find((d) => d.id === at.deskId));
   const tier = useMyTier();
+  // The Apps row (ADR 0054): the desk app host is here (a desk has said apps are available), and it says this desk has them.
+  const appsHost = useDoor((s) => s.host);
+  useDoor((s) => s.rev);
+  const apps = !!appsHost && !at.itemId && appsHost.appsRowShows(at.deskId);
   const guildId = at.itemId ? null : guildIdOfPanel(at.deskId);
   const hello = useGuildStore((s) => (guildId ? s.hello[guildId] : undefined));
   const target = at.itemId ?? at.deskId;
@@ -113,7 +118,7 @@ function MenuBody({ at }: { at: DeskMenuAt }) {
   const limits = !!guildId && !info?.removed && mayManageAgents(role, grants);
   const usage = !!guildId && !info?.removed && maySeeUsage(role);
   const away = !!guildId && info?.removed === true;
-  const count = (at.itemId || undoable ? 4 : 3) + (renamable ? 1 : 0) + (limits ? 1 : 0) + (usage ? 1 : 0) + (away ? 1 : 0);
+  const count = (at.itemId || undoable ? 4 : 3) + (renamable ? 1 : 0) + (limits ? 1 : 0) + (usage ? 1 : 0) + (away ? 1 : 0) + (apps ? 1 : 0);
   // A desk's style, once there's more than one to choose from.
   const styled = !at.itemId && deskStyles().length > 1;
   // The desk's kind, whatever its name: "Personal desk", once it's been named something else.
@@ -158,6 +163,9 @@ function MenuBody({ at }: { at: DeskMenuAt }) {
         <button type="button" role="menuitem" className="menu-item" onClick={() => edit('resize')}>Resize</button>
         {renamable && (
           <button type="button" role="menuitem" className="menu-item" onClick={rename}>Rename</button>
+        )}
+        {apps && (
+          <button type="button" role="menuitem" className="menu-item" data-testid="desk-menu-apps" onClick={() => run(() => appsHost?.openAppsSheet(at.deskId))}>Apps</button>
         )}
         {styled && <DeskStylePicker deskId={at.deskId} stored={desk.style} />}
         {limits && guildId && (

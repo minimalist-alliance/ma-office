@@ -1,22 +1,24 @@
 // The account menu's panel (`AccountMenu.tsx` is its button): the member, theme, background, plain background, About this desk
 // (the owner only), keyboard shortcuts, Account settings (a full-screen modal, ADR 0052), sign out, and sign out everywhere.
 // Shut, it draws nothing, so it's in the top bar's popovers chunk (`popoversChunk.ts`), fetched once the page is idle.
-import { lazy, Suspense, useEffect, useState, type ComponentType, type Dispatch, type RefObject, type SetStateAction } from 'react';
+import { Fragment, lazy, Suspense, useEffect, useState, type ComponentType, type Dispatch, type RefObject, type SetStateAction } from 'react';
 import type { Me } from '../platform/api';
 import type { BadgeId } from '../platform/tiers';
 import { refreshDeskStatus, useAbout, useLive } from '../desk/liveStore';
-import { formatUptime, readJson, writeJson } from '../lib/util';
+import { formatUptime } from '../lib/util';
 import { accountUrl, billingUrl, reportUrl } from '../platform/clientConfig';
 import { PAY_NOW, UPDATE_CARD, menuNoteOf } from '../platform/billingNote';
 import { linksOn } from '../open/intent';
 import { signOut, useSession } from '../platform/session';
 import { openSettings } from '../settings/settingsStore';
 import { useViewStore } from '../state/viewStore';
+import { useDoor } from '../deskapps/door';
 import { canLockKeys, installedWindow } from '../shell/keyLock';
 import { setFlatGround } from '../theme/ground';
 import type { ThemeMode } from '../theme/resolve';
 import { setThemePref, useTheme } from '../theme/themeStore';
 import { THEME_IDS, THEME_LABELS } from '../theme/tokens';
+import { aboutOpen, keepAboutOpen } from './aboutOpen';
 import { Avatar } from './Avatar';
 import { builtRecipeOf, pictureOf } from './avatar';
 import { Icon } from './icons';
@@ -111,6 +113,11 @@ function Shortcuts() {
   const [open, setOpen] = useState(false);
   // Send to my desk (#9): a copied link, pasted on the office, behind Links in and out's kill switch.
   const pasteOpens = useSession((s) => linksOn(s.config));
+  // An installed app's own keys (ADR 0054), the Bible's first: where it's installed on the desk in front, or on any desk.
+  const appsHost = useDoor((s) => s.host);
+  useDoor((s) => s.rev);
+  const front = useViewStore((s) => s.activeDesk);
+  const appGroups = appsHost?.shortcutGroups(front) ?? [];
   return (
     <>
       <button type="button" className="menu-item menu-disclosure" aria-expanded={open} aria-controls="shortcuts-list" onClick={() => setOpen((v) => !v)}>
@@ -143,6 +150,19 @@ function Shortcuts() {
               </div>
             ))}
           </dl>
+          {appGroups.map(([name, keys]) => (
+            <Fragment key={name}>
+              <p className="about-line">{name}</p>
+              <dl className="about" data-testid={`shortcuts-app-${name}`}>
+                {keys.map(([k, what]) => (
+                  <div key={k} className="about-row">
+                    <dt><kbd>{k}</kbd></dt>
+                    <dd>{what}</dd>
+                  </div>
+                ))}
+              </dl>
+            </Fragment>
+          ))}
           {canLockKeys() && <p className="about-line" data-testid="shortcuts-full-screen">{fullScreenKeysLine(isMac())}</p>}
           <InstallOffer mac={isMac()} />
         </div>
@@ -151,18 +171,15 @@ function Shortcuts() {
   );
 }
 
-/** Open or shut, remembered in this browser. Shut by default. */
-const ABOUT_KEY = 'ma.menu.about.v1';
-
 /**
  * "About this desk", for the owner only ("Only me", Nov 9): `roles` from `/v1/me` (contract desks.md). Members see none
  * of it. A disclosure, shut until he opens it ("Let me shrink it though"), and the desk's status is only asked for then.
  */
 function About({ deskId }: { deskId: string | null }) {
-  const [open, setOpen] = useState(() => readJson<boolean>(ABOUT_KEY) === true);
+  const [open, setOpen] = useState(aboutOpen);
   const toggle = (): void => {
     setOpen((v) => {
-      writeJson(ABOUT_KEY, !v);
+      keepAboutOpen(!v);
       return !v;
     });
   };

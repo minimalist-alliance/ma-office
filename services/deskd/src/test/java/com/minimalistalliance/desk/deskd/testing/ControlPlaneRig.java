@@ -75,6 +75,8 @@ public final class ControlPlaneRig implements AutoCloseable {
     /** The data volume's usable bytes, as statvfs would say; -1 (the start) for the real file system's. */
     public final java.util.concurrent.atomic.AtomicLong usableBytes = new java.util.concurrent.atomic.AtomicLong(-1);
     public final AgeBand ageBand;
+    /** This rig's boot, as deskd's state has it. */
+    public static final String BOOT_ID = "00000000-0000-4000-8000-000000000099";
     /** deskd's data directory, apart from the sockets, as on a desk. */
     public final Path dataDir;
     public final StubUnitsSocket units;
@@ -110,7 +112,7 @@ public final class ControlPlaneRig implements AutoCloseable {
             return stub >= 0 ? stub : Files.getFileStore(directory).getUsableSpace();
         });
         ageBand = new AgeBand(dataDir.resolve(AgeBand.FILE));
-        state = new DeskState("00000000-0000-4000-8000-000000000099", apiOverride ? platform.url() : null, null);
+        state = new DeskState(BOOT_ID, apiOverride ? platform.url() : null, null);
         rtcClient = new RtcClient(new RtcClient.Config(socket, SessionManager.MAX_SESSIONS, state::publicIpv4));
         ImdsClient imds = new ImdsClient(http, platform.url());
         credentials = new RoleCredentials(imds, clock);
@@ -136,7 +138,7 @@ public final class ControlPlaneRig implements AutoCloseable {
                 ownUid);
         units.forgetStartupThaw();
         browser.followStreamingPause(state.streamingPause());
-        browser.followAgeBand(ageBand);
+        browser.followAgeBand(ageBand, state.bootId());
         browserTime = FreeTier.follow(state, dataDir, dir, browser, clock);
         data = new DataModule(
                 sessions, dispatcher, browser, dir.resolve("data.sock"), dir.resolve(DataModule.FREE_BYTES_FILE), state::bootId,

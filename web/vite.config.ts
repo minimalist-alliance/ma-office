@@ -27,7 +27,7 @@ export default defineConfig({
       output: { manualChunks: (id) => (id.includes('/packages/avatar-kit/') ? 'avatar-kit' : undefined) },
     },
   },
-  // The dev server may read Commons' source, beside this package.
-  server: { host: 'localhost', fs: { allow: ['.', '../apps/commons/web', '../packages/avatar-kit', '../packages/bell-kit'] } },
+  // The dev server may read Commons' source, beside this package, and the sample app's view and manifest (the mock desk's Tally).
+  server: { host: 'localhost', fs: { allow: ['.', '../apps/commons/web', '../packages/avatar-kit', '../packages/bell-kit', '../spikes/app-contract-sample/app'] } },
   test: { include: ['src/**/*.test.ts'], environment: 'node' },
 });

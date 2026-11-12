@@ -77,8 +77,8 @@ for (const theme of ['light', 'dusk', 'dark'] as ThemeId[]) {
     await setTheme(page, theme);
     await open(page);
     await expect(page.locator('html')).toHaveAttribute('data-theme', theme);
-    // At the end of the bar, after the address.
-    const last = await page.locator('.br-bar > :last-child button').first().getAttribute('aria-label');
+    // At the end of the bar, after the address: the last of the bar's tools on a wide bar (#11's key and Extensions come first).
+    const last = await page.locator('.br-bar > :last-child > .br-wide > button').last().getAttribute('aria-label');
     expect(last).toBe('Picture quality: High');
     await expect(button(page)).toHaveAttribute('aria-haspopup', 'menu');
     await expect(button(page)).toHaveAttribute('aria-expanded', 'false');
@@ -353,7 +353,9 @@ test('a Platform from before the desk layer: the choice holds in this browser, n
 test("once Platform has the desk layer, this browser's old copy moves over, once and quietly, and its level holds throughout", async ({ page, request }) => {
   const errors = watchConsole(page);
   await page.addInitScript(([key, sub, desk]) => {
-    if (sessionStorage.getItem('moved-once')) return;
+    // What the member's earlier visit left: on the first load that's signed in or finishing a sign-in, since a start with
+    // nobody signed in wipes the member's caches (ISS-89), as it does the layout's mirror.
+    if (sessionStorage.getItem('moved-once') || !(location.pathname === '/auth/callback' || localStorage.getItem('ma-desk-web-refresh') || sessionStorage.getItem('ma-desk-web-refresh'))) return;
     sessionStorage.setItem('moved-once', '1');
     localStorage.setItem(key, JSON.stringify({ sub, desks: { [desk]: { browser: 'low' } } }));
   }, [DESK_KEY, ME, DESK] as const);

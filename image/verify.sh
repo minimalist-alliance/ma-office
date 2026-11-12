@@ -1771,12 +1771,13 @@ if [ -n "${VERIFY_DESKD:-}" ]; then   # LAB ONLY (above)
   printf '%s\n' "$D_URL" | R "sudo bash -c 'read -r u; /opt/ma/bin/ma-update deskd \"\$u\" $D_SHA 2>&1 | tail -2; cat /opt/ma/deskd/current/VERSION'" > $WORKDIR/o 2>&1
   unset D_URL; say "VERIFY_DESKD (lab only): deskd rolled forward for 3b6's links parts: $(tail -1 $WORKDIR/o)"
 fi
-for p in links click bands keys jxl; do
+for p in links click bands keys blocklist jxl; do
   case $p in
     links) what="the stand-in is the only xdg-open and xdg-email on Chromium's PATH (xdg-utils' two diverted off it), /run/desk-links desk:kiosk 2750 and in deskd's container, no session bus for Chromium, and AutoLaunchProtocolsFromOrigins for the six schemes applied as mandatory" ;;
     click) what="an http page's tel:, webcal: and mailto: links, each clicked, reach deskd's links socket (its /health count goes up by one each), and its ssh: and ms-settings: links reach nothing" ;;
     bands) what="ExtensionInstallBlocklist [*], ExtensionAllowedTypes [extension] and BlockExternalExtensions on every band; the three password managers allowed on band adult only, unset on teen, with no band and with a band that isn't one" ;;
     keys) what="no key in two of the four managed files, and the teen and adult files hold what they should" ;;
+    blocklist) what="URLBlocklist holds office, desk, api, auth and gw at minimalistalliance.com and at staging.minimalistalliance.com, each navigation is ERR_BLOCKED_BY_ADMINISTRATOR, and portal. at both is not blocked" ;;
     jxl) what="Chromium's one --disable-features turns JXLImageFormat off, and neither a page's request nor its image's asks for image/jxl" ;;
   esac
   [ $p = bands ] && [ -n "${VERIFY_DESKD:-}" ] && { R "sudo /opt/ma/bin/ma-update deskd --rollback 2>&1 | tail -1; cat /opt/ma/deskd/current/VERSION" > $WORKDIR/o 2>&1; say "VERIFY_DESKD (lab only): deskd back: $(tail -1 $WORKDIR/o)"; }
@@ -2293,6 +2294,20 @@ R "sudo env RESTART_FAST=1 bash -s -- backoff" < "$HERE/verify-restart.sh" > $WO
 grep -q -e '^FAILED$' $WORKDIR/o && grep -q "no back-off" $WORKDIR/o && rc=0
 R 'sudo rm -r /etc/systemd/system/deskd.service.d && sudo systemctl daemon-reload && sudo systemctl restart deskd.service'
 result "restart and memory pressure, the back-off check fails with the back-off off (deskd's RestartSteps=0 flat, three kills): it says no back-off" $rc < $WORKDIR/o
+# ---- 3s. Kernel hardening (ISS-20; image/recipe/files/etc/sysctl.d/91-ma-hardening.conf; docs/interfaces/desk-runtime.md, "Kernel settings").
+# Its own file, so it can run alone on a lab box (lab/sysctl036/). The mutation changes one value at runtime and puts it back.
+for p in values mutation works; do
+  case $p in
+    values) what="ptrace_scope 2, suid_dumpable 0, core_pattern |/bin/false, unprivileged_bpf_disabled 1, dmesg_restrict 1, kptr_restrict 2, ldisc_autoload 0 and the UDP buffers, each read from /proc/sys and found in /etc/sysctl.d" ;;
+    mutation) what="one value (dmesg_restrict) changed at runtime makes the values check fail, and put back it passes" ;;
+    works) what="an ordinary uid is refused dmesg and sees no kernel address, root reads dmesg, and deskd, desk-agent, desk-notebook and desk-rtc are active under them" ;;
+  esac
+  R "sudo bash -s -- $p" < "$HERE/verify-sysctl.sh" > $WORKDIR/o 2>&1; rc=0
+  grep -q -e '^FAILED$' $WORKDIR/o && rc=1
+  grep -q '^ran to the end$' $WORKDIR/o || rc=1
+  result "kernel settings, $p: $what" $rc < $WORKDIR/o
+done
+
 # ---- 4. ma-update with a dummy component (run, health, small image.tar)
 D=$WORKDIR/dummy; mkdir -p $D
 mkart() { # mkart <version> <healthy:yes|no> -> $D/dummy-<version>.tgz
@@ -2609,7 +2624,7 @@ result "teen lock: the AMI carries DeskTeenLock=1" $rc <<<"AMI $AMI tag DeskTeen
 # 6.1). Its own file, so it can run alone on a lab box (lab/desk-batch/lab.sh). Last, on the root the swap above brought
 # from the AMI, so "never ran this boot" is checked on a fresh root's boot. Each part puts back what it changed, and each
 # has been seen to fail with what it guards broken (evidence/desk-batch-2026-11-09/mutations.txt, mutations-2.txt).
-for p in install apt closed socket idle prepare rollback apt-idle; do
+for p in install apt closed socket idle prepare rollback apt-idle apt-forced; do
   case $p in
     install) what="desk-batch's timer enabled and waiting, its socket /run/desk/batch.sock 0600 desk:desk, both key directories root's 0755, exactly Platform's release key (sha256 96287954...3f0a) in the image's and nothing in the drop-in, no batch pending" ;;
     apt) what="apt-daily and apt-daily-upgrade masked and not run this boot; unattended-upgrades allows Debian's security archive only, by apt-config and its own dry run; the installed Chromium comes from trixie-security" ;;
@@ -2619,6 +2634,7 @@ for p in install apt closed socket idle prepare rollback apt-idle; do
     prepare) what="ma-update --prepare loads the image and switches nothing, --activate switches, a failing smoke test puts the old release back, previous is prepared from disk, --unprepare drops it, desk-rtc never restarted" ;;
     rollback) what="a two-component batch whose second fails its smoke test: the first rolled back, the batch rolled-back and its seq refused after" ;;
     apt-idle) what="desk-batch tick runs apt only while idle, not with no idle.json, and at nice 19 in the idle I/O class" ;;
+    apt-forced) what="after 72 h without a run apt is forced with no idle.json (not at 71 h), at nice 19 in the idle I/O class" ;;
   esac
   R "sudo bash -s -- $p" < "$HERE/verify-batch.sh" > $WORKDIR/o 2>&1; rc=0
   grep -q -e '^FAILED$' $WORKDIR/o && rc=1

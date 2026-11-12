@@ -6,6 +6,7 @@ import { afterEach, beforeEach, describe, expect, it, vi } from 'vitest';
 const { stored, config } = vi.hoisted(() => ({ stored: { value: null as string | null, onWrite: null as (() => void) | null, outlived: null as string | null, choice: null as string | null, signedInAt: null as number | null }, config: { reachable: true } }));
 
 vi.mock('./clientConfig', () => ({
+  loadedConfig: () => null,
   getClientConfig: () => (config.reachable
     ? Promise.resolve({ api: 'https://api.test', auth: { domain: 'https://auth.test', clientId: 'c', redirectUri: '', logoutUri: '', scopes: [] } })
     : Promise.reject(new TypeError('Failed to fetch'))),
@@ -368,6 +369,132 @@ describe('finishSignIn', () => {
     expect(stored.value).toBe('from-a-sign-in');
     await expect(auth.getAccessToken()).resolves.toBe('access-for-sign-in');
     expect(lockNames).toEqual(['ma-refresh']); // that one needed no refresh
+  });
+});
+
+/**
+ * ISS-68 (as `ma-platform`'s Platform app): signing in again over a stored session revokes the refresh token it replaced
+ * at Cognito, as sign-out does. Only once the new one is stored, never the new one, and nothing about the sign-in waits
+ * on it or fails with it.
+ */
+describe('finishSignIn over a stored session', () => {
+  const idWith = (nonce: string) => `x.${btoa(JSON.stringify({ nonce, sub: 'm' })).replace(/=+$/, '')}.y`;
+  const exchange = (refreshToken: string | null, nonce = 'n'): Reply =>
+    json(200, { access_token: 'access-for-sign-in', id_token: idWith(nonce), expires_in: 3600, ...(refreshToken ? { refresh_token: refreshToken } : {}) });
+  /** Each revoke sent: its token, what was stored as it went out, and whether ma-refresh was held. */
+  let atRevoke: { token: string; stored: string | null; locked: boolean }[];
+  let locked: boolean;
+  let revokeReply: Reply;
+
+  beforeEach(() => {
+    atRevoke = [];
+    locked = false;
+    revokeReply = text(200, '');
+    vi.stubGlobal('sessionStorage', { getItem: () => JSON.stringify({ state: 's', nonce: 'n', verifier: 'v' }), removeItem: () => undefined });
+    vi.stubGlobal('navigator', {
+      locks: {
+        request: async (_name: string, fn: () => Promise<unknown>) => {
+          locked = true;
+          try {
+            return await fn();
+          } finally {
+            locked = false;
+          }
+        },
+      },
+    });
+    vi.stubGlobal('fetch', (url: string, init: { body: URLSearchParams }) => {
+      if (url.endsWith('/oauth2/revoke')) {
+        atRevoke.push({ token: init.body.get('token') ?? '', stored: stored.value, locked });
+        return Promise.resolve().then(revokeReply);
+      }
+      sent.push(init.body.get('refresh_token'));
+      const next = replies.shift();
+      if (!next) throw new Error('a POST nobody expected');
+      return next();
+    });
+  });
+  const finish = () => auth.finishSignIn('?code=c&state=s');
+
+  it('revokes the old refresh token once the new one is stored, outside the lock', async () => {
+    replies = [exchange('r2')];
+    await finish();
+    await vi.advanceTimersByTimeAsync(0);
+    expect(stored.value).toBe('r2');
+    expect(atRevoke).toEqual([{ token: 'r1', stored: 'r2', locked: false }]);
+    expect(sent).toEqual([null]); // the code exchange alone: nothing refreshed with the old token
+    await expect(auth.getAccessToken()).resolves.toBe('access-for-sign-in');
+  });
+
+  it.each<[string, Reply]>([
+    ['a network error', networkError],
+    ['a 400', json(400, { error: 'unsupported_token_type' })],
+    ['a 503', text(503, '')],
+  ])('a revoke that fails (%s) changes nothing about the sign-in, and is not tried again', async (_name, reply) => {
+    revokeReply = reply;
+    replies = [exchange('r2')];
+    await expect(finish()).resolves.toBeUndefined();
+    await vi.advanceTimersByTimeAsync(60_000);
+    expect(atRevoke.map((r) => r.token)).toEqual(['r1']);
+    expect(stored.value).toBe('r2');
+    await expect(auth.getAccessToken()).resolves.toBe('access-for-sign-in');
+    expect(sent).toEqual([null]);
+  });
+
+  it('a revoke that never answers holds nothing up', async () => {
+    revokeReply = () => new Promise<Response>(() => undefined);
+    replies = [exchange('r2')];
+    // No timer moves: the sign-in finishes without waiting for the revoke's SIGN_OUT_WAIT_MS.
+    await expect(finish()).resolves.toBeUndefined();
+    expect(atRevoke.map((r) => r.token)).toEqual(['r1']);
+    expect(stored.value).toBe('r2');
+  });
+
+  it('never revokes the token it was just given, when Cognito hands back the same one', async () => {
+    replies = [exchange('r1')];
+    await finish();
+    await vi.advanceTimersByTimeAsync(10_000);
+    expect(atRevoke).toEqual([]);
+    expect(stored.value).toBe('r1');
+  });
+
+  it('a first sign-in, with nothing stored, revokes nothing', async () => {
+    stored.value = null;
+    replies = [exchange('r2')];
+    await finish();
+    await vi.advanceTimersByTimeAsync(10_000);
+    expect(atRevoke).toEqual([]);
+    expect(stored.value).toBe('r2');
+  });
+
+  it.each<[string, Reply]>([
+    ['a refused code exchange', INVALID_GRANT],
+    ["an ID token for another browser's sign-in", exchange('r2', 'other')],
+  ])('a sign-in that fails (%s) revokes nothing and keeps the old session', async (_name, reply) => {
+    replies = [reply];
+    await expect(finish()).rejects.toBeInstanceOf(auth.SignInRequired);
+    await vi.advanceTimersByTimeAsync(10_000);
+    expect(atRevoke).toEqual([]);
+    expect(stored.value).toBe('r1');
+  });
+
+  it('a new token the browser refuses to store fails the sign-in as before, and the old one is kept, unrevoked', async () => {
+    stored.onWrite = () => {
+      throw new Error('localStorage refused the token');
+    };
+    replies = [exchange('r2')];
+    await expect(finish()).rejects.toThrow('refused');
+    await vi.advanceTimersByTimeAsync(10_000);
+    expect(atRevoke).toEqual([]);
+    expect(stored.value).toBe('r1');
+  });
+
+  it('an exchange that brings no refresh token leaves the stored one in place, unrevoked', async () => {
+    replies = [exchange(null)];
+    await finish();
+    await vi.advanceTimersByTimeAsync(10_000);
+    expect(atRevoke).toEqual([]);
+    expect(stored.value).toBe('r1');
   });
 });
 

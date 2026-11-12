@@ -6,6 +6,7 @@ import { readJson, writeJson } from '../lib/util';
 import { useSession } from '../platform/session';
 import { useLayoutPrefs } from '../shell/layoutPrefs';
 import { setLayoutPref } from '../shell/layoutSync';
+import { layoutMirrorWritable } from '../state/layoutStore';
 
 /** The keys, as Platform stores them (proposed in STATUS.md, "For Platform"). */
 export const SAID_ON = 'freeSaidOn';
@@ -34,8 +35,11 @@ export function usePref(key: PrefKey): string | null {
   return fromDoc ?? str(mirror()[key]);
 }
 
-/** Written to the document (saved like any other change) and to this browser. */
+/**
+ * Written to the document (saved like any other change) and to this browser, but never to this browser once this page
+ * or another tab has signed out: it's part of the saved layout's mirror (ISS-67, Security's ISS67-L1).
+ */
 export function writePref(key: PrefKey, value: string): void {
-  writeJson(MIRROR, { who: who(), prefs: { ...mirror(), [key]: value } });
+  if (layoutMirrorWritable()) writeJson(MIRROR, { who: who(), prefs: { ...mirror(), [key]: value } });
   setLayoutPref({ [key]: value });
 }

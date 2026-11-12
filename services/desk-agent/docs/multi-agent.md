@@ -34,7 +34,7 @@ whose manager still has the old default name `Manager` is renamed `Lead` once, b
 |---|---|
 | `purpose` | The agent's instructions, up to 4000 characters. `""` uses the built-in default for its role |
 | `status`, `statusDetail` | `online`, `offline`, and so on as before; `paused` with `statusDetail: "agent_cap"` for an agent over the desk's cap (section 2) |
-| `look.icon` | One of the 24 icon ids (section 7), or `png` when the member uploaded one. Default `spark` |
+| `look.icon` | One of the 24 icon ids (section 7), or `png` when the member uploaded one. Default `nodes` |
 | `look.tone` | One of the 12 tone ids (section 7). Unknown ids render as the neutral tone. Default: see "Names and looks" |
 | `look.png` | The upload's version, a counter, or `null`: a client refetches `agent.icon.get` when it changes |
 | `solo` | `true` (the default): the agent **sends** no messages to other agents. It still receives from any agent whose link names it, under that link's rules |
@@ -55,7 +55,7 @@ whose manager still has the old default name `Manager` is renamed `Lead` once, b
   allowed) are refused in names, purposes, rules, timer labels and prompts, and in workspace paths: `bad_request`,
   `detail` the field, `reason: "hidden_chars"` (paths: `detail: "path"`).
 - **Without a `tone`,** a create takes the first tone in wheel order that no agent on the desk uses, skipping `graphite`;
-  when all are used, the least used one (wheel order breaks ties). Without an `icon`: `spark`.
+  when all are used, the least used one (wheel order breaks ties). Without an `icon`: `nodes`.
 - **Retired ids** are mapped wherever one comes in (create, update, proposals) and migrated once at open: tones
   `moss` to `green`, `sky` to `blue`; icons `globe` to `plane`, `chat` to `person`, `heart` to `wallet`, `star` to
   `bulb`, `puzzle` to `terminal`, `briefcase` to `document`.
@@ -283,7 +283,7 @@ with its prompt. Its runs count toward every spending limit, as any run does.
 
 - **Tones,** 12 ids in wheel order: `graphite, rose, clay, amber, olive, green, teal, cyan, blue, indigo, violet, plum`.
   `graphite` is the neutral default.
-- **Icons,** 24 ids in this order: `spark, compass, book, pen, calendar, clock, chart, code, mail, person, search, leaf,
+- **Icons,** 24 ids in this order: `nodes, compass, book, pen, calendar, clock, chart, code, mail, person, search, leaf,
   flask, document, music, camera, plane, shield, wallet, bulb, home, bell, list, terminal`. The drawings and tone values
   are in `web/agent/src/look/`; `LookIdsTest` keeps the Java and web lists equal.
 - **Library:** `agent.update {icon: "<id>"}`.

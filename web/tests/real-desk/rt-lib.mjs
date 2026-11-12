@@ -410,6 +410,14 @@ export async function shutdown(code, why) {
   if (S.closing) return;
   S.closing = true;
   setTimeout(() => process.exit(code), S.hardExitMs).unref(); // nothing below may hang the exit
+  if (S.layoutStandIn) {
+    const si = S.layoutStandIn;
+    log(`layout stand-in: ${si.calls.length} calls ${JSON.stringify(si.calls)}, version ${si.version}, past it to Platform ${si.unrouted}`);
+    if (si.unrouted > 0 && code === 0) {
+      log('FAIL: a layout call reached Platform past the stand-in');
+      code = 1;
+    }
+  }
   log('SHUTDOWN', why ?? '', `exit=${code}`);
   try {
     S.beforeExit?.(why);
@@ -547,7 +555,61 @@ export function readTestUser(name) {
   return u;
 }
 
-export async function openSession({ browserKind = 'shell', watch = false, onLanding = null, onContext = null, launchArgs = [], contextOptions = {} } = {}) {
+
+// GET and PUT /v1/me/desk-layout as services/identity answers them (contract desks.md), in memory, for a script that
+// must start from a layout of its own and not from desk-1's saved document (ADR layout sync, task 14 E). The document
+// starts never saved. A route answers before anything leaves the browser, CORS preflight included, so the real document
+// is neither read nor written. `unrouted` counts any layout call that got past the stand-in toward Platform: it must
+// stay 0. Pass the result to openSession as `layoutStandIn`.
+export function createLayoutStandIn() {
+  const calls = [];
+  const standIn = { version: 0, updatedAt: null, layout: null, unrouted: 0, calls };
+  const routed = (url) => url.hostname.startsWith('api.') && url.pathname === '/v1/me/desk-layout';
+  async function layoutRoute(route) {
+    const r = route.request();
+    const origin = r.headers().origin ?? new URL(HOST).origin;
+    if (r.method() === 'OPTIONS') {
+      // A preflight, if one reaches the route: allow what the API's CORS allows.
+      const asked = (await r.headerValue('access-control-request-headers')) ?? 'authorization, content-type, if-match, if-none-match';
+      return route.fulfill({ status: 204, headers: { 'Access-Control-Allow-Origin': origin, 'Access-Control-Allow-Methods': 'GET, PUT', 'Access-Control-Allow-Headers': asked, 'Access-Control-Max-Age': '600', Vary: 'Origin' } });
+    }
+    const answer = (status, body, headers = {}) => {
+      calls.push(`${r.method()} ${status}`);
+      return route.fulfill({
+        status,
+        contentType: 'application/json; charset=utf-8',
+        headers: { 'Access-Control-Allow-Origin': origin, 'Access-Control-Expose-Headers': 'etag, retry-after', 'Cache-Control': 'no-store', Vary: 'Origin', ...headers },
+        body: JSON.stringify(body),
+      });
+    };
+    const doc = () => ({ version: standIn.version, updatedAt: standIn.updatedAt, layout: standIn.layout });
+    const tag = () => `"${standIn.version}"`;
+    if (r.method() === 'GET') return answer(200, doc(), { ETag: tag() });
+    if (r.method() !== 'PUT') return answer(404, { message: 'Not Found' });
+    const ifMatch = (await r.headerValue('if-match'))?.trim();
+    if (!ifMatch) return answer(428, { error: { code: 'precondition_required', message: 'Send If-Match.', retryable: false } });
+    if (ifMatch !== tag()) return answer(412, { error: { code: 'version_mismatch', message: 'Changed.', retryable: false, details: { currentVersion: standIn.version } } });
+    let layout;
+    try {
+      layout = JSON.parse(r.postData() ?? '').layout;
+    } catch {
+      layout = null;
+    }
+    if (typeof layout !== 'object' || layout === null || !Number.isInteger(layout.schemaVersion)) return answer(400, { error: { code: 'invalid_request', message: 'Bad layout.', retryable: false } });
+    Object.assign(standIn, { version: standIn.version + 1, updatedAt: new Date().toISOString(), layout });
+    return answer(200, doc(), { ETag: tag() });
+  }
+  standIn.install = async (context) => {
+    await context.route(routed, layoutRoute);
+    // A layout call the route doesn't match would go to Platform: there should be none.
+    context.on('request', (r) => {
+      if (r.url().includes('/desk-layout') && !routed(new URL(r.url()))) standIn.unrouted++;
+    });
+  };
+  return standIn;
+}
+
+export async function openSession({ browserKind = 'shell', watch = false, onLanding = null, onContext = null, launchArgs = [], contextOptions = {}, layoutStandIn = null } = {}) {
   const u = readTestUser('desk-1');
   S.watch = watch;
 
@@ -570,6 +632,8 @@ export async function openSession({ browserKind = 'shell', watch = false, onLand
   await S.context.exposeBinding('__maGuard', (_src, e) => tripGuard(e));
   await S.context.addInitScript(probeInit, { allowed: ALLOWED, watch });
   observeRequests(S.context, { watch });
+  S.layoutStandIn = layoutStandIn;
+  await layoutStandIn?.install(S.context);
   await onContext?.(S.context); // before the first page: a test's own init script goes here
   S.context.on('response', (r) => {
     try {

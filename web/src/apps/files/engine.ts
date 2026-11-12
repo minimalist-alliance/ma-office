@@ -807,7 +807,7 @@ export class TransferEngine {
       if (!releaseAll) return releaseDownload();
       try {
         const name = j.folder ? `${j.name}.zip` : j.name;
-        target = await (this.deps.open ?? openTarget)(j.handle, name, j.folder ? 'application/zip' : 'application/octet-stream').catch(() => null);
+        target = await (this.deps.open ?? openTarget)(j.handle, name).catch(() => null);
         if (!target) return this.settle(j, 'failed', "Your browser wouldn't let this be saved there. Try again.", true);
         if (j.folder) await this.downloadFolder(j, target);
         else await this.downloadOne(j, target);

@@ -8,6 +8,7 @@
 # How it differs from a member's machine, each for the test only:
 #   - Its "home network" is the internet: the group lets in SSH (22) and the desk's port (4443, UDP and TCP) from this
 #     workstation's address alone, and install.sh gets --address <its public address>, as for a forwarded port.
+#   - For selfhost/e2e, install.sh gets --env staging too (its default is prod), and the desk is never paired with prod.
 #   - standin-ssh.service (user data) puts "tcp dport 22 accept" back in the desk's firewall after every load of it, since the
 #     desk's own --keep-ssh rule takes only private addresses. The group still holds SSH to this workstation.
 #   - cloud-init is turned off after its first boot (as a cloud desk's image does, TD-227): a member's own Debian has none,

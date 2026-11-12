@@ -7,7 +7,59 @@ import { fitDeskSize, isPlaced, levelSize, restacked, roundUnit, settleDesk, sta
 import { createDeskPush, separateDesks, separation, type DeskAt } from '../canvas/deskPush';
 import { clearLayoutDoc, fitDeskToBand, fitDocToBand, freshDesk, LAYOUT_KEY, LAYOUT_KEY_V1, migrateLayoutV1, readLayoutDoc, type LayoutDoc } from '../canvas/layoutDoc';
 import { currentBand } from '../platform/age';
+import { MIRROR_KEY as BACKDROP_KEY } from '../theme/backdropMirror';
 import { defaultDeskStyleId } from '../theme/deskStyles';
+
+// ----- the mirror, and whose it is (ISS-67)
+//
+// What this browser keeps of the account's saved layout (ADR 0005 and its addendum): the document's desks (`ma.layout.v2`,
+// and `ma.layout.v1` from before), what hasn't reached Platform yet (`ma.layout.sync.v1`), the document's preferences that
+// are mirrored for a reload or the first frame (the free tier's, the setup circle's, the background), and whose all of it
+// is (`ma.layout.owner.v1`, the token's `sub`). It's one copy for every desk the member has, Personal, Work and Guild,
+// whatever the scope shows. Every signed-out state wipes all of it (`forgetLayoutMirror`, from `platform/session.ts`). It's
+// written only while a refresh token is kept in this browser (`mirrorFollowsToken`), so a tab that another tab has signed
+// out has nothing to write it back with. A sign-in as anyone else finds it gone, from storage and memory (`layoutMirrorFor`).
+
+export const LAYOUT_SYNC_KEY = 'ma.layout.sync.v1';
+export const LAYOUT_OWNER_KEY = 'ma.layout.owner.v1';
+/** Every key of the mirror. `free/prefs.ts` and `setup/prefs.ts` are lazy chunks, so theirs are written out here; `layoutMirror.test.ts` holds them to it. */
+export const LAYOUT_MIRROR_KEYS: readonly string[] = [LAYOUT_KEY, LAYOUT_KEY_V1, LAYOUT_SYNC_KEY, 'ma.free.prefs.v1', 'ma.setup.prefs.v1', BACKDROP_KEY, LAYOUT_OWNER_KEY];
+
+// ----- the member's other caches (ISS-89)
+//
+// What else this browser keeps of a member goes with the mirror: on the same signed-out states, per account by the same
+// owner, and written only while `layoutMirrorWritable()`. Each module has its own constant, mostly in lazy chunks, so the
+// keys are written out here and a wipe never waits on a chunk; `memberCaches.test.ts` holds them to each module's own.
+/**
+ * localStorage: stream quality and its desk levels (`quality/store.ts`), the boots told (`platform/bootNotice.ts`), the
+ * bandwidth heads-up seen (`bandwidth/BandwidthCircle.tsx`), the Guild Desk's privacy line seen (`guild/GuildLayer.tsx`),
+ * the members shown the touch hint (`browser/touchInput.ts`), the connect-time report's cap (`desk/rtc/connectRtt.ts`),
+ * and the owner's About disclosure (`chrome/AccountPanel.tsx`).
+ */
+export const MEMBER_CACHE_KEYS: readonly string[] = ['ma.streamQuality.v1', 'ma.streamQuality.desks.v1', 'ma.boots.seen.v1', 'ma.bandwidth.notice.v1', 'ma.guild.privacy.v1', 'ma.browser.touchHint.v1', 'ma.rttCapped.v1', 'ma.menu.about.v1'];
+/**
+ * This tab's sessionStorage: Maia's conversation and whether her panel was open (`maia/`), and whose they are (the owner
+ * key again), since a tab's own storage can outlast its member in localStorage (a reload after a sign-in elsewhere).
+ */
+export const MEMBER_TAB_KEYS: readonly string[] = ['ma.maia.conversation.v1', 'ma.maia.open.v1', LAYOUT_OWNER_KEY];
+
+function drop(store: () => Storage, keys: readonly string[]): void {
+  for (const key of keys) {
+    try {
+      store().removeItem(key);
+    } catch {
+      /* storage refused: there's nothing there to take */
+    }
+  }
+}
+
+function storedOwner(): string | null {
+  try {
+    return window.localStorage.getItem(LAYOUT_OWNER_KEY);
+  } catch {
+    return null;
+  }
+}
 
 // Saved desks that overlap are cleared here, before anything paints. A doc that needed no moves isn't written.
 function load(): LayoutDoc {
@@ -26,14 +78,53 @@ function load(): LayoutDoc {
 
 export const useLayoutStore = create<LayoutDoc>(load);
 
+/** Whose the layout in memory is: the owner it was loaded with, then each token's `sub`. Null while nobody has said. */
+let owner: string | null = storedOwner();
+/** This page reached a signed-out state: nothing more of the mirror is written from it, nor saved to Platform. */
+let held = false;
+/** A layout put in memory that isn't the member's change and needn't be written: another account's going. */
+let muted = false;
+
+/** Whether a refresh token is kept in this browser. `platform/session.ts` hands in `tokenStore.hasStoredToken` as it loads. */
+let tokenKept: () => boolean = () => true;
+/** Handed in rather than imported: importing the token store here splits it into a chunk of its own, 0.4 KB more initial JS. */
+export function mirrorFollowsToken(kept: () => boolean): void {
+  tokenKept = kept;
+}
+
+/**
+ * The mirror may be written: this page hasn't signed out, a refresh token is kept in this browser, and what's stored is
+ * this tab's account's, or nobody's yet. That last is ISS-89's: a tab that another tab signed out, still drawing the
+ * last member on the access token it holds, finds a token kept again once someone signs in there, and that sign-in has
+ * already named the mirror theirs (`layoutMirrorFor`), so the last member's writes go nowhere.
+ */
+export const layoutMirrorWritable = (): boolean => {
+  if (held || !tokenKept()) return false;
+  const stored = storedOwner();
+  return owner === null || stored === null || stored === owner;
+};
+/** This page has signed out: `shell/layoutSync.ts` saves nothing more, the keepalive save as it goes included. */
+export const layoutMirrorHeld = (): boolean => held;
+
+function writeMirror(s: LayoutDoc): void {
+  if (!layoutMirrorWritable()) return;
+  // Whose it is goes first, so another tab reading the layout already knows.
+  try {
+    if (owner !== null && storedOwner() !== owner) window.localStorage.setItem(LAYOUT_OWNER_KEY, owner);
+  } catch {
+    /* storage refused: the layout below is refused too */
+  }
+  writeJson(LAYOUT_KEY, s);
+}
+
 let persist = true;
 let timer = 0;
 useLayoutStore.subscribe((s) => {
-  if (!persist) return;
+  if (!persist || muted) return;
   window.clearTimeout(timer);
   timer = window.setTimeout(() => {
     timer = 0;
-    writeJson(LAYOUT_KEY, s);
+    writeMirror(s);
   }, 1000);
 });
 
@@ -45,7 +136,80 @@ export function flushLayoutMirror(): void {
   if (!persist || !timer) return;
   window.clearTimeout(timer);
   timer = 0;
-  writeJson(LAYOUT_KEY, useLayoutStore.getState());
+  writeMirror(useLayoutStore.getState());
+}
+
+/**
+ * A signed-out state (`platform/session.ts`): every key of the mirror goes, and the member's other caches with it
+ * (`MEMBER_CACHE_KEYS`, and this tab's `MEMBER_TAB_KEYS`; ISS-89). `hold`: this page is the one signing out, so
+ * nothing more is written from it, not the debounce, a flush or a save as it goes. What's in memory goes with the page.
+ * Another tab's sign-out passes false: this tab has no token left to write with, and writes again if one comes back.
+ */
+export function forgetLayoutMirror(hold = true): void {
+  if (hold) held = true;
+  window.clearTimeout(timer);
+  timer = 0;
+  drop(() => window.localStorage, [...LAYOUT_MIRROR_KEYS, ...MEMBER_CACHE_KEYS]);
+  drop(() => sessionStorage, MEMBER_TAB_KEYS);
+}
+
+/**
+ * This tab's tokens are `sub`'s: the first ones, or another account's after a sign-in in another tab (`onMemberChange`).
+ * A mirror another account wrote goes from storage. A layout this tab holds from another account goes from memory,
+ * replaced by what's stored for `sub` (another tab of theirs wrote it) or by nothing, which the desk list and Platform's
+ * document fill. `listed` is what the desk list says now: those desks keep a layout, at a new desk's places where nothing
+ * of `sub`'s has one, never the last account's arrangement. The session then drops the list itself and asks for the new
+ * account's at once (ISS-89), so the office shows the list loading, and any desk the new list names again draws at once
+ * at those places. A mirror nobody has named, which a build before this one wrote, is `sub`'s. False if any was someone
+ * else's.
+ */
+export function layoutMirrorFor(sub: string, listed: readonly string[] = []): boolean {
+  const stored = storedOwner();
+  const fits = stored === null || stored === sub;
+  if (!fits) forgetLayoutMirror(false);
+  const mine = owner === null || owner === sub;
+  owner = sub;
+  // This tab's own keys (ISS-89): another account's go, and they're named for `sub`. None named, from a build before
+  // this one, are `sub`'s, as the mirror's are.
+  try {
+    const tab = sessionStorage.getItem(LAYOUT_OWNER_KEY);
+    if (!mine || (tab !== null && tab !== sub)) drop(() => sessionStorage, MEMBER_TAB_KEYS);
+    if (!held) sessionStorage.setItem(LAYOUT_OWNER_KEY, sub);
+  } catch {
+    /* no storage for this tab: nothing kept to name */
+  }
+  if (!fits || !mine) {
+    // Not one write of the last account's layout may land after this, under anyone's name.
+    window.clearTimeout(timer);
+    timer = 0;
+    expected = {};
+    const doc = stored === sub ? load() : { desks: {}, z: [] };
+    // Written nowhere: this tab's next real change, or the list's next answer, writes what's `sub`'s.
+    muted = true;
+    try {
+      quietly(() => useLayoutStore.setState({ desks: doc.desks, z: doc.z }));
+      if (listed.length) reconcileLayout(listed);
+    } finally {
+      muted = false;
+    }
+  }
+  // Named at once, before the sign-in's refresh token is stored (ISS-89), so a tab still drawing someone else can't
+  // name it theirs in between. Only this tab's own tokens get here, so it's never a signed-out tab's write.
+  if (stored !== sub && !held) {
+    try {
+      window.localStorage.setItem(LAYOUT_OWNER_KEY, sub);
+    } catch {
+      /* the next write of the layout names it */
+    }
+  }
+  return fits && mine;
+}
+
+/** Another tab's write of the mirror is this tab's to take: this page hasn't signed out, and it's the same account's, or nobody has said. */
+export function mirrorIsOurs(): boolean {
+  if (held) return false;
+  const stored = storedOwner();
+  return stored === null || owner === null || stored === owner;
 }
 
 // A change that didn't come from the member, and so isn't theirs to save: what Platform's copy says, and what

@@ -19,7 +19,7 @@ import { acceptAttr, splitAttached } from './attachments';
 import { Card } from './Card';
 import { PendingChips, SentChips } from './Chips';
 import { kindLabel } from './cards';
-import { Chat, type Msg } from './chat';
+import { Chat, OPEN_KEY, writeSession, type Msg } from './chat';
 import type { MaiaState } from './gate';
 import { FREE_TICK_MS, freeLabel } from './free';
 import { MAIA_NOT_NOW, writePref } from '../free/prefs';
@@ -37,7 +37,6 @@ import './maia.css';
 
 /** The launcher, as her spec has it: 64 px, which draws her at the `md` tier. */
 const BUBBLE = 64;
-const OPEN_KEY = 'ma.maia.open.v1';
 const MOTION_KEY = 'ma.maia.motion.v1';
 /** The count shows from here on. */
 const COUNT_FROM = MAX_MESSAGE_CHARS - 400;
@@ -190,13 +189,13 @@ function MaiaWidget({ base, initial, woke }: Props) {
   const show = (): void => {
     focusOnOpen.current = true;
     setOpen(true);
-    writeStore('session', OPEN_KEY, '1');
+    writeSession(OPEN_KEY, '1');
   };
 
   const hide = useCallback((): void => {
     setOpen(false);
     setView('chat');
-    writeStore('session', OPEN_KEY, null);
+    writeSession(OPEN_KEY, null);
     launcherRef.current?.focus();
   }, []);
 

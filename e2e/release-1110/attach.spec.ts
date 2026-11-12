@@ -1,6 +1,7 @@
 // Release checks for the Agent app's file attachments (S-118b) on the staging test desk, over an RPC session as the e2e test account.
 // Run after the gate and never beside it:  npx playwright test -c release-1110 attach.spec.ts
-// No key is held, so a real-provider answer is not tested here. No file name or content is printed to the log.
+// The no_key test makes an agent of its own (the desk's first agent may hold a stored key) and deletes it. No real-provider answer is tested here.
+// No file name or content is printed to the log.
 import { randomBytes } from 'node:crypto';
 import { test, expect, type BrowserContext, type Page } from '@playwright/test';
 import { APP, apiToken, loadUser, onDesk } from '../tests/lib';
@@ -78,20 +79,38 @@ test.describe('agent attachments over an RPC session', () => {
   });
 
   test('a send with an attachment and no key gets no_key', async () => {
-    // This test channel's data channel limits a message, so chunks here are 8 KiB (the desk accepts up to 512 KiB).
-    const chunk = 8 * 1024;
-    const uploadId = `up-${tag}-3`;
-    const size = chunk + 10;
-    const first = await put(uploadId, fileName, size, 0, Buffer.alloc(chunk, 0x62));
-    expect(first.ok, JSON.stringify(first.details)).toBe(true);
-    const sent = await client.rpcTry('agent.message.send', { agentId, text: 'check', attachments: [uploadId] }, { idem: true });
-    note('send with no key', { ok: sent.ok, code: sent.code, details: sent.details });
-    expect(sent.ok).toBe(false);
-    expect(JSON.stringify(sent.details)).toContain('no_key');
-    // Is the staged half still there? The next chunk completes it if so.
-    const next = await put(uploadId, fileName, size, 1, Buffer.alloc(10, 0x62));
-    note('staged file after no_key (ok=still staged)', { ok: next.ok, code: next.code, details: next.details });
-    await client.rpcTry('agent.attach.remove', { agentId, uploadId }, { idem: true });
+    // An agent of its own, so a key stored on the desk's first agent can't change the answer.
+    const made = await client.rpcTry('agent.create', { name: `zzattach${tag}` }, { idem: true });
+    if (!made.ok) {
+      note('agent.create', { ok: made.ok, code: made.code, details: made.details });
+      test.skip(JSON.stringify(made.details).includes('agent_cap'), 'agent.create answered agent_cap: no room for an agent of its own');
+      expect(made.ok, JSON.stringify(made.details)).toBe(true);
+    }
+    const created = ((made as unknown as { result?: { agent?: { id: string; binding?: unknown } } }).result ?? (made as unknown as { agent: { id: string; binding?: unknown } })).agent;
+    const ownId = created?.id ?? '';
+    expect(ownId).toBeTruthy();
+    try {
+      note('new agent binding', created?.binding ? 'bound' : 'none');
+      test.skip(!!created?.binding, 'the new agent came back already bound to a key (a desk default), so no_key cannot be tested');
+      // This test channel's data channel limits a message, so chunks here are 8 KiB (the desk accepts up to 512 KiB).
+      const chunk = 8 * 1024;
+      const uploadId = `up-${tag}-3`;
+      const size = chunk + 10;
+      const putOwn = (index: number, bytes: Buffer) =>
+        client.rpcTry('agent.attach.put', { agentId: ownId, uploadId, name: fileName, size, index, data: bytes.toString('base64') }, { idem: true });
+      const first = await putOwn(0, Buffer.alloc(chunk, 0x62));
+      expect(first.ok, JSON.stringify(first.details)).toBe(true);
+      const sent = await client.rpcTry('agent.message.send', { agentId: ownId, text: 'check', attachments: [uploadId] }, { idem: true });
+      note('send with no key', { ok: sent.ok, code: sent.code, details: sent.details });
+      expect(sent.ok).toBe(false);
+      expect(JSON.stringify(sent.details)).toContain('no_key');
+      // Is the staged half still there? The next chunk completes it if so.
+      const next = await putOwn(1, Buffer.alloc(10, 0x62));
+      note('staged file after no_key (ok=still staged)', { ok: next.ok, code: next.code, details: next.details });
+      await client.rpcTry('agent.attach.remove', { agentId: ownId, uploadId }, { idem: true });
+    } finally {
+      await client.rpcTry('agent.delete', { agentId: ownId }, { idem: true }).catch(() => {});
+    }
   });
 
   test('the journals carry no file name or content', async () => {

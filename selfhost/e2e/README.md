@@ -13,6 +13,7 @@ SELFHOST_USER=<staging test user> \
   npx playwright test
 ```
 
+- **Install the desk with `--env staging`:** the installer pairs with prod by default (from 2026.11.12), and this test runs on staging.
 - The test user is a staging `@test.minimalistalliance.com` account made with `ma-platform` `web/platform/e2e/test-users.mjs create <name>`; the script reads its credentials from SSM and never prints them. Never the owner's.
 - **No browser flags or permissions:** Chromium as a member has it. The first runs here switched Local Network Access off, then granted it, and ICE still never started; the cause was the port (`../README.md`, "The port"). `SELFHOST_LNA=1` grants it, to compare.
 - **`SELFHOST_REBOOT` must restart the machine** and may return once it's back. The test compares boot IDs, so a desk that's online again before its first look still counts. The one used here shuts the VM down and starts it through the hypervisor's guard rail, which refuses any command with the word reboot in it.

@@ -131,7 +131,7 @@ for (const theme of THEMES) {
     await openAgent(page);
     const setup = page.getByTestId('key-setup');
     await expect(setup.getByRole('heading', { name: 'Give Lead a key' })).toBeVisible();
-    await expect(setup).toContainText('Lead wakes once it has an AI key, and the key stays on this desk.');
+    await expect(setup).toContainText('Lead wakes once it has an AI key, and the key is kept on this desk.');
     // The card, by its title; the privacy line in it, plain text, never folded into a details.
     const c = page.getByRole('region', { name: 'Try free models' });
     await expect(c).toBeVisible();
@@ -139,7 +139,7 @@ for (const theme of THEMES) {
     await expect(c.locator('.ag-free-facts li')).toHaveText([
       'Slower than paid models, with a limited number of requests each day.',
       'Some chat only: they can’t use tools on your desk.',
-      'The key is yours, from your OpenRouter account, and comes straight to this desk.',
+      'The key is yours, from your OpenRouter account, and is kept on this desk.',
     ]);
     await expect(c.getByTestId('free-privacy')).toHaveText(PRIVACY);
     await expect(c.getByTestId('free-privacy')).toBeVisible();
@@ -351,10 +351,10 @@ test('the browser kept the window from opening: the link, Cancel, and a code aft
 
 test('every way it fails says why, and Connect again', async ({ page, request }) => {
   const words = {
-    mismatch: 'That answer from OpenRouter didn’t match this window, so nothing was added. Connect again.',
+    mismatch: "That answer from OpenRouter didn't match, so nothing was added. Connect again.",
     declined: 'OpenRouter didn’t hand over a key, so nothing was added. Connect again.',
     expired: 'That took more than 10 minutes, so nothing was added. Connect again when you’re ready.',
-    unreachable: 'OpenRouter couldn’t be reached from this window. Try again in a moment.',
+    unreachable: "OpenRouter couldn't be reached from here. Try again in a moment.",
     desk: `Your desk can’t reach OpenRouter right now, so it kept nothing. Try again later, or add a key of your own below.${UNUSED}`,
     storage: `Your desk couldn’t save the key, and kept nothing. Connect again.${UNUSED}`,
     refused: `OpenRouter refused the new key, so nothing was kept. Connect again.${UNUSED}`,

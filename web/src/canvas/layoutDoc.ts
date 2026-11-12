@@ -5,7 +5,7 @@ import { GUILD_APPS, isGuildPanel } from '../guild/panel';
 import { adultOnly, type AgeBand } from '../platform/age';
 import { clearSpot, separateDesks } from './deskPush';
 import { isDeskStyleId } from '../theme/deskStyles';
-import { defaultDesk, deskFromGrid, G, isAgentApp, panelH, placeNewDesk, roundUnit, settleDesk, stackOrder, withStack, type AppId, type DeskCarousel, type DetailLevel, type LayoutDesk, type LayoutItem } from './layout';
+import { defaultDesk, deskFromGrid, G, isAgentApp, isDeskApp, panelH, placeNewDesk, roundUnit, settleDesk, stackOrder, withStack, type AppId, type DeskCarousel, type DetailLevel, type LayoutDesk, type LayoutItem } from './layout';
 
 export interface LayoutDoc {
   desks: Record<string, LayoutDesk>;
@@ -22,8 +22,8 @@ const LEVELS: readonly string[] = ['icon', 'small', 'wide', 'large'];
 type Json = Record<string, unknown>;
 const isObject = (v: unknown): v is Json => typeof v === 'object' && v !== null && !Array.isArray(v);
 const isNumber = (v: unknown): v is number => typeof v === 'number' && Number.isFinite(v);
-/** One of the four, or an agent's own (task 49): `agent:<agentId>`. */
-const isApp = (v: unknown): v is AppId => (typeof v === 'string' && APPS.includes(v)) || isAgentApp(v);
+/** One of the four, an agent's own (task 49): `agent:<agentId>`, or an installed app's (ADR 0054): `app:<manifest id>`. */
+const isApp = (v: unknown): v is AppId => (typeof v === 'string' && APPS.includes(v)) || isAgentApp(v) || isDeskApp(v);
 
 function zOf(raw: Json, desks: Record<string, unknown>): string[] {
   const z = Array.isArray(raw['z']) ? raw['z'] : [];
@@ -251,9 +251,9 @@ export function isUntouched(doc: LayoutDoc, ids: readonly string[]): boolean {
     if (!mine) return true;
     const inRow = mine.y === fresh.y || (n === 0 && mine.y === OLD_ROW_Y);
     // A style is only ever the member's own choice, so a desk wearing one has been touched.
-    // An agent's own tile comes from the desk's word, not the member's hand (task 49), so it doesn't make a desk arranged. Nor does Files' tile (`apps/files/tiles.ts`). One
+    // An agent's own tile comes from the desk's word, not the member's hand (task 49), so it doesn't make a desk arranged. Nor does Files' tile (`apps/files/tiles.ts`), or an installed app's (`deskapps/host/tiles.ts`). One
     // that made the desk grow does: there's no telling that from a member's resize, and either way it's something to send.
-    const own = mine.items.filter((i) => !isAgentApp(i.app) && i.app !== 'files');
+    const own = mine.items.filter((i) => !isAgentApp(i.app) && !isDeskApp(i.app) && i.app !== 'files');
     // The carousel is only ever the member's own choice, so a desk that has one has been touched.
     return !mine.style && !mine.carousel && inRow && mine.x === fresh.x && mine.w === fresh.w && (mine.h === fresh.h || mine.h === OLD_DESK_H) && (sameItems(own, fresh.items) || sameItems(own, fitDeskToBand(fresh, 'teen').items));
   });

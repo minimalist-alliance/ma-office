@@ -137,6 +137,8 @@ export interface PlatformDesk {
   phase?: string | null;
   stopAt?: string | null;
   stopReason?: string | null;
+  /** Only after a cost guard stop (contract desks.md "Traffic stops", TD-162). Read only through `trafficStopOf`. */
+  stopDetail?: unknown;
   agentStatus?: string | null;
   badges?: { total?: number; apps?: Record<string, number> } | null;
   queue?: { position?: number } | null;

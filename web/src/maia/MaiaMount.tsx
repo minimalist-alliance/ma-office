@@ -2,6 +2,7 @@
 // with one, it asks her state and loads the widget's chunk only if she's enabled. A failure anywhere, the chunk's load
 // included, means no widget, never a broken office.
 import { Component, lazy, Suspense, useEffect, useMemo, useState, type ReactNode } from 'react';
+import { onMemberChange } from '../platform/auth';
 import { useSession } from '../platform/session';
 import { useFree } from '../free/door';
 import { fetchMaiaState, maiaBase, type MaiaState } from './gate';
@@ -24,6 +25,18 @@ export function MaiaMount() {
   const [ready, setReady] = useState<{ base: string; state: MaiaState } | null>(null);
   // An upgrade from the free tier asks again, and she wakes (`free/door.ts`).
   const again = useFree((s) => s.maia);
+  // This tab's tokens became someone else's (a sign-in in another tab): the last member's chat goes at once, her state
+  // with it, and she's asked again for the new one (ISS-89). Her keys in this tab went before this (`layoutMirrorFor`).
+  const [member, setMember] = useState(0);
+  useEffect(
+    () =>
+      onMemberChange((_sub, before) => {
+        if (before === null) return;
+        setReady(null);
+        setMember((n) => n + 1);
+      }),
+    [],
+  );
 
   useEffect(() => {
     if (!base) return undefined;
@@ -34,7 +47,7 @@ export function MaiaMount() {
       if (!ctl.signal.aborted && state) setReady(state.enabled || state.trial ? { base, state } : null);
     });
     return () => ctl.abort();
-  }, [base, again]);
+  }, [base, again, member]);
 
   if (!base || ready?.base !== base) return null;
   return (

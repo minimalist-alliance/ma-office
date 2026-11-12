@@ -141,6 +141,50 @@ test('after the idle fetch, the account menu\'s panel is there at the next frame
   expect(errors).toEqual([]);
 });
 
+// Short-viewport mode's two menu buttons (`BarMenus.tsx`): only the buttons are in the first load, and their panels are the
+// popovers chunk's. After the idle fetch a panel is there at the next frame after the press, with the keyboard in it;
+// pressed sooner, it comes as the chunk lands, nothing in its place meanwhile, and the keyboard goes into it then.
+test('short-viewport mode: the scope list and the zoom popover, after the idle fetch and pressed before it, with the keyboard in them', async ({ page, request }) => {
+  const errors = watchConsole(page);
+  await harness(request, { reset: true });
+  await page.setViewportSize({ width: 360, height: 225 });
+  await signIn(page, '/?fixture=three');
+  await canvasPainted(page);
+  await fetched(page, POPOVERS);
+  const scope = page.getByRole('button', { name: 'Scope: All' });
+  const zoom = page.getByRole('button', { name: /^Zoom \d+%$/ });
+  expect(await pressAndWatch(scope, '#scope-list')).toEqual({ frames: 0, animating: false, focused: true });
+  await page.keyboard.press('Escape');
+  expect(await pressAndWatch(zoom, '#zoom-pop')).toEqual({ frames: 0, animating: false, focused: true });
+  await page.keyboard.press('Escape');
+  await expect(zoom).toBeFocused();
+
+  let release: () => void = () => {};
+  const held = new Promise<void>((r) => {
+    release = r;
+  });
+  await page.route(POPOVERS, async (route) => {
+    await held;
+    await route.continue();
+  });
+  await page.reload();
+  await canvasPainted(page);
+  await scope.focus();
+  await page.keyboard.press('Enter');
+  await expect(scope).toHaveAttribute('aria-expanded', 'true');
+  await page.waitForTimeout(300);
+  await expect(page.getByRole('menu', { name: 'Scope' })).toHaveCount(0);
+  await expect(scope).toBeFocused();
+  release();
+  await expect(page.getByRole('menuitemradio', { name: 'All' })).toBeFocused();
+  await page.keyboard.press('Escape');
+  await expect(scope).toBeFocused();
+  await zoom.focus();
+  await page.keyboard.press('Enter');
+  await expect(page.getByRole('dialog', { name: 'Zoom' }).getByRole('button', { name: 'Zoom out' })).toBeFocused();
+  expect(errors).toEqual([]);
+});
+
 for (const theme of ['light', 'dusk', 'dark'] as const) {
   test(`${theme}: the account menu reads as main's, Zen's Background (in Zen only), labels and hint included`, async ({ page, request }) => {
     const errors = await arrive(page, request, theme);

@@ -8,7 +8,7 @@
 // The shipping bundle has no window.__maDesk and the proxy only updates on a drop, so the live size during
 // a drag is read from the canvas's own pixels, calibrated at rest against the proxy. Read-only.
 import { mkdirSync } from 'node:fs';
-import { ALLOWED, events, getDesk, HOST, log, logConfig, openSession, OTHER, S, shot, shutdown, testLabel, wait, waitPanel } from './rt-lib.mjs';
+import { ALLOWED, createLayoutStandIn, events, getDesk, HOST, log, logConfig, openSession, OTHER, S, shot, shutdown, testLabel, wait, waitPanel } from './rt-lib.mjs';
 
 const EXPECTED = process.env.MA_EXPECT_VERSION;
 if (!EXPECTED) throw new Error('Set MA_EXPECT_VERSION to the bundle version you expect on staging');
@@ -69,48 +69,12 @@ async function pageVersion(page) {
   });
 }
 
-const layoutCalls = [];
-// GET and PUT /v1/me/desk-layout as services/identity answers them (contract desks.md), in memory. A route
-// answers before anything leaves the browser, CORS preflight included.
-const standIn = { version: 0, updatedAt: null, layout: null, unrouted: 0 };
-const routed = (url) => url.hostname.startsWith('api.') && url.pathname === '/v1/me/desk-layout';
-async function layoutRoute(route) {
-  const r = route.request();
-  const origin = r.headers().origin ?? `https://${APP_HOST}`;
-  if (r.method() === 'OPTIONS') {
-    // A preflight, if one reaches the route: allow what the API's CORS allows.
-    const asked = (await r.headerValue('access-control-request-headers')) ?? 'authorization, content-type, if-match, if-none-match';
-    return route.fulfill({ status: 204, headers: { 'Access-Control-Allow-Origin': origin, 'Access-Control-Allow-Methods': 'GET, PUT', 'Access-Control-Allow-Headers': asked, 'Access-Control-Max-Age': '600', Vary: 'Origin' } });
-  }
-  const answer = (status, body, headers = {}) => {
-    layoutCalls.push(`${r.method()} ${status}`);
-    return route.fulfill({
-      status,
-      contentType: 'application/json; charset=utf-8',
-      headers: { 'Access-Control-Allow-Origin': origin, 'Access-Control-Expose-Headers': 'etag, retry-after', 'Cache-Control': 'no-store', Vary: 'Origin', ...headers },
-      body: JSON.stringify(body),
-    });
-  };
-  const doc = () => ({ version: standIn.version, updatedAt: standIn.updatedAt, layout: standIn.layout });
-  const tag = () => `"${standIn.version}"`;
-  if (r.method() === 'GET') return answer(200, doc(), { ETag: tag() });
-  if (r.method() !== 'PUT') return answer(404, { message: 'Not Found' });
-  const ifMatch = (await r.headerValue('if-match'))?.trim();
-  if (!ifMatch) return answer(428, { error: { code: 'precondition_required', message: 'Send If-Match.', retryable: false } });
-  if (ifMatch !== tag()) return answer(412, { error: { code: 'version_mismatch', message: 'Changed.', retryable: false, details: { currentVersion: standIn.version } } });
-  let layout;
-  try {
-    layout = JSON.parse(r.postData() ?? '').layout;
-  } catch {
-    layout = null;
-  }
-  if (typeof layout !== 'object' || layout === null || !Number.isInteger(layout.schemaVersion)) return answer(400, { error: { code: 'invalid_request', message: 'Bad layout.', retryable: false } });
-  Object.assign(standIn, { version: standIn.version + 1, updatedAt: new Date().toISOString(), layout });
-  return answer(200, doc(), { ETag: tag() });
-}
+const standIn = createLayoutStandIn();
+const layoutCalls = standIn.calls;
 
 await openSession({
   watch: true,
+  layoutStandIn: standIn,
   onContext: async (context) => {
     await context.addInitScript(
       ({ doc, host }) => {
@@ -118,11 +82,6 @@ await openSession({
       },
       { doc: V1, host: APP_HOST },
     );
-    await context.route(routed, layoutRoute);
-    // A layout call the route doesn't match would go to Platform: there should be none.
-    context.on('request', (r) => {
-      if (r.url().includes('/desk-layout') && !routed(new URL(r.url()))) standIn.unrouted++;
-    });
   },
   onLanding: async (page) => {
     const limit = Date.now() + 15000;

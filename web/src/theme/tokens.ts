@@ -328,7 +328,9 @@ export const VIEW: Record<ThemeId, ViewTokens> = {
  * `app-colors` tokens). Each key replaces one office property inside that app's window only, by `appThemeCss`:
  * `window` is `--ma-surface-window`, `sidebar` `--ma-surface-sunken`, `accent*` the accent set and `--ma-focus-ring`,
  * `accentSubtle` `--ma-accent-subtle`, `onAccent` `--ma-text-on-accent`, `link` `--ma-text-link`. Text, borders, status
- * and danger stay the office's. Files is "Steel teal"; another pick changes these values and nothing else.
+ * and danger stay the office's. Files is "Steel teal"; another pick changes these values and nothing else. Keyed by the
+ * window's `data-app`: an installed app's is `app:<manifest id>` (ADR 0054), and the desk app host passes its ink to the app's
+ * view too (`deskapps/host/tokens.ts`). The Bible is "Lapis", the Product Designer's pick 1 (`design-drafts/bible-app`).
  */
 export interface AppInk {
   window: string;
@@ -346,6 +348,11 @@ export const APP_INKS: Record<string, Record<ThemeId, AppInk>> = {
     light: { window: '#FAFDFE', sidebar: '#E9F5F9', accent: '#21748C', accentHover: '#07657D', accentPressed: '#02566B', accentSubtle: '#D6F0FA', onAccent: '#FFFFFF', link: '#21748C' },
     dusk: { window: '#464E51', sidebar: '#3E4649', accent: '#9CD1E4', accentHover: '#A8DEF1', accentPressed: '#8FC4D7', accentSubtle: '#2D4B56', onAccent: '#1B2029', link: '#A8DEF1' },
     dark: { window: '#21282B', sidebar: '#192225', accent: '#79AEC0', accentHover: '#89BED0', accentPressed: '#6A9EB0', accentSubtle: '#1C3A44', onAccent: '#14171B', link: '#79AEC0' },
+  },
+  'app:com.minimalistalliance.bible': {
+    light: { window: '#FDFDFE', sidebar: '#F0F3F8', accent: '#2C51B6', accentHover: '#1F42A5', accentPressed: '#133395', accentSubtle: '#E0EAFE', onAccent: '#FFFFFF', link: '#2C51B6' },
+    dusk: { window: '#414855', sidebar: '#39404E', accent: '#9FBDFE', accentHover: '#B2CAFE', accentPressed: '#90B0F4', accentSubtle: '#455577', onAccent: '#1B2029', link: '#B7CEFF' },
+    dark: { window: '#22242A', sidebar: '#1B1D23', accent: '#759BF2', accentHover: '#86ACFF', accentPressed: '#668CE1', accentSubtle: '#273656', onAccent: '#14171B', link: '#81A8FF' },
   },
 };
 

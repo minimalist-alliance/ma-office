@@ -33,7 +33,9 @@ def main(argv):
         say("takes one URL, as Chromium gives it")
         return 1
     url = os.fsencode(argv[1])
-    if not url or b"\n" in url or b"\r" in url:
+    # A URL has no control byte: none below 0x20, and no DEL. deskd splits on LF and checks the rest itself; this refuses
+    # the lot before anything reaches its socket (Security's image-035 Low 2).
+    if not url or any(b < 0x20 or b == 0x7F for b in url):
         say("not a URL")
         return 1
     try:

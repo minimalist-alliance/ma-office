@@ -44,6 +44,33 @@ final class DataMethods {
      * leave its desk.
      */
     static final Set<String> MACHINE_PARTS = Set.of("rtc", "selfhost", "desk-egress", "lost+found", ".ma-export-tmp", ".ma-move");
+    /** deskd's own directory, and the catalog apps' one: the parts {@link #machinePath} looks inside. */
+    static final String DESK_PART = "desk";
+    static final String APPS_PART = "apps";
+
+    /**
+     * Paths inside a part that are the machine's, not the member's, which deskd leaves out of every listing and read, whatever
+     * the helper says. For the apps, in {@code desk} under {@code apps/} (the bundled ones) and in {@code apps} (the catalog's):
+     * the registry and its temporary file, each app's member-pseudonym key ({@code <id>/member.key} and its temporary file),
+     * which the contract keeps out of the export, and each app's {@code <id>/cache} and what's in it. The same rule the
+     * helper keeps for {@code /data/apps} (its {@code APP_PACKAGES}); each app's {@code data} and {@code summary.json} stay
+     * in, as the member's (API.md section 19, "Bundled apps").
+     */
+    static boolean machinePath(String part, String path) {
+        String rest;
+        if (DESK_PART.equals(part) && path.startsWith("apps/")) {
+            rest = path.substring("apps/".length());
+        } else if (APPS_PART.equals(part)) {
+            rest = path;
+        } else {
+            return false;
+        }
+        String[] parts = rest.split("/", -1);
+        if (parts.length == 1) {
+            return parts[0].equals("registry.json") || parts[0].equals(".registry.json.tmp");
+        }
+        return parts[1].equals("cache") || (parts.length == 2 && (parts[1].equals("member.key") || parts[1].equals(".member.key.tmp")));
+    }
 
     /** The Browser's side of data.browser.cookies. */
     @FunctionalInterface
@@ -134,7 +161,7 @@ final class DataMethods {
                 throw helperUnavailable();
             }
             Map<String, Object> result = new LinkedHashMap<>();
-            result.put("entries", entries);
+            result.put("entries", withoutMachinePaths(part, entries));
             result.put("next", next);
             if (Json.bytes(result).length <= FrameKind.RES.maxMessageBytes()) {
                 return result;
@@ -143,9 +170,26 @@ final class DataMethods {
         throw helperUnavailable();
     }
 
+    /** A page with {@link #machinePath}s taken out. A page can come back shorter, or empty with a {@code next}. */
+    private static List<?> withoutMachinePaths(String part, List<?> entries) {
+        if (!DESK_PART.equals(part) && !APPS_PART.equals(part)) {
+            return entries;
+        }
+        List<Object> kept = new ArrayList<>(entries.size());
+        for (Object item : entries) {
+            if (!(item instanceof Map<?, ?> entry && entry.get("path") instanceof String path && machinePath(part, path))) {
+                kept.add(item);
+            }
+        }
+        return kept;
+    }
+
     private Object read(RpcContext context, Map<String, Object> params) throws Exception {
         String part = part(params);
         String path = path(params);
+        if (machinePath(part, path)) {
+            throw new RpcException(RpcException.NOT_FOUND, "No such part or path", Map.of());
+        }
         long offset = 0;
         if (params.get("offset") != null) {
             offset = DataHelperClient.wholeNumber(params.get("offset"));

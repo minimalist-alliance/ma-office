@@ -5,6 +5,8 @@ import (
 	"encoding/base64"
 	"encoding/json"
 	"errors"
+	"log"
+	"regexp"
 	"strconv"
 	"strings"
 	"unicode/utf16"
@@ -63,10 +65,62 @@ func params(raw json.RawMessage, v any) *apiErr {
 	return nil
 }
 
-func (a *app) dispatch(ctx context.Context, r *wire.Request) (any, *apiErr) {
+// caller is who a call is for, as deskd says (deskd API.md §19, "What the app is told about the caller").
+type caller struct {
+	Kind   string `json:"kind"`
+	Member string `json:"member"`
+}
+
+// request is a REQ from deskd.
+type request struct {
+	M          string          `json:"m"`
+	P          json.RawMessage `json:"p"`
+	Idem       string          `json:"idem"`
+	DeadlineMs int             `json:"deadlineMs"`
+	From       struct {
+		Kind   string  `json:"kind"`
+		Caller *caller `json:"caller"`
+	} `json:"from"`
+}
+
+var memberID = regexp.MustCompile(`^p-[A-Za-z0-9_-]{22}$`)
+
+// whose is the bucket a call's data belongs to: the owner's on a member's own desk, a member's pseudonym on a Guild
+// Desk, or store.Desk for deskd's own calls. Anything else is forbidden.
+func whose(fromKind string, c *caller) (string, *apiErr) {
+	if fromKind == "desk" {
+		return store.Desk, nil
+	}
+	if c != nil {
+		switch {
+		case c.Kind == "owner":
+			return store.Owner, nil
+		case c.Kind == "guild_member" && memberID.MatchString(c.Member):
+			return c.Member, nil
+		}
+	}
+	return "", &apiErr{"forbidden", "caller", "no caller this app knows"}
+}
+
+// panicOn makes one method panic, for the test that a panic stays inside its call.
+var panicOn string
+
+func (a *app) dispatch(ctx context.Context, r *request, who string) (any, *apiErr) {
+	if panicOn != "" && r.M == panicOn {
+		panic("a test's panic")
+	}
+	if r.M == "app.members.retain" {
+		if who != store.Desk {
+			return nil, &apiErr{"forbidden", "caller", "deskd's call"}
+		}
+		return a.retain(ctx, r)
+	}
+	if who == store.Desk {
+		return nil, &apiErr{"forbidden", "caller", "a view's call"}
+	}
 	switch r.M {
 	case "bible.state":
-		return a.state(ctx)
+		return a.state(ctx, who)
 	case "bible.info":
 		return map[string]any{"translations": a.infos(), "defaultTranslation": text.DefaultCode}, nil
 	case "bible.about":
@@ -74,23 +128,23 @@ func (a *app) dispatch(ctx context.Context, r *wire.Request) (any, *apiErr) {
 	case "bible.books":
 		return a.books(r.P)
 	case "bible.chapter":
-		return a.chapter(ctx, r.P)
+		return a.chapter(ctx, r.P, who)
 	case "bible.lookup":
 		return a.lookup(r.P)
 	case "bible.search":
 		return a.search(ctx, r.P)
 	case "bible.marks.chapter":
-		return a.marksChapter(ctx, r.P)
+		return a.marksChapter(ctx, r.P, who)
 	case "bible.marks.list":
-		return a.marksList(ctx, r.P)
+		return a.marksList(ctx, r.P, who)
 	case "bible.mark.put", "bible.mark.remove", "bible.highlight.clear", "bible.prefs.set":
-		return a.mutation(ctx, r)
+		return a.mutation(ctx, r, who)
 	case "bible.prefs.get":
 		st, aerr := a.waitStore(ctx)
 		if aerr != nil {
 			return nil, aerr
 		}
-		return st.Prefs(), nil
+		return st.Prefs(who), nil
 	}
 	return nil, notFound("method")
 }
@@ -147,12 +201,12 @@ func booksOf(t *text.Translation) []bookJSON {
 	return out
 }
 
-func (a *app) state(ctx context.Context) (any, *apiErr) {
+func (a *app) state(ctx context.Context, who string) (any, *apiErr) {
 	st, aerr := a.waitStore(ctx)
 	if aerr != nil {
 		return nil, aerr
 	}
-	prefs := st.Prefs()
+	prefs := st.Prefs(who)
 	try := []string{text.DefaultCode}
 	if prefs.Place != nil {
 		try = append([]string{prefs.Place.Translation}, try...)
@@ -183,7 +237,7 @@ func (a *app) about(raw json.RawMessage) (any, *apiErr) {
 	if !a.lib.Has(p.Translation) {
 		return nil, notFound("translation")
 	}
-	statement, err1 := a.lib.File(p.Translation, "STATEMENT.txt")
+	statement, err1 := a.lib.File(p.Translation, "NOTICE.txt") // the member-facing notice; STATEMENT.txt is the audit record
 	source, err2 := a.lib.File(p.Translation, "SOURCE.md")
 	if err1 != nil || err2 != nil {
 		return nil, unavailable("translation")
@@ -211,7 +265,7 @@ func (a *app) books(raw json.RawMessage) (any, *apiErr) {
 	return map[string]any{"translation": t.Code, "books": booksOf(t)}, nil
 }
 
-func (a *app) chapter(ctx context.Context, raw json.RawMessage) (any, *apiErr) {
+func (a *app) chapter(ctx context.Context, raw json.RawMessage, who string) (any, *apiErr) {
 	var p struct {
 		Translation string `json:"translation"`
 		Book        string `json:"book"`
@@ -238,7 +292,11 @@ func (a *app) chapter(ctx context.Context, raw json.RawMessage) (any, *apiErr) {
 	prev, next := t.Neighbors(b, p.Chapter)
 	marks := []store.Mark{}
 	if st, aerr := a.waitStore(ctx); aerr == nil {
-		marks = st.Chapter(b.ID, p.Chapter)
+		if ms, err := st.Chapter(who, b.ID, p.Chapter); err == nil {
+			marks = ms
+		} else {
+			log.Printf("a chapter's marks: %v", err) // the text still shows
+		}
 	}
 	return map[string]any{"translation": t.Code, "book": b.ID, "bookName": b.Name, "chapter": p.Chapter, "items": items,
 		"prev": prev, "next": next, "marks": marks}, nil
@@ -361,7 +419,7 @@ func (a *app) search(ctx context.Context, raw json.RawMessage) (any, *apiErr) {
 	return out, nil
 }
 
-func (a *app) marksChapter(ctx context.Context, raw json.RawMessage) (any, *apiErr) {
+func (a *app) marksChapter(ctx context.Context, raw json.RawMessage, who string) (any, *apiErr) {
 	var p struct {
 		Book    string `json:"book"`
 		Chapter int    `json:"chapter"`
@@ -380,7 +438,12 @@ func (a *app) marksChapter(ctx context.Context, raw json.RawMessage) (any, *apiE
 	if aerr != nil {
 		return nil, aerr
 	}
-	return map[string]any{"marks": st.Chapter(p.Book, p.Chapter)}, nil
+	marks, err := st.Chapter(who, p.Book, p.Chapter)
+	if err != nil {
+		log.Printf("marks: %v", err)
+		return nil, unavailable("data")
+	}
+	return map[string]any{"marks": marks}, nil
 }
 
 type listedMark struct {
@@ -388,7 +451,7 @@ type listedMark struct {
 	VerseText *string `json:"verseText,omitempty"`
 }
 
-func (a *app) marksList(ctx context.Context, raw json.RawMessage) (any, *apiErr) {
+func (a *app) marksList(ctx context.Context, raw json.RawMessage, who string) (any, *apiErr) {
 	var p struct {
 		Kind        string `json:"kind"`
 		Order       string `json:"order"`
@@ -434,7 +497,15 @@ func (a *app) marksList(ctx context.Context, raw json.RawMessage) (any, *apiErr)
 	if aerr != nil {
 		return nil, aerr
 	}
-	marks, total, next := st.List(p.Kind, p.Order, after, limit)
+	marks, total, next, err := st.List(who, p.Kind, p.Order, after, limit)
+	if err != nil {
+		var inv *store.Invalid
+		if errors.As(err, &inv) {
+			return nil, bad(inv.Reason)
+		}
+		log.Printf("marks: %v", err)
+		return nil, unavailable("data")
+	}
 	out := make([]listedMark, len(marks))
 	for i, m := range marks {
 		out[i].Mark = m
@@ -451,7 +522,7 @@ func (a *app) marksList(ctx context.Context, raw json.RawMessage) (any, *apiErr)
 	return map[string]any{"marks": out, "total": total, "cursor": cursor}, nil
 }
 
-func (a *app) mutation(ctx context.Context, r *wire.Request) (any, *apiErr) {
+func (a *app) mutation(ctx context.Context, r *request, who string) (any, *apiErr) {
 	st, aerr := a.waitStore(ctx)
 	if aerr != nil {
 		return nil, aerr
@@ -473,7 +544,7 @@ func (a *app) mutation(ctx context.Context, r *wire.Request) (any, *apiErr) {
 		if p.Mark == nil {
 			return nil, bad("mark")
 		}
-		res, changed, err = st.PutMark(r.Idem, *p.Mark)
+		res, changed, err = st.PutMark(who, r.Idem, *p.Mark)
 	case "bible.mark.remove":
 		var p struct {
 			ID string `json:"id"`
@@ -484,7 +555,7 @@ func (a *app) mutation(ctx context.Context, r *wire.Request) (any, *apiErr) {
 		if p.ID == "" {
 			return nil, bad("id")
 		}
-		res, changed, err = st.RemoveMark(r.Idem, p.ID)
+		res, changed, err = st.RemoveMark(who, r.Idem, p.ID)
 	case "bible.highlight.clear":
 		var p struct {
 			Book     string `json:"book"`
@@ -495,14 +566,14 @@ func (a *app) mutation(ctx context.Context, r *wire.Request) (any, *apiErr) {
 		if aerr := params(r.P, &p); aerr != nil {
 			return nil, aerr
 		}
-		res, changed, err = st.ClearHighlights(r.Idem, p.Book, p.Chapter, p.Verse, p.VerseEnd)
+		res, changed, err = st.ClearHighlights(who, r.Idem, p.Book, p.Chapter, p.Verse, p.VerseEnd)
 	case "bible.prefs.set":
 		var p map[string]json.RawMessage
 		if aerr := params(r.P, &p); aerr != nil {
 			return nil, aerr
 		}
-		res, err = st.SetPrefs(r.Idem, p)
-		if err == nil {
+		res, err = st.SetPrefs(who, r.Idem, p)
+		if err == nil && who == store.Owner {
 			a.publishSummary()
 		}
 	}
@@ -510,7 +581,34 @@ func (a *app) mutation(ctx context.Context, r *wire.Request) (any, *apiErr) {
 		return nil, storeErr(err)
 	}
 	if changed {
-		a.marksChanged()
+		a.marksChanged(who)
+	}
+	return res, nil
+}
+
+// retain is deskd's app.members.retain: every member's data not in the list goes (API.md, "Guild Desks").
+func (a *app) retain(ctx context.Context, r *request) (any, *apiErr) {
+	var p struct {
+		Members *[]string `json:"members"`
+		All     bool      `json:"all"`
+	}
+	if aerr := params(r.P, &p); aerr != nil {
+		return nil, aerr
+	}
+	if p.Members == nil && !p.All {
+		return nil, bad("members")
+	}
+	var members []string
+	if p.Members != nil {
+		members = *p.Members
+	}
+	st, aerr := a.waitStore(ctx)
+	if aerr != nil {
+		return nil, aerr
+	}
+	res, err := st.Retain(r.Idem, members, p.All)
+	if err != nil {
+		return nil, storeErr(err)
 	}
 	return res, nil
 }
@@ -534,12 +632,14 @@ func storeErr(err error) *apiErr {
 }
 
 // summaryJSON is the widget's app.summary: nothing before a place exists, then the place and its verse's first words.
+// On a Guild Desk, or before deskd has said which kind of desk this is, nothing: a shared tile never shows one
+// member's place.
 func (a *app) summaryJSON() []byte {
 	rows := []map[string]string{}
 	select {
 	case <-a.ready:
-		if a.st != nil {
-			if pl := a.st.Prefs().Place; pl != nil {
+		if a.st != nil && a.guild.Load() == 0 {
+			if pl := a.st.Prefs(store.Owner).Place; pl != nil {
 				if t, err := a.lib.Get(pl.Translation); err == nil {
 					name := pl.Book
 					if b := t.Book(pl.Book); b != nil {

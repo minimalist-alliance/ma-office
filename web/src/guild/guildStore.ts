@@ -4,11 +4,13 @@
 // it (`guild.hello`), and the guilds the member has just left or been removed from, until they put the panel away.
 //
 // It starts once the session knows who the member is, so a teen's office never draws an Agent tile, even for a moment, and
-// it forgets everything when the session ends. Polls are quiet: a failure keeps what's shown and asks again later.
+// it forgets everything when the session ends, or when another tab's sign-in makes this tab someone else's: the Guild Desks'
+// links go too then, since a guild's panel is the same for every member in it. Polls are quiet: a failure keeps what's shown
+// and asks again later.
 import { create } from 'zustand';
-import { linkOf, syncLinks, useLiveStore } from '../desk/liveStore';
+import { forgetLinks, linkOf, syncLinks, useLiveStore } from '../desk/liveStore';
 import { ApiError } from '../platform/api';
-import { SignInRequired } from '../platform/auth';
+import { onMemberChange, SignInRequired } from '../platform/auth';
 import { loadedConfig } from '../platform/clientConfig';
 import { useSession } from '../platform/session';
 import { focusDesk } from '../shell/actions';
@@ -17,7 +19,7 @@ import { reconcileLayout, useLayoutStore } from '../state/layoutStore';
 import { setView } from '../state/viewStore';
 import { setGuildAccessHooks } from './access';
 import { getGuildDesk, getGuilds, type GuildDesk, type GuildHello, type GuildMine } from './api';
-import { guildIdOfPanel, guildPanelId, guildVm, myGuilds } from './panel';
+import { guildIdOfPanel, guildPanelId, guildVm, isGuildPanel, myGuilds } from './panel';
 
 export type GuildListStatus = 'idle' | 'loading' | 'ready' | 'error' | 'off';
 
@@ -117,13 +119,18 @@ function openWanted(): void {
   const present = useGuildStore.getState().guilds.some((g) => g.guildId === guildId);
   const id = guildPanelId(guildId);
   if (present && !useLayoutStore.getState().desks[id]) return; // its layout comes with the next publish
+  dropWanted();
+  if (!present) return; // not one of theirs: the office as it is
+  setView({ scope: 'guild' });
+  focusDesk(id);
+}
+
+/** `?guild=` is done with: opened, or not this member's to open. The address loses it, so a reload doesn't ask again. */
+function dropWanted(): void {
   wanted = null;
   const url = new URL(window.location.href);
   url.searchParams.delete('guild');
   window.history.replaceState(window.history.state, '', `${url.pathname}${url.search}${url.hash}`);
-  if (!present) return; // not one of theirs: the office as it is
-  setView({ scope: 'guild' });
-  focusDesk(id);
 }
 
 // ----- the list
@@ -285,6 +292,26 @@ export function stopGuilds(): void {
   helloAsked.clear();
   useGuildStore.setState(FRESH);
 }
+
+/**
+ * This tab's tokens became another member's (a sign-in in another tab; ISS-89's follow-up). The store starts over, as the
+ * session's `me` going does (`follow`), and every Guild Desk's link closes with what its session said: a guild's panel id
+ * is the same for every member in it, so the new member's list naming it again would keep the last member's session, on
+ * their guild token, and deskd's `guild.hello` on it would say who the last member is there and what they may do. The new
+ * member's opens with their own token. A `?guild=` the last member's office hadn't opened yet isn't the new member's.
+ * The Guild Desks go from the desk list with the rest of it, in the session's own listener (`dropDeskList`), in the same
+ * moment as this, whichever runs first: nothing here writes the desk list or its mirror.
+ */
+function dropGuilds(): void {
+  stopGuilds();
+  if (wanted) dropWanted();
+  forgetLinks(isGuildPanel);
+}
+
+// The first token (`before` null) changes nothing here: there was nobody's before it.
+onMemberChange((_sub, before) => {
+  if (before !== null) dropGuilds();
+});
 
 /**
  * A Guild Desk has no Browser, and the office never moves anything between desks by itself: a link in a guild page asks

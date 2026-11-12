@@ -1,6 +1,8 @@
 // Moving and resizing from the keyboard (ADR 0062, follow-up 6). On a focused app or desk, `m` moves
 // and `r` resizes. Arrows change it by 8 units, Shift+arrows by 40. Enter keeps the change and Esc
 // restores where it started. Every step is announced, so this works with no canvas in view at all.
+// While it's on, the bottom bar is the edit's own row (`chrome/EditBar.tsx`, a11y 2.5.7): four arrows that step by one
+// grid cell (`step` with `G.pitch`), Keep and Restore, so a pointer moves and resizes with presses, no drag. The keys stay as they were.
 import { createDeskPush, type DeskAt, type DeskPush } from '../canvas/deskPush';
 import { fitDeskSize, nudgeMove, nudgeResize, workArea, type LayoutDesk, type LayoutItem, type Rect } from '../canvas/layout';
 import { isPhone } from '../canvas/phone';
@@ -86,7 +88,8 @@ function placeDesk(e: Edit, bounds: Rect): string {
   return aside.length === 1 ? `, ${deskName(aside[0]!.id)} pushed aside` : `, ${aside.length} desks pushed aside`;
 }
 
-function step(dx: -1 | 0 | 1, dy: -1 | 0 | 1, size: number): void {
+/** One step of the edit: `size` units, 8 or 40 from the keys, a grid cell from the edit bar's arrows (`EditBar.tsx`). */
+export function step(dx: -1 | 0 | 1, dy: -1 | 0 | 1, size: number): void {
   if (!edit) return;
   const { kind, deskId, itemId } = edit;
   const desk = useLayoutStore.getState().desks[deskId];

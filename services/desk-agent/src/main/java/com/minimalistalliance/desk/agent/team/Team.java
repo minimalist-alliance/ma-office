@@ -464,7 +464,7 @@ public final class Team {
         boolean lead = AgentStore.MANAGER.equals(view.get("id"));
         view.put("lead", lead);
         Map<String, Object> look = new LinkedHashMap<>();
-        look.put("icon", extras == null ? "spark" : extras.icon());
+        look.put("icon", extras == null ? "nodes" : extras.icon());
         look.put("tone", extras == null ? "graphite" : extras.tone());
         look.put("png", extras == null ? null : extras.pngVersion());
         view.put("look", look);
@@ -586,7 +586,7 @@ public final class Team {
             throws RpcError, SQLException {
         String name = name(p, true);
         String purpose = purpose(p);
-        String icon = look(p, "icon", "spark");
+        String icon = look(p, "icon", "nodes");
         String picked = p.get("tone") == null ? null : look(p, "tone", null);
         boolean solo = !p.containsKey("solo") || bool(p, "solo");
         Integer workspaceMb = workspaceMb(p);

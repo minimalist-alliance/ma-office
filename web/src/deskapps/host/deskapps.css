@@ -1,0 +1,323 @@
+/* Desk apps (ADR 0054): the Apps sheet and an app's window body. Tokens only (rule "No color literals"). */
+
+/* ------------------------------------------------------------ the Apps sheet: over the windows, the office dimmed behind */
+.dapp-away {
+  position: fixed;
+  inset: 0;
+  z-index: 45;
+  display: grid;
+  place-items: center;
+  padding: 16px;
+  background: var(--ma-surface-scrim);
+}
+.dapp-sheet {
+  width: min(560px, 100%);
+  max-height: calc(100dvh - 32px);
+  overflow: auto;
+  border: 1px solid var(--ma-border);
+  border-radius: 18px;
+  background: var(--ma-surface-window);
+  color: var(--ma-text-primary);
+  box-shadow: var(--ma-elevation-window);
+}
+.dapp-sheet:focus {
+  outline: none;
+}
+.dapp-head {
+  position: sticky;
+  top: 0;
+  z-index: 1;
+  display: flex;
+  align-items: center;
+  gap: 8px;
+  padding: 16px 16px 10px 24px;
+  background: var(--ma-surface-window);
+}
+.dapp-head h2 {
+  flex: 1;
+  display: grid;
+  min-width: 0;
+  font-size: 17px;
+  line-height: 24px;
+  font-weight: 600;
+}
+.dapp-head .icon-btn:first-child {
+  margin-left: -10px;
+}
+.dapp-kicker {
+  overflow: hidden;
+  color: var(--ma-text-tertiary);
+  font-size: 12px;
+  line-height: 16px;
+  font-weight: 500;
+  letter-spacing: 0.04em;
+  text-transform: uppercase;
+  text-overflow: ellipsis;
+  white-space: nowrap;
+}
+.dapp-body {
+  padding: 4px 24px 24px;
+}
+.dapp-empty {
+  display: grid;
+  justify-items: center;
+  gap: 12px;
+  padding: 32px 0;
+  color: var(--ma-text-secondary);
+  text-align: center;
+}
+.dapp-empty.delayed {
+  animation: br-appear 160ms linear 300ms both;
+}
+
+/* One row per app: glyph tile, name and line, Free, the button. */
+.dapp-rows {
+  display: grid;
+  gap: 4px;
+  margin: 0;
+  padding: 0;
+  list-style: none;
+}
+.dapp-row {
+  display: grid;
+  grid-template-columns: minmax(0, 1fr) auto auto;
+  align-items: center;
+  column-gap: 12px;
+  padding: 8px 0;
+  border-top: 1px solid var(--ma-border-hairline);
+}
+.dapp-row:first-child {
+  border-top: 0;
+}
+.dapp-row-main {
+  display: flex;
+  align-items: center;
+  gap: 12px;
+  min-width: 0;
+  min-height: 44px;
+  padding: 4px 6px 4px 0;
+  border: 0;
+  border-radius: 12px;
+  background: none;
+  color: inherit;
+  font: inherit;
+  text-align: left;
+  cursor: pointer;
+}
+.dapp-row-main:hover .dapp-name {
+  text-decoration: underline;
+  text-underline-offset: 3px;
+}
+.dapp-row-main:focus-visible {
+  outline: 2px solid var(--ma-focus-ring);
+  outline-offset: 2px;
+}
+.dapp-row-text {
+  display: grid;
+  min-width: 0;
+}
+.dapp-name {
+  font-size: 15px;
+  line-height: 20px;
+  font-weight: 600;
+  overflow-wrap: anywhere;
+}
+.dapp-line1 {
+  color: var(--ma-text-secondary);
+  font-size: 13px;
+  line-height: 18px;
+  overflow-wrap: anywhere;
+}
+.dapp-price,
+.dapp-free {
+  color: var(--ma-text-secondary);
+  font-size: 13px;
+  line-height: 18px;
+}
+.dapp-tile {
+  flex: none;
+  display: grid;
+  place-items: center;
+  border: 1px solid var(--ma-border-hairline);
+  background: var(--ma-surface-tile);
+  box-shadow: var(--ma-elevation-tile);
+}
+.dapp-tile.s40 {
+  width: 40px;
+  height: 40px;
+  border-radius: 10px;
+}
+.dapp-tile.s64 {
+  width: 64px;
+  height: 64px;
+  border-radius: 16px;
+}
+.dapp-actions {
+  display: flex;
+  align-items: center;
+  gap: 4px;
+}
+.dapp-actions .btn {
+  height: 36px;
+  padding: 0 14px;
+}
+.dapp-quiet {
+  height: 36px;
+  padding: 0 10px;
+  border: 0;
+  border-radius: 10px;
+  background: none;
+  color: var(--ma-text-secondary);
+  font: inherit;
+  font-size: 13px;
+  cursor: pointer;
+}
+.dapp-quiet:hover:not(:disabled) {
+  background: var(--ma-surface-sunken);
+  color: var(--ma-text-primary);
+}
+.dapp-quiet:focus-visible {
+  outline: 2px solid var(--ma-focus-ring);
+  outline-offset: 1px;
+}
+.dapp-quiet:disabled {
+  cursor: default;
+}
+.dapp-why,
+.dapp-line {
+  margin: 0;
+  color: var(--ma-text-secondary);
+  font-size: 13px;
+  line-height: 18px;
+}
+.dapp-row .dapp-line {
+  grid-column: 1 / -1;
+  padding: 2px 0 4px 52px;
+}
+
+/* The detail: the glyph at 64, the name, Free, the words, who made it, what it asks, the size, the button, the credits. */
+.dapp-detail {
+  display: grid;
+  gap: 12px;
+}
+.dapp-detail-head {
+  display: flex;
+  align-items: center;
+  gap: 16px;
+  margin-bottom: 4px;
+}
+.dapp-detail-head h3 {
+  font-size: 17px;
+  line-height: 24px;
+  font-weight: 600;
+  overflow-wrap: anywhere;
+}
+.dapp-about {
+  margin: 0;
+  font-size: 14px;
+  line-height: 21px;
+  text-wrap: pretty;
+  overflow-wrap: anywhere;
+}
+.dapp-facts {
+  display: grid;
+  gap: 4px;
+  color: var(--ma-text-secondary);
+  font-size: 13px;
+  line-height: 19px;
+}
+.dapp-facts p {
+  margin: 0;
+}
+.dapp-perms {
+  display: grid;
+  gap: 4px;
+  margin: 0;
+  padding-left: 18px;
+}
+.dapp-perms ul {
+  padding-left: 16px;
+  overflow-wrap: anywhere;
+}
+.dapp-detail-foot {
+  display: grid;
+  justify-items: start;
+  gap: 8px;
+  margin-top: 4px;
+}
+.dapp-detail-foot .btn {
+  height: 40px;
+  padding: 0 18px;
+}
+.dapp-credits {
+  display: grid;
+  gap: 2px;
+  padding-top: 8px;
+  border-top: 1px solid var(--ma-border-hairline);
+  color: var(--ma-text-tertiary);
+  font-size: 12px;
+  line-height: 17px;
+}
+.dapp-credits p {
+  margin: 0;
+}
+
+/* Phones: the sheet is the whole screen. */
+@media (max-width: 599px) {
+  .dapp-away {
+    padding: 0;
+  }
+  .dapp-sheet {
+    width: 100%;
+    height: 100dvh;
+    max-height: none;
+    border: 0;
+    border-radius: 0;
+  }
+  .dapp-head {
+    padding-left: 16px;
+    padding-right: 12px;
+  }
+  .dapp-body {
+    padding: 4px 16px 24px;
+  }
+}
+/* Phones: the button goes under the name, so the name and its line keep their room. */
+@media (max-width: 599px) {
+  .dapp-row {
+    grid-template-columns: minmax(0, 1fr) auto;
+    row-gap: 2px;
+  }
+  .dapp-row .dapp-actions,
+  .dapp-row .dapp-why {
+    grid-column: 1 / -1;
+    padding-left: 52px;
+  }
+}
+
+/* ------------------------------------------------------------ an app's window body */
+.dapp-view {
+  position: relative;
+  flex: 1;
+  min-width: 0;
+  min-height: 0;
+  display: flex;
+  background: var(--ma-surface-window);
+}
+.dapp-frame {
+  flex: 1;
+  display: block;
+  width: 100%;
+  height: 100%;
+  border: 0;
+  background: var(--ma-surface-window);
+  color-scheme: normal;
+}
+.dapp-frame[hidden] {
+  display: none;
+}
+
+/* A phone's Apps button at the end of the carousel's thumb row (`AppsThumb.tsx`): a thumb, kept whole. */
+.thumb.thumb-apps {
+  flex: none;
+}

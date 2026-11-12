@@ -104,6 +104,14 @@ public final class GuildRoster implements DeskTokenVerifier.MemberCheck {
     private volatile Set<String> listed = Set.of();
     private volatile long version = -1;
     private volatile boolean closed;
+    /** Whether the applied roster has a Founder and every entry's id could be read. */
+    private volatile boolean sound;
+    /**
+     * Whether the applied roster came over an earlier one, or is the one kept on disk: a first roster read with nothing to
+     * compare it to had no drop guard, so apps aren't told to delete on its word (Security's L2).
+     */
+    private volatile boolean compared;
+    private final List<Runnable> listeners = new java.util.concurrent.CopyOnWriteArrayList<>();
     private long wanted = -1;
     private boolean readAsked;
     private boolean running;
@@ -130,6 +138,47 @@ public final class GuildRoster implements DeskTokenVerifier.MemberCheck {
         return purges;
     }
 
+    /**
+     * The members apps may keep data for (API.md section 19, "Members leaving"), through the purges' own guard: nothing while
+     * no roster is known, the guild is closed, the roster has no Founder or an entry whose id can't be read, or any purge is
+     * held. Otherwise the roster's members and those whose purge is still in its grace.
+     */
+    public com.minimalistalliance.desk.deskd.apps.AppMembers appMembers() {
+        return new com.minimalistalliance.desk.deskd.apps.AppMembers() {
+            @Override
+            public Set<String> retained() {
+                Set<String> now;
+                lock.lock();
+                try {
+                    if (members == null || closed || !sound || !compared || listed.isEmpty()) {
+                        return null;
+                    }
+                    now = listed;
+                } finally {
+                    lock.unlock();
+                }
+                Set<String> grace = purges.inGrace();
+                if (grace == null) {
+                    return null;
+                }
+                Set<String> all = new java.util.TreeSet<>(now);
+                all.addAll(grace);
+                return Set.copyOf(all);
+            }
+
+            @Override
+            public long nextChangeAtMillis() {
+                return purges.nextGraceEndMillis();
+            }
+
+            @Override
+            public void onChange(Runnable wake) {
+                listeners.add(wake);
+                purges.onChange(wake);
+            }
+        };
+    }
+
     /** The roster kept on disk, if it's this guild's. Call once config says which guild that is. */
     public void loadKept() {
         String guild = guildId.get();
@@ -145,6 +194,7 @@ public final class GuildRoster implements DeskTokenVerifier.MemberCheck {
             Parsed kept = parse(Json.parseObject(bytes), guild, true);
             if (kept != null) {
                 install(kept);
+                compared = true;
             }
         } catch (IOException | JsonFormatException | RuntimeException e) {
             log.warn("guild roster: the kept one couldn't be read: {}", e.getClass().getSimpleName());
@@ -337,16 +387,21 @@ public final class GuildRoster implements DeskTokenVerifier.MemberCheck {
         lock.lock();
         try {
             install(parsed);
+            compared = before != null || compared;
         } finally {
             lock.unlock();
         }
         enforce();
+        for (Runnable listener : listeners) {
+            listener.run();
+        }
     }
 
     private void install(Parsed parsed) {
         members = parsed.members();
         listed = parsed.listed();
         closed = parsed.closed();
+        sound = parsed.hasLead() && parsed.unidentified() == 0;
         version = parsed.version();
     }
 

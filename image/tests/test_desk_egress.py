@@ -1002,5 +1002,28 @@ class GuildBudget(unittest.TestCase):
         self.assertNotIn("Requires=desk-kind", unit)
 
 
+class BrowserAfterTheShaper(unittest.TestCase):
+    """Security's NET031-5: the Browser never starts before desk-egress is up (READY or failed), so it never runs unshaped at boot,
+    whoever starts it. Only ordering, never a Requires (a desk with no shaper still gets a Browser), and no cycle with deskd."""
+
+    def units(self, name):
+        return (RECIPE / "files/etc/systemd/system" / name).read_text().splitlines()
+
+    def keys(self, name, key):
+        return [w for l in self.units(name) if l.startswith(key + "=") for w in l.split("=", 1)[1].split()]
+
+    def test_the_browser_is_ordered_after_the_shaper(self):
+        self.assertIn("desk-egress.service", self.keys("desk-browser.service", "After"))
+        self.assertNotIn("desk-egress.service", self.keys("desk-browser.service", "Requires"))
+        self.assertNotIn("desk-egress.service", self.keys("desk-browser.service", "Wants"))
+
+    def test_no_cycle_with_deskd(self):
+        # desk-egress is Before deskd, and so is the Browser: neither may be After deskd, nor desk-egress After the Browser.
+        self.assertIn("deskd.service", self.keys("desk-egress.service", "Before"))
+        self.assertIn("deskd.service", self.keys("desk-browser.service", "Before"))
+        self.assertNotIn("deskd.service", self.keys("desk-browser.service", "After"))
+        self.assertNotIn("desk-browser.service", self.keys("desk-egress.service", "After"))
+
+
 if __name__ == "__main__":
     unittest.main()

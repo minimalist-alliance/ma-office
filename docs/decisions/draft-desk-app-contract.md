@@ -307,6 +307,7 @@ Every message is a `u32be` length, then one frame exactly as design §4.2.4 defi
 - **Subscriptions:** deskd subscribes once per topic and fans events out to every session viewing the app. `snapshot` first, then `patch`. An app with no history may always answer `since` with a snapshot.
 - **App to deskd, in 1.0:** `desk.info.get` (theme, locale, time zone, `appApi`), `browser.open {url}` with that permission, and `files.pick`, `files.read` and `files.write` with `files.pick`. 50 requests a second.
 - **Errors:** deskApi's codes (`bad_request`, `not_found`, `forbidden`, `rate_limited`, `unavailable` …). `forbidden` means the permission isn't granted.
+- **A 1.x addition, `app.members.retain` (2026-11-11):** on a Guild Desk, deskd sends `REQ {m: "app.members.retain", p: {members: [pseudonym, …]}, idem, from: {kind: "desk"}}`. It comes after each HELLO and whenever the roster changes, and only on a roster that passes the agent purge's guard (ADR 0080's addendum of 2026-11-10). `members` is every current member's pseudonym for this app. The app deletes all data of any member not listed and answers `{removed}`. `not_found` from an app that predates the call is tolerated. deskd's API §19, "Members leaving", has the rules. It's reserved (`app.`), and a Guild Desk app that keeps a member's own data must take it.
 
 ### 5.4 HELLO and versions
 - `appApi` is `MAJOR.MINOR`, separate from `deskApi`, because apps and the Desk app change at different times.
@@ -587,7 +588,7 @@ Launch row S-97 pulled the base into launch. This review covers decisions 1 to 1
 - **An app that crashes** (built): it starts again after 1 s, 5 s and 30 s while anyone is subscribed or it's `background`. After 3 in 10 minutes it stays `failed`, with `crashed`, or `memory` when the helper reports an OOM kill, until the member starts it. An on-demand app stops after 10 idle minutes.
 - **Size and CPU caps:** deskd holds the manifest to the tier's ceilings, the files to `diskMaxMiB`, frames to 1 MiB and 64 KiB, and calls to 32 in flight and a 30 s deadline. The kernel's enforcement is the unit's (System). The pressure guard (2.3), the apps' memory budget (stop the least recently used) and emptying caches below 2 GiB free (2.4) aren't built: each needs a helper verb (`cap`, `freeze`, `cache.clear`).
 - **Export (S-86):** each app's `data/` and its widget's `summary.json` are in the export's "Apps" part already. `tools/desk-data` leaves out `registry.json` and every `releases`, `current`, `previous` and `cache`, and that matches this layout, so the helper needs no change. A move carries the data but not the registry, so a reinstall on the new desk takes the data back at `prepare` (which re-owns it). A Guild Desk member's pseudonym changes on a move, but Guild Desks don't move today. **New rule for review (6.3):** an app keeps its data in a form readable without it (plain files, JSON, SQLite), because the export promises members their data, not an app's private blob.
-- **Guild Desks** (§12 had them open; decided here for 1.0): installing, upgrading, removing and stopping an app are the Founder's (`role: lead`), because a new app on a shared desk sees every member's calls. Every member may list, open, call, mutate and subscribe, and each member's subscription is their own. **Gap:** leaving a guild sends apps nothing, unlike ADR 0080's agent purge. A later minor adds an event, `desk.member.left {member}`. Until then, review refuses a Guild Desk app that keeps a member's private data.
+- **Guild Desks** (§12 had them open; decided here for 1.0): installing, upgrading, removing and stopping an app are the Founder's (`role: lead`), because a new app on a shared desk sees every member's calls. Every member may list, open, call, mutate and subscribe, and each member's subscription is their own. Leaving a guild now reaches apps: `app.members.retain` (5.3, a 1.x addition of 2026-11-11) closes what was a gap here. Review refuses a Guild Desk app that keeps a member's own data and doesn't take it.
 - **deskd's own cost:** with no app, one directory check at start, no thread and no timer. Each running app adds one socket and three virtual threads, a writer queue capped at 4 MiB, and a 5 s ticker. A 30 s ticker runs while any app runs. The daily catalog check runs only while an app is installed.
 
 ### ADR 0035 and the export
@@ -683,3 +684,72 @@ The house rule is config review and normal use only, with no probing.
   - the kill switch `/data/desk/apps-switch`.
 - **Stand-in:** the helper is an interface (`AppHost`) with a client for the wire above (`HelperAppHost`) and a test double that runs a fake app in the test's JVM. Nothing has run against a real helper or unit.
 - **Not built:** the daily automatic update, the pressure guard and memory budget, cache emptying, developer mode (6.4), `browser.open` and `files.*` for apps, per-app egress, `display`, the `docs/app-api/1.x` schemas with their `FROZEN` test, and the conformance suite in Java (5.5).
+
+## Addendum (2026-11-11): deskd hosts first-party apps bundled in its image until the helper exists
+
+**Status:** Proposed by the Desk Engineer, for Security's read before any desk runs it. Built on `sub/bible-deskd` (S-150). The wire is in deskd's `API.md` §19, "Bundled apps".
+
+### Context
+The Bible (S-150, `com.minimalistalliance.bible`) is the first contract app, and it's wanted at launch, free on every tier. A catalog app needs the System Engineer's helper `desk-apps`, `/data/apps`, a Platform catalog and a review key, and no image or Platform has any of them yet. Waiting would hold the Bible behind all four.
+
+### Decision
+1. **deskd's image carries first-party apps** under `/app/bundled-apps/<id>/`. Each holds exactly what a package unpacks to: `ma-app.json`, with every file's hash, and `files/`. They're built from source in this repository by the image's own build (`deskd/docker/bundle-app.go`). Never a downloaded binary, and never a community app.
+2. **deskd checks each one at start,** off its start path:
+   - the manifest, as a first-party package's;
+   - a bundled ceiling of 64 MiB, 0.25 CPU, 32 tasks and 1 GiB;
+   - the directory named for its id;
+   - every file's size and hash, with nothing extra and no link.
+
+   One that fails isn't offered.
+3. **The member adds and removes them as any app.** The catalog lists them with `bundled: true`, `installable: true`, and the manifest's hash as `packageSha256`. Their data goes in `/data/desk/apps/<id>/` (deskd's, `0700`). Section 19's methods, topics, table of who may call, switch and health hold unchanged.
+4. **deskd runs each one as its own child** (`BundledAppHost`), with exactly section 1.5's environment and its socket in a `0700` directory in the container's `/tmp`.
+5. **A bundled app has no signature.** `apps.view.get` gives `signatures: null, bundled: true`. The Desk app accepts the view on each file's SHA-256 against the manifest, because the files come from deskd's own image, which the desk trusts as much as deskd itself. A catalog app's view is checked as before.
+6. **A bundled app goes with deskd's image.** Its version follows the image, and a deskd release updates it.
+
+### Security posture (for Security's read)
+A bundled app is first-party, reviewed code from this repository, compiled in deskd's image build, and it runs with **deskd's own authority**:
+- **Same uid, same container.** It can read and write whatever deskd can:
+  - deskd's state in `/data/desk`, other bundled apps' data included;
+  - the member's Files (`/data/files`, which deskd's container mounts);
+  - the sockets in `/run/desk`, whose helpers trust uid 1100: `rtc.sock`, `units.sock`, `data.sock`, and `apps.sock` once it exists;
+  - the services deskd relays to, as deskd: `/run/desk-agent` (it could drive the Agent), `/run/desk-notebook`, `/run/desk-commons` and `/run/desk-links`;
+  - its own member key, `/data/desk/apps/<id>/member.key`, and every other bundled app's.
+
+  The peer-uid check on its socket, made both ways, proves only "deskd's uid".
+- **Network:** deskd's container is on the host's network, so nothing stops the app opening a connection. The Bible opens none: its texts are bundled, and nothing is fetched at runtime (S-150's rule, which its review checks).
+- **Limits:** its runtime sizes itself to `MA_APP_MEMORY_MAX` and `MA_APP_CPU_MAX`, and nothing else holds its memory, CPU or tasks. The container's limits (512 MiB, 256 pids) are deskd's, and the app takes from them. `nice -n 10` lets deskd win under contention, and `oom_score_adj` 1000 makes the kernel take the app first in a full container. There's no disk quota: install keeps the Browser's 2 GiB floor (ADR 0035), and the app's own code bounds its data.
+- **What deskd does hold:**
+  - the integrity check at start;
+  - a cleared environment, with no `PATH`, name or desk id;
+  - its own data as its working directory, and no stdin;
+  - its output dropped, so nothing it logs names a verse or a note;
+  - its socket in a private directory;
+  - the ceiling, and every frame, call and event bound of section 19;
+  - the kill switch, and the export rule below;
+  - no process of it during the AppCDS training run, and none after deskd stops.
+- **Hardening without root (not built):** the app could restrict itself after start with Landlock, to its `files/`, its data and cache, and no TCP, which Go can do with system calls alone. That's a follow-up for the app's builder and Security, not a condition here.
+- **Threats to read for:**
+  - a bundled app as a path to deskd's helpers or the member's Files, which is why only reviewed first-party code is bundled;
+  - a tampered image file (the check at start; the image is root's);
+  - one bundled app reading another's data (no barrier: same uid);
+  - an app's memory squeezing deskd (`oom_score_adj`, and its own limit).
+- **On a Guild Desk** the Founder adds and removes a bundled app, and every member uses it, as section 19's table says for any app. It sees every member's calls. So it must:
+  - keep each member's data apart by `from.caller.member`, which deskd sends on every relayed call and each member's own subscription (the Bible's service adds this);
+  - publish no member's place or content in `app.summary`, which every member's tile shows;
+  - take `app.members.retain` (5.3), so a member who leaves loses their data on the same guard as their agent conversations.
+
+  deskd sends it only with a key it can trust (Security's S-150 Medium). The key is kept beside the app's data, so a lost registry changes no pseudonym. It's never sent when the key was made over data the app already had, or when there's no key. It's never sent with an empty list, and never on a first roster with nothing before it.
+
+  The export's `desk` part then holds current members' data under pseudonyms and none of a departed member's, as the `agent` part does.
+
+### The export
+Each bundled app's `data` and `summary.json` go in the export's `desk` part ("Desk settings and Chat"), as `apps/<id>/…`. deskd leaves out `apps/registry.json`, which holds each app's member-pseudonym key (the contract keeps those out of the export), and every `apps/<id>/cache`, whatever `desk-data` says. `desk-data` should get the same rule (its `excluded()` for part `desk`), and may want the member to see the data under Apps. Those are for the System Engineer.
+
+### What moves when the helper ships
+- **Each bundled app becomes a unit like any other app:**
+  - `prepare` gives it a uid from the range;
+  - its `data` and `cache` move from `/data/desk/apps/<id>/` to `/data/apps/<id>/` (prepare re-owns them);
+  - its registry entry moves, with its member key;
+  - `HelperAppHost` runs it with the unit's sandbox: its own uid, mount namespace, cgroup and quota, and no network.
+- **Its files** can stay in deskd's image, bound read-only into the unit, or the app can move to the catalog as a signed package. After that, `bundled` is false and the view needs signatures.
+- **What goes:** `BundledAppHost` and the `/data/desk/apps` home. The wire's `bundled` fields stay (they're additive), so the Desk app needs no change.

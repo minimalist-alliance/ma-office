@@ -78,10 +78,31 @@ logged() { grep -qF -- " $1 " <<<" $(tail -n 1 "$STUB_LOG") "; }
 # --- build-image.sh
 tag=2026.11.05-abc1234
 : >"$STUB_LOG"
-expect "build-image: builds" "$scripts/build-image.sh" deskd "$tag"
-for arg in "--network host" "--file $services_dir/deskd/Dockerfile" "--build-arg VERSION=$tag" "--tag ma/deskd:$tag" "$services_dir"; do
+expect "build-image: builds" env MA_BUNDLED_APPS_DIR="$work/no-apps" "$scripts/build-image.sh" deskd "$tag"
+for arg in "--network host" "--file deskd/Dockerfile" "--build-arg VERSION=$tag" "--tag ma/deskd:$tag" "-"; do
   expect "build-image: passes $arg" logged "$arg"
 done
+# Its context is services/ as a stream, plus deskd/bundled/<name>/ for each bundled app this tree has (API.md section 19).
+expect "build-image: its context has the Dockerfile" grep -qE '^(\./)?deskd/Dockerfile$' "$STUB_LOG.context"
+expect "build-image: its context has the bundling tool" grep -qE '^(\./)?deskd/docker/bundle-app\.go$' "$STUB_LOG.context"
+expect "build-image: its context has the bundled placeholder" grep -qE '^(\./)?deskd/bundled/README\.md$' "$STUB_LOG.context"
+expect "build-image: its context has no build output" test -z "$(grep -E '(^|/)(target|node_modules)(/|$)' "$STUB_LOG.context" || true)"
+expect "build-image: no Bible where the tree has none" test -z "$(grep -E 'deskd/bundled/bible' "$STUB_LOG.context" || true)"
+mkdir -p "$work/apps/bible/server" "$work/apps/bible/texts/bsb" "$work/apps/bible/view-dev" "$work/apps/bible/node_modules/x" \
+  "$work/apps/bible/dist"
+echo '{}' >"$work/apps/bible/ma-app.json"
+echo 'package main' >"$work/apps/bible/server/main.go"
+echo 'Public domain.' >"$work/apps/bible/texts/bsb/STATEMENT.txt"
+echo 'dev' >"$work/apps/bible/view-dev/index.html"
+echo 'x' >"$work/apps/bible/node_modules/x/index.js"
+echo 'package' >"$work/apps/bible/dist/bible-1.0.0-arm64.maapp"
+: >"$STUB_LOG"
+expect "build-image: builds with a Bible" env MA_BUNDLED_APPS_DIR="$work/apps" "$scripts/build-image.sh" deskd "$tag"
+for path in deskd/bundled/bible/ma-app.json deskd/bundled/bible/server/main.go deskd/bundled/bible/texts/bsb/STATEMENT.txt; do
+  expect "build-image: the Bible's $path" grep -qxF "$path" "$STUB_LOG.context"
+done
+expect "build-image: not the Bible's dev view, dist or node_modules" test -z "$(grep -E 'deskd/bundled/bible/(view-dev|node_modules|dist)' "$STUB_LOG.context" || true)"
+expect "build-image: leaves no staging behind" test -z "$(find "$services_dir/deskd/bundled" -mindepth 1 ! -name README.md)"
 refuses "build-image: an x86 daemon" env STUB_ARCH=x86_64 "$scripts/build-image.sh" deskd "$tag"
 refuses "build-image: a bad tag" "$scripts/build-image.sh" deskd 'a b'
 refuses "build-image: a tag starting with a dot" "$scripts/build-image.sh" deskd .x
@@ -146,14 +167,18 @@ spec=$services_dir/../docs/interfaces/desk-runtime.md
 release=$work/unpacked
 image_id=sha256:0123456789abcdef
 echo "$image_id" >"$release/image-id"
+# The spec's run block mounts the image's kind file, which run does only when the file exists, so this run gets one.
+printf 'member\n' >"$work/desk-kind"
 : >"$STUB_LOG"
-expect "run: starts docker" env RELEASE_DIR="$release" "$release/run"
+expect "run: starts docker" env MA_DESK_KIND_FILE="$work/desk-kind" RELEASE_DIR="$release" "$release/run"
 expect "run: the image comes last" test "$(tail -n 1 "$STUB_LOG" | awk '{print $NF}')" = "$image_id"
 expect "run: the env file" logged "--env-file $release/deskd.env"
 if [ -f "$spec" ]; then
   flags=$(sed -n '/^exec docker run/,/image-id/p' "$spec" | tr -s ' \\' '\n' | grep -vE '^(exec|docker|run|"\$.*|.*image-id.*\)")?$' | sed '/^$/d')
   [ -n "$flags" ] || fail "run: found the flags in the spec"
   for flag in $flags; do
+    # The kind file's source path is the test's own, so the expected flag moves it; its dst= stays as the spec has it.
+    flag=${flag//src=\/run\/ma\/desk-kind,/src=$work\/desk-kind,}
     expect "run: spec flag $flag" logged "$flag"
   done
 else
@@ -301,8 +326,8 @@ else
 
   dockerfile=$services_dir/deskd/Dockerfile
   version=9.8.7-test
-  # The final stage's RUN with its continuation lines, with the paths moved.
-  steps=$(awk '/^FROM /{stage++} stage==2' "$dockerfile" | awk '/^RUN /{on=1} on{print} on && !/\\$/{on=0}' |
+  # The last stage's RUN with its continuation lines, with the paths moved.
+  steps=$(awk -v last="$(grep -c '^FROM ' "$dockerfile")" '/^FROM /{stage++} stage==last' "$dockerfile" | awk '/^RUN /{on=1} on{print} on && !/\\$/{on=0}' |
     sed -e 's/^RUN //' -e "s#/app#$app#g" -e "s#/tmp/train.options#$work/train.options#g")
   training_tmp=$work/before-training
   : >"$training_tmp"

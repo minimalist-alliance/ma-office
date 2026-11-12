@@ -30,7 +30,8 @@ async function open(page: Page, request: APIRequestContext, patch: Record<string
   const errors = watchConsole(page);
   await setTheme(page, theme);
   await page.addInitScript((d) => {
-    if (localStorage.getItem('test.seeded')) return;
+    // Seeded on the first load that's signed in: a start with nobody signed in wipes the layout's mirror (ISS-67).
+    if (localStorage.getItem('test.seeded') || !(location.pathname === '/auth/callback' || localStorage.getItem('ma-desk-web-refresh') || sessionStorage.getItem('ma-desk-web-refresh'))) return;
     localStorage.setItem('test.seeded', '1');
     localStorage.setItem('ma.layout.v2', d);
   }, JSON.stringify(layout));

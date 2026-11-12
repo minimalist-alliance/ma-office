@@ -210,7 +210,9 @@ p {
    `2px / s` outline drew 1.75 px on a desk at 175 %. So the ring is a box the size of the proxy on screen plus the
    gap, drawn unscaled and scaled back by 1 / s. It's only on the focused proxy, and it follows the camera as the
    layer does: at rest, and during a move while it has focus. */
-.proxy:focus-visible::after {
+/* A tile being moved or resized keeps its ring, dashed, while the edit bar has the keyboard (`chrome/EditBar.tsx`). */
+.proxy:focus-visible::after,
+.proxy.editing::after {
   content: "";
   position: absolute;
   left: calc((-2px - var(--ma-ring-w)) / var(--ma-cam-s));
@@ -224,7 +226,7 @@ p {
   transform-origin: 0 0;
   pointer-events: none;
 }
-.proxy.editing:focus-visible::after {
+.proxy.editing::after {
   --ma-ring-w: 3px;
   border-style: dashed;
 }
@@ -233,7 +235,8 @@ p {
    bars' controls keep the global outline, 2 px off their edge, and the shadow under it fills the gap and one pixel beyond
    (the gap can't be left clear with one shadow), so there the ring sits between two dark lines. Menus and windows are
    surfaces of their own and need none. */
-:root[data-backdrop] .proxy:focus-visible::after {
+:root[data-backdrop] .proxy:focus-visible::after,
+:root[data-backdrop] .proxy.editing::after {
   box-shadow: 0 0 0 1px var(--ma-ring-halo);
 }
 :root[data-backdrop] :is(.topbar :focus-visible, .bottombar :focus-visible, .bw:focus-visible, .setup-circle:focus-visible):not(.menu *, .ma-window *) {
@@ -297,6 +300,14 @@ p {
   display: flex;
   align-items: center;
   gap: 8px;
+}
+/* At every size the wrapper itself takes no press, only its controls do: where it wrapped to a row of its own it lay,
+   empty and transparent, over the desk switch at 320 x 200 (the accessibility audit's finding 6). */
+.topbar > .top-actions {
+  pointer-events: none;
+}
+.top-actions > * {
+  pointer-events: auto;
 }
 @media (max-width: 599px) {
   /* A phone: with several desks the scope switch and the buttons don't fit one row, so they wrap, from the right. */
@@ -2948,12 +2959,9 @@ a.menu-item {
   }
 }
 /* Where the hints' column is too short for all of them (about 1110 px with four desks and the bandwidth circle), the
-   desk switch's own arrows say what "← → switch desks" says. A keyboard move or resize leaves out "shift 40" there
-   too, beside the desk switch: in full it's 349 px against the column's 344 at 1024 px, and its ellipsis cut
-   "esc restores". With one desk the column has room, so it stays. */
+   desk switch's own arrows say what "← → switch desks" says. (A keyboard move or resize has its own row, the edit bar.) */
 @media (max-width: 1279px) {
-  .hint-switch,
-  .bottombar:has(.desk-nav) .hint-shift {
+  .hint-switch {
     display: none;
   }
 }
@@ -3122,6 +3130,237 @@ a.menu-item {
     content: '';
     position: absolute;
     inset: -3px -1px;
+  }
+}
+
+/* ------------------------------------------------------------ the bars in short-viewport mode (the audit's finding 6) */
+/* The bars' menu buttons: a chip in the bars' own look (the chrome surface, its border, the icon buttons' 36 px), the
+   scope's name or the zoom's level on it. Only short-viewport mode draws them (`chrome/BarMenus.tsx`). */
+.chip-btn {
+  display: inline-flex;
+  align-items: center;
+  gap: 2px;
+  max-width: 100%;
+  height: 36px;
+  padding: 0 6px 0 10px;
+  border: 1px solid var(--ma-border);
+  border-radius: 999px;
+  background: var(--ma-surface-chrome);
+  color: var(--ma-text-primary);
+  font-size: 15px;
+  line-height: 20px;
+  font-weight: 500;
+  white-space: nowrap;
+}
+.chip-btn:hover {
+  background: var(--ma-surface-fill);
+}
+.chip-btn[aria-expanded='true'] {
+  background: var(--ma-surface-fill-strong);
+}
+.chip-btn .icon {
+  color: var(--ma-text-secondary);
+}
+/* A name too long for a 320 px bar ends in an ellipsis rather than push the bar off the screen. */
+.chip-text {
+  min-width: 0;
+  overflow: hidden;
+  text-overflow: ellipsis;
+}
+.zoom-menu .chip-btn {
+  padding: 0 8px;
+}
+/* As wide as "100%", so the button doesn't change size as the level passes it. */
+.zoom-menu .zoom-label {
+  min-width: 37px;
+}
+/* The scope list: the office's menu (a desk's, `.menu.desk-menu`), dropped from its button, a check on the current one. */
+.menu.desk-menu.bar-list {
+  position: absolute;
+  top: calc(100% + 4px);
+  left: 0;
+  width: 168px;
+  max-height: calc(100dvh - 48px);
+}
+.menu.desk-menu.bar-list .menu-item {
+  display: flex;
+  align-items: center;
+  gap: 8px;
+}
+/* Where 40 px rows wouldn't all fit under the top bar (320 x 200), 34 px ones do, rather than scroll. */
+@media (max-height: 219.98px) {
+  .menu.desk-menu.bar-list .menu-item {
+    padding-block: 5px;
+  }
+}
+.bar-list .menu-item .icon {
+  color: var(--ma-accent);
+  visibility: hidden;
+}
+.bar-list .menu-item[aria-checked='true'] .icon {
+  visibility: visible;
+}
+/* The zoom popover: the zoom group's own pill (−, + and Fit), over the bar above its button, raised as a menu is. */
+.zoom-ctl.zoom-pop {
+  position: absolute;
+  right: 0;
+  bottom: calc(100% + 8px);
+  box-shadow: var(--ma-elevation-menu);
+  z-index: 40;
+}
+/* Open, the bottom bar is over the windows (20) and Maia's open panel (25), as the top bar is with its menu open. */
+.bottombar:has(.zoom-pop) {
+  z-index: 30;
+}
+
+/* ------------------------------------------------------------ the edit bar (a11y 2.5.7, `chrome/EditBar.tsx`) */
+/* While a desk or an app is moved or resized, the bottom bar's row: what's edited, four 36 px arrows 4 px apart, then Keep (the accent,
+   the primary) and Restore (the chrome chip, quiet), in the middle column where the desk switch is. A finger gets 8 px
+   between the arrows, so each keeps a whole 44 px target round it (`.icon-btn::after`), as the top bar's do. */
+.edit-bar {
+  grid-column: 2;
+  justify-self: center;
+  display: flex;
+  align-items: center;
+  gap: 4px;
+  min-height: 42px; /* the desk switch's and the zoom's, so the bar keeps its height and its row's middle */
+}
+.edit-bar .icon-btn {
+  width: 36px;
+  height: 36px;
+}
+/* What's moving or resizing, at the row's left: the hints' quiet pill (the Designer's fix: the two modes draw the same
+   arrows, so the words say which it is). It names the group too (`aria-labelledby`). */
+.edit-name {
+  max-width: 240px;
+  margin-right: 4px;
+  padding: 6px 14px;
+  overflow: hidden;
+  border-radius: 999px;
+  background: var(--ma-surface-chrome);
+  color: var(--ma-text-secondary);
+  font-size: 13px;
+  line-height: 18px;
+  white-space: nowrap;
+  text-overflow: ellipsis;
+}
+.edit-bar .chip-btn {
+  padding: 0 14px;
+  font-size: 14px;
+}
+.edit-bar .edit-keep {
+  margin-left: 4px;
+  border-color: var(--ma-accent);
+  background: var(--ma-accent);
+  color: var(--ma-text-on-accent);
+  font-weight: 600;
+}
+.edit-bar .edit-keep:hover {
+  border-color: var(--ma-accent-hover);
+  background: var(--ma-accent-hover);
+}
+@media (pointer: coarse) {
+  .edit-bar {
+    gap: 8px;
+  }
+}
+@media (max-width: 599px) {
+  .edit-bar {
+    grid-column: auto;
+  }
+}
+
+/* The Product Designer's spec: under 400 CSS px high (400 % zoom, a phone on its side), at any width, each bar is one 44 px
+   row. Top: the mark and the scope menu on the left; the shield, full screen, the bell and the account on the right, 36 px
+   each with 4 px gaps. Bottom: the desk switch as it is, the zoom's button, then the circles. So the desks keep about 96 px
+   of 320 x 200 and 120 of 360 x 225, and the bars never touch. The same query as `useIsShort` (`canvas/phone.ts`). */
+@media (max-height: 399.98px) {
+  .topbar {
+    flex-wrap: nowrap;
+    gap: 4px;
+    padding-block: 4px;
+  }
+  .home-mark {
+    flex: none;
+    margin-right: 4px;
+  }
+  .topbar > .scope-menu {
+    flex: 0 1 auto;
+    min-width: 0;
+    margin-right: auto;
+  }
+  .top-actions {
+    flex: none;
+    flex-wrap: nowrap;
+    gap: 4px;
+  }
+  .top-actions .icon-btn {
+    width: 36px;
+    height: 36px;
+  }
+  .bottombar {
+    grid-auto-rows: 44px;
+    padding-block: 8px calc(8px + env(safe-area-inset-bottom, 0px));
+  }
+  .zoom-menu {
+    grid-column: 3;
+    justify-self: end;
+  }
+  .ma-shell .bw,
+  .ma-shell .setup-circle {
+    bottom: calc(8px + env(safe-area-inset-bottom, 0px));
+  }
+  /* What sat above the bar, or below the top bar's rows, sits by one row now. */
+  .notices,
+  .ma-shell:has(.desk-nav) .notices,
+  .notice.bw-notice,
+  .ma-shell:has(.desk-nav) .notice.bw-notice {
+    bottom: calc(68px + env(safe-area-inset-bottom, 0px));
+  }
+  .office-notice {
+    top: calc(52px + env(safe-area-inset-top, 0px));
+  }
+}
+/* With a finger the 36 px buttons' targets grow to 44 round them, invisibly (`.icon-btn::after`, above), and 8 px gaps keep
+   each a whole 44 px; at 4 they'd overlap their neighbour's. The desk switch keeps its 34 px arrows the same way. */
+@media (max-height: 399.98px) and (pointer: coarse) {
+  .top-actions {
+    gap: 8px;
+  }
+  .desk-nav .icon-btn {
+    width: 34px;
+  }
+}
+@media (pointer: coarse) {
+  .chip-btn {
+    position: relative;
+  }
+  .chip-btn::after {
+    content: '';
+    position: absolute;
+    inset: min(0px, (100% - 44px) / 2) -1px;
+  }
+}
+/* Narrow and short (400 % zoom): one row, the desk switch and the zoom's button side by side in the middle. Under 360 px
+   the switch's name is 88 px at least rather than 112, which leaves the zoom's button its room beside the circle. */
+@media (max-height: 399.98px) and (max-width: 599px) {
+  .bottombar {
+    grid-template-columns: none;
+    grid-auto-flow: column;
+    justify-content: center;
+    column-gap: 8px;
+  }
+  .desk-nav,
+  .zoom-menu {
+    grid-column: auto;
+  }
+  .ma-shell:has(.desk-nav) .maia {
+    bottom: calc(68px + env(safe-area-inset-bottom, 0px));
+  }
+}
+@media (max-height: 399.98px) and (max-width: 359px) {
+  .desk-nav-label {
+    min-width: 88px;
   }
 }
 

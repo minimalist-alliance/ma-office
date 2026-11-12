@@ -33,7 +33,8 @@ const DESK = { id: ID, x: 13.37, y: 7.77, w: 2400, h: 900, items: [
 
 async function open(page: Page, request: APIRequestContext): Promise<void> {
   await page.addInitScript((d) => {
-    if (localStorage.getItem('test.seeded')) return;
+    // Seeded on the first load that's signed in: a start with nobody signed in wipes the layout's mirror (ISS-67).
+    if (localStorage.getItem('test.seeded') || !(location.pathname === '/auth/callback' || localStorage.getItem('ma-desk-web-refresh') || sessionStorage.getItem('ma-desk-web-refresh'))) return;
     localStorage.setItem('test.seeded', '1');
     localStorage.setItem('ma.layout.v2', JSON.stringify({ desks: { [d.id]: d }, z: [d.id] }));
   }, DESK);
@@ -289,7 +290,7 @@ test.describe('a desk smaller on screen than its name', () => {
 
   test('keeps its fit through a zoom, never shows off the desk, and hides under 7 px', async ({ page, request }) => {
     await page.addInitScript((d) => {
-      if (localStorage.getItem('test.seeded')) return;
+      if (localStorage.getItem('test.seeded') || !(location.pathname === '/auth/callback' || localStorage.getItem('ma-desk-web-refresh') || sessionStorage.getItem('ma-desk-web-refresh'))) return;
       localStorage.setItem('test.seeded', '1');
       localStorage.setItem('ma.layout.v2', JSON.stringify({ desks: { [d.id]: d }, z: [d.id] }));
     }, SMALL);

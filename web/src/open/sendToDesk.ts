@@ -78,7 +78,7 @@ export function deskStateWords(vm: DeskInfo['vm']): string | null {
     case 'starting':
       return 'Waking up';
     case 'stopping':
-      return 'Going to sleep, stays up to open this';
+      return 'Going to sleep, wakes to open this';
     case 'error':
       return 'Couldn’t wake last time, tries again';
     default:

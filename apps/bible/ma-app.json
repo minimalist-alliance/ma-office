@@ -19,7 +19,7 @@
     "memoryMaxMiB": 64,
     "cpuMax": 0.25,
     "tasksMax": 32,
-    "diskMaxMiB": 160
+    "diskMaxMiB": 256
   },
   "permissions": [],
   "views": {

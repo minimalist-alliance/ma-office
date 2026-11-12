@@ -32,7 +32,7 @@ export const STEP_WORDS: Readonly<Record<StepId, StepWords>> = {
   invite: { title: 'Invite your first members', line: 'A guild comes alive with people in it.', button: 'Invite' },
   'work-desk': { title: 'Open your Work desk', line: 'Work stays at work: its own Browser sign-ins, files and agents.', button: 'Go to Work' },
   browser: { title: 'Open the Browser', line: 'Browse from your desk, in a simpler, quieter view.', button: 'Open Browser' },
-  'agent-key': { title: 'Give your Agent an AI key', line: 'Try free models with no card, or use a key of your own. Either way, the key stays on your desk.', button: 'Add key' },
+  'agent-key': { title: 'Give your Agent an AI key', line: 'Try free models with no card, or use a key of your own. Either way, the key is kept on your desk.', button: 'Add key' },
   files: { title: 'Put a file in Files', line: 'What you upload stays on your desk, private to you.', button: 'Open Files' },
   'maia-trial': { title: 'Try Maia for a week', line: 'She knows your office and can help with it. Free for a week, or up to $1 of her time.', button: 'Start the week' },
   'guild-join': { title: 'Join a guild', line: 'Guilds share a desk, a board and chat with people you choose.', button: 'Find a guild' },

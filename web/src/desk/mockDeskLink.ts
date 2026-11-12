@@ -9,11 +9,13 @@ import { answerData, MockBulk, newDataControl, type MockDataControl } from './mo
 import { cursorCss, InputEncoder } from './rtc/input';
 import { refusalOf } from './rtc/policy';
 import { Subscriptions } from './rtc/subs';
-import { DeskNotConnected, MAX_COLLAB_MESSAGE, type AgentActivity, type DeskAttentionMessage, type AppSummary, type BrowserInput, type BrowserMedia, type PhoneDevice, type BrowserViewMessage, type BrowserDownload, type BrowserDownloadsMessage, type BrowserLinkOutMessage, type BrowserTab, type BulkChannel, type CollabChannel, type CollabEnd, type DeskLink, type DeskRefusal, type DeskRpc, type LinkDeskState, type LinkDetails, type LinkState, type LinkTopics, type RpcOptions, type StreamState, type SummaryMessage } from './deskLink';
+import { answerSignIns, signInsControl, type MockSignInsControl } from './mockSignIns';
+import { DeskNotConnected, MAX_COLLAB_MESSAGE, type AgentActivity, type DeskAttentionMessage, type AppSummary, type BrowserInput, type BrowserMedia, type PhoneDevice, type BrowserViewMessage, type BrowserDownload, type BrowserDownloadsMessage, type BrowserLinkOutMessage, type BrowserTab, type BulkChannel, type CollabChannel, type CollabEnd, type DeskLink, type DeskRefusal, type DeskRpc, type LinkDeskState, type LinkDetails, type LinkState, type LinkTopics, type RawTopicEvent, type RpcOptions, type StreamState, type SummaryMessage } from './deskLink';
 import type { MockCollabServer, MockNotebookControl } from './mockNotebook';
 import { MockSimpleDesk, type MockSimpleControl } from './mockSimpleView';
 import { isRefusal, type GuildAccess } from '../guild/access';
-import { answerGuild, guildCaller, guildControl, MockCommonsChannel, seedGuildAgent, seedGuildDesk, type MockGuildControl } from './mockGuild';
+import { answerApps, appsControl, subscribeApps, subscribeAppTopic, type MockAppsControl } from './mockDeskApps';
+import { answerGuild, guildCaller, guildControl, guildSessionMember, MockCommonsChannel, seedGuildAgent, seedGuildDesk, type GuildSessionMember, type MockGuildControl } from './mockGuild';
 
 const SAMPLE: Record<string, AppSummary> = {
   chat: { badge: 4, widget: { title: '#general', text: 'Sam: the draft is ready for a look', foot: '3 unread channels' } },
@@ -26,6 +28,8 @@ const SAMPLE: Record<string, AppSummary> = {
 export interface MockDeskControl {
   /** A Guild Desk's side (task 48, `mockGuild.ts`). */
   guild: MockGuildControl;
+  /** Desk apps (API.md section 19, `mockDeskApps.ts`): Tally and the Bible's row. Off unless `__maAppsMockInit` turns it on. */
+  apps: MockAppsControl;
   /**
    * The free tier's proposed `desk.contention` topic (S-119): this desk says its container is being held back. Off by
    * default, and refused like any topic a deskd doesn't serve when `refuse['desk.contention']` is set.
@@ -143,6 +147,8 @@ export interface MockDeskControl {
   setSound(deskId: string, on: boolean): void;
   /** Every `desk.attention.set` the desk heard, with `performance.now()`. */
   attentionLog: { deskId: string; seen: boolean; at: number }[];
+  /** Site sign-ins (#11, `mockSignIns.ts`): the password managers' list, the key's tab, and a passwords file on `bulk`. `?signIns=old` is a deskd before it, `?signIns=bitwarden` has Bitwarden installed, `?signInsStop=1` serves the Stop section. */
+  signIns: MockSignInsControl;
   /**
    * deskd's phone view (API.md section 10, "On a phone"): `browser.view` per desk, the `device` each `desk.attention.set`
    * carried, and a field to report as focused. A seen phone gets the phone's view after `viewDelayMs`, anything else the
@@ -179,6 +185,7 @@ let heldSeq = 0;
 const busyDesks = new Set<string>();
 const control: MockDeskControl = {
   guild: guildControl,
+  apps: appsControl,
   setBusy: (deskId, busy) => {
     if (busy) busyDesks.add(deskId);
     else busyDesks.delete(deskId);
@@ -315,6 +322,7 @@ const control: MockDeskControl = {
     control.setKeepThawed(deskId, on);
   },
   attentionLog: [],
+  signIns: signInsControl,
   phoneView: false,
   view: {},
   setView: (deskId, view) => publishView(deskId, view),
@@ -685,6 +693,8 @@ export class MockDeskLink implements DeskLink {
   private guildDesk: LinkDetails['desk'] = null;
   private guildTry = 0;
   private guildTimer = 0;
+  /** Who this Guild Desk session was opened for, from its guild token as deskd reads it (`guild.hello`). */
+  private guildMember: GuildSessionMember | null = null;
   commonsChannel: MockCommonsChannel | null = null;
 
   constructor(deskId: string, purpose?: 'export', guild: GuildAccess | null = null) {
@@ -745,6 +755,7 @@ export class MockDeskLink implements DeskLink {
         }
         await seedGuildDesk(this.deskId, notebookModule);
         if (attempt !== this.guildTry) return;
+        this.guildMember = guildSessionMember(this.deskId);
         this.setSession(true);
         this.set('open');
       },
@@ -1111,9 +1122,13 @@ export class MockDeskLink implements DeskLink {
         return desk.answer(method, params, { bulk: this.session, scope: this.purpose ?? 'owner', ...(idem ? { idem } : {}) });
       }) as Promise<DeskRpc[M]>;
     }
+    if (method.startsWith('apps.')) {
+      if (this.state !== 'open') return Promise.reject(new DeskNotConnected(this.deskId));
+      return answerApps(this.deskId, method, params, options?.idem) as Promise<DeskRpc[M]>;
+    }
     if (method.startsWith('guild.')) {
       if (!this.guild || this.state !== 'open') return Promise.reject(new DeskNotConnected(this.deskId));
-      return answerGuild(this.deskId, method, params) as Promise<DeskRpc[M]>;
+      return answerGuild(this.deskId, method, params, this.guildMember) as Promise<DeskRpc[M]>;
     }
     if (method.startsWith('agent.')) return this.agentDesk().answer(method, params, options) as Promise<DeskRpc[M]>;
     if (method.startsWith('notebook.')) return notebookModule().then((m) => m.mockDesk(this.deskId).answer(method, params, options?.idem)) as Promise<DeskRpc[M]>;
@@ -1134,6 +1149,8 @@ export class MockDeskLink implements DeskLink {
       const delay = method === 'browser.minified.site.get' ? simpleDesk.control.siteDelayMs : 0;
       return delay > 0 ? new Promise<void>((done) => window.setTimeout(done, delay)).then(run) : run();
     }
+    const signIns = answerSignIns(method, params, options, this.state === 'open' ? this.session : null, { get: () => control.tabs, set: (tabs) => control.setTabs(tabs) });
+    if (signIns) return signIns as Promise<DeskRpc[M]>;
     if (control.chromiumOff && method === 'browser.tab.open' && control.tabOpenStarts && params['start'] === true) control.chromiumOff = false;
     if ((browserDownMs() > 0 || control.chromiumOff) && (method === 'browser.text.insert' || method.startsWith('browser.tab.'))) {
       return Promise.reject(Object.assign(new Error('Chromium is starting'), { code: 'unavailable', details: { reason: 'chromium' } }));
@@ -1219,7 +1236,21 @@ export class MockDeskLink implements DeskLink {
     return Promise.reject(Object.assign(new Error(`mock: unknown method ${String(method)}`), { code: 'not_found' }));
   }
 
+  subscribeRaw(topic: string, fn: (e: RawTopicEvent) => void, onRefused?: (code: string) => void): () => void {
+    if (topic.startsWith('app:')) return subscribeAppTopic(this.deskId, topic, fn, onRefused);
+    window.setTimeout(() => onRefused?.('not_found'), 0);
+    return () => {};
+  }
+
   subscribe<T extends keyof LinkTopics>(topic: T, fn: (msg: LinkTopics[T]) => void, onRefused?: (code: string) => void): () => void {
+    if (topic === 'apps') {
+      const refusal = control.refuse[topic];
+      if (refusal) {
+        window.setTimeout(() => onRefused?.(refusal), 0);
+        return () => {};
+      }
+      return subscribeApps(this.deskId, fn as (msg: Record<string, unknown>) => void);
+    }
     if (typeof topic === 'string' && topic.startsWith('agent.')) {
       // The real link's own subscriptions, so several listeners share one, a new session asks again, and a refusal is final.
       return this.agentSubs.subscribe(topic, {}, {

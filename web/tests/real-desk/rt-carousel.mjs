@@ -5,7 +5,7 @@
 // into the Browser on stage, reloads to see it remembered, and turns it off. Reads only names and states. Shots in
 // test-results/real-desk/rt-carousel/, which the next Playwright run wipes.
 import { existsSync, mkdirSync, readFileSync, writeFileSync } from 'node:fs';
-import { ALLOWED, getDesk, log, openSession, S, shot, shutdown, wait } from './rt-lib.mjs';
+import { ALLOWED, createLayoutStandIn, getDesk, log, openSession, S, shot, shutdown, wait } from './rt-lib.mjs';
 
 const DIST = new URL('../../dist/release/', import.meta.url).pathname;
 const OUT = new URL('../../test-results/real-desk/rt-carousel/', import.meta.url).pathname;
@@ -29,6 +29,7 @@ const watchdog = setTimeout(() => void shutdown(1, 'watchdog'), 25 * 60 * 1000);
 watchdog.unref();
 
 await openSession({
+  layoutStandIn: createLayoutStandIn(),
   browserKind: 'full',
   onContext: async (ctx) => {
     await ctx.route(/\/v\/[^/]+\/ma-release\.json(\?.*)?$/, (route) => route.fulfill({ status: 200, contentType: 'application/json', headers: { 'cache-control': 'no-store' }, body: JSON.stringify(release) }));

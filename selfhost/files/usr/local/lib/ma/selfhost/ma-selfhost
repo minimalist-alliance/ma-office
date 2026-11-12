@@ -89,7 +89,8 @@ def now_iso():
 # ---------- configuration ----------
 
 def load_conf():
-    conf = {"env": "staging", "api": "", "address": "auto"}
+    # prod, as install.sh's default (which always writes env=): staging is our test platform, for testers only.
+    conf = {"env": "prod", "api": "", "address": "auto"}
     try:
         with open(CONF) as f:
             for line in f:
@@ -709,6 +710,10 @@ def cmd_status(conf):
         print(f"desk:     {desk.get('deskName') or '-'} ({desk['deskId']}, {desk['env']})")
     if s.get("code"):
         print(f"code:     {s['code']}  ->  {s.get('claimUrl')}")
+        # EXP-8: the live code pairs this desk as `pair`'s does, so it carries `pair`'s warning (the root wrapper's check).
+        if browser_profile():
+            for line in BROWSER_SAYS:
+                print(f"          {line.strip()}")
     if s.get("address"):
         print(f"address:  {s['address']}")
     if s.get("lastOk"):

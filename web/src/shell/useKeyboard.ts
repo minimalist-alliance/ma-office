@@ -200,8 +200,8 @@ export function useKeyboard(): void {
           }
       }
     };
-    // A click anywhere ends a keyboard edit, and keeps it.
-    const onPointer = (): void => finishEdit(true);
+    // A click anywhere ends a keyboard edit, and keeps it; anywhere but the edit bar, whose presses are the edit's own.
+    const onPointer = (e: PointerEvent): void => void ((e.target as Element).closest('.edit-bar') || finishEdit(true));
     window.addEventListener('keydown', onKey);
     window.addEventListener('pointerdown', onPointer, true);
     return () => {

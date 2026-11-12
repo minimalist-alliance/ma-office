@@ -46,6 +46,8 @@ export const themeRadio = (page: Page, label: string): Locator => page.getByRole
 
 export async function setTheme(page: Page, theme: ThemeId): Promise<void> {
   await page.addInitScript((t) => {
+    // Not in a frame: an app's view is a sandboxed frame with no storage (ADR 0054), where this would throw.
+    if (window !== window.top) return;
     localStorage.setItem('ma.prefs.theme', JSON.stringify({ mode: t, systemDark: 'dark' }));
     localStorage.setItem('ma.theme.resolved', t);
   }, theme);

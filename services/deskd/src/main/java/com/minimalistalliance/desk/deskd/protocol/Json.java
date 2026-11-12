@@ -5,6 +5,9 @@ import tools.jackson.core.JacksonException;
 import tools.jackson.core.JsonParser;
 import tools.jackson.core.StreamReadConstraints;
 import tools.jackson.core.json.JsonFactory;
+import tools.jackson.core.util.BufferRecycler;
+import tools.jackson.core.util.JsonRecyclerPools;
+import tools.jackson.core.util.RecyclerPool;
 import tools.jackson.jr.ob.JSON;
 
 /**
@@ -13,16 +16,30 @@ import tools.jackson.jr.ob.JSON;
  */
 public final class Json {
 
-    private static final JSON MAPPER = JSON.builder(JsonFactory.builder()
-                    .streamReadConstraints(StreamReadConstraints.builder()
-                            .maxNestingDepth(64)
-                            .build())
-                    .build())
-            .disable(JSON.Feature.HANDLE_JAVA_BEANS)
-            .disable(JSON.Feature.USE_DEFERRED_MAPS)
-            .enable(JSON.Feature.WRITE_NULL_PROPERTIES)
-            .enable(JSON.Feature.FAIL_ON_UNKNOWN_TYPE_WRITE)
-            .build();
+    private static final JSON MAPPER = mapper(JsonRecyclerPools.defaultPool());
+
+    /**
+     * The same, with parsers that keep no buffer once closed, for a client's RPC requests, whose params can hold a
+     * secret such as {@code agent.key.add}'s key. The shared pool keeps each parser's character buffers reachable for
+     * deskd's life, and a string's characters stay in one until a longer string happens to cover them: a key stayed
+     * through thousands of later requests (ISS-20). These become garbage with their parser, as the strings it makes do.
+     * About half a KiB more per small request.
+     */
+    private static final JSON UNPOOLED = mapper(JsonRecyclerPools.nonRecyclingPool());
+
+    static JSON mapper(RecyclerPool<BufferRecycler> pool) {
+        return JSON.builder(JsonFactory.builder()
+                        .recyclerPool(pool)
+                        .streamReadConstraints(StreamReadConstraints.builder()
+                                .maxNestingDepth(64)
+                                .build())
+                        .build())
+                .disable(JSON.Feature.HANDLE_JAVA_BEANS)
+                .disable(JSON.Feature.USE_DEFERRED_MAPS)
+                .enable(JSON.Feature.WRITE_NULL_PROPERTIES)
+                .enable(JSON.Feature.FAIL_ON_UNKNOWN_TYPE_WRITE)
+                .build();
+    }
 
     private Json() {}
 
@@ -33,8 +50,22 @@ public final class Json {
      * @throws JsonFormatException if the bytes aren't one JSON object, or repeat a key
      */
     public static Map<String, Object> parseObject(byte[] bytes) throws JsonFormatException {
-        try (JsonParser parser = MAPPER.createParser(bytes)) {
-            Map<String, Object> object = MAPPER.mapFrom(parser);
+        return parseObject(MAPPER, bytes);
+    }
+
+    /**
+     * {@link #parseObject(byte[])} for a client's request, through parsers whose buffers aren't pooled ({@link
+     * #UNPOOLED}), so nothing of its params stays reachable once it's parsed.
+     *
+     * @throws JsonFormatException if the bytes aren't one JSON object, or repeat a key
+     */
+    public static Map<String, Object> parseRequest(byte[] bytes) throws JsonFormatException {
+        return parseObject(UNPOOLED, bytes);
+    }
+
+    static Map<String, Object> parseObject(JSON mapper, byte[] bytes) throws JsonFormatException {
+        try (JsonParser parser = mapper.createParser(bytes)) {
+            Map<String, Object> object = mapper.mapFrom(parser);
             if (object == null || parser.nextToken() != null) {
                 throw new JsonFormatException();
             }

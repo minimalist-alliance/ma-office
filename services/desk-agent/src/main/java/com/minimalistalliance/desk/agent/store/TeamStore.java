@@ -74,7 +74,7 @@ public final class TeamStore {
      * moves stored rows once at open, and desk-agent maps one wherever it comes in.
      */
     public static final Map<String, String> RETIRED_ICONS = Map.of("globe", "plane", "chat", "person", "heart",
-            "wallet", "star", "bulb", "puzzle", "terminal", "briefcase", "document");
+            "wallet", "star", "bulb", "puzzle", "terminal", "briefcase", "document", "spark", "nodes");
 
     /** Tone ids the wheel no longer has, each to the one that took its place. */
     public static final Map<String, String> RETIRED_TONES = Map.of("moss", "green", "sky", "blue");

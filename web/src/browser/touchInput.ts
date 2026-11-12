@@ -32,6 +32,7 @@ import type { BrowserInput } from '../desk/deskLink';
 import { contentBox, normalized, WheelSum, type Box } from '../desk/rtc/input';
 import { EDGE_PX } from '../carousel/model';
 import { readJson, reducedMotion, writeJson } from '../lib/util';
+import { layoutMirrorWritable } from '../state/layoutStore';
 import { touchFeedback } from './touchFeedback';
 
 /** A finger that moves less than this is still a tap or a press. */
@@ -508,16 +509,21 @@ export const TOUCH_HINT_MORE = "Hold for the page's menu, or hold and drag to se
 export const TOUCH_HINT_PHONE = 'Tap and scroll as on any site. Pinch to zoom.';
 /** It goes on Got it, or after this many gestures on the picture: they've found their way. */
 export const TOUCH_HINT_GESTURES = 3;
-const HINT_KEY = 'ma.browser.touchHint.v1';
+export const HINT_KEY = 'ma.browser.touchHint.v1';
 const HINT_KEEP = 20;
 
-/** The members this browser has shown the hint to. A convenience: with no storage it may show again on a later visit. */
+/**
+ * The members this browser has shown the hint to. A convenience: with no storage it may show again on a later visit. Their
+ * ids, so the list goes with the layout's mirror on every signed-out state and is written only while that may be
+ * (`MEMBER_CACHE_KEYS` in `state/layoutStore.ts`, ISS-89): a member sees it again after a sign-out, once.
+ */
 export function touchHintDue(member: string): boolean {
   const seen = readJson<unknown>(HINT_KEY);
   return !(Array.isArray(seen) && seen.includes(member));
 }
 
 export function touchHintShown(member: string): void {
+  if (!layoutMirrorWritable()) return;
   const seen = readJson<unknown>(HINT_KEY);
   const list = Array.isArray(seen) ? seen.filter((m): m is string => typeof m === 'string' && m !== member) : [];
   writeJson(HINT_KEY, [...list, member].slice(-HINT_KEEP));

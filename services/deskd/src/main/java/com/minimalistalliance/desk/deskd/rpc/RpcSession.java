@@ -208,7 +208,8 @@ public final class RpcSession {
         private void serve() throws InterruptedException {
             Map<String, Object> body;
             try {
-                body = Json.parseObject(request.payload());
+                // Its own buffers, not the shared pool's, as params can hold a key (Json.parseRequest).
+                body = Json.parseRequest(request.payload());
             } catch (JsonFormatException e) {
                 answer(true, errorPayload(new RpcException(RpcException.BAD_REQUEST, "Invalid JSON")));
                 return;

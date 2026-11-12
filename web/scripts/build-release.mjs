@@ -58,7 +58,7 @@ if (initialGz > MAX_INITIAL_JS_GZ) fail(`initial JS is ${(initialGz / 1024).toFi
 for (const f of js) {
   const src = readFileSync(f, 'utf8');
   // `ma-notebook-local` is `LocalBackend`'s default database and `ma-mock-notebook` the mock desk's: notes in the browser must not reach a member.
-  for (const word of ['MockDeskLink', 'mockDeskLink', 'makeFixture', '__maDesk', '__maMaia', 'MockAgentClient', 'mockAgentClient', '__maAgentMock', 'k-anthropic-1', 'This is the demo', 'ma-notebook-local', 'ma-mock-notebook', 'mockNotebook', 'LocalBackend', '__maGuildMockInit', 'MockCommonsChannel', 'gm-thismember01', 'Sprint 42', '__maTestDeskStyles']) {
+  for (const word of ['MockDeskLink', 'mockDeskLink', 'makeFixture', '__maDesk', '__maMaia', 'MockAgentClient', 'mockAgentClient', '__maAgentMock', 'k-anthropic-1', 'This is the demo', 'ma-notebook-local', 'ma-mock-notebook', 'mockNotebook', 'LocalBackend', '__maGuildMockInit', 'MockCommonsChannel', 'gm-thismember01', 'Sprint 42', '__maTestDeskStyles', '__maTestAppKeys', '__maAppsMockInit', 'changed after it was signed', 'sample.tally', 'Counts things']) {
     if (src.includes(word)) fail(`${f} contains "${word}"`);
   }
 }

@@ -302,7 +302,7 @@ class ChromiumIT {
     private void teen() throws Exception {
         Path file = dir.resolve(AgeBand.FILE);
         java.nio.file.Files.writeString(file, "teen\n");
-        rig.module.followAgeBand(new AgeBand(file));
+        rig.module.followAgeBand(new AgeBand(file), "boot-1");
     }
 
     /** A middle click on the link, as trusted input through the page's own input path: what the stream sends. */

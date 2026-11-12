@@ -53,12 +53,12 @@ func main() {
 			text := (strconv.Itoa(i) + " " + strings.Repeat("A note written while reading, long. ", 280))[:10000]
 			in = store.MarkInput{Kind: "note", Book: b.ID, Chapter: 1, Verse: 1 + i%176, Text: &text}
 		}
-		if _, _, err := s.PutMark("", in); err != nil {
+		if _, _, err := s.PutMark(store.Owner, "", in); err != nil {
 			break
 		}
 		n++
 	}
-	count, bytes := s.Count()
+	count, bytes := s.Count(store.Owner)
 	fmt.Printf("full after %d puts in %v: %d marks, %.1f MiB stored: %s\n", n, time.Since(t0).Round(time.Millisecond), count, float64(bytes)/(1<<20), rss())
 	s.Close()
 	t1 := time.Now()
@@ -66,7 +66,7 @@ func main() {
 	if err != nil {
 		panic(err)
 	}
-	count, _ = s.Count()
+	count, _ = s.Count(store.Owner)
 	fmt.Printf("loaded again in %v, %d marks: %s\n", time.Since(t1).Round(time.Millisecond), count, rss())
 	runtime.KeepAlive(s)
 }

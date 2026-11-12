@@ -14,6 +14,9 @@
 #           every band; ExtensionInstallAllowlist the three password managers on band adult only, as mandatory, and unset on
 #           teen, with no band and with a band that isn't one; ma-adult.json the template's bytes, root's, on adult only
 #   keys    no key in two of the four managed files, and the teen and adult files hold what this check expects
+#   blocklist  the policy Chromium reports holds ten hosts (office, desk, api, auth and gw, each at minimalistalliance.com and at
+#           staging.minimalistalliance.com), a navigation to each commits net::ERR_BLOCKED_BY_ADMINISTRATOR, and one to
+#           portal.minimalistalliance.com and portal.staging.minimalistalliance.com does not (any other result, DNS included)
 #   jxl     Chromium's command line turns JXLImageFormat off, and neither a page's request nor its image's has image/jxl in
 #           its Accept header, which still asks for AVIF (the control: the header was read)
 set -u
@@ -81,6 +84,12 @@ def policy():
     finally:
         w.s.close(); get('/json/close/' + t['id'])
     return out
+def nav(url):
+    """Page.navigate's errorText for url in a fresh tab: 'net::ERR_BLOCKED_BY_ADMINISTRATOR' when policy blocks it, '' when it commits."""
+    t = json.loads(get('/json/new?about:blank', 'PUT')); w = WS(t['webSocketDebuggerUrl'])
+    try: return w.call('Page.navigate', url=url).get('errorText', '')
+    finally:
+        w.s.close(); get('/json/close/' + t['id'])
 def opened(url):
     """A new tab at url, in front, once its document is complete and its title set."""
     t = json.loads(get('/json/new?about:blank', 'PUT')); w = WS(t['webSocketDebuggerUrl'])
@@ -140,6 +149,7 @@ if __name__ == '__main__':
     if cmd == 'policy': print(json.dumps(policy()))
     elif cmd == 'click': click(sys.argv[2])
     elif cmd == 'jxl': jxl()
+    elif cmd == 'nav': print(nav(sys.argv[2]))
     elif cmd == 'serve': serve()
 P
 chmod 644 /var/tmp/vc.py
@@ -292,6 +302,27 @@ want(ma.get('ExtensionInstallBlocklist') == ['*'] and ma.get('ExtensionAllowedTy
 sys.exit(1 if bad else 0)
 Q
   for f in "$TEEN" "$ADULT_T"; do [ "$(stat -c '%U:%G %a' $f)" = "root:root 644" ] || bad "$f: $(stat -c '%U:%G %a' $f)"; done ;;
+blocklist)
+  remember; browser
+  vc policy > /var/tmp/vc-pol.json
+  python3 -I - /var/tmp/vc-pol.json <<'Q' || bad "URLBlocklist as Chromium applies it"
+import json, sys
+r = json.load(open(sys.argv[1])).get('URLBlocklist'); print('URLBlocklist: %s' % json.dumps(r))
+want = ['%s.%sminimalistalliance.com' % (n, e) for e in ('', 'staging.') for n in ('office', 'desk', 'api', 'auth', 'gw')]
+ok = bool(r) and r[1:] == ['OK', 'mandatory', 'machine', 'platform'] and all(h in r[0] for h in want)
+print('%s: all ten hosts, mandatory' % ('ok' if ok else 'BAD')); sys.exit(0 if ok else 1)
+Q
+  for e in "" staging.; do
+    for n in office desk api auth gw; do
+      h=$n.${e}minimalistalliance.com; r=$(vc nav "https://$h/" | tail -1); echo "$h: ${r:-committed}"
+      [ "$r" = net::ERR_BLOCKED_BY_ADMINISTRATOR ] || bad "$h: navigation gave '${r:-committed}', wanted net::ERR_BLOCKED_BY_ADMINISTRATOR"
+    done
+  done
+  for h in portal.minimalistalliance.com portal.staging.minimalistalliance.com; do
+    r=$(vc nav "https://$h/" | tail -1); echo "$h: ${r:-committed}"
+    [ "$r" != net::ERR_BLOCKED_BY_ADMINISTRATOR ] || bad "$h is blocked"
+  done
+  restore ;;
 jxl)
   remember; browser; pages_server
   pid=$(chromium_pid); [ -n "$pid" ] || bad "no Chromium browser process"; c=$(switches "$pid" | grep -- '^--disable-features' | paste -sd' ')

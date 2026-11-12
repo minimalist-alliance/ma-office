@@ -13,11 +13,17 @@ import java.util.concurrent.CopyOnWriteArrayList;
  * The System Engineer's helper as a test double: {@code prepare} makes the app's directories (no uid or quota, which need
  * root), {@code start} runs a {@link FakeApp} for the current release in this JVM, {@code stop} closes it. Each version can be
  * told how its HELLO goes, and the next status can say the kernel killed it at its memory limit.
+ *
+ * <p>As a bundled host ({@code bundled}), it stands in for {@link BundledAppHost}: the same, with no release to look for, and
+ * {@link #BUNDLED} as the version whose HELLO it's told.
  */
 final class FakeAppHost implements AppHost {
 
+    static final String BUNDLED = "bundled";
+
     final Path root;
     final Path runRoot;
+    final boolean bundled;
     final List<String> calls = new CopyOnWriteArrayList<>();
     final Map<String, FakeApp.Hello> byVersion = new ConcurrentHashMap<>();
     final Map<String, FakeApp> running = new ConcurrentHashMap<>();
@@ -27,8 +33,13 @@ final class FakeAppHost implements AppHost {
     volatile boolean oomNext;
 
     FakeAppHost(Path root, Path runRoot) {
+        this(root, runRoot, false);
+    }
+
+    FakeAppHost(Path root, Path runRoot, boolean bundled) {
         this.root = root;
         this.runRoot = runRoot;
+        this.bundled = bundled;
     }
 
     @Override
@@ -53,15 +64,19 @@ final class FakeAppHost implements AppHost {
     @Override
     public synchronized void start(String id, int uid) throws AppHostException {
         calls.add("start " + id);
-        Path current = root.resolve(id).resolve("current");
-        if (!Files.isRegularFile(current.resolve("ma-app.json"))) {
-            throw new AppHostException("not_found");
-        }
         String version;
-        try {
-            version = Files.readSymbolicLink(current).getFileName().toString();
-        } catch (IOException e) {
-            throw new AppHostException("failed");
+        if (bundled) {
+            version = BUNDLED;
+        } else {
+            Path current = root.resolve(id).resolve("current");
+            if (!Files.isRegularFile(current.resolve("ma-app.json"))) {
+                throw new AppHostException("not_found");
+            }
+            try {
+                version = Files.readSymbolicLink(current).getFileName().toString();
+            } catch (IOException e) {
+                throw new AppHostException("failed");
+            }
         }
         // A unit that runs already is left as it is, as systemd's start of an active unit is.
         FakeApp old = running.get(id);
@@ -145,6 +160,14 @@ final class FakeAppHost implements AppHost {
             } catch (IOException e) {
                 // Gone either way.
             }
+        }
+    }
+
+    /** As the real bundled host: deskd's own children stop with it. The helper's units run on. */
+    @Override
+    public void close() {
+        if (bundled) {
+            closeAll();
         }
     }
 

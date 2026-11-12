@@ -73,6 +73,10 @@ import org.slf4j.LoggerFactory;
  * member's tabs, cookies and history carry over (ADR 0035). It runs even after a refusal: a teen without a Browser is safe,
  * and one on the wrong policy isn't. While a hold is on it waits for the release. Until its stop has worked, the gate
  * stays shut, and a stop that fails is tried again, as there's nothing else to catch a Chromium left on the wrong policy.
+ * {@link #restartWhenUnused}, for a band that became {@code adult}, waits instead for the first moment nobody wants
+ * {@code live} or waits on a start and nothing else uses the Browser ({@link #restartWaitsFor}), or for Chromium's next
+ * start from down, whichever comes first, and leaves the gate open: a lock stricter than the band needs is safe
+ * meanwhile. Either one owed outlives a restart of deskd ({@link #owedFrom}).
  *
  * <p><b>Nobody looking.</b> {@link #mediaAllowed} false, from {@link DeskAttention}, cuts every session's media while
  * what each wants stays as it is, so desk-rtc pauses desk-stream and nothing is captured or encoded: a {@code live} is held
@@ -200,10 +204,22 @@ public final class BrowserStream {
     /**
      * @param hold completes when this step ends, for the stop that {@link #hold} asked for, and null for any other
      * @param forPolicy this is the stop {@link #restartForPolicy} asked for
+     * @param forUnlock this is the stop {@link #restartWhenUnused} asked for
+     * @param knownUp for a step of desk-browser: this process knew Chromium was up as the step was made
+     * @param unlockAsks for a step of desk-browser: {@link #unlockAsks} as the step was made, if a restart for the unlock
+     *     was owed then, and -1 if none was
      */
-    private record Step(String verb, String unit, List<Waiter> covered, CompletableFuture<Void> hold, boolean forPolicy) {
+    private record Step(
+            String verb,
+            String unit,
+            List<Waiter> covered,
+            CompletableFuture<Void> hold,
+            boolean forPolicy,
+            boolean forUnlock,
+            boolean knownUp,
+            long unlockAsks) {
         Step(String verb, String unit, List<Waiter> covered) {
-            this(verb, unit, covered, null, false);
+            this(verb, unit, covered, null, false, false, false, -1);
         }
     }
 
@@ -273,6 +289,23 @@ public final class BrowserStream {
     private boolean policyRestartDue;
     /** {@link #restartForPolicy}'s stop has yet to work, so Chromium may be on the wrong policy, and no start goes out. */
     private boolean policyRestartOwed;
+    /**
+     * The band's file says {@code adult}, and a Chromium that may be up started before it did, so it may still have the
+     * teen lock: {@link #restartWhenUnused}. Never a reason to keep the gate shut.
+     */
+    private boolean unlockRestartOwed;
+    /** How many times {@link #restartWhenUnused} has been asked: a step ends only an owed restart asked before it was made. */
+    private long unlockAsks;
+    /** The unlock's stop failed, so it waits {@link #policyRestartRetry} before it goes again. */
+    private boolean unlockRetryWaiting;
+    /** {@link #unlockRestartOwed}, read without the lock. */
+    private volatile boolean unlockOwedNow;
+    /** Whether something other than a session's video uses the Browser now: {@link #restartWaitsFor}. Under the lock. */
+    private volatile BooleanSupplier otherUse = () -> false;
+    /** Keeps an owed restart across a restart of deskd: {@link #owedFrom}. Null until then. */
+    private volatile PolicyRestartMarker owedMarker;
+    /** One write of {@link #owedMarker} at a time, each with the state as it is then. Taken before {@link #lock}, never under it. */
+    private final ReentrantLock markerWrites = new ReentrantLock();
 
     /**
      * @param sessionLive so a request that loses a race with its session's end leaves nothing behind
@@ -669,6 +702,147 @@ public final class BrowserStream {
         } finally {
             lock.unlock();
         }
+        syncOwed();
+    }
+
+    /**
+     * The band's file says {@code adult} now, and a Chromium that's up may have started under the teen lock: it comes up
+     * again under the file as it is, at the first moment nobody wants {@code live} or waits on a start of it, no hold or
+     * other restart of it is under way or owed, and nothing else uses it ({@link #restartWaitsFor}); or with its next start
+     * from down, whichever comes first. A stop now, and a start if it was up. Unlike {@link #restartForPolicy}, the gate
+     * stays open throughout, as a lock stricter than the band needs is safe meanwhile, so a {@code live} that comes
+     * during the stop starts after it. A Chromium that's down, by this process and by its port, with no step of it under
+     * way, owes nothing, as its next start reads the file as it is now: so a desk's first boot keeps no file for it. A stop
+     * that fails goes again after {@link #policyRestartRetry}. Runs on the thread that heard the Platform, and returns
+     * quickly.
+     */
+    public void restartWhenUnused() {
+        // Outside the lock, as it reads /proc. A start that was under way then is the step below, or has made it known up.
+        boolean portUp = chromiumRunning.getAsBoolean();
+        lock.lock();
+        try {
+            boolean browserStepNow = current != null && current.unit().equals(UnitsClient.DESK_BROWSER);
+            if (!portUp && !browserKnownUp && !browserStepNow) {
+                unlockRestartOwed = false;
+                unlockOwedNow = false;
+            } else {
+                unlockRestartOwed = true;
+                unlockOwedNow = true;
+                unlockAsks++;
+                startWorkerIfDue();
+            }
+        } finally {
+            lock.unlock();
+        }
+        syncOwed();
+    }
+
+    /** Whether a restart for the band {@code adult} is owed: {@link #restartWhenUnused}. Doesn't block. */
+    boolean unlockOwed() {
+        return unlockOwedNow;
+    }
+
+    /**
+     * Where the Browser's use other than a session's video comes from (the simplified view): {@link #restartWhenUnused}
+     * waits while it's true. Asked under this class's lock, so it must not block. Set once, before anything can call.
+     */
+    void restartWaitsFor(BooleanSupplier inUse) {
+        otherUse = inUse;
+    }
+
+    /** Something {@link #restartWaitsFor} follows has stopped using the Browser: an owed restart may go now. Returns quickly. */
+    void otherUseEnded() {
+        lock.lock();
+        try {
+            startWorkerIfDue();
+        } finally {
+            lock.unlock();
+        }
+    }
+
+    /**
+     * Keeps an owed restart in {@code marker} from here, so a restart of deskd doesn't lose it, and takes up one that an
+     * earlier deskd of this boot owed: one for the teen lock at once, with the gate shut until its stop has worked, and one
+     * for the band {@code adult} as {@link #restartWhenUnused} has it. Call once, after {@link #ageGateFrom}.
+     */
+    void owedFrom(PolicyRestartMarker marker) {
+        PolicyRestartMarker.Owed owed;
+        markerWrites.lock();
+        try {
+            owed = marker.read();
+            owedMarker = marker;
+        } finally {
+            markerWrites.unlock();
+        }
+        if (owed.lock()) {
+            log.info("a restart of Chromium for the teen lock is owed from before this process, so it goes now");
+            restartForPolicy();
+        } else if (owed.unlock()) {
+            log.info("a restart of Chromium for the band adult is owed from before this process");
+            restartWhenUnused();
+        }
+    }
+
+    /** Makes the marker say what's owed now. Outside {@link #lock}, and one at a time, so the files end as the state does. */
+    private void syncOwed() {
+        PolicyRestartMarker marker = owedMarker;
+        if (marker == null) {
+            return;
+        }
+        markerWrites.lock();
+        try {
+            boolean lockOwed;
+            boolean unlockOwed;
+            lock.lock();
+            try {
+                lockOwed = policyRestartOwed;
+                unlockOwed = unlockRestartOwed;
+            } finally {
+                lock.unlock();
+            }
+            marker.write(lockOwed, unlockOwed);
+        } finally {
+            markerWrites.unlock();
+        }
+    }
+
+    /**
+     * {@link #restartWhenUnused}'s stop may go now: nobody wants {@code live} or waits on a start of Chromium, nothing
+     * else uses it, and no hold, restart for the lock (whose stop does this one's job), restart of a Chromium off its port,
+     * or start after one is under way or owed.
+     */
+    private boolean unlockRestartDue() {
+        return unlockRestartOwed
+                && !unlockRetryWaiting
+                && !held
+                && !holdStopDue
+                && !policyRestartOwed
+                && !browserRestartDue
+                && !browserRestartStarting
+                && !startAfterHold
+                && !anyWant(Level.LIVE)
+                && !anyNeeds(w -> w.needsBrowser)
+                && !otherUse.getAsBoolean();
+    }
+
+    /** The unlock's stop failed: it goes again in a while, with nothing held meanwhile. */
+    private void retryUnlockLater() {
+        unlockRetryWaiting = true;
+        Duration wait = policyRestartRetry;
+        Thread.ofVirtual().name("browser-unlock-retry").start(() -> {
+            try {
+                Thread.sleep(wait);
+            } catch (InterruptedException e) {
+                // Tried at the next step anyone asks for, then.
+            }
+            lock.lock();
+            try {
+                unlockRetryWaiting = false;
+                startWorkerIfDue();
+            } finally {
+                lock.unlock();
+            }
+        });
     }
 
     /** Each {@code live} refused at the gate gets the steps a new one would, if they can go now. */
@@ -879,6 +1053,7 @@ public final class BrowserStream {
             return !held
                     && !holdStopDue
                     && !policyRestartDue
+                    && !unlockRestartDue()
                     && ageGateOpenLocked()
                     && !browserRestartDue
                     && !browserRestartStarting
@@ -1062,6 +1237,7 @@ public final class BrowserStream {
     private boolean nextStepExists() {
         return holdStopDue
                 || !held && policyRestartDue
+                || unlockRestartDue()
                 || browserMayStart() && (browserRestartDue
                         || browserRestartStarting
                         || startAfterHold
@@ -1094,30 +1270,39 @@ public final class BrowserStream {
     private Step nextStep() {
         if (holdStopDue) {
             holdStopDue = false;
+            Step stop = browserStep(UnitsClient.STOP, new ArrayList<>(), holdStopped, false, false);
             browserKnownUp = false;
-            return new Step(UnitsClient.STOP, UnitsClient.DESK_BROWSER, new ArrayList<>(), holdStopped, false);
+            return stop;
         }
         if (!held && policyRestartDue) {
             policyRestartDue = false;
             // This stop is that stop too, and whether a start follows goes by whether Chromium was up.
             browserRestartDue = false;
             startAfterHold |= browserKnownUp;
+            Step stop = browserStep(UnitsClient.STOP, new ArrayList<>(), null, true, false);
             browserKnownUp = false;
-            return new Step(UnitsClient.STOP, UnitsClient.DESK_BROWSER, new ArrayList<>(), null, true);
+            return stop;
+        }
+        if (unlockRestartDue()) {
+            // Whether a start follows goes by whether Chromium was up, once the stop has worked.
+            Step stop = browserStep(UnitsClient.STOP, new ArrayList<>(), null, false, true);
+            browserKnownUp = false;
+            return stop;
         }
         // While held, no start of desk-browser, and nothing waits for one: hold() refused those that would. While the age
         // gate is shut, no start of it either, and what waits for one gets it as the gate opens.
         if (browserMayStart() && browserRestartDue) {
             browserRestartDue = false;
             browserRestartStarting = true;
+            Step stop = browserStep(UnitsClient.STOP, new ArrayList<>(), null, false, false);
             browserKnownUp = false;
-            return new Step(UnitsClient.STOP, UnitsClient.DESK_BROWSER, new ArrayList<>());
+            return stop;
         }
         if (browserMayStart() && (browserRestartStarting || startAfterHold || anyNeeds(w -> w.needsBrowser) || (browserStartDue && anyWant(Level.LIVE)))) {
             browserRestartStarting = false;
             browserStartDue = false;
             startAfterHold = false;
-            return new Step(UnitsClient.START, UnitsClient.DESK_BROWSER, covering(w -> w.needsBrowser));
+            return browserStep(UnitsClient.START, covering(w -> w.needsBrowser), null, false, false);
         }
         if (anyNeeds(w -> w.needsStream)) {
             stopDue = true;
@@ -1130,6 +1315,11 @@ public final class BrowserStream {
             return new Step(UnitsClient.STOP, UnitsClient.DESK_STREAM, covering(w -> w.needsStop));
         }
         return null;
+    }
+
+    /** A step of desk-browser, made before {@link #browserKnownUp} changes for it, with what it can end of an owed unlock. */
+    private Step browserStep(String verb, List<Waiter> covered, CompletableFuture<Void> hold, boolean forPolicy, boolean forUnlock) {
+        return new Step(verb, UnitsClient.DESK_BROWSER, covered, hold, forPolicy, forUnlock, browserKnownUp, unlockRestartOwed ? unlockAsks : -1);
     }
 
     private void work() {
@@ -1154,7 +1344,13 @@ public final class BrowserStream {
                 lock.unlock();
             }
             boolean browserStep = step.unit().equals(UnitsClient.DESK_BROWSER);
-            if (browserStep) {
+            // Outside the lock, as they read /proc. The unlock's stop of a Chromium that's down, by this process and by its
+            // port, has nothing to do, as the next start reads the file anyway; and a start of one that's down reads it, so
+            // that start is the unlock's restart.
+            boolean upForUnlock = step.forUnlock() && (step.knownUp() || chromiumRunning.getAsBoolean());
+            boolean skip = step.forUnlock() && !upForUnlock;
+            boolean downBeforeStart = isBrowserStart(step) && step.unlockAsks() >= 0 && !step.knownUp() && !chromiumRunning.getAsBoolean();
+            if (browserStep && !skip) {
                 try {
                     browserSteps.beforeBrowserStep();
                 } catch (InterruptedException e) {
@@ -1169,9 +1365,9 @@ public final class BrowserStream {
             // Outside the lock, as it reads /proc: whether there's a Chromium for the release to bring back.
             boolean upBeforeStop = (step.hold() != null || step.forPolicy()) && chromiumRunning.getAsBoolean();
             long began = System.nanoTime();
-            UnitException failure = run(step);
+            UnitException failure = skip ? null : run(step);
             long took = System.nanoTime() - began;
-            if (browserStep) {
+            if (browserStep && !skip) {
                 browserSteps.afterBrowserStep(failure == null);
             }
             if (startingBrowser && failure == null) {
@@ -1199,6 +1395,20 @@ public final class BrowserStream {
                         retryPolicyRestartLater();
                     }
                 }
+                if (step.forUnlock()) {
+                    if (failure == null) {
+                        startAfterHold |= upForUnlock;
+                    } else {
+                        retryUnlockLater();
+                    }
+                }
+                // Any stop of Chromium that worked, and a start of one that was down, leave its next start to read the file
+                // as it is then: an unlock asked for before this step was made is done.
+                if (browserStep && failure == null && step.unlockAsks() >= 0 && step.unlockAsks() == unlockAsks
+                        && (step.verb().equals(UnitsClient.STOP) || downBeforeStart)) {
+                    unlockRestartOwed = false;
+                    unlockOwedNow = false;
+                }
                 refusedNow = chromiumRefused;
                 settle();
             } finally {
@@ -1207,6 +1417,9 @@ public final class BrowserStream {
             // On this thread, so the file follows each change in the order they came.
             if (refusedNow != refusedBefore) {
                 marker.write(refusedNow);
+            }
+            if (browserStep) {
+                syncOwed();
             }
             if (step.hold() != null) {
                 if (failure == null) {

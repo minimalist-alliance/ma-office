@@ -145,7 +145,11 @@ final class AppsMethods {
         return link.call(request, CALL_TIMEOUT, mutation ? context::beginEffect : null);
     }
 
-    /** The window's three files, as text, with the manifest and its signatures for the Desk app to check again itself. */
+    /**
+     * The window's three files, as text, with the manifest and its signatures for the Desk app to check again itself. A
+     * bundled app's come from deskd's image, with {@code signatures: null} and {@code bundled: true}: its files are deskd's
+     * own, so the Desk app checks each one's SHA-256 against the manifest and nothing else.
+     */
     private Map<String, Object> view(String id) throws RpcException {
         AppRuntime.Process p = module.runtime.process(id);
         if (p == null) {
@@ -156,17 +160,26 @@ final class AppsMethods {
             throw notFound("view");
         }
         String version = p.entry.version();
+        BundledApps.Bundled b = p.home.bundled() ? module.bundled.find(id) : null;
+        if (p.home.bundled() && (b == null || !b.version().equals(version))) {
+            throw AppRuntime.unavailable("storage");
+        }
         Map<String, Object> files = new LinkedHashMap<>();
         try {
             for (String path : List.of(window.html(), window.script(), window.style())) {
-                byte[] bytes = module.store.releaseFile(id, version, path, AppManifest.MAX_VIEW_BYTES);
+                if (!AppManifest.cleanPath(path)) {
+                    throw new IOException("not a clean path");
+                }
+                byte[] bytes = b != null ? AppStore.readSmall(b.files().resolve(path), AppManifest.MAX_VIEW_BYTES)
+                        : module.store.releaseFile(id, version, path, AppManifest.MAX_VIEW_BYTES);
                 files.put(path, utf8(bytes));
             }
             Map<String, Object> json = new LinkedHashMap<>();
             json.put("id", id);
             json.put("version", version);
-            json.put("manifest", utf8(module.store.manifestBytes(id, version)));
-            json.put("signatures", utf8(module.store.signatureBytes(id, version)));
+            json.put("manifest", utf8(b != null ? b.manifestBytes() : module.store.manifestBytes(id, version)));
+            json.put("signatures", b != null ? null : utf8(module.store.signatureBytes(id, version)));
+            json.put("bundled", b != null);
             json.put("files", files);
             return json;
         } catch (IOException e) {

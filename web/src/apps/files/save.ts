@@ -37,6 +37,8 @@ export interface Target {
   where: 'chosen file' | 'downloads';
 }
 
+export const DOWNLOAD_TYPE = 'application/octet-stream';
+
 /** Pieces of 1 MiB in blob storage, cut back by slicing. */
 export class BlobSink implements Sink {
   private parts: Blob[] = [];
@@ -59,9 +61,10 @@ export class BlobSink implements Sink {
     return Promise.resolve();
   }
 
-  blob(type: string): Blob {
+  /** Always `application/octet-stream`: a blob the office makes never carries a type from desk data (ADR 0054). */
+  blob(): Blob {
     this.flush();
-    return new Blob(this.parts, { type });
+    return new Blob(this.parts, { type: DOWNLOAD_TYPE });
   }
 
   private flush(): void {
@@ -85,7 +88,7 @@ function startDownload(blob: Blob, name: string): void {
   window.setTimeout(() => URL.revokeObjectURL(url), 60_000);
 }
 
-export async function openTarget(handle: FileSystemFileHandle | null | undefined, name: string, type: string): Promise<Target> {
+export async function openTarget(handle: FileSystemFileHandle | null | undefined, name: string): Promise<Target> {
   if (handle) {
     const w = await handle.createWritable({ keepExistingData: false });
     return {
@@ -96,5 +99,5 @@ export async function openTarget(handle: FileSystemFileHandle | null | undefined
     };
   }
   const sink = new BlobSink();
-  return { sink, finish: () => Promise.resolve(startDownload(sink.blob(type), name)), abort: () => Promise.resolve(), where: 'downloads' };
+  return { sink, finish: () => Promise.resolve(startDownload(sink.blob(), name)), abort: () => Promise.resolve(), where: 'downloads' };
 }

@@ -8,6 +8,11 @@
 # notebook has no JVM, so it builds on amd64 too (self-hosted desks).
 # Build steps use host networking because a desk's Docker has its firewall management off (ADR 0040), which leaves
 # a bridge with no way out.
+#
+# deskd's context is services/ plus deskd/bundled/<name>/ for each first-party app it bundles (deskd/docs/API.md section 19,
+# "Bundled apps"), copied from the repo's apps/ when this tree has the app: today apps/bible, without its dev view, its
+# own build's dist/ or node_modules. MA_BUNDLED_APPS_DIR names another apps/ (tests). The context goes to Docker as a stream, so nothing is
+# written into the tree.
 set -euo pipefail
 
 die() { echo "build-image: $*" >&2; exit 1; }
@@ -40,6 +45,21 @@ if [ "$service" = notebook ]; then
   # It bundles web/notebook/src/model as source, so its context is those paths and its own, from the repo's root.
   (cd "$services_dir/.." && tar --exclude=node_modules --exclude=dist -cf - services/notebook web/notebook/src/model) |
     docker build --network host --file services/notebook/Dockerfile --build-arg "VERSION=$tag" --tag "ma/$component:$tag" -
+elif [ "$service" = deskd ]; then
+  apps_dir=${MA_BUNDLED_APPS_DIR:-$services_dir/../apps}
+  stage=$(mktemp -d)
+  trap 'rm -rf "$stage"' EXIT
+  mkdir -p "$stage/deskd/bundled"
+  if [ -f "$apps_dir/bible/ma-app.json" ] && [ -d "$apps_dir/bible/server" ]; then
+    (cd "$apps_dir" && tar --exclude=node_modules --exclude=view-dev --exclude=.git --exclude=bible/dist -cf - bible) |
+      tar -C "$stage/deskd/bundled" -xf -
+    echo "build-image: bundling the Bible from $apps_dir/bible"
+  else
+    echo "build-image: no apps/bible here, so the image bundles no Bible"
+  fi
+  # As .dockerignore has it for a directory context: no local build output.
+  tar --exclude=target --exclude=node_modules -cf - -C "$services_dir" . -C "$stage" deskd/bundled |
+    docker build --network host --file deskd/Dockerfile --build-arg "VERSION=$tag" --tag "ma/$component:$tag" -
 else
   docker build --network host --file "$dockerfile" --build-arg "VERSION=$tag" --tag "ma/$component:$tag" "$services_dir"
 fi

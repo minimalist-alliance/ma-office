@@ -236,7 +236,8 @@ export function PageEditor({
       injectCSS: false,
       shouldRerenderOnTransaction: false,
       immediatelyRender: true,
-      autofocus: autofocus ? 'start' : false,
+      // Never TipTap's own autofocus: the effect below is the only one (why, there).
+      autofocus: false,
       editorProps: {
         attributes: { class: 'nb-prose', role: 'textbox', 'aria-multiline': 'true', 'aria-label': 'Note text', 'data-testid': 'note-editor', spellcheck: 'true' },
         handlePaste: (view, _event, slice) => handleLargePaste(view, slice),
@@ -263,6 +264,9 @@ export function PageEditor({
   // TipTap's own autofocus runs on a timer from when the editor is made, during render. A long render, such as a desk's whole page
   // list, yields before it commits, the timer fires first, and focus on a view that isn't in the page yet goes nowhere: on a real
   // desk a new page then sat unfocused, and what was typed went to the New page button. This runs once the view is in the page.
+  // It's the only autofocus. TipTap's focus command calls `view.focus()` a frame after it's asked, wherever the focus is by then,
+  // so with TipTap's as well the second landed a frame after the first: a search opened from a page just opened from search lost
+  // its box to the page, and Esc went to the page (the search test's flake at its last line).
   useEffect(() => {
     if (!editor || !autofocus) return undefined;
     const frame = requestAnimationFrame(() => {

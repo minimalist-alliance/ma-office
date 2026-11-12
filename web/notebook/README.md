@@ -2,7 +2,7 @@
 
 The Notebook app's editor (backlog S-13 and the Notebook part of TD-74), as a module the Desk app
 imports from source. It's TipTap 3 with Yjs (ADR 0015, design section 5), the Tab and Temporal views,
-versions, search and export, in Light, Dusk and Dark. Storage and sync sit behind one interface,
+versions, search and export, in Light, Zen and Dark. Storage and sync sit behind one interface,
 `NotebookBackend`. On a member's desk that's the app's `DeskBackend` (`web/src/notebook/`, contract:
 `services/deskd/docs/API.md` section 13). The only backend in this package is a local one in this browser's
 IndexedDB, for the demo and for the Desk app's mock desk: no network, no sign-in, no provider names.
@@ -157,7 +157,7 @@ One database per desk: `dbName`. `importData()` (not part of the interface) writ
     default highlight, and the old yellow reads as it. Each has highlight, text, callout and label values per theme. A
     color submenu is one row of round swatches filled with the label color, named for screen readers, the checked one
     ringed in the accent, then "none". `tests/unit/palette.test.ts` holds any palette to the Designer's contrast
-    (text.primary on a highlight or callout 7:1 in Light and 4.5:1 in Dusk and Dark, colored text 4.5:1 on the window,
+    (text.primary on a highlight or callout 7:1 in Light and 4.5:1 in Zen and Dark, colored text 4.5:1 on the window,
     the page and its callout). The values reach CSS as `--ma-nb-amber-highlight` and so on through `notebookThemesPlugin`,
     and files that leave the app get the light ones (`exportPalette()`); pasted colors from elsewhere map to the nearest
     (`nearestPaletteId`).
@@ -167,13 +167,14 @@ One database per desk: `dbName`. `importData()` (not part of the interface) writ
     and then shows the row to change it. On a desk it's `notebookColor` in the member's layout `prefs`
     (`web/src/notebook/NotebookApp.tsx`), saved with the layout once `prefs` keeps keys it doesn't name
     (`sub/setup-circle`); the demo keeps it in `localStorage`.
-  - **The Notebook's own scheme, "Paper and ink":** `NOTEBOOK_SCHEME` re-declares the office's surface and accent
+  - **The Notebook's own scheme, "Navy ink":** `NOTEBOOK_SCHEME` re-declares the office's surface and accent
     properties (window, sidebar, accent, accent subtle, on accent, link; text, borders, status and danger stay the
     office's) on `.ma-nb`, its menus (`.ma-nb-portal`) and, on a desk, its window with the title bar
     (`.ma-window[data-app="notebook"]`, the scope the Desk app's `APP_INKS` gives Files). Nothing outside them changes.
-    The Notebook's surfaces read them through `--nb-scheme-*` (`src/ui/color.css`). In Zen (`dusk`) its ground is slate,
-    the owner's rule for Zen (window `#4B5162`, sidebar `#444A5A`, the Designer's, Nov 11, with the indigo ink: text 7.1:1,
-    tertiary 5.5:1, accent 4.65:1, link 5.3:1); Light and Dark keep paper and ink.
+    The Notebook's surfaces read them through `--nb-scheme-*` (`src/ui/color.css`). All surfaces are cool (hue 255, accent 262; the Designer, Nov 11; it replaced the warm "Paper and ink" the owner
+    called brown). Light window `#FBFCFE`, sidebar `#EFF3F8`; Zen window `#4B5160`, sidebar `#444A59`; Dark window
+    `#24272C`, sidebar `#1D2126`. Contrast, 270 of 270 pass: text 13.44:1 (Light), 7.15:1 (Zen), 12.79:1 (Dark) on the
+    window; accent on window 5.38, 4.70 and 6.03; link 5.38, 5.35 and 6.03.
 - **Temporal view**: month calendar with up to three activity dots a day, the day's pages as
   Created or Edited with first and last edit time and a snippet, the days list, ← and → between
   active days, a date picker, search within it, and "As of this day": the page's day-end version,
@@ -182,6 +183,8 @@ One database per desk: `dbName`. `importData()` (not part of the interface) writ
   "Save a version now".
 - **Search**: Ctrl/Cmd+K anywhere in the Notebook. Every word must match, by prefix, ignoring case
   and accents; title hits rank five times body hits; `has:checklist`; all notebooks or this one.
+  A page opened from it takes the cursor, once: `PageEditor`'s effect is its only autofocus, never TipTap's own as
+  well, whose second `view.focus()` a frame later took the box from a search opened straight after.
 - **Export**: Markdown (GitHub flavour, checklists as `- [ ]`), a self-contained HTML file, and
   print or PDF through the browser's own print of the page alone.
 - **Colors as data** ([ADR 0091](../../docs/decisions/0091-notebook-colors.md)): the binder tabs' six names (`blue`, `green`,
@@ -194,8 +197,11 @@ One database per desk: `dbName`. `importData()` (not part of the interface) writ
   (`exportNotebookFile` and `importNotebookFile` in `src/ui/exporting.ts`). Markdown and HTML export draw colors from
   the UI palette's light values when given them. The palette's values and the menus are `ui/palette.ts` and the
   context menus (`sub/notebook-color-menus`).
-- **Themes**: Light, Dusk and Dark from the brand kit's tokens, Nunito with the type rule's
+- **Themes**: Light, Zen and Dark from the brand kit's tokens, Nunito with the type rule's
   weights, and the kit's metric-matched fallback face (in `demo/demo.css`; the app has its own).
+  Zen was Dusk: the demo's picker says Zen, as the office does (ADR 0093), and the id stays `dusk` everywhere else
+  (`data-theme`, the saved choice, CSS, `?theme=dusk`, the specs' screenshot names), so a saved choice still holds. The page is
+  `surface.tile`, and `notebook.spec.ts` pins Zen's to the kit's `#474D5B` (ADR 0093's cool slate, from Nov 10).
 
 ## Performance
 
@@ -276,7 +282,8 @@ What it says:
 
 `media/notebook-demo.mp4`, 25 s, 1280x800, 0.7 MB: a new page with bold, highlight and a
 checklist, binder tabs and paging across them, search, an older version in History, the Temporal
-view, then Dusk and Dark. Playwright's own video of headless Chromium, re-encoded to H.264 with
+view, then Zen (its picker still said Dusk when this was recorded) and Dark. Playwright's own
+video of headless Chromium, re-encoded to H.264 with
 `-map_metadata -1` and `-fflags +bitexact`. ffprobe finds only the container's brand tags, the
 handler name and `encoder: Lavc libx264`; the H.264 stream carries x264's settings string. No
 dates, names, paths or hosts.

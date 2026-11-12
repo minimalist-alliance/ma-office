@@ -1,13 +1,15 @@
 // The Notebook's context menus and colors, on the demo under the Desk harness's CSP: right click, long press (touch
 // emulation) and Shift+F10, colors applied to text, blocks and pages, and the page list's filter and sort by label, in
-// Light, Dusk and Dark. Screenshots go to $NB_SHOTS (outside git) when it's set.
+// Light, Zen and Dark. Screenshots go to $NB_SHOTS (outside git) when it's set.
 import { expect, test, type Locator, type Page } from '@playwright/test';
 import { mkdirSync } from 'node:fs';
 import { join } from 'node:path';
 import { NOTEBOOK_SCHEME } from '../../src/ui/palette.ts';
 
 const SHOTS = process.env['NB_SHOTS'];
-const THEMES = ['Light', 'Dusk', 'Dark'] as const;
+const THEMES = ['Light', 'Zen', 'Dark'] as const;
+/** The picker's words, and the theme's id: Zen's is still `dusk` (ADR 0093). Shots are named by id. */
+const THEME_ID = { Light: 'light', Zen: 'dusk', Dark: 'dark' } as const;
 const MAC = process.platform === 'darwin';
 const MOD = MAC ? 'Meta' : 'Control';
 
@@ -44,7 +46,7 @@ async function shot(page: Page, name: string, target?: Locator): Promise<void> {
 
 async function theme(page: Page, name: (typeof THEMES)[number]): Promise<void> {
   await page.getByRole('radio', { name }).click();
-  await expect(page.locator('html')).toHaveAttribute('data-theme', name.toLowerCase());
+  await expect(page.locator('html')).toHaveAttribute('data-theme', THEME_ID[name]);
 }
 
 /** A new page with a title and a line of text, the caret at the end of the line. */
@@ -423,7 +425,7 @@ test.describe('in each theme', () => {
     test(`${name}: colors applied match the palette, and the menus and list look intended`, async ({ page }) => {
       const problems = await open(page);
       await theme(page, name);
-      const id = name.toLowerCase();
+      const id = THEME_ID[name];
       await newPage(page, `${name} colors`, 'Highlight this and color that');
       await page.keyboard.press('Enter');
       await page.keyboard.type('A callout for the key thing');
@@ -450,7 +452,7 @@ test.describe('in each theme', () => {
       const callout = page.locator('.nb-prose [data-block-color="green"]');
       await expect(callout).toHaveText('A callout for the key thing');
       expect(await callout.evaluate((el) => getComputedStyle(el).backgroundColor)).toBe(await paletteRgb(page, 'green', 'callout'));
-      // The Notebook wears its own scheme, "Paper and ink": its window and its side column.
+      // The Notebook wears its own scheme, "Navy ink": its window and its side column.
       const ink = NOTEBOOK_SCHEME[id as 'light' | 'dusk' | 'dark'];
       expect(await page.locator('.ma-nb').evaluate((el) => getComputedStyle(el).backgroundColor)).toBe(rgb(ink.window));
       expect(await page.locator('.nb-side').evaluate((el) => getComputedStyle(el).backgroundColor)).toBe(rgb(ink.sidebar));
@@ -512,7 +514,7 @@ test.describe('touch', () => {
       const grid = menu(page, 'Label');
       await expect(grid.getByRole('menuitem', { name: /^Back/ })).toBeVisible();
       expect(overlap((await grid.boundingBox())!, rb)).toBe(false);
-      await shot(page, `${name.toLowerCase()}-phone-label-menu`);
+      await shot(page, `${THEME_ID[name]}-phone-label-menu`);
       await grid.getByRole('menuitemradio', { name: 'Blue' }).tap();
       await expect(lake.locator('.nb-label-dot')).toHaveAttribute('data-pal', 'blue');
       expect(problems).toEqual([]);

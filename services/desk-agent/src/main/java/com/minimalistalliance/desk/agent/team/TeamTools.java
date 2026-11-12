@@ -48,7 +48,7 @@ final class TeamTools {
      * The library's ids, in its order, as {@code web/agent/src/look/icons.ts} and {@code tones.ts} have them (a test
      * checks): 24 icons, and 12 tones in the wheel's order (Design H4, M13).
      */
-    static final List<String> ICONS = List.of("spark", "compass", "book", "pen", "calendar", "clock", "chart", "code",
+    static final List<String> ICONS = List.of("nodes", "compass", "book", "pen", "calendar", "clock", "chart", "code",
             "mail", "person", "search", "leaf", "flask", "document", "music", "camera", "plane", "shield", "wallet",
             "bulb", "home", "bell", "list", "terminal");
     static final List<String> TONES = List.of("graphite", "rose", "clay", "amber", "olive", "green", "teal", "cyan",
@@ -794,7 +794,7 @@ final class TeamTools {
                 team.requireUniqueName(name, null, team.teamAgents());
                 payload.put("name", name);
                 payload.put("purpose", Team.purpose(in));
-                payload.put("icon", listed(in, "icon", ICONS, "spark"));
+                payload.put("icon", listed(in, "icon", ICONS, "nodes"));
                 payload.put("tone", in.get("tone") == null ? team.defaultTone() : listed(in, "tone", TONES, null));
                 bindingOf(in, payload, null);
                 if (in.get("workspaceMb") != null) {

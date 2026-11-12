@@ -3,7 +3,7 @@
    src/ui/palette.ts (served with the Notebook's other tokens by vite-plugins/notebookThemes.ts). */
 
 /* ------------------------------------------------------------ the Notebook's own scheme
-   "Paper and ink" (the Product Designer, Nov 10) re-declares the office's surface and accent properties inside the Notebook,
+   "Navy ink" (the Product Designer, Nov 11; it replaced the warm "Paper and ink") re-declares the office's surface and accent properties inside the Notebook,
    its menus and its window on a desk (NOTEBOOK_SCHEME in src/ui/palette.ts, served as CSS by vite-plugins/notebookThemes.ts).
    The Notebook's own surfaces read them through these names, so a later scheme can also set any one of them apart. */
 .ma-nb,

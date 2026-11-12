@@ -17,13 +17,13 @@ import { SignInRequired } from '../platform/auth';
 import { decodeJwtPayload } from '../platform/pkce';
 import { memberChanged, onBeforeSignOut } from '../platform/session';
 import { useDeskStore } from '../state/deskStore';
-import { applyQuietly, expectDesks, flushLayoutMirror, isQuietChange, isSavingLayout, reconcileLayout, useLayoutStore } from '../state/layoutStore';
+import { applyQuietly, expectDesks, flushLayoutMirror, isQuietChange, isSavingLayout, LAYOUT_SYNC_KEY, layoutMirrorHeld, layoutMirrorWritable, mirrorIsOurs, reconcileLayout, useLayoutStore } from '../state/layoutStore';
 import { getView } from '../state/viewStore';
 import { refit } from './actions';
 import { anyTidying } from './cleanup';
 import { useRing } from './hidden';
 
-export const SYNC_KEY = 'ma.layout.sync.v1';
+export const SYNC_KEY = LAYOUT_SYNC_KEY;
 
 /** After the last change. The contract's own suggestion, and well under its 60 PUTs a minute. */
 const DEBOUNCE_MS = 2_000;
@@ -106,6 +106,8 @@ function readMeta(): SyncMeta | null {
 const unsaved = (): Set<string> => new Set([...dirty, ...sending]);
 
 function writeMeta(): void {
+  // Signed out, here or in another tab: the record went with the rest of the mirror, and nothing brings it back.
+  if (!layoutMirrorWritable()) return;
   if (member === undefined) {
     // Nobody has said whose this is yet. What's on record stays, with what's new added: the first token sorts it out.
     const was = readMeta();
@@ -375,7 +377,7 @@ async function save(keepalive = false): Promise<void> {
   window.clearTimeout(saveTimer);
   saveTimer = 0;
   if (!dirty.size && !prefsDirty) firstChangeAt = 0; // back to what Platform has: the next change starts its own wait
-  if (!running || frozen || routeMissing || version === null || etag === null || (!dirty.size && !prefsDirty)) return;
+  if (!running || layoutMirrorHeld() || frozen || routeMissing || version === null || etag === null || (!dirty.size && !prefsDirty)) return;
   if (keepalive ? Date.now() < toldUntil : Date.now() < holdUntil) {
     // Going away during Retry-After leaves it for the next load, which ma.layout.sync.v1 tells. Otherwise it's only early.
     if (!keepalive) saveSoon(0);
@@ -527,6 +529,8 @@ function onPageShow(e: PageTransitionEvent): void {
 
 /** Another tab of this browser: its mirror arrives at once, with no network, and this tab's own changes stay on top. */
 function onStorage(e: StorageEvent): void {
+  // Another account's, from a tab signed in as them, or a page that has signed out: nothing to take.
+  if (!mirrorIsOurs()) return;
   if (e.key === SYNC_KEY) {
     const meta = readMeta();
     if (meta && meta.member === member && version !== null && meta.version > version) {

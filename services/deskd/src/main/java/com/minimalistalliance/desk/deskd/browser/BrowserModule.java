@@ -41,6 +41,9 @@ public final class BrowserModule implements SessionListener {
     public static final String REFUSAL_MARKER = RefusalMarker.NAME;
     /** The file that says Chromium may be frozen, beside the refusal's ({@link FreezeMarker}). */
     public static final String FREEZE_MARKER = FreezeMarker.NAME;
+    /** The files in deskd's data directory that keep a restart of Chromium the age band owes across a restart of deskd ({@link PolicyRestartMarker}). */
+    public static final String LOCK_OWED_MARKER = PolicyRestartMarker.LOCK;
+    public static final String UNLOCK_OWED_MARKER = PolicyRestartMarker.UNLOCK;
 
     private static final Logger log = LoggerFactory.getLogger(BrowserModule.class);
 
@@ -80,6 +83,8 @@ public final class BrowserModule implements SessionListener {
     private final Object videoLock = new Object();
     /** The simplified view is in use ({@link MinifiedModule#followBrowserTime}), which Browser time counts too. Under {@link #videoLock}. */
     private boolean simplifiedOn;
+    /** {@link #simplifiedOn}, read without a lock: an owed restart of Chromium waits while it's true. */
+    private volatile boolean simplifiedNow;
     /** Until when today's Browser time is used up, or null: {@link #followBrowserTime}. */
     private volatile Supplier<Instant> timeUsedUntil = () -> null;
     /** Hears the Browser go live to any session, and stop: {@link #followBrowserTime}. Must not block. */
@@ -191,6 +196,8 @@ public final class BrowserModule implements SessionListener {
         this.view = new BrowserView(tabs, stream::liveSessions, freeze, hub, this::looked, BrowserView.Timing.DEFAULT);
         this.attention = new DeskAttention(stream, freeze, hub, sessions::isLive, this::lookChanged, view::said, attentionTiming);
         stream.attentionFrom(attention::attended, freeze);
+        // A restart the band adult owes waits for the simplified view too, as one would reload the page the member reads.
+        stream.restartWaitsFor(() -> simplifiedNow);
         freeze.follow(
                 stream::browserSettled,
                 () -> cdpListener.get().kind() == CdpListener.Kind.TRUSTED,
@@ -256,9 +263,14 @@ public final class BrowserModule implements SessionListener {
         synchronized (videoLock) {
             boolean before = inUseLocked();
             simplifiedOn = on;
+            simplifiedNow = on;
             tellUse(before);
         }
         view.simplified(on);
+        if (!on && stream.unlockOwed()) {
+            // On a thread of its own: the view tells this under its own lock, and the stream's is taken there.
+            Thread.ofVirtual().name("browser-unlock-check").start(stream::otherUseEnded);
+        }
     }
 
     private boolean inUseLocked() {
@@ -468,15 +480,22 @@ public final class BrowserModule implements SessionListener {
 
     /**
      * Follows the owner's age band (ma-platform contract age.md, section 8): Chromium doesn't start until the band is known
-     * and its file can't take the policy off a teen, and a desk that becomes {@code teen} restarts Chromium. Nothing here
-     * touches the profile, so cookies and history stay (ADR 0035). While the band is {@code teen}, a site the family filter
-     * stopped gets our page in place of Chromium's ({@link FilteredSites}). Call once, before the lifecycle starts.
+     * and its file can't take the policy off a teen; a desk that becomes {@code teen} restarts Chromium at once; and one
+     * whose file comes to say {@code adult} restarts it once nobody is using it, or with its next start, whichever comes
+     * first ({@link BrowserStream#restartWhenUnused}), as the image's policy (the teen lock or the adult allowlist) is set
+     * only as Chromium starts. A restart owed when deskd stops is taken up by the next one of this boot, from beside the band's
+     * own file ({@link PolicyRestartMarker}: deskd's directory alone, and this boot's id in each). Both go through
+     * desk-units' stop and start of desk-browser, and nothing here touches the profile, so cookies and history stay (ADR
+     * 0035). While the band is {@code teen}, a site the family filter stopped gets our page in place of Chromium's
+     * ({@link FilteredSites}). Call once, before the lifecycle starts.
      */
-    public void followAgeBand(AgeBand band) {
+    public void followAgeBand(AgeBand band, String bootId) {
         filtered.teenFrom(() -> band.band() == AgeBand.Band.TEEN);
         stream.ageGateFrom(band::browserMayStart, BrowserStream.POLICY_RESTART_RETRY);
         band.onLockBegins(stream::restartForPolicy);
+        band.onUnlocked(stream::restartWhenUnused);
         band.onSettled(stream::ageGateMoved);
+        stream.owedFrom(new PolicyRestartMarker(band.directory(), bootId));
     }
 
     /**

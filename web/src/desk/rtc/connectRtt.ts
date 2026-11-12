@@ -8,6 +8,7 @@
 // Nothing else goes: no location, time or id beyond the desk in the path. The Platform adds the day, the desk's region
 // and the viewer's state, and keeps only counts. Nothing here throws, retries, logs or touches the session: every
 // failure ends quietly. `peer.ts` calls `watchConnectRtt` once, as it makes the RTCPeerConnection.
+import { layoutMirrorWritable } from '../../state/layoutStore';
 
 export const FIRST_SAMPLE_MS = 3000;
 export const SAMPLE_EVERY_MS = 1000;
@@ -94,6 +95,8 @@ export function nextMidnightUtc(now: number): number {
 
 /** Remember that `sub` sends no reports until `Retry-After` seconds from `now` (the next 00:00 UTC when it's missing or bad). */
 export function markCapped(sub: string, retryAfterSec: number | null, now: number, storage?: Pick<Storage, 'setItem'>): void {
+  // The member's id: it goes with the layout's mirror on every signed-out state, and is written only while that may be (ISS-89).
+  if (!layoutMirrorWritable()) return;
   try {
     const until = typeof retryAfterSec === 'number' && Number.isFinite(retryAfterSec) && retryAfterSec > 0 ? now + retryAfterSec * 1000 : nextMidnightUtc(now);
     (storage ?? globalThis.localStorage).setItem(CAP_KEY, JSON.stringify({ sub, until }));

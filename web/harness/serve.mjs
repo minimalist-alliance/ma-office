@@ -30,7 +30,7 @@ const ORIGIN = `http://localhost:${PORT}`;
 // `openRouter`: the one origin the free models' Connect trades its code at (agent-free-key spec §2.5, hostnames.md). On, as the
 // office's CSP has it; off to see the office's own CSP refuse it. A spec answers that origin itself (`page.route`): nothing here,
 // and no test, ever reaches the real OpenRouter.
-const csp = () => `default-src 'self'; connect-src 'self'${state.openRouter ? ' https://openrouter.ai' : ''}${state.shim ? ` ${gatewayUrl()}` : ''}; img-src 'self' data: blob:${/^https:\/\/[a-z0-9.-]+$/.test(process.env.MA_AVATAR_ORIGIN ?? '') ? ` ${process.env.MA_AVATAR_ORIGIN}` : ''}; media-src 'self' blob:; worker-src 'self' blob:;${state.accountFrame ? ' frame-src https://platform.localhost;' : ''} frame-ancestors 'none'`;
+const csp = () => `default-src 'self';${state.appFrames ? " script-src 'self' blob:;" : ''} connect-src 'self'${state.openRouter ? ' https://openrouter.ai' : ''}${state.shim ? ` ${gatewayUrl()}` : ''}; img-src 'self' data: blob:${/^https:\/\/[a-z0-9.-]+$/.test(process.env.MA_AVATAR_ORIGIN ?? '') ? ` ${process.env.MA_AVATAR_ORIGIN}` : ''}; media-src 'self' blob:; worker-src 'self' blob:;${state.accountFrame ? ' frame-src https://platform.localhost;' : ''} frame-ancestors 'none'`;
 
 const MIME = {
   '.js': 'text/javascript', '.css': 'text/css', '.json': 'application/json', '.woff2': 'font/woff2', '.html': 'text/html', '.svg': 'image/svg+xml',
@@ -234,6 +234,12 @@ const FRESH = () => ({
   maia: null,
   /** Refuse the next turns: { status, code, times }. */
   maiaTurnFail: null,
+  /**
+   * True holds each turn that gets as far as her words just before them (after `[stub:status]`'s line and free Maia's slow
+   * start; a stop never waits), until a POST sets it false or resets: a spec checks what shows while she answers for as long
+   * as it likes, instead of racing a stub that can finish in a few ms (TD-239).
+   */
+  maiaHold: false,
   /** Every turn's body, exactly as it came. */
   maiaTurns: [],
   /** Every decision: { proposalId, decision, result, errorCode }. */
@@ -246,6 +252,13 @@ const FRESH = () => ({
   export: null,
   /** client-config's `simpleView` block (task 47), a kill switch: { enabled: false } is off. Null is the block being absent: on, as on prod. */
   simpleView: null,
+  /** client-config's `deskApps` block (ADR 0054), a kill switch: { enabled: false } is off. Null is the block being absent: on, as it ships. */
+  deskApps: null,
+  /**
+   * The office CSP has `script-src 'self' blob:`, which an app view's frame needs (ADR 0054: a `srcdoc` frame inherits the office's
+   * policy, and the view's script runs from a `blob:` URL by its hash). Off, as in prod until Platform adds it.
+   */
+  appFrames: false,
   /** GET /v1/me/export carries the newer records too (Maia chats, activity log, tickets, phone factor). */
   meExportExtras: false,
   /**
@@ -281,6 +294,8 @@ const FRESH = () => ({
   notificationPosts: [],
 });
 let state = FRESH();
+/** Turns waiting on `maiaHold`, each let go when a POST turns it off or resets the state. */
+const maiaHeld = new Set();
 let refreshGen = 0;
 const gatewayUrl = () => (state.shim ? `${state.shim.replace(/^http/, 'ws')}/v1` : 'ws://localhost:1/v1');
 
@@ -746,6 +761,7 @@ async function maiaTurn(req, res) {
     send({ type: 'status', code: 'kb' });
     await wait(300);
   }
+  if (state.maiaHold) await new Promise((go) => { maiaHeld.add(go); });
   const plain = message.replace(/\[stub:[^\]]*\]/g, '').trim();
   const reply = message.includes('[stub:markdown]') ? maiaMarkdown() : `You asked: ${plain || 'nothing'}. Here's **a short answer**.`;
   for (let i = 0; i < reply.length && open; i += 12) {
@@ -807,6 +823,7 @@ async function handleApi(req, res, url) {
       ...(state.configExtra ? Object.fromEntries(Object.entries(state.configExtra).filter(([k]) => k !== 'links')) : {}),
       ...(state.export ? { export: state.export } : {}),
       ...(state.simpleView ? { simpleView: state.simpleView } : {}),
+      ...(state.deskApps ? { deskApps: state.deskApps } : {}),
       ...(state.files ? { files: state.files } : {}),
       ...(state.tierNames ? { tierNames: state.tierNames } : {}),
       ...(state.ageRules ? { ageRules: state.ageRules } : {}),
@@ -949,6 +966,10 @@ createServer(async (req, res) => {
     if (req.method === 'POST') {
       const patch = JSON.parse((await readBody(req)) || '{}');
       state = patch.reset ? FRESH() : { ...state, ...ageState(patch.age), ...patch };
+      if (!state.maiaHold) {
+        for (const go of maiaHeld) go();
+        maiaHeld.clear();
+      }
     }
     return json(res, 200, state);
   }

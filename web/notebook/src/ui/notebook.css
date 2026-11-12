@@ -511,7 +511,8 @@
   border: 1px solid var(--ma-border-hairline);
   border-bottom: 0;
   border-radius: 12px 12px 0 0;
-  background: color-mix(in srgb, var(--tab) 16%, var(--nb-scheme-desk));
+  /* One cool fill for every unselected tab (Navy ink's window surface); the dot alone carries the tab's color. */
+  background: var(--ma-surface-window);
   color: var(--ma-text-secondary);
   font-size: 13.5px;
   font-weight: 600;
@@ -534,7 +535,7 @@
   font-weight: 700;
 }
 .nb-tab.drop {
-  background: color-mix(in srgb, var(--tab) 34%, var(--nb-scheme-desk));
+  background: var(--nb-scheme-accent-subtle);
 }
 .nb-tab.add {
   padding: 8px 10px;

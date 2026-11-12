@@ -346,6 +346,36 @@ class BrowserSignInsGoWithTheDesk(unittest.TestCase):
         self.assertEqual((rc, kept), (0, False))
         self.assertIn("next office", out)
 
+    def status(self):
+        out = io.StringIO()
+        with mock.patch.object(self.m, "read_desk", return_value=None), contextlib.redirect_stdout(out):
+            self.m.write_json(os.path.join(self.m.RUN, "status.json"), dict(self.CODE))
+            self.assertEqual(self.m.cmd_status(CONF), 0)
+        return out.getvalue()
+
+    def test_status_says_it_beside_the_live_code_with_a_profile(self):
+        os.makedirs(self.m.RUN, exist_ok=True)
+        self.browser("profile")
+        out = self.status()
+        self.assertIn("ABCD-EFGH", out)
+        self.assertIn("Whoever's office this desk joins gets that Browser, signed in.", out)
+        self.assertLess(out.index("ABCD-EFGH"), out.index("signed in."))
+        os.environ.pop("MA_SELFHOST_BROWSER", None)
+        self.assertIn("signed in.", self.status())
+
+    def test_status_says_nothing_of_it_without_a_profile_or_a_code(self):
+        os.makedirs(self.m.RUN, exist_ok=True)
+        self.browser("none")
+        out = self.status()
+        self.assertIn("ABCD-EFGH", out)
+        self.assertNotIn("Browser", out)
+        self.browser("profile")
+        self.m.write_json(os.path.join(self.m.RUN, "status.json"), {"status": "online"})
+        out = io.StringIO()
+        with mock.patch.object(self.m, "read_desk", return_value=None), contextlib.redirect_stdout(out):
+            self.m.cmd_status(CONF)
+        self.assertNotIn("Browser", out.getvalue())
+
     def test_forget_without_a_profile_needs_no_terminal(self):
         self.browser("none")
         rc, kept, out, _ = self.forget(tty=False)

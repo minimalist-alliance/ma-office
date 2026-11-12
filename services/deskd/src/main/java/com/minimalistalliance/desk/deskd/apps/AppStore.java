@@ -47,6 +47,11 @@ import java.util.regex.Pattern;
  * leaves out {@code registry.json} and every {@code <dir>/releases}, {@code current}, {@code previous} and {@code cache}
  * ({@code tools/desk-data}'s {@code APP_PACKAGES}), so what goes is each app's {@code data} and its widget's summary. The
  * catalog isn't kept on the volume, only its {@code seq} (in the registry), as the floor a fetched one must reach.
+ *
+ * <p><b>A bundled store</b> ({@code /data/desk/apps}, API.md section 19, "Bundled apps") keeps the same registry for the apps
+ * deskd hosts itself from its image: no releases or links (the release is the image's), {@link #NO_UID} for the uid (they run
+ * as deskd), each entry marked {@code bundled}, and each app's {@code data}, {@code cache} and summary beside it, made by
+ * deskd rather than the helper.
  */
 final class AppStore {
 
@@ -59,12 +64,19 @@ final class AppStore {
     /** The uids kept for apps (section 1.4), one per app, never reused while its data is kept. */
     static final int UID_FIRST = 2000;
     static final int UID_LAST = 2999;
+    /** A bundled app's uid in its entry: it has none of its own, as it runs as deskd. */
+    static final int NO_UID = -1;
     private static final int MAX_REGISTRY_BYTES = 4 << 20;
     private static final Pattern VERSION = Pattern.compile("(0|[1-9][0-9]{0,8})\\.(0|[1-9][0-9]{0,8})\\.(0|[1-9][0-9]{0,8})");
     private static final SecureRandom RANDOM = new SecureRandom();
 
     /**
-     * {@link #installed} while a release is there to run; {@link #kept} after a removal that kept the app's data.
+     * {@code memberKey} is the app's key for guild members' pseudonyms (API.md section 19), kept also in
+     * {@code <app>/member.key} beside its data, so a lost registry changes no pseudonym. {@code keyOverData}: the key was
+     * made while the app already had data, whose members' pseudonyms came from a key now lost, so deskd never tells the app
+     * which members to keep ({@code app.members.retain}): every bucket it has would look like a departed member's.
+     *
+     * <p>{@link #installed} while a release is there to run; {@link #kept} after a removal that kept the app's data.
      * {@code trial} while a new version hasn't answered its trial start yet, with {@code before} the entry it replaced (null
      * for a first install): a deskd that stops mid-trial leaves this, and the next start rolls it back ({@link #rollBackTrials}).
      */
@@ -82,6 +94,7 @@ final class AppStore {
             String packageSha256,
             String manifestSha256,
             String memberKey,
+            boolean keyOverData,
             boolean trial,
             Entry before) {
         static final String INSTALLED = "installed";
@@ -93,18 +106,18 @@ final class AppStore {
 
         Entry withState(String state, String version, String previous) {
             return new Entry(id, uid, version, previous, tier, grants, state, disabled, installedAt, updatedAt, packageSha256,
-                    manifestSha256, memberKey, false, null);
+                    manifestSha256, memberKey, keyOverData, false, null);
         }
 
         Entry withDisabled(String why) {
             return new Entry(id, uid, version, previous, tier, grants, state, why, installedAt, updatedAt, packageSha256,
-                    manifestSha256, memberKey, trial, before);
+                    manifestSha256, memberKey, keyOverData, trial, before);
         }
 
         /** The trial passed: nothing to go back to any more. */
         Entry passed() {
             return new Entry(id, uid, version, previous, tier, grants, state, disabled, installedAt, updatedAt, packageSha256,
-                    manifestSha256, memberKey, false, null);
+                    manifestSha256, memberKey, keyOverData, false, null);
         }
 
         Map<String, Object> toJson() {
@@ -122,6 +135,7 @@ final class AppStore {
             json.put("packageSha256", packageSha256);
             json.put("manifestSha256", manifestSha256);
             json.put("memberKey", memberKey);
+            json.put("keyOverData", keyOverData);
             json.put("trial", trial);
             json.put("before", before == null ? null : before.toJson());
             return json;
@@ -129,21 +143,39 @@ final class AppStore {
     }
 
     private final Path root;
+    private final boolean bundled;
     private final ReentrantLock lock = new ReentrantLock();
     private Map<String, Entry> entries;
     private long catalogSeq;
 
     AppStore(Path root) {
+        this(root, false);
+    }
+
+    AppStore(Path root, boolean bundled) {
         this.root = root;
+        this.bundled = bundled;
     }
 
     Path root() {
         return root;
     }
 
-    /** Null if deskd can keep apps here: the directory is there and is deskd's to write. Otherwise {@code no_storage}. */
+    boolean bundled() {
+        return bundled;
+    }
+
+    /**
+     * Null if deskd can keep apps here: the directory is there and is deskd's to write, or for a bundled store, which deskd
+     * makes at its first install, its parent is. Otherwise {@code no_storage}.
+     */
     String unavailable() {
-        return Files.isDirectory(root, LinkOption.NOFOLLOW_LINKS) && Files.isWritable(root) ? null : "no_storage";
+        if (Files.isDirectory(root, LinkOption.NOFOLLOW_LINKS)) {
+            return Files.isWritable(root) ? null : "no_storage";
+        }
+        Path parent = root.getParent();
+        return bundled && !Files.exists(root, LinkOption.NOFOLLOW_LINKS) && parent != null
+                && Files.isDirectory(parent, LinkOption.NOFOLLOW_LINKS) && Files.isWritable(parent) ? null : "no_storage";
     }
 
     // ---- the registry
@@ -194,6 +226,9 @@ final class AppStore {
 
     /** The app's uid if it has one, else the lowest no other app holds. */
     int uidFor(String id) throws IOException, InstallException {
+        if (bundled) {
+            return NO_UID;
+        }
         Map<String, Entry> all = entries();
         Entry existing = all.get(id);
         if (existing != null) {
@@ -238,7 +273,7 @@ final class AppStore {
                 if (item instanceof Map<?, ?>) {
                     @SuppressWarnings("unchecked")
                     Map<String, Object> e = (Map<String, Object>) item;
-                    Entry entry = entry(e);
+                    Entry entry = entry(e, bundled);
                     if (entry != null) {
                         out.put(entry.id(), entry);
                     }
@@ -249,20 +284,20 @@ final class AppStore {
     }
 
     @SuppressWarnings("unchecked")
-    private static Entry entry(Map<String, Object> e) {
-        Entry entry = entryAlone(e);
+    private static Entry entry(Map<String, Object> e, boolean bundled) {
+        Entry entry = entryAlone(e, bundled);
         if (entry == null || !Boolean.TRUE.equals(e.get("trial"))) {
             return entry;
         }
-        Entry before = e.get("before") instanceof Map<?, ?> b ? entryAlone((Map<String, Object>) b) : null;
+        Entry before = e.get("before") instanceof Map<?, ?> b ? entryAlone((Map<String, Object>) b, bundled) : null;
         return new Entry(entry.id(), entry.uid(), entry.version(), entry.previous(), entry.tier(), entry.grants(), entry.state(),
                 entry.disabled(), entry.installedAt(), entry.updatedAt(), entry.packageSha256(), entry.manifestSha256(),
-                entry.memberKey(), true, before != null && before.id().equals(entry.id()) && before.uid() == entry.uid() ? before : null);
+                entry.memberKey(), entry.keyOverData(), true, before != null && before.id().equals(entry.id()) && before.uid() == entry.uid() ? before : null);
     }
 
-    private static Entry entryAlone(Map<String, Object> e) {
+    private static Entry entryAlone(Map<String, Object> e, boolean bundled) {
         String id = Json.string(e, "id");
-        if (id == null || !(e.get("uid") instanceof Integer uid) || uid < UID_FIRST || uid > UID_LAST) {
+        if (id == null || !(e.get("uid") instanceof Integer uid) || (bundled ? uid != NO_UID : uid < UID_FIRST || uid > UID_LAST)) {
             return null;
         }
         List<String> grants = new ArrayList<>();
@@ -277,7 +312,7 @@ final class AppStore {
         return new Entry(id, uid, Json.string(e, "version"), Json.string(e, "previous"), Json.string(e, "tier"), List.copyOf(grants),
                 Entry.KEPT.equals(state) ? Entry.KEPT : Entry.INSTALLED, Json.string(e, "disabled"), Json.string(e, "installedAt"),
                 Json.string(e, "updatedAt"), Json.string(e, "packageSha256"), Json.string(e, "manifestSha256"),
-                Json.string(e, "memberKey"), false, null);
+                Json.string(e, "memberKey"), Boolean.TRUE.equals(e.get("keyOverData")), false, null);
     }
 
     /** The newest catalog seq this desk has taken: a fetched catalog below it is a replay, and refused. */
@@ -307,7 +342,11 @@ final class AppStore {
     private void save(Map<String, Entry> all, long seq) throws IOException {
         List<Map<String, Object>> list = new ArrayList<>();
         for (Entry e : all.values()) {
-            list.add(e.toJson());
+            Map<String, Object> entry = e.toJson();
+            if (bundled) {
+                entry.put("bundled", true);
+            }
+            list.add(entry);
         }
         Map<String, Object> json = new LinkedHashMap<>();
         json.put("registry", 1);
@@ -473,6 +512,60 @@ final class AppStore {
                 }
             }
         }
+    }
+
+    // ---- the members' key
+
+    static final String MEMBER_KEY = "member.key";
+    private static final java.util.regex.Pattern KEY = java.util.regex.Pattern.compile("[A-Za-z0-9+/]{43}=");
+
+    /** The app's member key as kept beside its data: {@code {key, overData}}, or null if there's none or it's unreadable. */
+    MemberKey readMemberKey(String id) {
+        try {
+            Map<String, Object> json = Json.parseObject(readSmall(appDir(id).resolve(MEMBER_KEY), 1024));
+            String key = Json.string(json, "key");
+            return key != null && KEY.matcher(key).matches() ? new MemberKey(key, Boolean.TRUE.equals(json.get("overData"))) : null;
+        } catch (IOException | JsonFormatException e) {
+            return null;
+        }
+    }
+
+    /** Keeps the key beside the app's data ({@code 0600}, deskd's), once: a key already there is never replaced. */
+    void keepMemberKey(String id, MemberKey key) throws IOException {
+        if (readMemberKey(id) != null) {
+            return;
+        }
+        Map<String, Object> json = new LinkedHashMap<>();
+        json.put("key", key.key());
+        json.put("overData", key.overData());
+        writeAtomically(appDir(id).resolve(MEMBER_KEY), Json.bytes(json));
+    }
+
+    /** The key goes with the app's data: after it, a new install over no data makes a fresh one. */
+    void forgetMemberKey(String id) {
+        try {
+            Files.deleteIfExists(appDir(id).resolve(MEMBER_KEY));
+        } catch (IOException e) {
+            // Left: the next install reads it, which keeps the old pseudonyms, the safe side.
+        }
+    }
+
+    /** A member key and whether it was made over data the app already had. */
+    record MemberKey(String key, boolean overData) {}
+
+    /**
+     * The key an install uses: the one kept beside the app's data, else the registry's, else a new one, which is made
+     * {@code overData} when the app already has data ({@code hadData}): its members' pseudonyms came from a key now lost.
+     */
+    MemberKey memberKeyFor(String id, Entry old, boolean hadData) {
+        MemberKey kept = readMemberKey(id);
+        if (kept != null) {
+            return kept;
+        }
+        if (old != null && old.memberKey() != null) {
+            return new MemberKey(old.memberKey(), old.keyOverData());
+        }
+        return new MemberKey(newMemberKey(), hadData);
     }
 
     // ---- the widget's summary

@@ -9,7 +9,12 @@
     "desk.minimalistalliance.com",
     "api.minimalistalliance.com",
     "auth.minimalistalliance.com",
-    "gw.minimalistalliance.com"
+    "gw.minimalistalliance.com",
+    "office.staging.minimalistalliance.com",
+    "desk.staging.minimalistalliance.com",
+    "api.staging.minimalistalliance.com",
+    "auth.staging.minimalistalliance.com",
+    "gw.staging.minimalistalliance.com"
   ],
   "DefaultBrowserSettingEnabled": false,
   "BrowserSignin": 0,

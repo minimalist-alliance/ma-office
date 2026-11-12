@@ -95,3 +95,29 @@ describe('seven days', () => {
     expect(await keys()).toEqual([]);
   });
 });
+
+describe("a stale tab (ISS-89): another tab's sign-out left no token here", () => {
+  it('keeps no picture, though nothing has cleared this tab, and keeps them again once a token is back', async () => {
+    const layout = await import('../state/layoutStore');
+    let kept = true;
+    layout.mirrorFollowsToken(() => kept);
+    try {
+      kept = false;
+      await saveLastScreen('d-a', frame());
+      await settle();
+      expect(await keys()).toEqual([]);
+      // A save begun before the token went doesn't land after it either.
+      kept = true;
+      const saving = saveLastScreen('d-b', frame());
+      kept = false;
+      await saving;
+      await settle();
+      expect(await keys()).toEqual([]);
+      kept = true;
+      await saveLastScreen('d-a', frame());
+      expect(await keys()).toEqual(['d-a']);
+    } finally {
+      layout.mirrorFollowsToken(() => true);
+    }
+  });
+});

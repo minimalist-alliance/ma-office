@@ -81,7 +81,7 @@ class FilteredSitesTest {
         if (band != null) {
             Path file = dir.resolve(AgeBand.FILE);
             Files.writeString(file, band);
-            rig.module.followAgeBand(new AgeBand(file));
+            rig.module.followAgeBand(new AgeBand(file), "boot-1");
         }
         client = rig.connect("cs-a");
         // A call keeps the connection wanted, and the tabs attached, for the rest of the test.

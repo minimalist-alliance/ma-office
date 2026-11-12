@@ -8,6 +8,7 @@ import { create } from 'zustand';
 import { reducedMotion, writeJson } from '../lib/util';
 import { useLayoutPrefs } from '../shell/layoutPrefs';
 import { setLayoutPref } from '../shell/layoutSync';
+import { layoutMirrorWritable } from '../state/layoutStore';
 import { MIRROR_KEY, paintBackdrop } from './backdropMirror';
 import { NONE, parseBackgroundPref, parseManifest, pictureSources, SAVE_DATA_MAX_WIDTH, sceneFor, type EdgeBand, type Scene } from './backgrounds';
 import { useThemeStore } from './themeStore';
@@ -117,7 +118,8 @@ export function mountBackdrop(): void {
       for (const k of ['--ma-backdrop-band', '--ma-backdrop-band-tb', '--ma-backdrop-band-side']) root.style.removeProperty(k);
     }
     if (scene) el.append(picture(scene));
-    writeJson(MIRROR_KEY, scene ? { id, theme, average: scene.average, placeholder: scene.placeholder } : { id, theme });
+    // Part of the saved layout's mirror (ISS-67): never written once this page or another tab has signed out.
+    if (layoutMirrorWritable()) writeJson(MIRROR_KEY, scene ? { id, theme, average: scene.average, placeholder: scene.placeholder } : { id, theme });
     useBackdrop.setState({ shown: id });
   };
 

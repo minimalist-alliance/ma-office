@@ -1,7 +1,8 @@
 // windows of design 3.13: one window per app per desk, up to 4 per desk. Rects are per device.
 import { create } from 'zustand';
 import { readJson, writeJson } from '../lib/util';
-import { baseApp, type AppId, type CoreAppId, type Rect } from '../canvas/layout';
+import { baseApp, type AppId, type BaseAppId, type Rect } from '../canvas/layout';
+import { host } from '../deskapps/door';
 import { adultOnly, mayHaveApp } from '../platform/age';
 import { isPhone } from '../canvas/phone';
 import { carouselApps, carouselOn } from '../carousel/model';
@@ -41,19 +42,22 @@ export const MIN_H = 280;
 const CASCADE = 32;
 export const TOP_BAR = 72;
 
-const DEFAULT_SIZE: Record<CoreAppId, { w: number; h: number | 'full'; side?: 'right'; mode?: WindowMode }> = {
+const DEFAULT_SIZE: Record<BaseAppId, { w: number; h: number | 'full'; side?: 'right'; mode?: WindowMode }> = {
   notebook: { w: 880, h: 640 },
   chat: { w: 720, h: 640 },
   agent: { w: 480, h: 'full', side: 'right' },
   browser: { w: 1120, h: 780, mode: 'full' },
   commons: { w: 960, h: 680 },
   files: { w: 880, h: 640 },
+  // An installed app opens at its manifest's own size where its desk has said it (the desk app host's `windowSize`), the title bar on top.
+  deskapp: { w: 480, h: 440 },
 };
+
 
 function defaultRect(app: AppId, openCount: number): { rect: Rect; mode: WindowMode } {
   const vw = window.innerWidth;
   const vh = window.innerHeight;
-  const spec = DEFAULT_SIZE[baseApp(app)];
+  const spec = { ...DEFAULT_SIZE[baseApp(app)], ...host?.windowSize(app) };
   const w = Math.min(spec.w, vw - 24);
   const h = spec.h === 'full' ? vh - TOP_BAR - 12 : Math.min(spec.h, vh - TOP_BAR - 12);
   const x = spec.side === 'right' ? vw - w - 12 : Math.max(12, (vw - w) / 2 + openCount * CASCADE);

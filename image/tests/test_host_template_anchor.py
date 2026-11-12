@@ -194,7 +194,8 @@ class BuildScript(unittest.TestCase):
 
 class BakeKms(unittest.TestCase):
     """bake.sh's KMS step, run alone with a fake `aws` on PATH: alias/ma-host-template's public half matching the committed key goes
-    on; another key stops the bake; AccessDenied skips only the KMS half, loudly, naming the permission; any other error stops it."""
+    on; another key stops the bake; AccessDenied stops it too, unless ALLOW_NO_KMS_COMPARE=1, which skips only the KMS half, loudly,
+    naming the permission (Security's ADR 0077 Low 1); any other error stops it."""
 
     def setUp(self):
         self.tmp = pathlib.Path(tempfile.mkdtemp())
@@ -216,9 +217,10 @@ class BakeKms(unittest.TestCase):
         a.write_text(f"#!/bin/bash\n[ \"$1 $2\" = 'kms get-public-key' ] || exit 99\ncat '{self.tmp}/out'; cat '{self.tmp}/err' >&2; exit {rc}\n")
         a.chmod(0o755)
 
-    def bake(self, here=HOST):
+    def bake(self, here=HOST, **env):
         script = f'set -euo pipefail; HERE="{here}"; . "{IMAGE}/lib.sh"; . "{self.block}"; echo CONTINUED'
-        return sh("bash", "-c", script, env=dict(os.environ, PATH=f"{self.bin}:{os.environ['PATH']}"))
+        base = {k: v for k, v in os.environ.items() if k != "ALLOW_NO_KMS_COMPARE"}
+        return sh("bash", "-c", script, env=dict(base, PATH=f"{self.bin}:{os.environ['PATH']}", **env))
 
     def test_kms_matches(self):
         self.fake_aws(base64.b64encode(der(KEYS / KEY)).decode() + "\n")
@@ -235,13 +237,31 @@ class BakeKms(unittest.TestCase):
         self.assertNotIn("CONTINUED", r.stdout)
         self.assertIn("isn't alias/ma-host-template's public half", r.stderr)
 
-    def test_access_denied_skips_loudly(self):
+    def test_access_denied_stops(self):   # the one check that catches a key and its anchor changed together in git
         self.fake_aws(err="An error occurred (AccessDeniedException) when calling the GetPublicKey operation: not authorized\n", rc=254)
-        r = self.bake()
+        for env in ({}, {"ALLOW_NO_KMS_COMPARE": "0"}, {"ALLOW_NO_KMS_COMPARE": "yes"}):
+            with self.subTest(env=env):
+                r = self.bake(**env)
+                self.assertEqual(r.returncode, 1, r.stderr)
+                self.assertNotIn("CONTINUED", r.stdout)
+                self.assertIn("lacks kms:GetPublicKey on alias/ma-host-template", r.stderr)
+                self.assertIn("no bake", r.stderr)
+
+    def test_access_denied_with_the_override_skips_loudly(self):
+        self.fake_aws(err="An error occurred (AccessDeniedException) when calling the GetPublicKey operation: not authorized\n", rc=254)
+        r = self.bake(ALLOW_NO_KMS_COMPARE="1")
         self.assertEqual(r.returncode, 0, r.stderr)
         self.assertIn("CONTINUED", r.stdout)
         self.assertIn("WARNING", r.stderr)
+        self.assertIn("ALLOW_NO_KMS_COMPARE=1", r.stderr)
         self.assertIn("lacks kms:GetPublicKey on alias/ma-host-template", r.stderr)
+
+    def test_the_override_never_hides_another_key(self):
+        new_key(self.tmp / "other.pem")
+        self.fake_aws(base64.b64encode(der(self.tmp / "other.pem")).decode() + "\n")
+        r = self.bake(ALLOW_NO_KMS_COMPARE="1")
+        self.assertEqual(r.returncode, 1)
+        self.assertIn("isn't alias/ma-host-template's public half", r.stderr)
 
     def test_other_error_stops(self):
         self.fake_aws(err="An error occurred (NotFoundException) when calling the GetPublicKey operation: Alias not found\n", rc=254)
@@ -340,6 +360,93 @@ if [ -f "$L/template-keys.sha256" ] && [ "$have" = "$(cat "$L/template-keys.sha2
         r = sh("bash", str(HOST / "verify-template-anchor.sh"), "mutation", self.b64, env=env)
         self.assertEqual(r.returncode, 2)
         self.assertNotIn("RESTORE PASS", r.stdout)
+
+
+class ReleaseTree(unittest.TestCase):
+    """bake.sh's release-tree check, run alone on a throwaway repo: a release bake (ma-shared-host-) refuses a changed or untracked
+    file under image/; a test bake goes on and says +dirty later (Security's ADR 0077 Low 2)."""
+
+    def setUp(self):
+        self.tmp = pathlib.Path(tempfile.mkdtemp())
+        b = (HOST / "bake.sh").read_text().splitlines()
+        start = next(i for i, l in enumerate(b) if l.startswith("# A release bake (ma-shared-host-) is made from committed files only"))
+        end = next(i for i in range(start, len(b)) if b[i] == "fi")
+        self.block = self.tmp / "block.sh"
+        self.block.write_text("\n".join(b[start:end + 1]) + "\n")
+        self.repo = self.tmp / "repo"
+        (self.repo / "image/host/recipe").mkdir(parents=True)
+        (self.repo / "image/host/recipe/template-keys.sha256").write_text("x\n")
+        (self.repo / "other.txt").write_text("x\n")
+        git = ["git", "-C", str(self.repo), "-c", "user.name=t", "-c", "user.email=t@example.invalid"]
+        for c in (["init", "-q"], ["add", "-A"], ["commit", "-q", "-m", "t"]):
+            subprocess.run(git + c, check=True, capture_output=True)
+
+    def tearDown(self):
+        shutil.rmtree(self.tmp)
+
+    def bake(self, prefix):
+        script = f'set -euo pipefail; PREFIX="{prefix}"; REPO="{self.repo}"; . "{IMAGE}/lib.sh"; . "{self.block}"; echo CONTINUED'
+        return sh("bash", "-c", script)
+
+    def test_a_clean_tree_bakes(self):
+        for prefix in ("ma-shared-host-", "ma-desk-test-host-"):
+            with self.subTest(prefix=prefix):
+                r = self.bake(prefix)
+                self.assertEqual(r.returncode, 0, r.stderr)
+                self.assertIn("CONTINUED", r.stdout)
+
+    def test_a_release_bake_refuses_a_changed_file(self):
+        (self.repo / "image/host/recipe/template-keys.sha256").write_text("y\n")
+        r = self.bake("ma-shared-host-")
+        self.assertEqual(r.returncode, 1)
+        self.assertNotIn("CONTINUED", r.stdout)
+        self.assertIn("needs a clean image/ tree", r.stderr)
+        self.assertIn("template-keys.sha256", r.stderr)
+
+    def test_a_release_bake_refuses_an_untracked_file(self):
+        (self.repo / "image/host/recipe/files").mkdir()
+        (self.repo / "image/host/recipe/files/new.pem").write_text("z\n")
+        r = self.bake("ma-shared-host-")
+        self.assertEqual(r.returncode, 1)
+        self.assertIn("new.pem", r.stderr)
+
+    def test_a_test_bake_and_a_change_outside_image_go_on(self):
+        (self.repo / "image/host/recipe/template-keys.sha256").write_text("y\n")
+        self.assertEqual(self.bake("ma-desk-test-host-").returncode, 0)
+        subprocess.run(["git", "-C", str(self.repo), "checkout", "-q", "--", "image"], check=True)
+        (self.repo / "other.txt").write_text("y\n")
+        self.assertEqual(self.bake("ma-shared-host-").returncode, 0)
+
+    def test_it_runs_before_anything_is_made(self):
+        b = (HOST / "bake.sh").read_text()
+        self.assertLess(b.index("# A release bake (ma-shared-host-) is made from committed files only"), b.index("aws ec2 describe-images"))
+
+
+class BatchKeyAtBake(unittest.TestCase):
+    """recipe/build.sh holds the host's batch key to the desk image's own copy in the template, with no way round it (Security's ADR
+    0077 Low 3). The desk recipe removes bake.sh's staged copy of itself as it ends, so the old check against that copy never ran."""
+
+    def setUp(self):
+        self.b = (RECIPE / "build.sh").read_text()
+        self.desk = (IMAGE / "recipe/build.sh").read_text()
+
+    def test_compared_with_the_templates_copy_and_dies(self):
+        i = self.b.index("cmp -s /etc/desk-host/batch-keys/ma-desk-batch-2026-11.pem")
+        line = self.b[i:self.b.index("\n", self.b.index("\n", i) + 1)]
+        self.assertIn('"$T/opt/ma/etc/batch-keys/ma-desk-batch-2026-11.pem"', line)
+        self.assertIn("|| die", line)
+        self.assertNotIn("[ ! -d", line)
+        self.assertNotIn("2>/dev/null", line)
+        self.assertNotIn("ma-recipe/files/opt/ma/etc/batch-keys", self.b)
+
+    def test_the_template_is_made_before_and_the_desk_copy_is_gone_by_then(self):
+        self.assertLess(self.b.index("tar -C $T -xpf -"), self.b.index("cmp -s /etc/desk-host/batch-keys/ma-desk-batch-2026-11.pem"))
+        self.assertIn("rm -rf /home/admin/ma-recipe", self.desk)
+
+    def test_the_two_committed_copies_are_one_key(self):
+        host = RECIPE / "files/etc/desk-host/batch-keys/ma-desk-batch-2026-11.pem"
+        desk = IMAGE / "recipe/files/opt/ma/etc/batch-keys/ma-desk-batch-2026-11.pem"
+        self.assertEqual(host.read_bytes(), desk.read_bytes())
 
 
 if __name__ == "__main__":

@@ -10,28 +10,13 @@ import { useFree } from '../free/door';
 import { useDeskStore } from '../state/deskStore';
 import { useMaiaState } from './maiaState';
 import { circleLabel, headsUp, ringShare, ringWindow } from './meter';
+import { headsUpSeen, markHeadsUpSeen } from './seen';
 import { useBandwidth, watchBandwidth } from './store';
 import { Words } from './Words';
 import './bandwidth.css';
 
-const SEEN_KEY = 'ma.bandwidth.notice.v1';
 const NOTICE_MS = 7_000;
 const HOVER_CLOSE_MS = 180;
-
-function seen(key: string): boolean {
-  try {
-    return localStorage.getItem(SEEN_KEY) === key;
-  } catch {
-    return false;
-  }
-}
-function markSeen(key: string): void {
-  try {
-    localStorage.setItem(SEEN_KEY, key);
-  } catch {
-    /* private mode: it may show again on the next load, which is fine */
-  }
-}
 
 function Ring({ share, level }: { share: number; level: string }) {
   // pathLength 100, so the dash is the percentage and nothing depends on the radius.
@@ -63,8 +48,8 @@ export function BandwidthCircle() {
   useEffect(() => {
     if (!meter || !hasDesks) return;
     const h = headsUp(meter, { now: Date.now() });
-    if (!h || seen(h.key)) return;
-    markSeen(h.key);
+    if (!h || headsUpSeen(h.key)) return;
+    markHeadsUpSeen(h.key);
     setNotice(h.text);
     announce(h.text);
   }, [meter, hasDesks]);

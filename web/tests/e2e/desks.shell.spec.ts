@@ -22,7 +22,8 @@ const doc = (layout: Layout, z = Object.keys(layout)) => ({
 /** Only the first load seeds it, so a reload shows what was saved. */
 async function open(page: Page, request: Parameters<typeof harness>[0], layout: Layout, key = 'ma.layout.v2'): Promise<void> {
   await page.addInitScript(({ d, k }) => {
-    if (localStorage.getItem('test.seeded')) return;
+    // Seeded on the first load that's signed in: a start with nobody signed in wipes the layout's mirror (ISS-67).
+    if (localStorage.getItem('test.seeded') || !(location.pathname === '/auth/callback' || localStorage.getItem('ma-desk-web-refresh') || sessionStorage.getItem('ma-desk-web-refresh'))) return;
     localStorage.setItem('test.seeded', '1');
     localStorage.setItem(k, d);
   }, { d: JSON.stringify(doc(layout)), k: key });
@@ -716,7 +717,7 @@ test.describe('a saved layout', () => {
     };
     const text = JSON.stringify(v1);
     await page.addInitScript((d) => {
-      if (localStorage.getItem('test.seeded')) return;
+      if (localStorage.getItem('test.seeded') || !(location.pathname === '/auth/callback' || localStorage.getItem('ma-desk-web-refresh') || sessionStorage.getItem('ma-desk-web-refresh'))) return;
       localStorage.setItem('test.seeded', '1');
       localStorage.setItem('ma.layout.v1', d);
     }, text);
