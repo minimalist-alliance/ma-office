@@ -18,5 +18,29 @@ if [ -e /opt/ma/desk-agent/current ]; then
   if /usr/sbin/nft list chain inet ma agent_redirect >/dev/null 2>&1; then echo "smoke-test: nftables agent_redirect ok"
   else echo "smoke-test: nftables FAIL: table inet ma has no agent_redirect chain (ruleset not loaded?)" >&2; rc=1; fi
 fi
+# ADR 0097: with the marker, the Agent reads files only through desk-parse. A desk-agent whose health names a way (a release from
+# ADR 0097 on) must say "sidecar", and a one-line text parse as uid 1103 through the socket must answer OK, so an update that
+# breaks the sidecar rolls back. A desk-agent from before says no way and keeps its own child: the sidecar waits, unused.
+if [ -e /run/desk-parse/required ] && [ -e /opt/ma/desk-agent/current ]; then
+  way=$(curl --silent --max-time 5 --unix-socket /run/desk-agent/agent-admin.sock http://localhost/health 2>/dev/null \
+    | python3 -I -c 'import json, sys
+try:
+    j = json.load(sys.stdin)
+except ValueError:
+    j = {}
+w = j.get("parse") if isinstance(j, dict) else None
+w = w if w is not None else ((j.get("details") or {}).get("parse") if isinstance(j, dict) and isinstance(j.get("details"), dict) else None)
+print(w if isinstance(w, str) else "")' 2>/dev/null || true)
+  if [ -z "$way" ]; then
+    echo "smoke-test: desk-parse: desk-agent's health names no reader (a release from before ADR 0097, which reads in its own child)"
+  elif [ "$way" != sidecar ]; then
+    echo "smoke-test: desk-parse FAIL: the marker is there and desk-agent reads with '$way', not the sidecar" >&2; rc=1
+  elif ans=$(printf 'smoke test\n' | timeout 50 setpriv --reuid 1103 --regid 1103 --clear-groups --no-new-privs /usr/local/lib/ma/desk-parse-ask text 1000 1 2>&1) \
+       && [ "$(printf '%s\n' "$ans" | head -1 | cut -c1-2)" = OK ]; then
+    echo "smoke-test: desk-parse ok (desk-agent says sidecar; a text parse as uid 1103 answered OK)"
+  else
+    echo "smoke-test: desk-parse FAIL: a text parse as uid 1103 answered: $(printf '%s' "$ans" | head -c 80)" >&2; rc=1
+  fi
+fi
 [ "$rc" = 0 ] && echo "smoke-test: ok ($n component(s))"
 exit "$rc"

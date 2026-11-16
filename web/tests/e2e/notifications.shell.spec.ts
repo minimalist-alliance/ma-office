@@ -234,6 +234,19 @@ test.describe('on a phone', () => {
 
 /** axe on the bell and its open panel, at WCAG 2.2 AA and best practice, as the membership cards are checked. */
 async function axe(page: Page): Promise<{ violations: string[]; unsure: string[] }> {
+  // The bell and its panel are the office's glass (`styles/glass.css`): gradients and two thin rings of light, which axe can't
+  // see through, so every word would be "unsure". It reads them as they are under reduced transparency, solid; the words'
+  // contrast on the glass itself is measured on the rendered surface (`officeglass.contrast.shell.spec.ts`).
+  const cdp = await page.context().newCDPSession(page);
+  await cdp.send('Emulation.setEmulatedMedia', { features: [{ name: 'prefers-reduced-transparency', value: 'reduce' }] });
+  try {
+    return await axeSolid(page);
+  } finally {
+    await cdp.send('Emulation.setEmulatedMedia', { features: [] });
+  }
+}
+
+async function axeSolid(page: Page): Promise<{ violations: string[]; unsure: string[] }> {
   await page.evaluate(AXE);
   return page.evaluate(async () => {
     const w = window as unknown as { axe: { run: (ctx: unknown, opts: unknown) => Promise<{ violations: Rule[]; incomplete: Rule[] }> } };
@@ -241,6 +254,9 @@ async function axe(page: Page): Promise<{ violations: string[]; unsure: string[]
     const sheet = document.styleSheets[0]!;
     const i = sheet.insertRule('.ma-shell::before { content: none !important; }', sheet.cssRules.length);
     sheet.insertRule('.window-layer { display: none !important; }', i + 1);
+    // The canvas's proxies are transparent buttons under the top bar's panel (z 30), but axe doesn't follow the proxy layer's
+    // transform, so a desk's box that ends under a row of text reads as "partially overlaps" (a new desk at 1280 x 800, ADR 0057).
+    sheet.insertRule('.proxy-layer { visibility: hidden !important; }', i + 2);
     try {
       const r = await w.axe.run({ include: [['.bell-btn'], ['.bell-panel']] }, {
         runOnly: { type: 'tag', values: ['wcag2a', 'wcag2aa', 'wcag21a', 'wcag21aa', 'wcag22aa', 'best-practice'] },
@@ -250,6 +266,7 @@ async function axe(page: Page): Promise<{ violations: string[]; unsure: string[]
       const why = (v: Rule) => v.nodes.map((n) => `${n.target.join(' ')}: ${n.any.map((a) => a.message).join('; ')}`);
       return { violations: r.violations.map(say), unsure: r.incomplete.filter((v) => v.id === 'color-contrast').flatMap(why) };
     } finally {
+      sheet.deleteRule(i + 2);
       sheet.deleteRule(i + 1);
       sheet.deleteRule(i);
     }

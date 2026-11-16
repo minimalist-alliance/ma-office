@@ -108,6 +108,15 @@ class BrowserToolsTest {
         return tools.run(c, r);
     }
 
+    /** As desk-agent runs a call the member approved: the card's payload, with the approval deskd's ToolHost redeemed. */
+    private HostedTool.Result approvedExec(String runId, String tool, Map<String, Object> payload) throws Exception {
+        HostedCall c = new HostedCall(1, runId, "ag-1", tool, new LinkedHashMap<>(payload),
+                new HostedCall.Approval("ap-1", "0".repeat(64)), false, Caller.THE_OWNER, null);
+        RunLedger.Run r = run(runId);
+        tools.look(c, r);
+        return tools.run(c, r);
+    }
+
     private ToolRisk classify(String tool, HostedTool.Look look, String runId) throws Exception {
         return ToolHost.classify(HostedDecls.get(tool), look, run(runId));
     }
@@ -242,6 +251,208 @@ class BrowserToolsTest {
         assertThat(classify("browser_click", look, "run-1")).isEqualTo(ToolRisk.READ);
     }
 
+    // ---- gap 1: a submit is send, whatever its label
+
+    @Test
+    void gapOneAClickThatSubmitsAFormIsSendWhateverItsLabelAndItsPayloadBindsIt() throws Exception {
+        AgentBrowser.Tab tab = readFormTab(null);
+        // "Show more" says nothing of sending, but deskd's half finds it a form's submit control.
+        browser.clickLooks.put("e.7", Map.of("nav", "submit", "url", ORIGIN + "/join/next"));
+        HostedTool.Look look = look("run-1", "browser_click", args("tabId", tab.tabId(), "ref", "n7"));
+        assertThat(look.risk()).isEqualTo(ToolRisk.SEND);
+        assertThat(classify("browser_click", look, "run-1")).isEqualTo(ToolRisk.SEND);
+        assertThat(look.payload()).containsEntry("submit", true).doesNotContainKey("spend");
+        assertThat(browser.clickLooked).contains("e.7");
+
+        // The model's own call, asked for nothing: never done.
+        assertThatThrownBy(() -> exec("run-1", "browser_click", args("tabId", tab.tabId(), "ref", "n7")))
+                .isInstanceOfSatisfying(ToolFailure.class, e -> assertThat(e.reason()).isEqualTo("changed"));
+        assertThat(browser.acts).isEmpty();
+
+        // The member's yes to the card that said so: done, and the action proxy is told it may submit.
+        HostedTool.Result done = approvedExec("run-1", "browser_click", look.payload());
+        assertThat((Map<String, Object>) done.content()).containsEntry("done", true);
+        assertThat(browser.submits).containsExactly(true);
+
+        // In the member's session too, and the same control there is a send, not a write.
+        AgentBrowser.Tab session = readFormTab("shop.example");
+        browser.clickLooks.put("e.7", Map.of("nav", "submit", "url", ORIGIN + "/join/next"));
+        HostedTool.Look there = look("run-1", "browser_click", args("tabId", session.tabId(), "ref", "n7"));
+        assertThat(there.risk()).isEqualTo(ToolRisk.SEND);
+        assertThat(there.payload()).containsEntry("submit", true);
+    }
+
+    @Test
+    void gapOneASearchFormsSubmitIsAReadInTheAgentsOwnContextAsItsEnterIsButASendInTheMembersSession() throws Exception {
+        AgentBrowser.Tab tab = readFormTab(null);
+        browser.clickLooks.put("e.7", Map.of("nav", "submit", "url", ORIGIN + "/search", "search", true));
+        HostedTool.Look look = look("run-1", "browser_click", args("tabId", tab.tabId(), "ref", "n7"));
+        assertThat(look.risk()).isNull();
+        assertThat(look.payload()).doesNotContainKey("submit");
+        exec("run-1", "browser_click", args("tabId", tab.tabId(), "ref", "n7"));
+        assertThat(browser.submits).containsExactly(true);
+
+        AgentBrowser.Tab session = readFormTab("shop.example");
+        HostedTool.Look there = look("run-1", "browser_click", args("tabId", session.tabId(), "ref", "n7"));
+        assertThat(there.risk()).isEqualTo(ToolRisk.SEND);
+        assertThat(there.payload()).containsEntry("submit", true);
+    }
+
+    @Test
+    void gapOneAControlThatBecameASubmitSinceTheCardIsntDone() throws Exception {
+        AgentBrowser.Tab tab = readFormTab("shop.example");
+        HostedTool.Look look = look("run-1", "browser_click", args("tabId", tab.tabId(), "ref", "n7"));
+        assertThat(look.risk()).isEqualTo(ToolRisk.WRITE);
+        assertThat(look.payload()).doesNotContainKey("submit");
+        // The page made it a submit after the member said yes to a plain click.
+        browser.clickLooks.put("e.7", Map.of("nav", "submit", "url", ORIGIN + "/join/next"));
+        assertThatThrownBy(() -> approvedExec("run-1", "browser_click", look.payload()))
+                .isInstanceOfSatisfying(ToolFailure.class, e -> assertThat(e.reason()).isEqualTo("changed"));
+        assertThat(browser.acts).isEmpty();
+        // A plain click that runs is told it may not submit, so the proxy refuses one that does by the time it clicks.
+        browser.clickLooks.clear();
+        approvedExec("run-1", "browser_click", look.payload());
+        assertThat(browser.submits).containsExactly(false);
+    }
+
+    @Test
+    void gapOneWhereTheElementItselfSaysItGoesIsCheckedBeforeAnyoneIsAsked() throws Exception {
+        AgentBrowser.Tab session = readFormTab("shop.example");
+        browser.clickLooks.put("e.7", Map.of("nav", "submit", "url", "https://other.example/collect"));
+        assertThat(look("run-1", "browser_click", args("tabId", session.tabId(), "ref", "n7")).refusal()).isEqualTo("off_site");
+        AgentBrowser.Tab own = readFormTab(null);
+        browser.clickLooks.put("e.7", Map.of("nav", "link", "url", "http://169.254.169.254/latest/meta-data/"));
+        assertThat(look("run-1", "browser_click", args("tabId", own.tabId(), "ref", "n7")).refusal()).isEqualTo("blocked");
+        // The page's own javascript: link is checked again as it's clicked and at the request, not here.
+        browser.clickLooks.put("e.7", Map.of("nav", "link", "url", "javascript:void(0)"));
+        assertThat(look("run-1", "browser_click", args("tabId", own.tabId(), "ref", "n7")).refusal()).isNull();
+        // A sensitive control isn't looked at in the page at all: it's refused.
+        browser.clickLooked.clear();
+        assertThat(look("run-1", "browser_click", args("tabId", own.tabId(), "ref", "n6")).refusal()).isEqualTo("sensitive");
+        assertThat(browser.clickLooked).doesNotContain("e.6");
+        // A control the page no longer shows as read isn't asked about.
+        browser.clickLookRefusals.put("e.7", "changed");
+        assertThatThrownBy(() -> look("run-1", "browser_click", args("tabId", own.tabId(), "ref", "n7")))
+                .isInstanceOfSatisfying(ToolFailure.class, e -> assertThat(e.reason()).isEqualTo("changed"));
+    }
+
+    @Test
+    void securityBbL1EnterIsJudgedByWhatItsFormSubmitsNotByTheFieldsKind() throws Exception {
+        AgentBrowser.Tab tab = readFormTab(null);
+        // A search box whose form posts: Enter sends it, so it asks as a send and binds it.
+        browser.enterLooks.put("e.5", Map.of("nav", "submit", "url", ORIGIN + "/join", "search", false));
+        HostedTool.Look post = look("run-1", "browser_press", args("tabId", tab.tabId(), "ref", "n5", "key", "Enter"));
+        assertThat(post.risk()).isEqualTo(ToolRisk.SEND);
+        assertThat(post.payload()).containsEntry("submit", true);
+        assertThatThrownBy(() -> exec("run-1", "browser_press", args("tabId", tab.tabId(), "ref", "n5", "key", "Enter")))
+                .isInstanceOfSatisfying(ToolFailure.class, e -> assertThat(e.reason()).isEqualTo("changed"));
+        approvedExec("run-1", "browser_press", post.payload());
+        assertThat(browser.submits).containsExactly(true);
+        // A search box in a GET search form: a search, a read, done unasked.
+        browser.enterLooks.put("e.5", Map.of("nav", "submit", "url", ORIGIN + "/search", "search", true));
+        HostedTool.Look get = look("run-1", "browser_press", args("tabId", tab.tabId(), "ref", "n5", "key", "Enter"));
+        assertThat(get.risk()).isNull();
+        assertThat(get.payload()).doesNotContainKey("submit");
+        exec("run-1", "browser_press", args("tabId", tab.tabId(), "ref", "n5", "key", "Enter"));
+        assertThat(browser.submits).containsExactly(true, true);
+        // Enter in a field whose form's button says it pays: a spend, by the button, whatever the field says.
+        browser.enterLooks.put("e.1", Map.of("nav", "submit", "url", ORIGIN + "/order", "button", "Place order"));
+        assertThat(look("run-1", "browser_press", args("tabId", tab.tabId(), "ref", "n1", "key", "Enter")).risk()).isEqualTo(ToolRisk.SPEND);
+        // Enter in a many-lines field submits nothing, and other keys aren't looked at for it.
+        assertThat(look("run-1", "browser_press", args("tabId", tab.tabId(), "ref", "n8", "key", "Enter")).risk()).isNull();
+        browser.clickLooked.clear();
+        look("run-1", "browser_press", args("tabId", tab.tabId(), "ref", "n1", "key", "Escape"));
+        assertThat(browser.clickLooked).isEmpty();
+        // In the member's session, a search box's Enter is a send whatever its form.
+        AgentBrowser.Tab session = readFormTab("shop.example");
+        assertThat(look("run-1", "browser_press", args("tabId", session.tabId(), "ref", "n5", "key", "Enter")).risk()).isEqualTo(ToolRisk.SEND);
+        // Where the form goes is checked before asking, as a click's is.
+        browser.enterLooks.put("e.1", Map.of("nav", "submit", "url", "https://other.example/collect"));
+        assertThat(look("run-1", "browser_press", args("tabId", session.tabId(), "ref", "n1", "key", "Enter")).refusal()).isEqualTo("off_site");
+    }
+
+    @Test
+    void gapSevenAPagePastItsMemorySaysSo() throws Exception {
+        AgentBrowser.Tab tab = readFormTab(null);
+        browser.actFails = new RpcException(RpcException.TOO_LARGE, "no", Map.of("reason", "memory", "limit", 300L));
+        assertThatThrownBy(() -> exec("run-1", "browser_click", args("tabId", tab.tabId(), "ref", "n7")))
+                .isInstanceOfSatisfying(ToolFailure.class, e -> {
+                    assertThat(e.code()).isEqualTo(RpcException.TOO_LARGE);
+                    assertThat(e.reason()).isEqualTo("memory");
+                    assertThat(e.details()).containsEntry("limit", 300L);
+                });
+    }
+
+    @Test
+    void securityBbL5AnActThatWasDoneNeverReadsAsNotDoneWhateverFollowedIt() throws Exception {
+        AgentBrowser.Tab tab = readFormTab("shop.example");
+        browser.paymentFrames.add(tab.tabId());
+        HostedTool.Look look = look("run-1", "browser_click", args("tabId", tab.tabId(), "ref", "n7"));
+        assertThat(look.risk()).isEqualTo(ToolRisk.SPEND);
+        // A navigation it led to, stopped at the request: done, and says so.
+        browser.actAfter = Map.of("stopped", "off_site");
+        Map<String, Object> stopped = (Map<String, Object>) approvedExec("run-1", "browser_click", look.payload()).content();
+        assertThat(stopped).containsEntry("done", true).containsEntry("stopped", "off_site").containsEntry("view", "page");
+        // The page past an Agent tab's memory after it: done, and the tab closed, with no page to read.
+        browser.actAfter = Map.of("closed", "memory");
+        Map<String, Object> closed = (Map<String, Object>) approvedExec("run-1", "browser_click", look.payload()).content();
+        assertThat(closed).containsEntry("done", true).containsEntry("closed", "memory").doesNotContainKey("text");
+        // The page after it unreadable: done all the same.
+        browser.actAfter = Map.of();
+        browser.readFailsOnce = new RpcException(RpcException.NOT_FOUND, "gone", Map.of("reason", "not_found"));
+        Map<String, Object> unread = (Map<String, Object>) approvedExec("run-1", "browser_click", look.payload()).content();
+        assertThat(unread).containsEntry("done", true).containsEntry("view", "unknown");
+        assertThat(browser.acts).hasSize(3);
+    }
+
+    // ---- gap 2: the model's arguments never say spend or submit
+
+    @Test
+    void gapTwoTheModelCantSaySpendOrSubmitOnACallNobodyApproved() throws Exception {
+        AgentBrowser.Tab tab = readFormTab(null);
+        // A plain click with spend and submit claimed: done as a plain click, the proxy told neither.
+        exec("run-1", "browser_click", args("tabId", tab.tabId(), "ref", "n7", "spend", true, "submit", true));
+        assertThat(browser.spends).containsExactly(false);
+        assertThat(browser.submits).containsExactly(false);
+
+        // On a page with a payment frame, a spend claimed by the model isn't the member's yes: refused, nothing done.
+        browser.paymentFrames.add(tab.tabId());
+        assertThatThrownBy(() -> exec("run-1", "browser_click", args("tabId", tab.tabId(), "ref", "n7", "spend", true)))
+                .isInstanceOfSatisfying(ToolFailure.class, e -> assertThat(e.reason()).isEqualTo("changed"));
+        browser.paymentFrames.clear();
+        // Nor is a submit it claims.
+        browser.clickLooks.put("e.7", Map.of("nav", "submit", "url", ORIGIN + "/join/next"));
+        assertThatThrownBy(() -> exec("run-1", "browser_click", args("tabId", tab.tabId(), "ref", "n7", "submit", true)))
+                .isInstanceOfSatisfying(ToolFailure.class, e -> assertThat(e.reason()).isEqualTo("changed"));
+        assertThat(browser.acts).hasSize(1);
+    }
+
+    // ---- gap 3: a control is judged by deskd's last read, never by the model's words
+
+    @Test
+    void gapThreeAnExpandedRefTheLastReadDidntShowIsntTheModelsToName() throws Exception {
+        AgentBrowser.Tab tab = readFormTab("shop.example");
+        // A node and words the model made up, a "Next" link for what may be a pay button: not judged by them.
+        Map<String, Object> made = args("tabId", tab.tabId(), "ref", args("node", "e.99", "fp", "zz", "block", "k3", "rev", 3),
+                "label", "Next", "role", "link");
+        assertThatThrownBy(() -> look("run-1", "browser_click", made))
+                .isInstanceOfSatisfying(ToolFailure.class, e -> assertThat(e.reason()).isEqualTo("not_found"));
+        assertThatThrownBy(() -> exec("run-1", "browser_click", made))
+                .isInstanceOfSatisfying(ToolFailure.class, e -> assertThat(e.reason()).isEqualTo("not_found"));
+        // A real node with the model's own words for it: the last read's words win.
+        Map<String, Object> renamed = args("tabId", tab.tabId(), "ref", args("node", "e.4", "fp", "fp4", "block", "k3", "rev", 3),
+                "label", "Show more", "role", "link");
+        HostedTool.Look look = look("run-1", "browser_click", renamed);
+        assertThat(look.risk()).isEqualTo(ToolRisk.SPEND);
+        assertThat(look.payload()).containsEntry("label", "Buy now").containsEntry("role", "button");
+        // An approved payload is the card the member saw: its words stand, and the proxy checks the page still shows it.
+        HostedTool.Result done = approvedExec("run-1", "browser_click", args("tabId", tab.tabId(),
+                "ref", args("node", "e.99", "fp", "zz", "block", "k3", "rev", 3), "label", "Next", "role", "button",
+                "origin", ORIGIN));
+        assertThat((Map<String, Object>) done.content()).containsEntry("done", true);
+        assertThat(browser.acts).extracting(FakeAgentBrowser.Act::node).containsExactly("e.99");
+    }
+
     @Test
     void inAMemberSessionTabEveryClickTypingAndPressIsAtLeastWrite() throws Exception {
         AgentBrowser.Tab tab = readFormTab("shop.example");
@@ -369,7 +580,7 @@ class BrowserToolsTest {
         assertThat(look("run-1", "browser_press", args("tabId", tab.tabId(), "ref", "n1", "key", "Escape")).risk()).isNull();
 
         // The approved payload runs, as a spend.
-        HostedTool.Result done = exec("run-1", "browser_click", new LinkedHashMap<>(show.payload()));
+        HostedTool.Result done = approvedExec("run-1", "browser_click", show.payload());
         assertThat((Map<String, Object>) done.content()).containsEntry("done", true);
         assertThat(browser.spends).containsExactly(true);
 
@@ -379,7 +590,7 @@ class BrowserToolsTest {
         assertThat(before.risk()).isNull();
         assertThat(before.payload()).doesNotContainKey("spend");
         browser.paymentFrames.add(tab.tabId());
-        assertThatThrownBy(() -> exec("run-1", "browser_click", new LinkedHashMap<>(before.payload())))
+        assertThatThrownBy(() -> approvedExec("run-1", "browser_click", before.payload()))
                 .isInstanceOfSatisfying(ToolFailure.class, e -> assertThat(e.reason()).isEqualTo("changed"));
         assertThat(browser.acts).hasSize(1);
     }
@@ -519,14 +730,14 @@ class BrowserToolsTest {
         AgentBrowser.Tab tab = readFormTab("shop.example");
         HostedTool.Look look = look("run-1", "browser_click", args("tabId", tab.tabId(), "ref", "n2"));
         // desk-agent sends exactly the payload the member approved.
-        HostedTool.Result result = exec("run-1", "browser_click", new LinkedHashMap<>(look.payload()));
+        HostedTool.Result result = approvedExec("run-1", "browser_click", look.payload());
         assertThat(browser.acts).containsExactly(new FakeAgentBrowser.Act("run-1", tab.tabId(), "e.2", "click", null, "fp2", "k2", 3));
         assertThat(result.taints()).containsExactlyInAnyOrder("U", "S");
         assertThat(result.chip()).containsEntry("session", "member");
 
         Map<String, Object> elsewhere = new LinkedHashMap<>(look.payload());
         elsewhere.put("origin", "https://evil.example");
-        assertThatThrownBy(() -> exec("run-1", "browser_click", elsewhere))
+        assertThatThrownBy(() -> approvedExec("run-1", "browser_click", elsewhere))
                 .isInstanceOfSatisfying(ToolFailure.class, e -> assertThat(e.reason()).isEqualTo("changed"));
     }
 
@@ -576,13 +787,33 @@ class BrowserToolsTest {
                     assertThat(e.reason()).isEqualTo("tab_cap");
                     assertThat(e.details()).containsEntry("limit", 2);
                 });
-        // A session tab isn't an Agent tab of its own context.
-        assertThat(look("run-1", "browser_use_my_session", args("site", "shop.example")).refusal()).isNull();
+        // A tab in the member's session is an Agent tab too (gap 4): no third tab, asked for nothing.
+        assertThat(look("run-1", "browser_use_my_session", args("site", "shop.example")).refusal()).isEqualTo("tab_cap");
 
         browser.tabs.clear();
         browser.free = true;
         exec("run-1", "browser_open", args("url", "https://a.example/"));
         assertThat(look("run-1", "browser_open", args("url", "https://c.example/")).refusal()).isEqualTo("tab_cap");
+    }
+
+    @Test
+    void gapFourASessionTabCountsAgainstTheDesksCapAndOneOpenAlreadyNeedsNoPlace() throws Exception {
+        exec("run-1", "browser_use_my_session", args("site", "shop.example"));
+        exec("run-1", "browser_open", args("url", "https://a.example/"));
+        assertThat(browser.agentTabs()).isEqualTo(2);
+        // No third tab of either kind, refused before anyone is asked.
+        assertThat(look("run-1", "browser_open", args("url", "https://b.example/")).refusal()).isEqualTo("tab_cap");
+        assertThat(look("run-2", "browser_use_my_session", args("site", "mail.example")).refusal()).isEqualTo("tab_cap");
+        assertThatThrownBy(() -> tools.run(call("run-2", "browser_use_my_session", args("site", "mail.example"), false), run("run-2")))
+                .isInstanceOfSatisfying(ToolFailure.class, e -> assertThat(e.reason()).isEqualTo("tab_cap"));
+        // The site the run holds open already takes no new place.
+        assertThat(look("run-1", "browser_use_my_session", args("site", "shop.example")).refusal()).isNull();
+        // A free desk has one, whichever kind it is.
+        browser.tabs.clear();
+        browser.sites.clear();
+        browser.free = true;
+        exec("run-1", "browser_use_my_session", args("site", "shop.example"));
+        assertThat(look("run-1", "browser_open", args("url", "https://a.example/")).refusal()).isEqualTo("tab_cap");
     }
 
     @Test
@@ -598,8 +829,11 @@ class BrowserToolsTest {
         assertThat(granted.taints()).containsExactlyInAnyOrder("U", "S");
         exec("run-1", "browser_use_my_session", args("site", "mail.example"));
         assertThat(look("run-1", "browser_use_my_session", args("site", "third.example")).refusal()).isEqualTo("ask_cap");
-        // A site the run holds already isn't a third, and another run starts with none.
+        // A site the run holds already isn't a third, and another run starts with none: it's the desk's two tabs that
+        // stop it here (the cap, gap 4), not its sites.
         assertThat(look("run-1", "browser_use_my_session", args("site", "shop.example")).refusal()).isNull();
+        assertThat(look("run-2", "browser_use_my_session", args("site", "third.example")).refusal()).isEqualTo("tab_cap");
+        browser.tabs.clear();
         assertThat(look("run-2", "browser_use_my_session", args("site", "third.example")).refusal()).isNull();
     }
 

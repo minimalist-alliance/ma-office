@@ -103,7 +103,7 @@ test('the switch at the desk\'s bottom right turns it into a stage for one app a
   await expect(toggle(page)).toHaveAccessibleName('Back to the desk');
   await expect(toggle(page)).toHaveAttribute('aria-pressed', 'true');
   await expect(stage(page)).toBeVisible();
-  await expect(slide(page)).toHaveAttribute('aria-label', /^Chat, 1 of \d$/);
+  await expect(slide(page)).toHaveAttribute('aria-label', /^Courier, 1 of \d$/);
   // The apps are on the stage now, not on the desk to press.
   await expect(desk(page, 'Personal').getByRole('button', { name: /^Notebook/ })).toHaveCount(0);
   // Most of the desk: the stage leaves only the strip and a margin.
@@ -138,9 +138,9 @@ test('keys, the head\'s buttons and a trackpad move one app at a time, and stop 
   await settled(page);
   // The stage has the keyboard, as a window does when it opens, so the arrows work at once.
   await expect(stage(page)).toBeFocused();
-  await expect(slide(page)).toHaveAttribute('aria-label', /^Chat, 1 of \d$/);
+  await expect(slide(page)).toHaveAttribute('aria-label', /^Courier, 1 of \d$/);
   await page.keyboard.press('ArrowLeft');
-  await expect(slide(page)).toHaveAttribute('aria-label', /^Chat, 1 of \d$/); // no wrap
+  await expect(slide(page)).toHaveAttribute('aria-label', /^Courier, 1 of \d$/); // no wrap
   await page.keyboard.press('ArrowRight');
   await expect(slide(page)).toHaveAttribute('aria-label', /^Notebook, 2 of \d$/);
   await stage(page).getByRole('button', { name: 'Next app' }).click();
@@ -344,7 +344,7 @@ for (const theme of ['light', 'dark'] as ThemeId[]) {
     expect(await axe(page)).toEqual([]);
     await press(page, toggle(page));
     await settled(page);
-    await expect(slide(page)).toHaveAttribute('aria-label', /^Chat, 1 of \d$/);
+    await expect(slide(page)).toHaveAttribute('aria-label', /^Courier, 1 of \d$/);
     expect(await axe(page)).toEqual([]);
     await page.keyboard.press('ArrowRight');
     await expect(slide(page)).toHaveAttribute('aria-label', /^Notebook, 2 of \d$/);

@@ -1,0 +1,21 @@
+From: Build Bot <builds@example.net>
+To: me@desk.example
+Date: Fri, 13 Nov 2026 10:00:00 +0000
+Subject: LF-only multipart
+Message-ID: <multipart-lf-endings@corpus.example>
+MIME-Version: 1.0
+X-Corpus-Note: a whole multipart message with LF line endings
+Content-Type: multipart/mixed; boundary="lf-1"
+
+--lf-1
+Content-Type: text/plain
+
+Sent from a mailer that writes bare LF.
+--lf-1
+Content-Type: application/pdf; name="build.pdf"
+Content-Disposition: attachment; filename="build.pdf"
+Content-Transfer-Encoding: base64
+
+JVBERi0xLjQKMSAwIG9iaiA8PCAvVHlwZSAvQ2F0YWxvZyA+PiBlbmRvYmoKdHJhaWxlciA8PCAv
+Um9vdCAxIDAgUiA+PgolJUVPRgo=
+--lf-1--

@@ -1,0 +1,30 @@
+From: Archive <archive@example.org>
+To: me@desk.example
+Date: Fri, 13 Nov 2026 10:00:00 +0000
+Subject: Long file names
+Message-ID: <rfc2231-continuations@corpus.example>
+MIME-Version: 1.0
+X-Corpus-Note: RFC 2231 continuations with a charset, and a charset with a language tag
+Content-Type: multipart/mixed; boundary="r2-1"
+
+--r2-1
+Content-Type: text/plain; charset=utf-8
+
+Two reports with long names.
+--r2-1
+Content-Type: application/pdf
+Content-Disposition: attachment;
+ filename*0*=utf-8''%C3%9Cbersicht%20der%20Ausgaben%20und%20Einnahmen;
+ filename*1*=%20f%C3%BCr%20das%20Jahr%202026%20%E2%80%94%20;
+ filename*2="final version.pdf"
+Content-Transfer-Encoding: base64
+
+JVBERi0xLjQKMSAwIG9iaiA8PCAvVHlwZSAvQ2F0YWxvZyA+PiBlbmRvYmoKdHJhaWxlciA8PCAv
+Um9vdCAxIDAgUiA+PgolJUVPRgo=
+--r2-1
+Content-Type: text/plain; charset=iso-8859-1
+Content-Disposition: attachment; filename*=iso-8859-1'fr'r%E9sum%E9%20annuel.txt
+Content-Transfer-Encoding: quoted-printable
+
+R=E9sum=E9 annuel.
+--r2-1--

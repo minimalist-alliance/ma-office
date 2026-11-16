@@ -1,0 +1,97 @@
+{
+  "id": "files-028",
+  "area": "files",
+  "title": "Trash several files in one step",
+  "prompt": "Trash every .tmp file in Harness/build, and leave everything else.",
+  "setup": {
+    "files": {
+      "Harness/build/a.tmp": "1\n",
+      "Harness/build/b.tmp": "2\n",
+      "Harness/build/c.tmp": "3\n",
+      "Harness/build/keep.md": "Keep this file.\n"
+    }
+  },
+  "approve": "all",
+  "checks": [
+    {
+      "kind": "noFile",
+      "path": "Harness/build/a.tmp"
+    },
+    {
+      "kind": "noFile",
+      "path": "Harness/build/b.tmp"
+    },
+    {
+      "kind": "noFile",
+      "path": "Harness/build/c.tmp"
+    },
+    {
+      "kind": "trashed",
+      "name": "a.tmp"
+    },
+    {
+      "kind": "trashed",
+      "name": "b.tmp"
+    },
+    {
+      "kind": "trashed",
+      "name": "c.tmp"
+    },
+    {
+      "kind": "file",
+      "path": "Harness/build/keep.md",
+      "equals": "Keep this file.\n"
+    },
+    {
+      "kind": "cards",
+      "tools": [
+        "files_trash",
+        "files_trash",
+        "files_trash"
+      ]
+    }
+  ],
+  "policy": {
+    "tools": [
+      "files_list",
+      "files_trash"
+    ]
+  },
+  "standIn": [
+    {
+      "calls": [
+        {
+          "name": "files_list",
+          "input": {
+            "path": "Harness/build"
+          }
+        }
+      ]
+    },
+    {
+      "calls": [
+        {
+          "name": "files_trash",
+          "input": {
+            "path": "Harness/build/a.tmp"
+          }
+        },
+        {
+          "name": "files_trash",
+          "input": {
+            "path": "Harness/build/b.tmp"
+          }
+        },
+        {
+          "name": "files_trash",
+          "input": {
+            "path": "Harness/build/c.tmp"
+          }
+        }
+      ]
+    },
+    {
+      "text": "Moved a.tmp, b.tmp and c.tmp to the trash. keep.md is still there."
+    }
+  ]
+}

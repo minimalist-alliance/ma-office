@@ -1,0 +1,179 @@
+/* The mark's menu (`MarkPanel.tsx`, the Product Designer's mark menu spec, Nov 12). The mark's button and its plate are
+   the top bar's, in `styles/app.css`. Two blocks: the panel's place and look, then its motion (concept 1, "unfold from the
+   mark"), on its own, so another concept is a swap of that block alone. `.menu-item` and `.menu-sep` are the office's own
+   classes (14/20 at 400, radius 10, hover `surface.sunken`); only the padding and the ring's offset change here. */
+
+/* ------------------------------------------------------------ place and look */
+/* Open, the bar is over every window (20) and Maia's open panel (25), as with its other popovers. */
+.topbar:has(.mark-pop) {
+  z-index: 30;
+}
+/* Under the mark, its left edge the plate's (6 px left of the mark), 8 px under the bar's row. It floats: nothing reflows.
+   The page's own 14/20 again: it sits in `.home-mark`, whose line height is 0 for the mark. */
+.mark-pop {
+  position: absolute;
+  left: -6px;
+  top: calc(100% + 13px);
+  width: 232px;
+  z-index: 40;
+  line-height: 20px;
+}
+/* The surface, whole on every frame of its growth: an element of its own (`.mark-surface`), so it wears the office's glass
+   (`styles/glass.css`) at a menu's height, its light following it as it grows. Its look under reduced transparency or more
+   contrast is the menu's: border, overlay and the menu's shadow. */
+.mark-surface {
+  position: absolute;
+  left: 0;
+  top: 0;
+  width: 100%;
+  height: 100%;
+  box-sizing: border-box;
+  border: 1px solid var(--ma-glass-line, var(--ma-border));
+  border-radius: 16px;
+  --ma-glass-fill: var(--ma-glass-body-full);
+  --ma-glass-edge: 1px;
+  --ma-glass-solid-bg: var(--ma-surface-overlay);
+  --ma-glass-solid-shadow: var(--ma-elevation-menu);
+  --ma-glass-lift: var(--ma-elevation-menu);
+}
+/* The hover bridge between the plate and the panel, the plate's width only, so the pointer can cross the gap. */
+.mark-pop::after {
+  content: '';
+  position: absolute;
+  left: 0;
+  bottom: 100%;
+  width: 57px;
+  height: 14px;
+}
+.mark-menu {
+  position: relative;
+  max-height: calc(100dvh - 72px);
+  overflow-y: auto;
+  overscroll-behavior: contain;
+  padding: 6px;
+}
+.mark-menu ul {
+  margin: 0;
+  padding: 0;
+  list-style: none;
+}
+.mark-menu .menu-item {
+  padding: 10px 6px;
+}
+/* Rows' rings are inset, as in the office's desk menu. */
+.mark-menu :focus-visible {
+  outline-offset: -2px;
+}
+/* Privacy, Terms and Guidelines: one quieter line. */
+.mark-foot {
+  display: flex;
+  gap: 4px;
+}
+.mark-foot a {
+  display: block;
+  padding: 6px;
+  border-radius: 8px;
+  font-size: 13px;
+  line-height: 18px;
+  color: var(--ma-text-secondary);
+  text-decoration: none;
+}
+.mark-foot a:hover {
+  background: var(--ma-surface-sunken);
+  color: var(--ma-text-primary);
+}
+/* A finger: 44 px rows and footer links. */
+@media (pointer: coarse) {
+  .mark-menu .menu-item {
+    padding-block: 12px;
+  }
+  .mark-foot a {
+    padding-block: 13px;
+  }
+}
+/* Short-viewport mode (the same query as `useIsShort`): 8 px under its 36 px row. */
+@media (max-height: 399.98px) {
+  .mark-pop {
+    top: calc(100% + 12px);
+  }
+}
+
+/* ------------------------------------------------------------ motion: concept 1, unfold from the mark */
+/* Opening (200 ms): the surface grows from a 57 x 36 rect at its top-left corner, under the mark, to its own size; the
+   rows' clip follows the same rect on the same curve, so no row shows outside it; the rows settle 8 ms apart. Closing
+   (160 ms): the rows fade, the surface and the clip fold back, the surface fades out; the plate stays while the panel is
+   there (`app.css`). */
+.mark-surface {
+  animation: mark-grow 200ms cubic-bezier(0.2, 0, 0, 1), mark-in 60ms cubic-bezier(0.2, 0, 0, 1);
+}
+.mark-menu {
+  animation: mark-reveal 200ms cubic-bezier(0.2, 0, 0, 1);
+}
+.mark-menu li,
+.mark-menu .menu-sep {
+  animation: mark-row 120ms cubic-bezier(0.2, 0, 0, 1) backwards;
+  animation-delay: calc(30ms + 8ms * var(--i, 0));
+}
+.mark-pop.shut .mark-surface {
+  animation: mark-fold 160ms cubic-bezier(0.4, 0, 0.2, 1) forwards, mark-out 100ms linear 60ms forwards;
+}
+.mark-pop.shut .mark-menu {
+  animation: mark-unreveal 160ms cubic-bezier(0.4, 0, 0.2, 1) forwards;
+}
+.mark-pop.shut li,
+.mark-pop.shut .menu-sep {
+  animation: mark-out 60ms linear forwards;
+}
+@keyframes mark-grow {
+  from {
+    width: 57px;
+    height: 36px;
+  }
+}
+@keyframes mark-fold {
+  to {
+    width: 57px;
+    height: 36px;
+  }
+}
+@keyframes mark-in {
+  from {
+    opacity: 0;
+  }
+}
+@keyframes mark-out {
+  to {
+    opacity: 0;
+  }
+}
+@keyframes mark-reveal {
+  from {
+    clip-path: inset(0 calc(100% - 57px) calc(100% - 36px) 0 round 16px);
+  }
+  to {
+    clip-path: inset(0 round 16px);
+  }
+}
+@keyframes mark-unreveal {
+  from {
+    clip-path: inset(0 round 16px);
+  }
+  to {
+    clip-path: inset(0 calc(100% - 57px) calc(100% - 36px) 0 round 16px);
+  }
+}
+@keyframes mark-row {
+  from {
+    opacity: 0;
+    transform: translateY(-4px);
+  }
+}
+/* Whole on the frame after the press or the intent delay, gone on the frame after a close (`MarkPanel.tsx`). */
+@media (prefers-reduced-motion: reduce) {
+  .mark-surface,
+  .mark-menu,
+  .mark-menu li,
+  .mark-menu .menu-sep {
+    animation: none !important;
+  }
+}

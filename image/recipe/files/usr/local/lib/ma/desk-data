@@ -54,7 +54,10 @@ SQLITE_SIBLINGS = ("-journal", "-wal", "-shm")
 NOT_A_DATABASE = ("SQLITE_NOTADB", "SQLITE_CORRUPT")
 
 # Decision 4: what belongs to the machine, not the member.
-MACHINE_PARTS = {"rtc", "selfhost", "desk-egress", "lost+found", SCRATCH, ".ma-move"}
+# "keys" is the desk's Courier identity and box keys (ma-desk draft ADR "Courier's envelopes"): a download holding them would
+# let whoever has the file sign as the desk and open what's sealed to it. A move doesn't carry them yet (Wave 3.3), so the
+# moved desk makes new keys and its contacts see a key change.
+MACHINE_PARTS = {"rtc", "selfhost", "desk-egress", "keys", "lost+found", SCRATCH, ".ma-move"}
 READABLE = "browser-readable"   # made by the helper. A stored directory of that name would be shadowed: left out
 BROWSER_CACHES = {
     "Cache", "Code Cache", "GPUCache", "DawnCache", "DawnGraphiteCache", "DawnWebGPUCache", "GrShaderCache",
@@ -68,6 +71,7 @@ LABELS = {
     "notebook": "Notebook",
     "agent": "Agent",
     "apps": "Apps",
+    "courier": "Courier",
     "files": "Files",
     READABLE: "Bookmarks and history",
 }
@@ -236,6 +240,12 @@ def excluded(part, comps):
         return comps == ("volume.json",)
     if part == "apps":
         return comps == ("registry.json",) or (n == 2 and comps[1] in APP_PACKAGES)
+    if part == "courier":
+        # The Courier vault: linked mailboxes' sealed sign-ins and the key that opens them, side by side. A download
+        # must not carry both (Security CP-L3). A move reads through this helper too, so today it doesn't carry them
+        # either, and the member signs in to each mailbox again on the new desk. The plan's "include sign-ins" tick, and
+        # a move carrying them under its own protection, are Wave 3.3's.
+        return comps[0] == "keys"
     return False
 
 

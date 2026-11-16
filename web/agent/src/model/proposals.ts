@@ -5,6 +5,7 @@
 // Java's String.compareTo), no whitespace, strings and numbers as JSON.stringify writes them, absent members dropped
 // (RFC 8785 for every value a payload can hold: strings, integers, booleans, null, arrays, objects).
 import type { Agent, AgentLook, Proposal, ProposalState, TimerInput } from '../client/types';
+import { RETIRED_TONES } from '../look/tones';
 import { bytesText, MB } from './workspace';
 import { durationText, scheduleText } from './timers';
 
@@ -97,7 +98,7 @@ export interface ChangeRow {
 export interface AgentTag {
   id: string;
   name: string;
-  look: { icon: string; tone: string } | null;
+  look: { icon: string; tone: string; color?: string | null } | null;
   /** Set when two names are close: the end of the id. */
   hint: string | null;
 }
@@ -141,8 +142,8 @@ export interface ChangeView {
   /** Links in the payload, `null` where it doesn't touch them. */
   links: ChangeLink[] | null;
   timers: ChangeTimer[];
-  /** The look the change gives the agent, for a preview: icon and tone ids. */
-  look: { icon: string; tone: string } | null;
+  /** The look the change gives the agent, for a preview: icon, colour and tone ids. */
+  look: { icon: string; tone: string; color?: string | null } | null;
   /** A muted line above the buttons: what it costs, or how to undo it. */
   note: string | null;
   /** A removal: the danger button's words, and what goes with it. */
@@ -169,8 +170,7 @@ export function runsPerMonth(t: Partial<Pick<TimerInput, 'kind' | 'days' | 'ever
 /** What a removal takes with it, and what it leaves (the message log keeps its rows 100 days). */
 export const GOES_WITH = 'Its thread, memories, workspace, timers, links and icon. Its messages stay in the Agent messages log for 100 days.';
 
-const RETIRED_ICON: Record<string, string> = { globe: 'plane', chat: 'person', heart: 'wallet', star: 'bulb', puzzle: 'terminal', briefcase: 'document' };
-const RETIRED_TONE: Record<string, string> = { moss: 'green', sky: 'blue' };
+const RETIRED_ICON: Record<string, string> = { globe: 'plane', chat: 'person', heart: 'wallet', star: 'bulb', puzzle: 'terminal', briefcase: 'document', spark: 'hat', nodes: 'hat' };
 const CONFUSABLE: Record<string, string> = { а: 'a', е: 'e', о: 'o', р: 'p', с: 'c', х: 'x', у: 'y', і: 'i', ѕ: 's', ј: 'j', ο: 'o', ν: 'v', α: 'a', ε: 'e', ι: 'i', κ: 'k', ρ: 'p', τ: 't', υ: 'u', χ: 'x' };
 
 /** A name as the desk compares it: NFKC, folded, trimmed, no format characters, look-alikes as Latin. */
@@ -196,10 +196,12 @@ export const namesClose = (a: string, b: string): boolean => {
   return x.length > 0 && (x === y || (Math.min(x.length, y.length) >= 4 && editWithinOne(x, y)));
 };
 
-const lookKey = (icon: string, tone: string): string => `${RETIRED_ICON[icon] ?? icon}/${RETIRED_TONE[tone] ?? tone}`;
+const lookKey = (icon: string, tone: string): string => `${RETIRED_ICON[icon] ?? icon}/${RETIRED_TONES[tone] ?? tone}`;
+/** Since Nov 15 an agent is told apart by its icon in its colour (desk-agent's `lookTaken`). */
+const colorKey = (icon: string, color: string): string => `${RETIRED_ICON[icon] ?? icon}/${color}`;
 
 /** An agent as a card needs it. */
-export type CardAgent = Pick<Agent, 'id' | 'name'> & Partial<Pick<Agent, 'lead' | 'role' | 'purpose' | 'solo' | 'workspace'>> & { look?: Pick<AgentLook, 'icon' | 'tone'> | null; binding?: { keyId: string; model: string } | null };
+export type CardAgent = Pick<Agent, 'id' | 'name'> & Partial<Pick<Agent, 'lead' | 'role' | 'purpose' | 'solo' | 'workspace'>> & { look?: Pick<AgentLook, 'icon' | 'tone' | 'color'> | null; binding?: { keyId: string; model: string } | null };
 
 const str = (v: unknown): string | null => (typeof v === 'string' ? v : null);
 const num = (v: unknown): number | null => (typeof v === 'number' && Number.isFinite(v) ? v : null);
@@ -220,6 +222,8 @@ export function describeProposal(
     zone: string | null;
     iconLabel: (id: string) => string;
     toneLabel: (id: string) => string;
+    /** A colour's name ("Sage"); unset: the id. */
+    colorLabel?: (id: string) => string;
   },
 ): ChangeView {
   const payload = p.payload ?? {};
@@ -245,7 +249,7 @@ export function describeProposal(
     const a = find(id);
     const name = a?.name ?? fallbackName ?? 'a deleted agent';
     const close = a ? ctx.agents.some((o) => o.id !== a.id && namesClose(o.name, a.name)) : false;
-    return { id, name, look: a?.look ? { icon: a.look.icon, tone: a.look.tone } : null, hint: close ? `…${id.slice(-4)}` : null };
+    return { id, name, look: a?.look ? { icon: a.look.icon, tone: a.look.tone, color: a.lead || a.role === 'manager' ? 'indigo' : (a.look.color ?? null) } : null, hint: close ? `…${id.slice(-4)}` : null };
   };
   const goneName = (id: string | null): string | null => (id && id === agentId ? str(before?.['name']) : null);
   const nameOf = (id: unknown): string => {
@@ -276,16 +280,24 @@ export function describeProposal(
       else rows.push({ label: 'Purpose', value: newPurpose || 'The built-in default', long: newPurpose.length > 0 });
     }
     const icon = str(take('icon'));
+    const color = str(take('color'));
     const tone = str(take('tone'));
     const oldIcon = self ? (str(was('icon')) ?? current?.look?.icon) : undefined;
+    const oldColor = self ? (str(was('color')) ?? current?.look?.color) : undefined;
     const oldTone = self ? (str(was('tone')) ?? current?.look?.tone) : undefined;
+    const colorText = (id: string): string => ctx.colorLabel?.(id) ?? id;
     if (icon !== null) row('Icon', ctx.iconLabel(icon), oldIcon != null ? ctx.iconLabel(oldIcon) : undefined);
-    if (tone !== null) row('Color', ctx.toneLabel(tone), oldTone != null ? ctx.toneLabel(oldTone) : undefined);
-    if (icon !== null || tone !== null) {
-      look = { icon: icon ?? oldIcon ?? 'nodes', tone: tone ?? oldTone ?? 'graphite' };
-      // Only a pair the member sees both halves of can clash: with no tone the desk picks a free one.
-      const pair = icon !== null && tone !== null ? lookKey(icon, tone) : self && icon !== null && oldTone ? lookKey(icon, oldTone) : self && tone !== null && oldIcon ? lookKey(oldIcon, tone) : null;
-      if (pending && pair && others(self).some((a) => a.look && lookKey(a.look.icon, a.look.tone) === pair)) lookTaken = true;
+    if (color !== null) row('Color', colorText(color), oldColor != null ? colorText(oldColor) : undefined);
+    // The tone isn't drawn since the colour took its place (Nov 15); an older lead's pick still shows, by its own name.
+    if (tone !== null) row('Tone', ctx.toneLabel(tone), oldTone != null ? ctx.toneLabel(oldTone) : undefined);
+    if (icon !== null || color !== null || tone !== null) {
+      look = { icon: icon ?? oldIcon ?? 'hat', tone: tone ?? oldTone ?? 'graphite', color: color ?? oldColor ?? null };
+      // Only a pair the member sees both halves of can clash: with no colour the desk picks a free one.
+      const ic = icon ?? (self ? (oldIcon ?? null) : 'hat');
+      const co = color ?? (self ? (oldColor ?? null) : null);
+      const pair = (icon !== null || color !== null) && ic && co ? colorKey(ic, co) : null;
+      if (pending && pair && others(self).some((a) => a.look?.color && colorKey(a.look.icon, a.look.color) === pair)) lookTaken = true;
+      else if (pending && icon !== null && tone !== null && others(self).some((a) => a.look && !a.look.color && lookKey(a.look.icon, a.look.tone) === lookKey(icon, tone))) lookTaken = true;
     }
     const keyId = str(take('keyId'));
     const oldKey = self ? (str(was('keyId')) ?? current?.binding?.keyId) : undefined;
@@ -337,7 +349,7 @@ export function describeProposal(
       fields(agentId);
       // A change to the icon alone (or the color alone) previews the result: the half it leaves is the agent's current one.
       const now = ctx.agents.find((a) => a.id === agentId)?.look;
-      if (look && now) look = { icon: str(payload['icon']) ?? (now.icon === 'png' ? 'nodes' : now.icon), tone: str(payload['tone']) ?? now.tone };
+      if (look && now) look = { icon: str(payload['icon']) ?? (now.icon === 'png' ? 'hat' : now.icon), tone: str(payload['tone']) ?? now.tone, color: str(payload['color']) ?? now.color ?? null };
       break;
     }
     case 'agent.delete': {
@@ -426,7 +438,7 @@ export function describeProposal(
   const subject = subjectId ? tagOf(subjectId, goneName(subjectId)) : null;
   if (subject && !subject.look && before?.['look']) {
     const l = rec(before['look']);
-    if (str(l['icon']) && str(l['tone'])) subject.look = { icon: str(l['icon'])!, tone: str(l['tone'])! };
+    if (str(l['icon']) && str(l['tone'])) subject.look = { icon: str(l['icon'])!, tone: str(l['tone'])!, color: str(l['color']) };
   }
   return { title, agentId, subject, rows, links, timers, look, note, remove, gone, nameTaken, lookTaken, stamp, purpose };
 }

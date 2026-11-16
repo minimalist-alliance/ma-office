@@ -163,6 +163,12 @@ public final class CdsTraining {
         // Its stand-in for Chromium holds the port as whoever this is, and on a build that's root.
         System.setProperty("deskd.cdp.uid", Files.getAttribute(Path.of("/proc/self"), "unix:uid").toString());
         System.setProperty("deskd.image.version", "training");
+        // Courier's store in the training's own directory: its first open loads SQLite's library from /app/native.
+        System.setProperty("deskd.courier.root", dir.resolve("courier").toString());
+        // Courier's keys (Wave 1.4) likewise: made at boot (Bouncy Castle's Ed25519 and X25519), then published.
+        Files.createDirectory(dir.resolve("keys"), java.nio.file.attribute.PosixFilePermissions.asFileAttribute(
+                java.nio.file.attribute.PosixFilePermissions.fromString("rwx------")));
+        System.setProperty("deskd.courier.keys", dir.resolve("keys").toString());
     }
 
     /** A desk's first TLS reads the JDK's whole list and parses every certificate in it, of every kind of key. */
@@ -216,6 +222,7 @@ public final class CdsTraining {
         driveTheBrowser();
         driveTheClipboard();
         driveTheNotebook();
+        driveCourier();
         health();
 
         rtc.send(Channels.CTL, jsonFrame(FrameKind.CLOSE, 0, Map.of("code", 1000)));
@@ -298,6 +305,24 @@ public final class CdsTraining {
         awaitEvent(((Number) Json.parseObject(subscribed.payload()).get("subId")).longValue());
         rtc.send(Channels.COLLAB, new Frame(FrameKind.DATA, Frame.BIN, 1, 0, new byte[] {0, 1, 2}));
         expect(Channels.COLLAB, FrameKind.DATA);
+    }
+
+    /**
+     * Courier's first use: its status, a list, a search, its keys and the topic. A store that didn't open, which on an image
+     * means SQLite's library didn't load, answers {@code unavailable} and fails the build here, as keys that didn't load do.
+     */
+    private void driveCourier() throws Exception {
+        call("courier.status", Map.of());
+        call("courier.keys", Map.of());
+        call("courier.list", Map.of("lane", "people"));
+        call("courier.search", Map.of("q", "training"));
+        long subscription = nextRequest++;
+        rtc.send(Channels.RPC, jsonFrame(FrameKind.SUB, subscription, Map.of("topic", "courier.changed", "params", Map.of())));
+        Frame subscribed = expectAnyReply(subscription);
+        if (subscribed.kind() != FrameKind.RES) {
+            throw new IllegalStateException("Courier's SUB got " + subscribed.kind());
+        }
+        awaitEvent(((Number) Json.parseObject(subscribed.payload()).get("subId")).longValue());
     }
 
     /** The next event for this subscription. Others, such as the tabs', can come first. */
@@ -491,6 +516,9 @@ public final class CdsTraining {
                 yield Map.of("state", "running", "nextHeartbeatSeconds", 60, "configVersion", 1, "actions", List.of());
             }
             case "/.well-known/jwks.json" -> jwks();
+            // Courier's keys at the key directory (contract 0.4.0 §3.1); the fingerprint is informational there.
+            case "/v1/agent/keys" -> Map.of("keysVersion", 1, "fingerprint", "0000-0000-0000-0000-0000-0000-0000-0000", "changed", true,
+                    "updatedAt", Instant.now().toString());
             default -> null;
         };
         return body == null

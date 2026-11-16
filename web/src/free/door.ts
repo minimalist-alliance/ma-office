@@ -4,6 +4,10 @@
 import type { ComponentType, ReactNode } from 'react';
 import { create } from 'zustand';
 import type { Rect } from '../canvas/layout';
+// Every wire read (`wire.ts`) is shared by this tier's chunk (`office.tsx`), the office's notice (`chrome/DeskNotice.tsx`),
+// Maia's widget and the ended desk's panel: kept in the first load, so none of those chunks waits on another for it. The
+// overlay waits for the first two (ADR 0058).
+import './wire';
 
 export interface FreeParts {
   /** On while the member is free: what `free` turns on outside the chunk (the last screen kept for their desk). */
@@ -31,6 +35,8 @@ export interface FreeParts {
   frames?: () => Rect[];
   /** Its words for a Browser it paused at the day's limit, or null for any other pause. */
   pause?: (resumesAt: string | null) => { title: string; body: string; link?: ReactNode } | null;
+  /** On while "You're on {Free} now" shows (`freeNow.tsx`): it says what a kept desk's own panel would, so that panel waits. */
+  nowCard?: boolean;
   /** Counts up when Maia's state should be asked again: an upgrade, which wakes her. */
   maia?: number;
   /**

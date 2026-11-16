@@ -358,6 +358,58 @@ def st_with(**kw):
 G = lambda g, ch, **kw: dict({"gen": g, "chromium": ch, "sealedAt": T.utc(time.time() - 7200)}, **kw)  # noqa: E731
 
 
+class TimesTest(Base):
+    """Host 0.1.16: a re-root's copy (copy_tree, also a batch's release copy) and a fetched generation's unpack keep every path's
+    mtime, as the prepare's tar -p does. 0.1.12 to 0.1.15 wrote each at the copy's time (Python sources newer than their .pyc,
+    font directories newer than fontconfig's cache, a batch's jars newer than deskd's and desk-agent's AppCDS archives): both
+    tests fail on 0.1.15's templates.py (5fd4f891)."""
+
+    def age(self, tree, base=1_700_000_000):
+        """Every path under tree (its top too, .complete left out) at a time of its own, years old: {rel: mtime_ns} as set."""
+        rels = [rel for rel, _ in T.walk_tree(tree)]
+        for i, rel in enumerate(rels):
+            t = (base + 3600 * i) * 10**9 + (i * 7919) % 10**9   # whole seconds apart, and a fraction (copy_tree keeps ns)
+            os.utime(os.path.join(tree, rel) if rel != "." else tree, ns=(t, t), follow_symlinks=False)
+        return {rel: os.lstat(os.path.join(tree, rel) if rel != "." else tree).st_mtime_ns for rel in rels}
+
+    def times(self, tree):
+        return {rel: st.st_mtime_ns for rel, st in T.walk_tree(tree)}
+
+    def test_a_re_roots_copy_keeps_every_time(self):
+        g1 = T.gen_dir("g1")
+        os.symlink("tool", f"{g1}/usr/bin/rel2")   # a link of its own (rel shares nothing with it)
+        want = self.age(g1)
+        self.assertEqual(want["usr/bin/tool"], want["usr/bin/tool2"], "one inode, one time")
+        dst = f"{ROOT}/work/copy"
+        os.mkdir(dst)
+        T.copy_tree(g1, dst)
+        got = self.times(dst)
+        self.assertEqual(set(got), set(want))
+        wrong = {rel: (got[rel], want[rel]) for rel in want if got[rel] != want[rel]}
+        self.assertEqual(wrong, {}, "every file, directory, link and the top keep their time to the nanosecond")
+        self.assertLess(want["usr/bin/big"], (time.time() - 86400 * 365) * 1e9)
+
+    def test_a_fetched_generations_unpack_keeps_every_time(self):
+        t = f"{ROOT}/work/tree-g2"
+        shutil.copytree(T.gen_dir("g1"), t, symlinks=True)
+        os.unlink(f"{t}/.complete")
+        os.unlink(f"{t}/usr/bin/tool2")
+        make_tree(t, ch="156.0.8078.80-1~deb13u1", extra=b"two")
+        os.makedirs(f"{t}/usr/lib/python3/dist-packages/m/__pycache__")
+        open(f"{t}/usr/lib/python3/dist-packages/m/__init__.py", "w").write("x = 1\n")
+        open(f"{t}/usr/lib/python3/dist-packages/m/__pycache__/__init__.cpython-313.pyc", "wb").write(b"\0" * 16)
+        want = {rel: ns // 10**9 for rel, ns in self.age(t).items()}   # the archive's (pax) times, whole seconds as GNU tar writes them
+        f = T.fetch(self.artifact(tree=t))
+        g2 = T.gen_dir("g2")
+        got = {rel: ns // 10**9 for rel, ns in self.times(g2).items()}
+        self.assertEqual(set(got), set(want))
+        # the top is the one exception, as g1's at the bake: the seal writes .complete there, after the unpack
+        wrong = {rel: (got[rel], want[rel]) for rel in want if rel != "." and got[rel] != want[rel]}
+        self.assertEqual(wrong, {}, "every file, directory and link keeps the archive's time")
+        self.assertEqual(T.walk_check(g2, T.parse_manifest(open(f"{T.VAR}/g2.json", "rb").read(), refused=T.Failed),
+                                      sealed_at=T.parse_utc(f["host-template"])), [], "and the sealed tree checks as it did")
+
+
 class ChooseTest(unittest.TestCase):
     def test_the_rule(self):
         st = st_with(current=G("g2", "156.0.8078.80-1"), previous=G("g1", "156.0.8078.79-1"))

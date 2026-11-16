@@ -19,5 +19,5 @@ export default tseslint.config(
     },
   },
   // The files allowed to hold colors (the tokens, and the palette that notes' colors map to), and the tests that check them.
-  { files: ['src/theme/tokens.ts', 'src/ui/palette.ts', 'tests/**/*.ts'], rules: { 'ma/no-color-literals': 'off' } },
+  { files: ['src/theme/tokens.ts', 'src/ui/palette.ts', 'src/ui/ink.ts', 'tests/**/*.ts'], rules: { 'ma/no-color-literals': 'off' } },
 );

@@ -1,6 +1,6 @@
 // The landing's signed-in cookie from the office (ma-platform contract auth.md section 3.4, platform/signedInCookie.ts). Where
 // client-config carries `signedInCookie`, a sign-in sets `ma_signed_in=1` for the member's "Stay signed in", a refresh sets it again,
-// and Sign out, Sign out everywhere and a refused refresh clear it. Without the key, no cookie is ever written. The harness is on
+// and Sign out and a refused refresh clear it. Without the key, no cookie is ever written. The harness is on
 // localhost, so the setting's domain is localhost (prod's is the apex); each write is also recorded as written, to check its
 // exact attributes. Our own sign-in pages and the hand-off landing set it in ma-platform (web/signin's signed-in-cookie.spec.ts).
 import { expect, test, type APIRequestContext, type BrowserContext, type Page } from '@playwright/test';
@@ -93,17 +93,6 @@ test('Sign out clears it before the page leaves for the logout', async ({ page, 
   await expectCookie(context, AGE['30d']);
   await openMenu(page);
   await page.getByRole('button', { name: 'Sign out', exact: true }).click();
-  await expect(page.getByTestId('sign-in')).toContainText("You're signed out.");
-  expect(await cookie(context)).toBeNull();
-  expect((await writes(page)).at(-1)).toBe(CLEAR);
-});
-
-test('Sign out everywhere clears it too', async ({ page, context, request }) => {
-  await withKey(request);
-  await signIn(page);
-  await expectCookie(context, AGE['30d']);
-  await openMenu(page);
-  await page.getByRole('dialog', { name: 'Account' }).getByRole('button', { name: 'Sign out everywhere' }).click();
   await expect(page.getByTestId('sign-in')).toContainText("You're signed out.");
   expect(await cookie(context)).toBeNull();
   expect((await writes(page)).at(-1)).toBe(CLEAR);

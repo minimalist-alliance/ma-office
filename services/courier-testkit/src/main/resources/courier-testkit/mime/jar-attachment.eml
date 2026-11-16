@@ -1,0 +1,25 @@
+From: Tools <tools@example.net>
+To: me@desk.example
+Date: Fri, 13 Nov 2026 10:00:00 +0000
+Subject: Updater tool
+Message-ID: <jar-attachment@corpus.example>
+MIME-Version: 1.0
+X-Corpus-Note: a Java archive (zip with META-INF/MANIFEST.MF and a class file)
+Content-Type: multipart/mixed; boundary="att-1"
+
+--att-1
+Content-Type: text/plain; charset=utf-8
+
+Run the updater tool with java -jar.
+--att-1
+Content-Type: application/java-archive; name="updater.jar"
+Content-Disposition: attachment; filename="updater.jar"
+Content-Transfer-Encoding: base64
+
+UEsDBBQAAAAIAABQbV0NozfPSgAAAEgAAAAUAAAATUVUQS1JTkYvTUFOSUZFU1QuTUbzTczLTEst
+LtENSy0qzszPs1Iw1DPg5fJNzMzTdc5JLC62UkitSMwtyEnV80jNycnn5XIuSk0sSU3Rdaq0UkjO
+LyooLebl4uUCAFBLAwQUAAAACAAAUG1d8M6RiA0AAAAgAAAAEwAAAGV4YW1wbGUvSGVsbG8uY2xh
+c3M79W/XPgYGBkcGHAAAUEsBAhQAFAAAAAgAAFBtXQ2jN89KAAAASAAAABQAAAAAAAAAAAAAAAAA
+AAAAAE1FVEEtSU5GL01BTklGRVNULk1GUEsBAhQAFAAAAAgAAFBtXfDOkYgNAAAAIAAAABMAAAAA
+AAAAAAAAAAAAfAAAAGV4YW1wbGUvSGVsbG8uY2xhc3NQSwUGAAAAAAIAAgCDAAAAugAAAAAA
+--att-1--

@@ -85,12 +85,12 @@ describe('the archive layout', () => {
     expect(readme({ madeAt: new Date(2026, 10, 6), desks: [], notCopied: 0 })).not.toContain('notCopied');
   });
 
-  it('puts Notebook in notebook/, its own folder, and desk/ holds settings and Chat (Security NE-3)', () => {
+  it('puts Notebook in notebook/, its own folder, and desk/ holds settings and Courier (Security NE-3)', () => {
     const text = readme({ madeAt: new Date(2026, 10, 6), desks: ['Personal'], notCopied: 0 });
-    expect(text).toContain('  desk/                  Desk settings and Chat.');
+    expect(text).toContain('  desk/                  Desk settings and Courier.');
     expect(text).toContain('  notebook/              Your Notebook.');
     expect(text).not.toMatch(/desk\/ .*Notebook/);
-    expect(partLabel('desk')).toBe('Desk settings and Chat');
+    expect(partLabel('desk')).toBe('Desk settings and Courier');
     expect(partLabel('notebook')).toBe('Notebook');
   });
 

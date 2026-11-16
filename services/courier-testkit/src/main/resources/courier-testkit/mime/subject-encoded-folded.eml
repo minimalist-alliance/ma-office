@@ -1,0 +1,12 @@
+From: Planning <planning@example.com>
+To: me@desk.example
+Date: Fri, 13 Nov 2026 10:00:00 +0000
+Subject: =?utf-8?B?UXVhcnRlcmx5IHBsYW5uaW5nOiBhZ2VuZGEsIHJvb21zLCBhbmQgY2F0ZXJp?=
+ =?utf-8?B?bmcgZm9yIHRoZSBvZmZzaXRlIGluIEtyYWvDs3cg4oCUIHBsZWFzZSBjb25m?=
+ =?utf-8?B?aXJtIGJ5IEZyaWRheQ==?=
+Message-ID: <subject-encoded-folded@corpus.example>
+MIME-Version: 1.0
+X-Corpus-Note: a long subject as several base64 encoded words over folded lines
+Content-Type: text/plain; charset=utf-8
+
+Please confirm your seat for the offsite.

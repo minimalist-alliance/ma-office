@@ -58,3 +58,13 @@ test('the quiet row is hidden', () => {
   const rows = rowsOf([{ id: 'q', type: 'system.quiet', title: 'More happened than we show here' }, { id: 'b', type: 'forums.reply', actor: { name: 'lio' }, body: 't' }], now);
   assert.deepEqual(rows.map((r) => r.id), ['b']);
 });
+
+test("Courier's waiting messages: counts only, never a sender or a subject", () => {
+  const r = rowOf({ id: 'c', type: 'courier.waiting', title: 'New messages on your Personal desk', body: 'Dana: the seed list', actor: { name: 'Dana' }, count: 4, updatedAt: ago(60), link: 'https://office.example/' }, now);
+  assert.equal(r.title, 'New messages on your Personal desk');
+  assert.equal(r.second, '');
+  assert.equal(r.family, 'thread');
+  assert.equal(rowOf({ id: 'd', type: 'courier.waiting', updatedAt: ago(60) }, now).title, 'New messages on your desk');
+  // Only its own words: a title that names anyone or anything else is replaced.
+  assert.equal(rowOf({ id: 'e', type: 'courier.waiting', title: 'Dana: the seed list', updatedAt: ago(60) }, now).title, 'New messages on your desk');
+});

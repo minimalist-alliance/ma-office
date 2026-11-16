@@ -28,8 +28,12 @@ KEY_NAME = "ma-selfhost-release-2026-11.pem"
 OPENSSL = "/usr/bin/openssl"
 
 
-def load():
-    loader = importlib.machinery.SourceFileLoader("ma_selfhost_bundle", CHECK)
+RELEASE2_CHECK = os.path.join(HERE, "fixtures", "ma-selfhost-bundle.release2")   # the checker releases 1 and 2 installed, as 8e440c11 had it
+DESK_SVC = "selfhost/files/usr/local/lib/ma/desk-svc"
+
+
+def load(path=CHECK):
+    loader = importlib.machinery.SourceFileLoader("ma_selfhost_bundle", path)
     spec = importlib.util.spec_from_loader("ma_selfhost_bundle", loader)
     mod = importlib.util.module_from_spec(spec)
     loader.exec_module(mod)
@@ -82,6 +86,7 @@ class Bundle(unittest.TestCase):
         write(f"{f}/selfhost/README.md", "guide\n")
         write(f"{f}/selfhost/files/etc/nftables.conf", "flush ruleset\n")
         write(f"{f}/selfhost/files/usr/local/lib/ma/selfhost/ma-selfhost-bundle", "#!/usr/bin/python3\n")
+        write(f"{f}/{DESK_SVC}", b"\x7fELF a stand-in for the amd64 desk-svc built from this commit")   # a file of the installer, not a pin line
         write(f"{f}/selfhost/e2e/selfhost.spec.ts", "// not installed\n")
         write(f"{f}/image/recipe/build.sh", "#!/bin/bash\n")
         write(f"{f}/image/recipe/files/etc/systemd/system/deskd.service", "[Unit]\n")
@@ -359,6 +364,38 @@ class Bundle(unittest.TestCase):
         os.unlink(os.path.join(self.bundle, self.arts["desk-stream"][1]))
         self.refused("has no desk-stream-0.3.3 file")
 
+    def test_an_installer_without_desk_svc_is_refused(self):
+        # desk-parse's container runs desk-svc as its process 1 (ADR 0097): the installer carries the amd64 build, signed with the rest
+        os.unlink(f"{self.folder}/{DESK_SVC}")
+        self.make()
+        self.refused("carries no selfhost/files/usr/local/lib/ma/desk-svc")
+
+    def test_a_desk_svc_line_in_bundle_pin_is_refused(self):
+        """It moved into the installer: releases 1 and 2's checkers take no such line, so a bundle with one can't update them."""
+        self.make(extra_lines=[f"desk-svc       abc1234              {'0' * 64}"])
+        self.refused("names desk-svc, which no installer takes")
+
+    def test_a_changed_desk_svc_in_the_installer_is_refused(self):
+        write(f"{self.folder}/{DESK_SVC}", b"\x7fELF someone else's desk-svc")
+        self.refused("desk-svc isn't the one this bundle was signed with")
+        self.refused("desk-svc isn't the one this bundle was signed with", installed=True)
+
+    def test_a_desk_svc_added_by_hand_under_another_name_is_refused(self):
+        write(f"{self.folder}/selfhost/files/usr/local/lib/ma/desk-svc2", b"x")
+        self.refused("a file this bundle wasn't signed with")
+
+    def test_the_checker_releases_1_and_2_installed_takes_this_bundle(self):
+        """An update runs the DESK's installed checker over the new folder (install.sh), so the new bundle.pin must pass it. Fails
+        before desk-svc moved into the installer: bundle.pin had a desk-svc line, which that checker refuses."""
+        old = load(RELEASE2_CHECK)
+        old.INSTALLED_KEYS, old.KEY_OWNER = self.installed, os.getuid()
+        self.assertIn("desk-rtc 0.5.0", old.verify(self.folder, self.bundle, True))
+        self.assertNotIn("desk-svc", open(f"{self.bundle}/bundle.pin").read())
+        # and it still checks the installer's files, desk-svc among them: one changed after signing is refused
+        write(f"{self.folder}/{DESK_SVC}", b"\x7fELF changed after signing")
+        with self.assertRaises(old.Refused):
+            old.verify(self.folder, self.bundle, True)
+
     # ---- the installer's own files
     def test_a_changed_installer_file_is_refused(self):
         write(f"{self.folder}/image/recipe/files/etc/systemd/system/deskd.service", "[Unit]\nExecStartPre=+/tmp/x\n")
@@ -469,13 +506,17 @@ class Wiring(unittest.TestCase):
     def test_build_bundles_installer_list_passes_the_check_on_this_commits_tree(self):
         with tempfile.TemporaryDirectory() as t:
             fn = subprocess.run(["sed", "-n", "/^installer_manifest() {/,/^}/p", BUILD], capture_output=True, text=True).stdout
-            r = subprocess.run(["bash", "-c", f"set -euo pipefail; die() {{ echo \"$*\" >&2; exit 1; }}; REPO={REPO}; {fn}\n"
-                                "installer_manifest HEAD"], capture_output=True, text=True)
+            svc = os.path.join(t, "desk-svc.bin")
+            write(svc, b"\x7fELF stand-in")
+            r = subprocess.run(["bash", "-c", f"set -euo pipefail; die() {{ echo \"$*\" >&2; exit 1; }}; REPO={REPO}; "
+                                f"DESK_SVC_REL={DESK_SVC}; {fn}\ninstaller_manifest HEAD {svc}"], capture_output=True, text=True)
             self.assertEqual(r.returncode, 0, r.stderr)
             folder = os.path.join(t, "folder")
             os.makedirs(folder)
             subprocess.run(f"git -C {REPO} archive --format=tar HEAD selfhost image/recipe | tar -x -C {folder}", shell=True,
                            check=True)
+            write(os.path.join(folder, DESK_SVC), b"\x7fELF stand-in")   # built, not committed
+            self.assertIn(f"  {DESK_SVC}\n", r.stdout)
             m = load()
             n = m.check_installer(folder, r.stdout.encode())
             self.assertGreater(n, 100)
@@ -485,6 +526,85 @@ class Wiring(unittest.TestCase):
             self.assertEqual(len(m.folder_keys(folder)), 1)
             self.assertIn(f"  {ANCHOR}\n", r.stdout)
             self.assertRegex(r.stdout, r"  selfhost/files/opt/ma/etc/selfhost-release-keys/[^/\n]+\.pem\n")
+
+
+class SignRebuilds(unittest.TestCase):
+    """build-bundle.sh --sign builds desk-svc again from the commit and compares: an installer.sha256 naming another desk-svc is
+    never signed. A copy of the tree as a git repo, a stand-in docker whose build "makes" $FAKE_SVC, and a stand-in aws that
+    signs with a throwaway key. Fails before desk-svc moved into the installer (nothing rebuilt it; it was a pin line)."""
+
+    @classmethod
+    def setUpClass(cls):
+        cls.keys = tempfile.TemporaryDirectory()
+        cls.priv, cls.pub = keypair(cls.keys.name, "release")
+
+    @classmethod
+    def tearDownClass(cls):
+        cls.keys.cleanup()
+
+    def setUp(self):
+        self.tmp = tempfile.TemporaryDirectory()
+        t = self.repo = os.path.join(self.tmp.name, "repo")
+        for top in ("selfhost", "image/recipe", "image/host/desk-svc"):
+            shutil.copytree(os.path.join(REPO, top), os.path.join(t, top), ignore=shutil.ignore_patterns(
+                "node_modules", "e2e", "lab", "tests", "__pycache__"))
+        kd = os.path.join(t, KEYS)
+        for n in os.listdir(kd):
+            os.unlink(os.path.join(kd, n))
+        shutil.copy(self.pub, os.path.join(kd, KEY_NAME))
+        write(os.path.join(t, ANCHOR), f"{sha(self.pub)}  {KEY_NAME}\n")
+        g = ["git", "-C", t, "-c", "user.name=t", "-c", "user.email=t@t"]
+        subprocess.run(g + ["init", "-q"], check=True)
+        subprocess.run(g + ["add", "-A"], check=True)
+        subprocess.run(g + ["commit", "-q", "-m", "x"], check=True)
+        self.commit = subprocess.run(g + ["rev-parse", "--short=7", "HEAD"], capture_output=True, text=True, check=True).stdout.strip()
+        bin_ = os.path.join(self.tmp.name, "bin")
+        write(os.path.join(bin_, "docker"), "#!/bin/sh\ncase \"$1\" in info) echo x86_64;; cp) case \"$2\" in *:*) cp \"$FAKE_SVC\" \"$3\";; esac;; esac\nexit 0\n")
+        write(os.path.join(bin_, "aws"), "#!/bin/sh\ncase \"$*\" in *sts*) echo 1;; *s3api*) exit 0;; *kms*)\n"
+                                          "  while [ $# -gt 0 ]; do [ \"$1\" = --message ] && f=${2#fileb://}; shift; done\n"
+                                          "  /usr/bin/openssl dgst -sha256 -sign \"$FAKE_KEY\" -out \"$FAKE_SIG\" \"$f\" && base64 -w0 \"$FAKE_SIG\";; esac\n")
+        os.chmod(os.path.join(bin_, "docker"), 0o755)
+        os.chmod(os.path.join(bin_, "aws"), 0o755)
+        self.bin = bin_
+        self.built = os.path.join(self.tmp.name, "built-svc")
+        write(self.built, b"\x7fELF the desk-svc this commit builds")
+        self.d = os.path.join(self.tmp.name, "dist")
+        for fn in ("desk-rtc-0.5.1-amd64.tgz", "desk-stream-0.3.5.tgz", "deskd-2026.11.12-x-amd64.tgz", "desk-agent-filter-0.1.1-amd64.tgz"):
+            write(os.path.join(self.d, fn), os.urandom(256))
+
+    def tearDown(self):
+        self.tmp.cleanup()
+
+    def make(self, svc_in_installer):
+        bscript = os.path.join(self.repo, "selfhost", "build-bundle.sh")
+        fn = subprocess.run(["sed", "-n", "/^installer_manifest() {/,/^}/p", bscript], capture_output=True, text=True).stdout
+        r = subprocess.run(["bash", "-c", f"set -euo pipefail; die() {{ echo \"$*\" >&2; exit 1; }}; REPO={self.repo}; "
+                            f"DESK_SVC_REL={DESK_SVC}; {fn}\ninstaller_manifest HEAD {svc_in_installer}"], capture_output=True, text=True)
+        self.assertEqual(r.returncode, 0, r.stderr)
+        write(os.path.join(self.d, "installer.sha256"), r.stdout)
+        pin = ["# ma-selfhost-bundle/1", f"# bundle {self.commit}"]
+        for name, ver, fn_ in (("desk-rtc", "0.5.1", "desk-rtc-0.5.1-amd64.tgz"), ("desk-stream", "0.3.5", "desk-stream-0.3.5.tgz"),
+                               ("deskd", "2026.11.12-x", "deskd-2026.11.12-x-amd64.tgz"),
+                               ("desk-agent-filter", "0.1.1", "desk-agent-filter-0.1.1-amd64.tgz")):
+            pin.append(f"{name:<14} {ver:<20} {sha(os.path.join(self.d, fn_))}")
+        pin.append(f"installer      {self.commit:<20} {sha(os.path.join(self.d, 'installer.sha256'))}")
+        write(os.path.join(self.d, "bundle.pin"), "\n".join(pin) + "\n")
+        env = dict(os.environ, PATH=f"{self.bin}:{os.environ['PATH']}", DOCKER_HOST="ssh://stand-in", RELEASE_BUCKET="b",
+                   FAKE_SVC=self.built, FAKE_KEY=self.priv, FAKE_SIG=os.path.join(self.tmp.name, "sig"))
+        return subprocess.run(["bash", bscript, "--sign", self.d], capture_output=True, text=True, env=env)
+
+    def test_the_desk_svc_of_this_commits_own_build_is_signed(self):
+        r = self.make(self.built)
+        self.assertEqual(r.returncode, 0, r.stderr + r.stdout)
+        self.assertTrue(os.path.isfile(os.path.join(self.d, "bundle.pin.sig")))
+
+    def test_a_desk_svc_in_the_installer_that_isnt_its_build_is_refused_and_nothing_is_signed(self):
+        other = os.path.join(self.tmp.name, "other-svc")
+        write(other, b"\x7fELF a desk-svc with something added")
+        r = self.make(other)
+        self.assertNotEqual(r.returncode, 0)
+        self.assertIn("a desk-svc that isn't its build is never signed", r.stderr)
+        self.assertFalse(os.path.exists(os.path.join(self.d, "bundle.pin.sig")))
 
 
 class Committed(unittest.TestCase):

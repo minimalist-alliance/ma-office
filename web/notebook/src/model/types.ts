@@ -73,6 +73,22 @@ export interface VersionMeta {
   actor: string;
   title: string;
   wordCount: number;
+  /** On a `pre_agent` version: the agent whose edit came next (its id, or on a guild desk the member's), that edit, and whether it was undone. */
+  agent?: string;
+  editId?: string;
+  undone?: boolean;
+}
+
+/** An agent's edit of a page (`notebook.page.agentEdits`), newest first: what the page's foot and its history say. */
+export interface AgentEdit {
+  editId: string;
+  op: 'create' | 'append' | 'replace_text';
+  /** The agent's id (`ag-…`), or on a guild desk the member's id: the app shows the name. */
+  agent: string;
+  at: number;
+  /** The page as it was before, or null for a page the agent made. */
+  versionId: string | null;
+  undone: boolean;
 }
 
 export interface Version extends VersionMeta {

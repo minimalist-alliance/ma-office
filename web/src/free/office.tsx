@@ -2,7 +2,7 @@
 // own chunk, loaded by `session.ts` only once `GET /v1/me` says `membership.tier: "free"`, which hands its parts to the
 // few places that show them (`door.ts`). "Visible everywhere, spoken rarely": the meter, Maia asleep and the account
 // menu's tier line show it (the Work desk offer and See membership are the setup circle's after-setup card now), and
-// the office speaks up at most once a day, only when the day's Browser time is nearly or wholly used. No modals, no red, no counts, no badges or padlocks; nothing in Chat, Agent or Notebook; nothing said in
+// the office speaks up at most once a day, only when the day's Browser time is nearly or wholly used. No modals, no red, no counts, no badges or padlocks; nothing in Courier, Agent or Notebook; nothing said in
 // full screen (the meter stays in view there, in the title bar of a Browser that covers it: walk L13); never on the
 // sign-in pages; and nothing while a desk wakes.
 //
@@ -25,6 +25,7 @@ import { useFree } from './door';
 import { FreeAccount, FreeBrowserLine, FreeNotices } from './Lines';
 import { watchCover } from './cover';
 import { FreeMeter, FreeWindowRing } from './Meter';
+import { FreeNow, watchFreeNow } from './freeNow';
 import { SAID_ON, readPref, writePref } from './prefs';
 import { BEAT_MS, HEADS_UP_MS, showNotice, UPGRADED_MS, useFreeState } from './state';
 import { allianceDrive, CONTENTION_TOPIC, devBrowserTime, isFree, membershipUrl, paidTier, readBrowserTime, readHeld, secondsLeft, usedUp, type BrowserTime } from './wire';
@@ -58,6 +59,16 @@ function pause(resumesAt: string | null): { title: string; body: string; link: R
   return { ...pausedWords(time.resetsAt, { now: Date.now() }), link: <PauseLink /> };
 }
 
+/** Beside the bandwidth circle: the meter; and over the office, "You're on {Free} now" after a paid membership (`freeNow.tsx`). */
+function FreeOffice() {
+  return (
+    <>
+      <FreeMeter />
+      <FreeNow />
+    </>
+  );
+}
+
 let opened = false;
 let reread: () => Promise<void> = async () => {};
 let openedAt = 0;
@@ -74,7 +85,7 @@ export function open(again: () => Promise<void>): void {
   member = useSession.getState().me?.userId ?? null;
   useFree.setState({
     free: true,
-    Office: FreeMeter,
+    Office: FreeOffice,
     Notices: FreeNotices,
     Account: FreeAccount,
     BrowserLine: FreeBrowserLine,
@@ -86,6 +97,7 @@ export function open(again: () => Promise<void>): void {
     },
   });
   watchTime();
+  watchFreeNow();
   watchMe();
   watchReturn();
   watchHeld();

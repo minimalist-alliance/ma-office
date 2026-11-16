@@ -4,26 +4,40 @@ shared-host image, from the wall test's run 2).
 
 WALL-05 and RC-01, as host root, after `runc create` of the desk and its services' sandboxes and before any of them starts:
 1. In a mount namespace of its own (private, gone when this exits), never the host's: if the device is blank, mkfs and
-   the format record /.ma-volume and the services' directories (desk, files, rtc, agent, notebook) with the desk's own on-disk
+   the format record /.ma-volume and the services' directories (desk, files, courier, keys, rtc, agent, notebook) with the desk's own on-disk
    owners, written through the fresh mount's descriptor (a volume no desk has run on, the one write ADR 0072 section 3
    allows). Then fsopen("ext4"), fsmount() with MOUNT_ATTR_NOSUID|NODEV|NOEXEC, and mount_setattr(MOUNT_ATTR_IDMAP) to the
    desk's user namespace (its host-owned bind, /run/desk-host/ns/<k>/user): on disk the volume keeps the desk's own uids
    (0, 1100 to 1110), so it works in any slot, on any host and back on an instance of its own, with no chown.
    The volume is attached only here, in this private namespace, because open_tree() can't clone from a detached mount on
    this kernel; no raw or idmapped mount of a member's volume is ever attached in the host's namespace.
+1b. ISS-96 (docs/sub-status/browser-metrics-tmpfs.md): a 32 MiB tmpfs, kiosk's, 0700, nosuid,nodev,noexec, over the profile's
+   BrowserMetrics/, the directory of Chromium's histogram file (a shared mapping every browser thread writes; on a slot whose
+   volume writes are capped, the browser UI thread sat in the kernel's dirty throttle on it for up to 91 s, and keys waited). On
+   the volume's root in this private namespace, before the desk's clone, which carries it (AT_RECURSIVE), so it's in /data
+   before any desk process runs and stays for every Chromium start of this run. browser, profile and BrowserMetrics are each
+   opened from the last one's descriptor with the openat2 rule below (a link anywhere is refused, never followed) and must be a
+   directory of kiosk's (fstat on that descriptor); a missing profile or BrowserMetrics is made by mkdirat(parent's descriptor)
+   in a child that is kiosk alone (no groups, no capabilities), never by root and never by name. The tmpfs is made with
+   fsopen/fsconfig/fsmount and attached to the checked descriptor itself (move_mount, MOVE_MOUNT_T_EMPTY_PATH). Anything that
+   doesn't check out (a link, the wrong owner or type, a mount error) makes no mount and one line, and the desk starts as before:
+   never a refusal. It covers the directory and reads or removes nothing: what the volume holds there stays as it is (ADR 0035:
+   Chromium's histograms only, rebuilt at each start, read by nothing on a desk, a rebuildable cache). METRICS_TMPFS=off in
+   desk-host.conf turns it off. A blank volume gets browser (kiosk's 0750) with the services' directories, as desk-init makes it.
 2. Each service's directory is resolved from the volume's own root with openat2(RESOLVE_IN_ROOT | RESOLVE_NO_SYMLINKS |
    RESOLVE_NO_MAGICLINKS | RESOLVE_NO_XDEV) and cloned with open_tree(OPEN_TREE_CLONE). A link, a file or a missing
    directory where the desk's root put one gets that service refused (printed with its errno; desks.sh doesn't start it),
-   never followed. deskd's second directory, files (its Files tree, free walk H5), is optional: missing, a link or a file
-   there skips only that mount, never followed, and deskd starts with the placeholder its spec put there (Files answers
-   unavailable for that run). A volume from before 0.1.11 has none: the desk's own init makes it, and the next start mounts
-   it. The whole volume is cloned for the desk itself, and for desk-data a read-only clone of the whole volume
+   never followed. deskd's other directories, files (its Files tree, free walk H5), courier (Courier's store and vault) and keys
+   (its sealed-message keys), are optional: missing, a link or a file there skips only that mount, never followed, and deskd
+   starts with the placeholder its spec put there (that part answers unavailable for that run). A volume from before 0.1.11 has
+   no files, and one from before the bake after 0.1.16 no courier or keys: the desk's own init makes them, and the next start
+   mounts them. The whole volume is cloned for the desk itself, and for desk-data a read-only clone of the whole volume
    (MOUNT_ATTR_RDONLY on the clone) with its scratch directory, .ma-export-tmp, read-write on top (WALL-06).
 3. setns() into the desk's mount namespace, then into each sandbox's (their host-owned binds), and move_mount() each clone
    onto its target, opened there with RESOLVE_IN_ROOT and no links (crossing that namespace's own mounts allowed).
 Prints one line per mount, "refused <service> ..." for each refusal and "skipped <service> /data/<dir> ..." for an optional
-directory left out; /run/desk-host/<k>.mounts.json records both ("refused", "skipped": {service: {dir: errno}}). Exit 0
-unless the desk's own /data failed.
+directory left out; /run/desk-host/<k>.mounts.json records both ("refused", "skipped": {service: {dir: errno}}) and step 1b's
+outcome ("metrics": "tmpfs", "off" or "refused: <why>"). Exit 0 unless the desk's own /data failed.
 
 mounts.py svc <k> <service>: one service's /data directory into its sandbox made again by a live switch (ADR 0078 section 2.2),
 after its `runc create` and before its `runc start`, while the desk runs. As vol's step 2 and 3 for that service alone: in a mount
@@ -50,6 +64,7 @@ import ctypes
 import errno
 import json
 import os
+import stat
 import subprocess
 import sys
 
@@ -63,13 +78,129 @@ RESOLVE_NO_XDEV, RESOLVE_NO_MAGICLINKS, RESOLVE_NO_SYMLINKS, RESOLVE_IN_ROOT = 0
 RESOLVE = RESOLVE_NO_XDEV | RESOLVE_NO_MAGICLINKS | RESOLVE_NO_SYMLINKS | RESOLVE_IN_ROOT
 CLONE_NEWNS = 0x20000
 MS_REC, MS_PRIVATE = 0x4000, 1 << 18
-# The desk's own uids, as desk-init's datadirs() makes these directories (desk:desk 750, rtc 700, agent 700, notebook 700)
-DIRS = {"desk": (1100, 1100, 0o750), "files": (1100, 1100, 0o700), "rtc": (1101, 1101, 0o700), "agent": (1103, 1103, 0o700),
-        "notebook": (1105, 1105, 0o700), ".ma-export-tmp": (1112, 1112, 0o700)}   # desk-data's scratch, its own uid (WALL-06)
+# The desk's own uids, as desk-init's datadirs() makes these directories (desk:desk 750, files, courier and keys desk:desk 700, rtc 700,
+# agent 700, notebook 700)
+DIRS = {"desk": (1100, 1100, 0o750), "files": (1100, 1100, 0o700), "courier": (1100, 1100, 0o700), "keys": (1100, 1100, 0o700),
+        "rtc": (1101, 1101, 0o700), "agent": (1103, 1103, 0o700),
+        "notebook": (1105, 1105, 0o700), ".ma-export-tmp": (1112, 1112, 0o700),   # desk-data's scratch, its own uid (WALL-06)
+        "browser": (1102, 1102, 0o750)}   # kiosk's, as datadirs() makes it: step 1b's walk starts there (ISS-96)
 # Each service's directories, in order; the first is the one it can't run without (refused if it can't be had), the rest
-# optional (skipped if they can't). files is deskd's Files tree, /data/files (deskd API.md section 16; free walk H5).
-SERVICES = {"deskd": ("desk", "files"), "desk-agent": ("agent",), "desk-notebook": ("notebook",), "desk-rtc": ("rtc",)}
+# optional (skipped if they can't). files is deskd's Files tree, /data/files (deskd API.md section 16; free walk H5); courier is Courier's
+# store and its vault (DESKD_COURIER_ROOT, the draft ADR "Courier's store"), keys its sealed-message keys (DESKD_COURIER_KEYS, /data/keys).
+SERVICES = {"deskd": ("desk", "files", "courier", "keys"), "desk-agent": ("agent",), "desk-notebook": ("notebook",), "desk-rtc": ("rtc",)}
 SCRATCH = ".ma-export-tmp"
+# Step 1b (ISS-96): Chromium's histogram directory on a tmpfs of its own, kiosk's, from the volume's root one directory at a time
+KIOSK = 1102                                               # Chromium's uid and group in every desk (image/recipe/build.sh)
+METRICS_WALK = (("browser", False), ("profile", True), ("BrowserMetrics", True))   # (name, made as kiosk when missing)
+METRICS_FS = (("source", "desk-metrics"), ("size", "32m"), ("mode", "0700"))       # and uid, gid: kiosk's on the host
+METRICS_ATTR = MOUNT_ATTR_NOSUID | MOUNT_ATTR_NODEV | MOUNT_ATTR_NOEXEC
+FSOPEN_CLOEXEC, FSMOUNT_CLOEXEC = 1, 1
+CONF = "/etc/desk-host/desk-host.conf"
+
+
+def base_id(k):
+    """Slot k's uid range on the host (wallspec.BASE_ID_OF): the desk's uid u is base_id(k) + u through its idmapped volume."""
+    return 100000 + k * 65536
+
+
+def conf_value(key, default, path=CONF):
+    """One KEY=VALUE of desk-host.conf (host root's), the last line that names it; the default when there's none or no file."""
+    v = default
+    try:
+        with open(path) as fh:
+            for line in fh:
+                line = line.strip()
+                if line and not line.startswith("#") and "=" in line and line.split("=", 1)[0].strip() == key:
+                    v = line.split("=", 1)[1].strip().strip('"')
+    except OSError:
+        pass
+    return v
+
+
+class Refused(Exception):
+    """Step 1b's check didn't pass: no mount, one line, and nothing more done on that path."""
+
+
+def make_dir_as(uid, gid, parent, name):
+    """mkdirat(parent, name, 0700) in a child that is uid and gid alone (no supplementary groups; a uid other than 0 has no
+    capabilities), on the parent's descriptor, never a path: so the directory is that user's from its first moment, is made
+    only where that user may write, and root never acts on a name inside that user's directory. 0, or the errno."""
+    pid = os.fork()
+    if pid == 0:
+        code = 1
+        try:
+            os.setgroups([])
+            os.setresgid(gid, gid, gid)
+            os.setresuid(uid, uid, uid)
+            os.mkdir(name, 0o700, dir_fd=parent)
+            code = 0
+        except OSError as e:
+            code = e.errno if 0 < e.errno < 126 else 1
+        finally:
+            os._exit(code)
+    _, status = os.waitpid(pid, 0)
+    return os.waitstatus_to_exitcode(status)
+
+
+def metrics_tmpfs(root, kiosk, make=None, switch=None):
+    """Step 1b (the docstring): a 32 MiB tmpfs of kiosk's (uid and gid `kiosk` on the host, through the idmapped volume) over
+    browser/profile/BrowserMetrics under the volume's root descriptor `root`. Returns the record's word: "tmpfs", "off" or
+    "refused: <why>". Prints one line. Never raises, never refuses the desk, and after a check fails does nothing more there."""
+    if (conf_value("METRICS_TMPFS", "on") if switch is None else switch) == "off":
+        print("browser-metrics: off (METRICS_TMPFS=off in desk-host.conf); Chromium's histograms stay on the volume")
+        return "off"
+    make = make or (lambda parent, name: make_dir_as(kiosk, kiosk, parent, name))
+    fds = []
+
+    def step(parent, name, may_make):
+        how = os.O_PATH | os.O_DIRECTORY | os.O_NOFOLLOW
+        try:
+            fd = openat2(parent, name, how)
+        except OSError as e:
+            if e.errno != errno.ENOENT or not may_make:
+                raise Refused(f"{name}: openat2(RESOLVE_IN_ROOT|NO_SYMLINKS|NO_MAGICLINKS|NO_XDEV) {errno.errorcode.get(e.errno, e.errno)}")
+            rc = make(parent, name)
+            if rc not in (0, errno.EEXIST):
+                raise Refused(f"{name}: mkdirat as kiosk {errno.errorcode.get(rc, rc)}")
+            try:
+                fd = openat2(parent, name, how)
+            except OSError as e2:
+                raise Refused(f"{name}: made, then openat2 {errno.errorcode.get(e2.errno, e2.errno)}")
+        fds.append(fd)
+        st = os.fstat(fd)
+        if not stat.S_ISDIR(st.st_mode):
+            raise Refused(f"{name}: not a directory")
+        if st.st_uid != kiosk:
+            raise Refused(f"{name}: uid {st.st_uid}'s, not kiosk's ({kiosk})")
+        return fd
+
+    fs = mnt = None
+    try:
+        at = root
+        for name, may_make in METRICS_WALK:
+            at = step(at, name, may_make)
+        fs = sysc("fsopen", b"tmpfs", FSOPEN_CLOEXEC)
+        for key, val in METRICS_FS + (("uid", str(kiosk)), ("gid", str(kiosk))):
+            sysc("fsconfig", fs, FSCONFIG_SET_STRING, key.encode(), val.encode(), 0)
+        sysc("fsconfig", fs, FSCONFIG_CMD_CREATE, None, None, 0)
+        mnt = sysc("fsmount", fs, FSMOUNT_CLOEXEC, METRICS_ATTR)
+        sysc("move_mount", mnt, b"", at, b"", MOVE_MOUNT_F_EMPTY_PATH | MOVE_MOUNT_T_EMPTY_PATH)
+        print(f"browser-metrics: a 32 MiB tmpfs (uid {kiosk}, 0700, nosuid,nodev,noexec) over /data/browser/profile/BrowserMetrics")
+        return "tmpfs"
+    except Refused as e:
+        why = str(e)
+    except OSError as e:
+        why = f"the mount: {e.strerror or e}"
+    except Exception as e:  # noqa: BLE001 - never the desk's start
+        why = f"{type(e).__name__}"
+    finally:
+        for fd in fds + [x for x in (fs, mnt) if x is not None]:
+            try:
+                os.close(fd)
+            except OSError:
+                pass
+    print(f"browser-metrics: no tmpfs ({why}); Chromium starts as before")
+    return f"refused: {why}"
 
 
 NSFD = {}   # namespace file -> descriptor, opened in the host's mount namespace
@@ -181,6 +312,8 @@ def vol(k, dev, volid):
     os.makedirs(priv, mode=0o700, exist_ok=True)
     sysc("move_mount", mnt, b"", -100, priv.encode(), MOVE_MOUNT_F_EMPTY_PATH)   # this private namespace only
     root = os.open(priv, os.O_PATH | os.O_DIRECTORY | os.O_CLOEXEC)
+    # 1b. ISS-96: Chromium's histogram directory on a tmpfs, here, so the desk's clone below (AT_RECURSIVE) carries it in
+    metrics = metrics_tmpfs(root, base_id(k) + KIOSK)
     # 2. one clone for the desk, one per service directory, each resolved without links or crossings
     whole = sysc("open_tree", root, b"", OPEN_TREE_CLONE | OPEN_TREE_CLOEXEC | AT_EMPTY_PATH | AT_RECURSIVE)
     trees, refused, skipped = clone_dirs(root, SERVICES, lambda svc: f"{nsd}/mnt-{svc}" in NSFD)
@@ -219,7 +352,8 @@ def vol(k, dev, volid):
             refused.append("desk-data")
             print(f"refused desk-data: its target: {e}")
     setns(host_ns, "the host's own")
-    json.dump({"refused": refused, "skipped": skipped, "formatted": formatted, "device": dev, "volumeId": volid}, open(f"/run/desk-host/{k}.mounts.json", "w"))
+    json.dump({"refused": refused, "skipped": skipped, "formatted": formatted, "device": dev, "volumeId": volid, "metrics": metrics},
+              open(f"/run/desk-host/{k}.mounts.json", "w"))
 
 
 def svc(k, name):

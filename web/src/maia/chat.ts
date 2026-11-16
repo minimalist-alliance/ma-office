@@ -15,6 +15,7 @@ import type { MaiaState } from './gate';
 import { parseMarkdown, plainText } from './markdown';
 import { errorCode, maiaFetch } from './net';
 import { refusalCode, refusedLine, turnBody, type TurnContext } from './turn';
+import { WEB_WORDS, answerBody, decidedLine, readPending, readSources, refusedAnswer, webExpired, type WebAsk, type WebDecision, type WebMode, type WebSource } from './web';
 
 declare const __MA_VERSION__: string;
 
@@ -38,6 +39,12 @@ export interface Msg {
   upgrade?: boolean;
   /** The member's message only: the files it carried, as names and sizes. Never their bytes. */
   files?: Sent[];
+  /** Hers: a batch of web searches waiting on the member (ma-platform ADR 0137), one card for all of it. */
+  web?: WebAsk;
+  /** Hers, in auto mode: what she searched the web for in this reply. */
+  searched?: string[];
+  /** Hers: the sources under a reply that used the web. */
+  sources?: WebSource[];
 }
 
 export interface ChatState {
@@ -68,6 +75,10 @@ export interface ChatState {
   attachLine: string | null;
   /** Words to put back in the composer: the turn did not happen. */
   restore: { text: string; n: number } | null;
+  /** The member's web search mode while she may search for them (ADR 0137), else null. */
+  webMode: WebMode | null;
+  /** One plain line about the mode, after it changed or didn't. */
+  webLine: string | null;
 }
 
 interface Turn {
@@ -78,6 +89,9 @@ interface Turn {
   firstAt: number;
   speaking: boolean;
   ended: 'done' | 'stop' | 'cut' | null;
+  web: WebAsk | null;
+  searched: string[] | null;
+  sources: WebSource[];
 }
 
 export const CONVERSATION_KEY = 'ma.maia.conversation.v1';
@@ -161,6 +175,8 @@ export class Chat {
       files: [],
       attachLine: null,
       restore: null,
+      webMode: state.webSearch?.mode ?? null,
+      webLine: null,
     }));
   }
 
@@ -303,8 +319,12 @@ export class Chat {
     if (back) this.set({ files: [...back.files, ...this.get().files].slice(0, this.state.attachments?.maxFiles ?? 99) });
   }
 
+  private newTurn(): Turn {
+    return { seq: ++this.seq, messageId: null, text: '', cards: [], firstAt: 0, speaking: false, ended: null, web: null, searched: null, sources: [] };
+  }
+
   private async run(message: string, wire: WireFile[], retried: boolean): Promise<boolean> {
-    const turn: Turn = { seq: ++this.seq, messageId: null, text: '', cards: [], firstAt: 0, speaking: false, ended: null };
+    const turn = this.newTurn();
     this.turn = turn;
     this.set({ phase: 'waiting', status: null, line: null });
     this.avatar()?.setState('thinking');
@@ -398,7 +418,7 @@ export class Chat {
         return;
       case 'status':
         // Waiting in free Maia's line: her thinking line says where they are and about how long, until her first words.
-        this.set({ status: f.code === 'free_queue' && f.text ? f.text : LOOKING });
+        this.set({ status: f.code === 'free_queue' && f.text ? f.text : f.code === 'web' ? WEB_WORDS.status : LOOKING });
         turn.speaking = false;
         this.avatar()?.setState('thinking');
         return;
@@ -420,6 +440,17 @@ export class Chat {
       }
       case 'proposal':
         turn.cards.push(f);
+        return;
+      case 'web_search':
+        // One card for the reply's whole batch; in auto mode, the line that says what's being searched.
+        if (f.mode === 'ask') turn.web = { batchId: f.batchId, queries: f.queries, expiresAt: f.expiresAt, status: 'pending', line: null };
+        else {
+          turn.searched = f.queries;
+          this.set({ status: WEB_WORDS.status });
+        }
+        return;
+      case 'sources':
+        turn.sources = f.sources;
         return;
       case 'stop':
         this.finish(turn, 'stop', f);
@@ -454,8 +485,19 @@ export class Chat {
     const now = Date.now();
     // A reply that ends in `stop` has no cards (ADR 0088), so any that came are dropped.
     const cards: CardState[] = how === 'done' ? turn.cards.map((proposal) => ({ proposal, status: expired(proposal, now) ? 'expired' : 'pending', line: null })) : [];
-    if (turn.text || stop || cards.length) {
-      this.push({ role: 'maia', text: turn.text, stop: stop ? stop.text : null, stopReason: stop?.reason ?? null, cards });
+    // A batch of web searches waits under her words (ADR 0137): one card, only on a reply that finished.
+    const web = how === 'done' && turn.web ? (webExpired(turn.web, now) ? { ...turn.web, status: 'expired' as const, line: WEB_WORDS.expired } : { ...turn.web, status: 'pending' as const }) : null;
+    if (turn.text || stop || cards.length || web || turn.sources.length) {
+      this.push({
+        role: 'maia',
+        text: turn.text,
+        stop: stop ? stop.text : null,
+        stopReason: stop?.reason ?? null,
+        cards,
+        ...(web ? { web } : {}),
+        ...(turn.searched ? { searched: turn.searched } : {}),
+        ...(turn.sources.length ? { sources: turn.sources } : {}),
+      });
     }
     this.streaming.setState({ text: '' });
     const heard = plainText(parseMarkdown(turn.text));
@@ -463,7 +505,7 @@ export class Chat {
       phase: 'idle',
       status: null,
       line: how === 'cut' ? 'The reply was cut off. Try again.' : null,
-      said: [heard, stop?.text ?? '', cards.length ? 'Maia suggests something below.' : ''].filter(Boolean).join(' ') || (how === 'cut' ? 'The reply was cut off.' : ''),
+      said: [heard, stop?.text ?? '', cards.length ? 'Maia suggests something below.' : '', web ? `${WEB_WORDS.title} ${web.queries.join(', ')}` : ''].filter(Boolean).join(' ') || (how === 'cut' ? 'The reply was cut off.' : ''),
     });
     if (this.turn === turn) this.turn = null;
     if (how === 'stop' && stop?.reason === 'limit_trial') this.set({ trialOver: true });
@@ -495,10 +537,17 @@ export class Chat {
       const body = (await res.json()) as { messages?: unknown };
       if (!Array.isArray(body.messages) || this.get().conversationId !== id || this.get().messages.length) return;
       const msgs: Msg[] = [];
-      for (const m of body.messages as { role?: unknown; text?: unknown }[]) {
+      for (const m of body.messages as { role?: unknown; text?: unknown; sources?: unknown }[]) {
         if (typeof m?.text !== 'string' || (m.role !== 'user' && m.role !== 'assistant')) continue;
         this.keys += 1;
-        msgs.push({ key: this.keys, role: m.role === 'user' ? 'me' : 'maia', text: m.text, stop: null, stopReason: null, cards: [] });
+        const sources = m.role === 'assistant' ? readSources(m.sources) : [];
+        msgs.push({ key: this.keys, role: m.role === 'user' ? 'me' : 'maia', text: m.text, stop: null, stopReason: null, cards: [], ...(sources.length ? { sources } : {}) });
+      }
+      // A batch of web searches still waiting comes back as its card (ADR 0137).
+      const pending = readPending((body as { pendingWebSearch?: unknown }).pendingWebSearch, Date.now());
+      if (pending) {
+        this.keys += 1;
+        msgs.push({ key: this.keys, role: 'maia', text: '', stop: null, stopReason: null, cards: [], web: pending });
       }
       this.set({ messages: msgs });
     } catch {
@@ -591,6 +640,70 @@ export class Chat {
     const out = memoryOutcome(action, status, code);
     this.setCard(key, id, { status: 'done', line: out.line });
     if (out.ok || code === 'memory_full') void this.loadMemories();
+  }
+
+  // ---------------------------------------------------------------- web search (ADR 0137)
+
+  setWeb(key: number, patch: Partial<WebAsk>): void {
+    this.set({ messages: this.get().messages.map((m) => (m.key === key && m.web ? { ...m, web: { ...m.web, ...patch } } : m)) });
+  }
+
+  /** The member's answer to a batch: one turn, with no message. Her reply streams in under the card. */
+  async answerWeb(key: number, decision: WebDecision): Promise<void> {
+    const msg = this.get().messages.find((m) => m.key === key);
+    const ask = msg?.web;
+    const conversationId = this.get().conversationId;
+    if (!ask || ask.status !== 'pending' || this.get().phase !== 'idle' || !conversationId) return;
+    if (webExpired(ask, Date.now())) {
+      this.setWeb(key, { status: 'expired', line: WEB_WORDS.expired });
+      return;
+    }
+    this.setWeb(key, { status: 'busy', line: null });
+    const turn = this.newTurn();
+    this.turn = turn;
+    this.set({ phase: 'waiting', status: decision === 'decline' ? null : WEB_WORDS.status, line: null });
+    this.avatar()?.setState('thinking');
+    this.ctl?.abort();
+    const ctl = new AbortController();
+    this.ctl = ctl;
+    let res: Response;
+    try {
+      res = await maiaFetch(this.base, '/v1/maia/turn', {
+        method: 'POST',
+        headers: { 'Content-Type': 'application/json', Accept: 'text/event-stream' },
+        body: JSON.stringify(answerBody(conversationId, ask.batchId, decision, turnBody(conversationId, '', this.context()).clientContext)),
+        signal: ctl.signal,
+      });
+    } catch {
+      if (!ctl.signal.aborted) {
+        this.setWeb(key, { status: 'pending', line: WEB_WORDS.failed });
+        this.refused("Maia can't be reached right now. Try again in a moment.");
+      }
+      return;
+    }
+    if (!res.ok || !res.body) {
+      const out = refusedAnswer(res.status);
+      this.setWeb(key, out);
+      this.refused(out.status === 'pending' ? refusedLine(res.status, (await errorInfo(res)).code) : '');
+      if (out.status !== 'pending') this.set({ line: null });
+      return;
+    }
+    this.setWeb(key, { status: 'done', line: decidedLine(decision) });
+    if (decision === 'always') this.set({ webMode: 'auto' });
+    void this.read(res.body, turn, ctl.signal);
+  }
+
+  /** The member's mode, from a search line or the card: theirs on every device (`PUT /v1/maia/preferences`). */
+  async setWebMode(mode: WebMode): Promise<boolean> {
+    try {
+      const res = await maiaFetch(this.base, '/v1/maia/preferences', { method: 'PUT', headers: { 'Content-Type': 'application/json' }, body: JSON.stringify({ webSearch: { mode } }) });
+      if (!res.ok) throw new Error(String(res.status));
+      this.set({ webMode: mode, webLine: mode === 'ask' ? WEB_WORDS.askFirstDone : null });
+      return true;
+    } catch {
+      this.set({ webLine: WEB_WORDS.failed });
+      return false;
+    }
   }
 
   // ---------------------------------------------------------------- memory

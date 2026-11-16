@@ -82,3 +82,13 @@ export function namesList(ids: readonly unknown[], names: TierNames, fallback: r
   const list = (known.length ? known : TIER_IDS.filter((id) => fallback.includes(id))).map((id) => names[id]);
   return list.length <= 1 ? list.join('') : `${list.slice(0, -1).join(', ')} ${joiner} ${list[list.length - 1] ?? ''}`;
 }
+
+/**
+ * Whether `GET /v1/me`'s `membership.status` says `connect` would no longer refuse for the membership: it refuses only
+ * `suspended` and `ended` (desks.md, 0.3.11). Anything else unknown or missing waits for the next look. Here, with the
+ * tiers, rather than in `desk/rtc/policy.ts`: `desk/liveStore.ts` asks it, and the rest of the link's policy stays in the
+ * link's own chunk (`sub/mm-js-budget`).
+ */
+export function membershipBack(status: unknown): boolean {
+  return status === 'active' || status === 'past_due' || status === 'canceling';
+}

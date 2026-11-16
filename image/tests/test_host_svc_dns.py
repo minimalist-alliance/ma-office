@@ -15,8 +15,9 @@ IMAGE = pathlib.Path(__file__).resolve().parent.parent
 LIB = IMAGE / "host" / "recipe" / "files" / "usr" / "local" / "lib" / "desk-host"
 RESOLV = "nameserver 169.254.169.253"
 NAME = "sts.us-east-1.amazonaws.com"
-PIDS = {"desk-rtc": 500, "deskd": 501, "desk-agent": 502, "desk-notebook": 503, "desk-stream": 504, "desk-data": 505}
-UIDS = {500: 1101, 501: 1100, 502: 1103, 503: 1105, 504: 1104, 505: 1112}
+PIDS = {"desk-rtc": 500, "deskd": 501, "desk-agent": 502, "desk-notebook": 503, "desk-stream": 504, "desk-data": 505, "desk-parse": 506,
+        "desk-parse-courier": 507}
+UIDS = {500: 1101, 501: 1100, 502: 1103, 503: 1105, 504: 1104, 505: 1112, 506: 1113, 507: 1113}
 
 
 def load_check():
@@ -29,7 +30,8 @@ def load_check():
 
 
 class World:
-    """One running slot (k=1) with six sandboxes; `resolv` and `lookup` are what the breaks change."""
+    """One running slot (k=1) with eight sandboxes (desk-parse, ADR 0097, the seventh; desk-parse-courier, Courier's reader, the eighth);
+    `resolv` and `lookup` are what the breaks change."""
     def __init__(self):
         self.resolv = {svc: RESOLV for svc in PIDS}
         self.lookup = {"deskd": "54.1.2.3\n", "desk-rtc": "54.1.2.3\n", "desk-agent": ""}
@@ -89,7 +91,7 @@ class SvcDns(unittest.TestCase):
     def test_passes_as_built(self):
         ok, detail = self.run_check()
         self.assertTrue(ok, detail)
-        self.assertIn("6 sandbox(es)", detail)
+        self.assertIn("8 sandbox(es)", detail)
         self.assertIn("3 lookups", detail)
 
     def test_fails_on_0_1_8_empty_resolv_conf_in_deskd(self):   # the bug: the release's empty file, and so no lookup
@@ -113,6 +115,12 @@ class SvcDns(unittest.TestCase):
 
     def test_fails_when_a_sandbox_is_missing(self):
         self.assertFalse(self.run_check(lambda w: w.sandboxes.discard("desk-data"))[0])
+        ok, detail = self.run_check(lambda w: w.sandboxes.discard("desk-parse-courier"))
+        self.assertFalse(ok)
+        self.assertIn("desk-parse-courier: no sandbox", detail)
+
+    def test_fails_when_the_courier_reader_has_the_empty_file(self):   # no network there either: only the file shows it
+        self.assertFalse(self.run_check(lambda w: w.resolv.update({"desk-parse-courier": ""}))[0])
 
     def test_agent_may_get_the_placeholder_or_nothing_never_a_real_address(self):
         self.assertTrue(self.run_check(lambda w: w.lookup.update({"desk-agent": "192.0.2.1"}))[0])

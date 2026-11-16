@@ -14,7 +14,7 @@ import sys
 import time
 
 HEALTHY_SEC = 120
-UNITS = ("deskd", "desk-agent", "desk-notebook", "desk-rtc", "desk-stream", "commons-server",
+UNITS = ("deskd", "desk-agent", "desk-parse", "desk-parse-courier", "desk-notebook", "desk-rtc", "desk-stream", "commons-server",
          "desk-agent-filter", "desk-egress", "desk-browser", "desk-xorg", "desk-audio")
 
 

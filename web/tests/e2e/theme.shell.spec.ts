@@ -7,7 +7,7 @@
 import { expect, test, type Locator, type Page } from '@playwright/test';
 import { THEMES } from '../../src/theme/tokens';
 import type { ThemeMode } from '../../src/theme/resolve';
-import { canvasPainted, harness, signIn, watchConsole, type ThemeId } from './helpers';
+import { canvasPainted, harness, signIn, watchConsole, type ThemeId, openMenuSection } from './helpers';
 
 /** The shell's debug handle (`shell/Shell.tsx`), as `hidden.shell.spec.ts` reads it. */
 declare const __maDesk: { camera: { dpr(): number; getStage(): { getLayers(): { getCanvas(): { getContext(): { _context: CanvasRenderingContext2D } } }[] } } };
@@ -174,6 +174,7 @@ test('System follows the OS as it flips, Dusk standing in for Dark when that swi
 
   // "Use Zen when the system is dark" shows only under System, and makes a dark OS mean the middle theme.
   await openMenu(page);
+  await openMenuSection(page, 'menu-appearance'); // under Appearance since the owner's Nov 16 tidy
   const duskWhenDark = menu(page).getByRole('switch', { name: 'Use Zen when the system is dark' });
   await expect(duskWhenDark).not.toBeChecked();
   await duskWhenDark.check();
@@ -183,6 +184,7 @@ test('System follows the OS as it flips, Dusk standing in for Dark when that swi
   await page.emulateMedia({ colorScheme: 'light' });
   await expectTheme(page, 'light');
   await openMenu(page);
+  await openMenuSection(page, 'menu-appearance');
   await radioFor(page, 'light').click();
   await expect(menu(page).getByRole('switch', { name: 'Use Zen when the system is dark' })).toHaveCount(0);
   await radioFor(page, 'system').click();

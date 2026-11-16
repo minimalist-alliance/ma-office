@@ -13,6 +13,9 @@ import { circleLabel, headsUp, ringShare, ringWindow } from './meter';
 import { headsUpSeen, markHeadsUpSeen } from './seen';
 import { useBandwidth, watchBandwidth } from './store';
 import { Words } from './Words';
+// The panel's offer to move up (`upgrade.ts`, the popovers chunk's) is also the Browser's pause's, in every app's window's chunk
+// (`withWindows`): kept in the first load here, so neither of those chunks imports it from the other's.
+import './upgrade';
 import './bandwidth.css';
 
 const NOTICE_MS = 7_000;
@@ -117,7 +120,7 @@ export function BandwidthCircle() {
         <button
           ref={btnRef}
           type="button"
-          className={`bw-btn${meter.paused || meter.dataGuard ? ' paused' : ''}`}
+          className={`bw-btn ma-glass${meter.paused || meter.dataGuard ? ' paused' : ''}`}
           aria-label={label}
           aria-expanded={!!open}
           aria-controls={open ? panelId : undefined}
@@ -133,7 +136,7 @@ export function BandwidthCircle() {
       {/* Said through the shell's live region (`announce` above), which is there, empty, from the start, so the words
           are a change a screen reader hears. The notice isn't live: one added together with its words may not be heard. */}
       {notice && (
-        <div className="notice bw-notice" data-testid="bandwidth-notice">
+        <div className="notice bw-notice ma-glass" data-testid="bandwidth-notice">
           <Words text={notice} />
         </div>
       )}

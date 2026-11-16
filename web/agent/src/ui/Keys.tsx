@@ -4,10 +4,11 @@
 // Nothing here logs it, stores it in the browser or sends it anywhere else.
 import { useCallback, useEffect, useId, useRef, useState, type FormEvent } from 'react';
 import { AgentError, newIdem, type AgentClient } from '../client/agentClient';
-import { KeySecret, keyFormatMessage, keyFormatProblem, keyOwner, providerMismatchMessage } from '../client/keySecret';
+import { KeySecret, keyFormatMessage, keyFormatProblem, keyOwners, providerMismatchMessage } from '../client/keySecret';
 import type { Agent, KeyMeta, ModelInfo, Provider } from '../client/types';
+import { isCreditsKey } from '../client/types';
 import { freeOffered, modelOption, OPENROUTER, readPending } from '../connect/openrouter';
-import { errorText, KEY_RESTART_LINE, keyLost } from '../model/agents';
+import { defaultModel, errorText, KEY_RESTART_LINE, keyLost } from '../model/agents';
 import { UNPRICED } from '../model/limits';
 import { when } from '../model/format';
 import { ProviderBadge, Switch } from './bits';
@@ -95,10 +96,11 @@ export function KeyForm({ client, providers, onAdded, onFailed, again, submitLab
     setHasText(false);
     const problem = keyFormatProblem(secret, provider.keyPrefix);
     // Another provider's key, by the longest prefix it fits, stops here and names that provider, before the desk is asked.
-    const owner = problem === null || problem === 'prefix' ? keyOwner(secret, providers) : null;
-    if (owner && owner.id !== provider.id) {
+    // A prefix two share (OpenAI's and Moonshot AI's `sk-`) is either's: picked as one of them, it goes on.
+    const owners = problem === null || problem === 'prefix' ? keyOwners(secret, providers) : [];
+    if (owners.length > 0 && !owners.some((o) => o.id === provider.id)) {
       secret.wipe();
-      setError(providerMismatchMessage(owner.name));
+      setError(providerMismatchMessage(owners.map((o) => o.name).join(' or ')));
       el.focus();
       return;
     }
@@ -173,11 +175,11 @@ export function KeyForm({ client, providers, onAdded, onFailed, again, submitLab
         <input id={`${ids}-label`} value={label} maxLength={40} placeholder="e.g. Personal" onChange={(e) => setLabel(e.target.value)} disabled={busy} autoComplete="off" {...NO_MANAGER} />
       </label>
       <div className="ag-note ag-travel">
-        <p>The key goes straight to this desk over its own encrypted connection, and this window keeps no copy.</p>
+        <p>The key goes from this window to this desk over its encrypted connection, and this window keeps no copy.</p>
         {/* The rest of the same words, a press away, so the form reads provider, key, Add key at a glance. */}
         <details>
           <summary>How the key travels</summary>
-          <p>The desk checks it with the provider and uses it on this desk only. Your prompts and replies then go to the provider, under your own agreement with them. That’s the one place desk content leaves Minimalist Alliance.</p>
+          <p>The desk checks it with the provider and uses it on this desk only. Your prompts and replies then go to the provider, under your own agreement with them.</p>
         </details>
       </div>
       {error && (
@@ -206,7 +208,7 @@ export function BindingPicker({ client, agent, keys, onBound, compact = false }:
   const list = models.value ?? [];
   // A key the desk has only a row for, and no way to tell before now.
   const gone = models.error instanceof AgentError && models.error.reason === 'no_key';
-  const chosen = list.some((m) => m.id === model) ? model : (list[0]?.id ?? '');
+  const chosen = list.some((m) => m.id === model) ? model : (defaultModel(list)?.id ?? '');
   const chosenInfo = list.find((m) => m.id === chosen);
   const unpriced = chosenInfo != null && (chosenInfo.inputMicroUsdPerMTok == null || chosenInfo.outputMicroUsdPerMTok == null);
   const unchanged = agent.binding?.keyId === keyId && agent.binding?.model === chosen;
@@ -236,7 +238,7 @@ export function BindingPicker({ client, agent, keys, onBound, compact = false }:
         <select id={`${ids}-k`} value={keyId} onChange={(e) => setKeyId(e.target.value)} disabled={busy} data-testid="bind-key">
           {keys.map((k) => (
             <option key={k.keyId} value={k.keyId}>
-              {k.label} · {k.providerName} ····{k.last4}
+              {isCreditsKey(k) ? creditsOption(k) : `${k.label} · ${k.providerName} ····${k.last4}`}
             </option>
           ))}
         </select>
@@ -338,7 +340,7 @@ export function KeySetup({
     onKeysChanged();
     if (back.includes(agent.id)) return true;
     const models = await client.listModels(key.keyId);
-    const model = models.find((m) => m.id === agent.binding?.model) ?? models[0];
+    const model = models.find((m) => m.id === agent.binding?.model) ?? defaultModel(models);
     if (!model) return false;
     await client.bindAgent(agent.id, { keyId: key.keyId, model: model.id }, { idem: newIdem() });
     return true;
@@ -457,7 +459,7 @@ export function KeysPanel({ client, agent, agents, providers, keys, keysLast, on
       setTrying(false);
       if (agent.binding && !boundLost) return false;
       const models = await client.listModels(key.keyId);
-      const model = models[0];
+      const model = defaultModel(models);
       if (!model) return false;
       await client.bindAgent(agent.id, { keyId: key.keyId, model: model.id }, { idem: newIdem() });
       return true;
@@ -508,9 +510,15 @@ export function KeysPanel({ client, agent, agents, providers, keys, keysLast, on
                 <span className="ag-key-label">{k.label}</span>
                 <ProviderBadge badge={k} />
               </div>
-              <div className="ag-key-meta">
-                <span className="ag-mono">····{k.last4}</span> · added on {k.createdByDesk === deskName ? 'this desk' : `the ${k.createdByDesk} desk`}, {when(k.createdAt)}
-              </div>
+              {isCreditsKey(k) ? (
+                <div className="ag-key-meta" data-testid="key-credits">
+                  {creditsLine(k)}
+                </div>
+              ) : (
+                <div className="ag-key-meta">
+                  <span className="ag-mono">····{k.last4}</span> · added on {k.createdByDesk === deskName ? 'this desk' : `the ${k.createdByDesk} desk`}, {when(k.createdAt)}
+                </div>
+              )}
               {k.provider === OPENROUTER && (
                 <p className="ag-key-free" data-testid="key-free">
                   Free models only, from your OpenRouter account.
@@ -526,7 +534,7 @@ export function KeysPanel({ client, agent, agents, providers, keys, keysLast, on
                   Add this key again
                 </button>
               )}
-              {confirm === k.keyId ? (
+              {isCreditsKey(k) ? null : confirm === k.keyId ? (
                 <div className="ag-confirm">
                   <span>Delete this key from the desk? Agents using it stop until they get another.</span>
                   <button type="button" className="ag-btn sm" onClick={() => setConfirm(null)}>
@@ -631,7 +639,7 @@ export function GuildKeyPanel({ client, agent, agents, providers, keys, onKeysCh
       const models = await client.listModels(added.keyId);
       for (const a of agents) {
         if (!a.binding || (old && a.binding.keyId !== old.keyId)) continue;
-        const model = models.find((m) => m.id === a.binding?.model) ?? models[0];
+        const model = models.find((m) => m.id === a.binding?.model) ?? defaultModel(models);
         if (model) await client.bindAgent(a.id, { keyId: added.keyId, model: model.id }, { idem: newIdem() });
       }
       if (old) await client.deleteKey(old.keyId, { idem: newIdem() });
@@ -697,4 +705,21 @@ export function GuildKeyPanel({ client, agent, agents, providers, keys, onKeysCh
       {error && <p className="ag-error" role="alert">{error}</p>}
     </section>
   );
+}
+
+/** The member's MA credits in the key picker: no last four, as no key of theirs is behind it. */
+export function creditsOption(k: KeyMeta): string {
+  return k.credits ? `MA credits · ${k.credits.left.toLocaleString('en-US')} left` : 'MA credits';
+}
+
+/** The member's MA credits under their row in the Keys list (deskd API.md §24): whole credits, never money. */
+export function creditsLine(k: KeyMeta): string {
+  const c = k.credits;
+  if (!c) return 'Your agents run on Minimalist Alliance. No key needed.';
+  if (c.left > 0) {
+    const parts = [`${c.left.toLocaleString('en-US')} credits left`];
+    if (c.topUp > 0) parts.push(`${c.topUp.toLocaleString('en-US')} from top-ups`);
+    return `${parts.join(', ')}. Your agents run on Minimalist Alliance.`;
+  }
+  return c.lighter ? 'Your credits are used up, so your agents use a lighter model for now.' : 'Your credits are used up. Give an agent your own key to keep going.';
 }

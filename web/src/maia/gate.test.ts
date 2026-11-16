@@ -1,6 +1,7 @@
 import { afterEach, beforeEach, describe, expect, it, vi } from 'vitest';
 import type { ClientConfig } from '../platform/clientConfig';
-import { maiaBase, readState } from './gate';
+import { maiaBase } from './gate';
+import { readState } from './state';
 
 const auth = { domain: '', clientId: '', redirectUri: '', logoutUri: '', scopes: [] };
 /** Prod's client-config today: no `maia` block. */

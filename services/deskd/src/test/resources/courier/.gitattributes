@@ -1,0 +1,2 @@
+# Raw messages exactly as mail servers send them (CRLF, 8-bit, NUL): never converted, diffed or merged as text.
+*.eml binary

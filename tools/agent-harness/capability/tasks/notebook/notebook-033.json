@@ -1,0 +1,73 @@
+{
+  "id": "notebook-033",
+  "area": "notebook",
+  "title": "A code block",
+  "prompt": "Create a page Git cheatsheet in my Harness tab with a code block showing git status and git log --oneline.",
+  "setup": {
+    "notebook": [
+      {
+        "tab": "Harness",
+        "title": "Inbox",
+        "markdown": "# Inbox\n\nThings to sort later.\n"
+      }
+    ]
+  },
+  "approve": "all",
+  "checks": [
+    {
+      "kind": "page",
+      "tab": "Harness",
+      "title": "Git cheatsheet",
+      "contains": [
+        "git status",
+        "git log --oneline"
+      ]
+    },
+    {
+      "kind": "cards",
+      "tools": [
+        "notebook_write"
+      ]
+    }
+  ],
+  "policy": {
+    "tools": [
+      "notebook_list",
+      "notebook_write"
+    ]
+  },
+  "standIn": [
+    {
+      "calls": [
+        {
+          "name": "notebook_list",
+          "input": {}
+        }
+      ]
+    },
+    {
+      "calls": [
+        {
+          "name": "notebook_write",
+          "input": {
+            "op": "create",
+            "new": {
+              "tabId": {
+                "$re": {
+                  "step": 0,
+                  "call": 0,
+                  "pattern": "\"tabId\":\"([^\"]+)\",\"title\":\"Harness\""
+                }
+              },
+              "title": "Git cheatsheet"
+            },
+            "markdown": "```sh\ngit status\ngit log --oneline\n```"
+          }
+        }
+      ]
+    },
+    {
+      "text": "Made Git cheatsheet with the two commands in a code block."
+    }
+  ]
+}

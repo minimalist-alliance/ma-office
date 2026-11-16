@@ -35,6 +35,20 @@ public final class AnthropicProvider implements ChatProvider {
     public static final ProviderInfo INFO = new ProviderInfo(ProviderId.ANTHROPIC, "console.anthropic.com", "sk-ant-");
     static final String VERSION = "2023-06-01";
 
+    /**
+     * The model a new agent gets unless the member picks another: {@code agent.key.models} lists first the first of these
+     * the key's catalog has (API.md section 11, "the first a good default"; the New agent form and the key screen take
+     * it). Sonnet 5.5 is the deliberate default (Nov 14): tools, a long context and half Opus 5.5's price; the older
+     * Sonnets stand in for a key without it. Anthropic lists its models newest first, so before this the newest and
+     * dearest one, {@code claude-fable-5-2}, became every new agent's model.
+     */
+    static final List<String> DEFAULT_FIRST = List.of("claude-sonnet-5-5", "claude-sonnet-5", "claude-sonnet-4-6");
+
+    /** The Fable models, the dearest tier: listed, and a member may pick one, but never first (the owner's stop, Nov 11). */
+    static boolean neverFirst(String id) {
+        return id.toLowerCase(java.util.Locale.ROOT).contains("fable");
+    }
+
     private final HttpTransport http;
     private final URI base;
 
@@ -53,9 +67,10 @@ public final class AnthropicProvider implements ChatProvider {
         Map<String, Object> body = new LinkedHashMap<>();
         body.put("model", request.model());
         body.put("max_tokens", request.maxOutputTokens());
-        // One cache breakpoint, on the last system block: the prefix it ends is the tools and then the system prompt,
-        // which a 50-step run would otherwise resend at the full input price every step. With no system prompt it
-        // goes on the last tool.
+        // Two cache breakpoints of Anthropic's four. The first on the last system block: the prefix it ends is the tools
+        // and then the system prompt, which a 50-step run would otherwise resend at the full input price every step.
+        // With no system prompt it goes on the last tool. The second on the thread's last block (thread()), so a run's
+        // later steps and a warm next turn read the whole thread from the cache too.
         Map<String, Object> breakpoint = Map.of("type", "ephemeral");
         if (!request.system().isEmpty()) {
             Map<String, Object> block = new LinkedHashMap<>();
@@ -64,7 +79,7 @@ public final class AnthropicProvider implements ChatProvider {
             block.put("cache_control", breakpoint);
             body.put("system", List.of(block));
         }
-        body.put("messages", Messages.anthropic(request.messages()));
+        body.put("messages", thread(request, breakpoint));
         if (!request.tools().isEmpty()) {
             List<Map<String, Object>> tools = Messages.anthropicTools(request.tools());
             if (request.system().isEmpty()) {
@@ -85,6 +100,44 @@ public final class AnthropicProvider implements ChatProvider {
             }
             return read(stream, request.model(), sink);
         }
+    }
+
+    /**
+     * The thread as Anthropic's messages, with a cache breakpoint on its last block and the request's note, if any, as one
+     * more text block after it: the note changes on every call, so it sits outside the cached prefix (ma-platform
+     * {@code desk-maia.md} 0.4.6 does the same). The newest turn's content becomes a list of blocks when it was one string.
+     */
+    static List<Map<String, Object>> thread(ChatRequest request, Map<String, Object> breakpoint) {
+        List<Map<String, Object>> messages = Messages.anthropic(request.messages());
+        if (messages.isEmpty()) {
+            return messages;
+        }
+        Map<String, Object> last = messages.getLast();
+        List<Object> blocks = new ArrayList<>();
+        if (last.get("content") instanceof String text) {
+            Map<String, Object> block = new LinkedHashMap<>();
+            block.put("type", "text");
+            block.put("text", text);
+            blocks.add(block);
+        } else if (last.get("content") instanceof List<?> list) {
+            blocks.addAll(list);
+        }
+        if (!blocks.isEmpty() && blocks.getLast() instanceof Map<?, ?> end) {
+            @SuppressWarnings("unchecked")
+            Map<String, Object> marked = new LinkedHashMap<>((Map<String, Object>) end);
+            marked.put("cache_control", breakpoint);
+            blocks.set(blocks.size() - 1, marked);
+        }
+        if (!request.note().isEmpty()) {
+            Map<String, Object> note = new LinkedHashMap<>();
+            note.put("type", "text");
+            note.put("text", request.note());
+            blocks.add(note);
+        }
+        if (!blocks.isEmpty()) {
+            last.put("content", blocks);
+        }
+        return messages;
     }
 
     private static ChatResult read(HttpTransport.Stream stream, String asked, DeltaSink sink)
@@ -207,10 +260,44 @@ public final class AnthropicProvider implements ChatProvider {
                     }
                 }
             }
-            return models;
+            return defaultFirst(models);
         } catch (IOException e) {
             throw new ProviderException(ProviderException.Kind.UNAVAILABLE, false);
         }
+    }
+
+    /**
+     * The catalog with its default first: the first of {@link #DEFAULT_FIRST} it has, else its first model that isn't
+     * {@link #neverFirst}. The rest keep Anthropic's order.
+     */
+    static List<ModelInfo> defaultFirst(List<ModelInfo> listed) {
+        int at = -1;
+        for (String pick : DEFAULT_FIRST) {
+            for (int i = 0; i < listed.size() && at < 0; i++) {
+                if (listed.get(i).id().equals(pick)) {
+                    at = i;
+                }
+            }
+            if (at >= 0) {
+                break;
+            }
+        }
+        for (int i = 0; i < listed.size() && at < 0; i++) {
+            if (!neverFirst(listed.get(i).id())) {
+                at = i;
+            }
+        }
+        if (at <= 0) {
+            return listed;
+        }
+        List<ModelInfo> out = new ArrayList<>(listed.size());
+        out.add(listed.get(at));
+        for (int i = 0; i < listed.size(); i++) {
+            if (i != at) {
+                out.add(listed.get(i));
+            }
+        }
+        return out;
     }
 
     private static HttpRequest.Builder authorized(HttpRequest.Builder builder, KeyLease key) {

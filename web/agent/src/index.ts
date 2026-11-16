@@ -3,6 +3,8 @@
 import './ui/agent.css';
 
 export { AgentApp, type AgentAppProps, type GuildMode } from './ui/AgentApp';
+export type { AccessPlaces } from './ui/Setup';
+export { otherDesksOf, type OtherDesk } from './model/access';
 export { AgentError, newIdem, type AgentClient, type Mutation } from './client/agentClient';
 export { RpcAgentClient, toAgentError, type DeskTransport } from './client/rpcAgentClient';
 export { KeySecret } from './client/keySecret';

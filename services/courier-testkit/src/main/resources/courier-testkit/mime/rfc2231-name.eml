@@ -1,0 +1,18 @@
+From: Dana <dana@example.com>
+To: me@desk.example
+Date: Mon, 2 Nov 2026 09:00:00 +0000
+Subject: Receipt
+MIME-Version: 1.0
+Content-Type: multipart/mixed; boundary=b1
+
+--b1
+Content-Type: text/plain
+
+Attached.
+--b1
+Content-Type: application/pdf
+Content-Disposition: attachment; filename*=UTF-8''Re%C3%A7u%20%E2%82%AC12.pdf
+Content-Transfer-Encoding: base64
+
+JVBERi0xLjQK
+--b1--

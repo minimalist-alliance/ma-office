@@ -1,8 +1,9 @@
 // The two pickers. Both are radio groups with one tab stop (roving tabindex) and arrow keys, so a keyboard moves and chooses
 // with the same keys.
 import { useRef, type KeyboardEvent } from 'react';
-import { AgentMark, IconPaths } from './AgentMark';
-import { AGENT_ICONS, GRID, STROKE, currentIcon } from './icons';
+import { AgentMark, HatMark, IconPaths } from './AgentMark';
+import { AGENT_COLOR_LIST, agentColorHex } from './colors';
+import { AGENT_ICONS, GRID, HAT_ICON, STROKE, currentIcon } from './icons';
 import { FOREGROUND } from './foreground';
 import { TONES, currentTone, toneColor, type LookTheme } from './tones';
 
@@ -37,7 +38,7 @@ function useRoving(count: number, ids: readonly string[], onChange: (id: string)
   return { refs, onKeyDown };
 }
 
-export function IconPicker({ value: stored, onChange }: { value: string; onChange(id: string): void }) {
+export function IconPicker({ value: stored, onChange, color = null, theme = 'light' }: { value: string; onChange(id: string): void; color?: string | null; theme?: LookTheme }) {
   const value = currentIcon(stored);
   const ids = AGENT_ICONS.map((i) => i.id);
   const { refs, onKeyDown } = useRoving(ids.length, ids, onChange);
@@ -61,9 +62,50 @@ export function IconPicker({ value: stored, onChange }: { value: string; onChang
           onClick={() => onChange(icon.id)}
           onKeyDown={(e) => onKeyDown(e, i)}
         >
-          <svg width={22} height={22} viewBox={`0 0 ${GRID} ${GRID}`} fill="none" stroke="currentColor" strokeWidth={STROKE} strokeLinecap="round" strokeLinejoin="round" focusable="false" aria-hidden="true">
-            <IconPaths icon={icon.id} />
-          </svg>
+          {icon.id === HAT_ICON ? (
+            // The hat is the Agent app's own icon, so it shows as itself, in this agent's colour.
+            <HatMark color={color} theme={theme} size={28} />
+          ) : (
+            <svg width={22} height={22} viewBox={`0 0 ${GRID} ${GRID}`} fill="none" stroke="currentColor" strokeWidth={STROKE} strokeLinecap="round" strokeLinejoin="round" focusable="false" aria-hidden="true">
+              <IconPaths icon={icon.id} />
+            </svg>
+          )}
+        </button>
+      ))}
+    </div>
+  );
+}
+
+/** An agent's colour: a row of the seven, each as it shows on the hat's band in this theme. */
+export function ColorPicker({ value, theme, onChange }: { value: string | null; theme: LookTheme; onChange(id: string): void }) {
+  const ids = AGENT_COLOR_LIST.map((c) => c.id);
+  const { refs, onKeyDown } = useRoving(ids.length, ids, onChange);
+  const stop = value && ids.includes(value) ? value : ids[0];
+  return (
+    <div className="ag-look-colors" role="radiogroup" aria-label="Color" data-testid="color-picker">
+      {AGENT_COLOR_LIST.map((c, i) => (
+        <button
+          key={c.id}
+          ref={(el) => {
+            refs.current[i] = el;
+          }}
+          type="button"
+          role="radio"
+          aria-checked={c.id === value}
+          aria-label={c.label}
+          title={c.label}
+          tabIndex={c.id === stop ? 0 : -1}
+          className="ag-look-color"
+          data-color={c.id}
+          style={{ background: agentColorHex(c.id, theme) ?? undefined }}
+          onClick={() => onChange(c.id)}
+          onKeyDown={(e) => onKeyDown(e, i)}
+        >
+          {c.id === value ? (
+            <svg width={14} height={14} viewBox="0 0 24 24" fill="none" stroke="currentColor" strokeWidth={3} strokeLinecap="round" strokeLinejoin="round" aria-hidden="true" focusable="false">
+              <path d="M5 12.5l4.5 4.5L19 7.5" />
+            </svg>
+          ) : null}
         </button>
       ))}
     </div>
@@ -111,7 +153,7 @@ export function ToneWheel({ value: stored, theme, onChange }: { value: string; t
         );
       })}
       <div className="ag-look-wheel-preview" aria-hidden="true">
-        <AgentMark icon="nodes" tone={value} theme={theme} size={44} />
+        <AgentMark icon="compass" tone={value} theme={theme} size={44} />
       </div>
     </div>
   );

@@ -3,6 +3,9 @@
 import oakLight from '../assets/desk-styles/oak-light.webp';
 import oakDusk from '../assets/desk-styles/oak-dusk.webp';
 import oakDark from '../assets/desk-styles/oak-dark.webp';
+import whiteOakLight from '../assets/desk-styles/white-oak-light.webp';
+import whiteOakDusk from '../assets/desk-styles/white-oak-dusk.webp';
+import whiteOakDark from '../assets/desk-styles/white-oak-dark.webp';
 import ashLight from '../assets/desk-styles/ash-light.webp';
 import ashDusk from '../assets/desk-styles/ash-dusk.webp';
 import ashDark from '../assets/desk-styles/ash-dark.webp';
@@ -17,6 +20,9 @@ export const DESK_STYLE_FILES: Record<string, string> = {
   'oak-light': oakLight,
   'oak-dusk': oakDusk,
   'oak-dark': oakDark,
+  'white-oak-light': whiteOakLight,
+  'white-oak-dusk': whiteOakDusk,
+  'white-oak-dark': whiteOakDark,
   'ash-light': ashLight,
   'ash-dusk': ashDusk,
   'ash-dark': ashDark,

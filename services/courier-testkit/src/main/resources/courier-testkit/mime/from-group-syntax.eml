@@ -1,0 +1,10 @@
+From: Release Team: releases@example.org, builds@example.org;
+To: me@desk.example
+Date: Fri, 13 Nov 2026 10:00:00 +0000
+Subject: Build 4.2
+Message-ID: <from-group-syntax@corpus.example>
+MIME-Version: 1.0
+X-Corpus-Note: a From that is a group of two mailboxes: refused, as which one a sender check covered can't be told
+Content-Type: text/plain; charset=utf-8
+
+Build 4.2 is green.

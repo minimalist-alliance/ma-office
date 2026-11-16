@@ -3,12 +3,15 @@
 //
 // The key goes in `agent.key.add`'s params, on the desk's `rpc` data channel, end to end (design 9.5 step 1).
 // This file is the only reader of `KeySecret`'s plaintext, and it reads it only to build that one frame.
-import { AgentError, newIdem, type AgentClient, type Mutation } from './agentClient';
+import { AgentError, newIdem, type AgentClient, type DeskState, type Mutation } from './agentClient';
 import { CHUNK_BYTES, uploadInChunks } from './attachUpload';
 import type { KeySecret } from './keySecret';
+import { applyEvent, EMPTY_THREAD, type Thread } from '../model/conversation';
 import type {
   A2aPage,
+  AccessChange,
   Agent,
+  AgentAccess,
   AgentCaps,
   AgentCreate,
   AgentErrorReason,
@@ -20,6 +23,8 @@ import type {
   AuditPage,
   ConversationEvent,
   DeskErrorCode,
+  DeskHalves,
+  DeskIncomingHalf,
   KeyMeta,
   LimitScope,
   LimitsChange,
@@ -74,6 +79,7 @@ export function toAgentError(err: unknown): unknown {
     limit: typeof d['limit'] === 'number' ? d['limit'] : null,
     scope: word(d['scope']) as LimitScope | null,
     mayHaveApplied: d['mayHaveApplied'] === true,
+    versionId: word(d['versionId']),
   });
 }
 
@@ -99,11 +105,14 @@ export class RpcAgentClient implements AgentClient {
     return (await this.call<{ agents: Agent[] }>('agent.list')).agents;
   }
 
-  watchAgents(onAgents: (agents: Agent[], caps: AgentCaps | null) => void): () => void {
+  watchAgents(onAgents: (agents: Agent[], caps: AgentCaps | null, desk?: DeskState) => void): () => void {
     // Each event is a whole snapshot (a coalescible topic), so a repeat or a jump in seq is harmless.
     return this.link.subscribe('agent.state', (msg) => {
       const caps = msg['caps'] && typeof msg['caps'] === 'object' ? (msg['caps'] as AgentCaps) : null;
-      if (Array.isArray(msg['agents'])) onAgents(msg['agents'] as Agent[], caps);
+      // W6: the offers from other desks waiting here, a count. A desk before it sends none.
+      const offers = msg['deskOffers'];
+      const desk: DeskState = { deskOffers: typeof offers === 'number' && Number.isFinite(offers) && offers >= 0 ? offers : null };
+      if (Array.isArray(msg['agents'])) onAgents(msg['agents'] as Agent[], caps, desk);
     });
   }
 
@@ -184,45 +193,79 @@ export class RpcAgentClient implements AgentClient {
     return (await this.call<{ agent: Agent }>('agent.bind', { agentId, ...binding }, m)).agent;
   }
 
-  getThread(agentId: string): Promise<ThreadSnapshot> {
-    return this.call<ThreadSnapshot>('agent.thread.get', { agentId });
+  async getThread(agentId: string): Promise<ThreadSnapshot> {
+    const t = await this.call<ThreadSnapshot>('agent.thread.get', { agentId });
+    const approvals = pageApprovals(t.approvals, t.messages ?? []);
+    return approvals ? { ...t, approvals } : t;
   }
 
   watchConversation(agentId: string, onEvent: (e: ConversationEvent) => void): () => void {
-    let lastSeq = 0;
     let gone = false;
-    let asking = false;
+    // What the window holds now, as these events made it: a whole-thread read is merged into it, never put over it.
+    let held: Thread = EMPTY_THREAD;
+    // While a whole-thread read is out: what an event has touched since it was asked, and whether a snapshot came.
+    let reading: { messages: Set<string>; approvals: Set<string>; snapshot: boolean } | null = null;
+    let again = false;
+    // Whether the newest snapshot left older messages out and no read has filled them in since.
+    let cut = false;
+    const emit = (e: ConversationEvent): void => {
+      held = applyEvent(held, e);
+      if (reading) {
+        if (e.type === 'snapshot') reading.snapshot = true;
+        else if (e.type === 'approval') reading.approvals.add(e.approval.id);
+        else if (e.type === 'message') reading.messages.add(e.message.id);
+        else reading.messages.add(e.messageId);
+      }
+      onEvent(e);
+    };
     // An EVT is at most 64 KiB and a thread can be longer: a snapshot says how many it left out, and a long message comes
-    // cut. `agent.thread.get` has them all (API.md section 11). Its `seq` is the last event seen, so what follows still lands.
+    // cut. `agent.thread.get` has them all (API.md section 11). It answers what the desk had when it was asked, which can be
+    // older than an event that came meanwhile (release 3: a card done during the read was put back to running), so only
+    // what no event touched since comes from it; and a snapshot that came meanwhile replaces it, so it's asked again.
     const askForWhole = (): void => {
-      if (asking) return;
-      asking = true;
+      if (reading) {
+        again = true;
+        return;
+      }
+      const touched = { messages: new Set<string>(), approvals: new Set<string>(), snapshot: false };
+      reading = touched;
       this.getThread(agentId).then(
         (t) => {
-          asking = false;
-          if (!gone) onEvent({ type: 'snapshot', seq: lastSeq, messages: t.messages, ...(Array.isArray(t.approvals) ? { approvals: t.approvals } : {}) });
+          reading = null;
+          if (gone) return;
+          if (!touched.snapshot) {
+            const whole = merged(held, t, touched);
+            cut = false;
+            emit({ type: 'snapshot', seq: held.seq, messages: whole.messages, ...(whole.approvals ? { approvals: whole.approvals } : {}) });
+          }
+          if (again || touched.snapshot) {
+            again = false;
+            // Read again, now: after the snapshot that came, or the cut message an event brought meanwhile.
+            if (cut || held.messages.some((m) => m.truncated)) askForWhole();
+          }
         },
         () => {
-          asking = false; // what's shown stands, and the next snapshot asks again
+          reading = null; // what's shown stands, and the next snapshot asks again
+          again = false;
         },
       );
     };
     const off = this.link.subscribe(`agent.conversation:${agentId}`, (msg) => {
-      lastSeq = msg.seq;
       if (msg.type === 'snapshot') {
         const messages = (msg['messages'] as Message[] | undefined) ?? [];
-        const approvals = Array.isArray(msg['approvals']) ? (msg['approvals'] as Approval[]) : undefined;
-        onEvent({ type: 'snapshot', seq: msg.seq, messages, ...(approvals ? { approvals } : {}) });
-        if (Number(msg['omitted'] ?? 0) > 0 || messages.some((m) => m.truncated)) askForWhole();
+        const approvals = pageApprovals(msg['approvals'], messages);
+        cut = Number(msg['omitted'] ?? 0) > 0;
+        emit({ type: 'snapshot', seq: msg.seq, messages, ...(approvals ? { approvals } : {}) });
+        if (cut || messages.some((m) => m.truncated)) askForWhole();
       } else if (msg.type === 'message' && msg['message']) {
         const message = msg['message'] as Message;
-        onEvent({ type: 'message', seq: msg.seq, message });
+        emit({ type: 'message', seq: msg.seq, message });
         if (message.truncated) askForWhole();
       } else if (msg.type === 'approval' && msg['approval']) {
         // API.md section 18: adds or replaces one by id, when it's asked and on every change.
-        onEvent({ type: 'approval', seq: msg.seq, approval: msg['approval'] as Approval });
+        emit({ type: 'approval', seq: msg.seq, approval: msg['approval'] as Approval });
       } else if (msg.type === 'delta') {
-        onEvent({ type: 'delta', seq: msg.seq, messageId: String(msg['messageId']), runId: String(msg['runId']), text: String(msg['text'] ?? '') });
+        emit({ type: 'delta', seq: msg.seq, messageId: String(msg['messageId']), runId: String(msg['runId']), text: String(msg['text'] ?? '') });
       }
       // `resync` and `error` are the link's to handle: it subscribes again, and a snapshot follows.
     });
@@ -336,6 +379,10 @@ export class RpcAgentClient implements AgentClient {
     return (await this.call<{ approval: Approval }>('agent.approval.decide', params, m)).approval;
   }
 
+  async undoApproval(approvalId: string, m: Mutation): Promise<Approval> {
+    return (await this.call<{ approval: Approval }>('agent.approval.undo', { approvalId }, m)).approval;
+  }
+
   watchTools(onEvent: (e: ToolsEvent) => void, onAbsent?: () => void): () => void {
     // Not served by any desk yet (the spec's section 2.8): the link's refusal says so, and nothing shows as running.
     return this.link.subscribe(
@@ -370,4 +417,71 @@ export class RpcAgentClient implements AgentClient {
     const r = await this.call<{ deleted?: number }>('agent.memory.clear', { agentId }, m);
     return { deleted: Number(r?.deleted ?? 0) };
   }
+
+  async getAccess(agentId: string): Promise<AgentAccess> {
+    return (await this.call<{ access: AgentAccess }>('agent.access.get', { agentId })).access;
+  }
+
+  async setAccess(agentId: string, change: AccessChange, m: Mutation): Promise<AgentAccess> {
+    // Only the sections given go, and in each only what's in it: absent means unchanged (section 16).
+    const params: Record<string, unknown> = { agentId };
+    if (change.apps !== undefined) params['apps'] = { ...change.apps };
+    if (change.auto !== undefined) params['auto'] = { ...change.auto };
+    if (change.desks !== undefined) params['desks'] = change.desks.map((d) => ({ deskId: d.deskId, on: d.on, ...(d.deskName !== undefined ? { deskName: d.deskName } : {}) }));
+    return (await this.call<{ access: AgentAccess }>('agent.access.set', params, m)).access;
+  }
+
+  revokeDeskGrant(grantId: string, m: Mutation): Promise<{ agentId: string; access: AgentAccess }> {
+    return this.call<{ agentId: string; access: AgentAccess }>('agent.desks.revoke', { grantId }, m);
+  }
+
+  async listDeskHalves(): Promise<DeskHalves> {
+    const r = await this.call<Partial<DeskHalves> | null>('agent.desks.list');
+    return { offers: Array.isArray(r?.offers) ? r.offers : [], answers: Array.isArray(r?.answers) ? r.answers : [] };
+  }
+
+  async answerDeskOffer(grantId: string, answer: { allow: true; agentId: string } | { allow: false }, m: Mutation): Promise<DeskIncomingHalf> {
+    // `agentId` only with a yes: Not now names nobody.
+    const params: Record<string, unknown> = answer.allow ? { grantId, allow: true, agentId: answer.agentId } : { grantId, allow: false };
+    return (await this.call<{ half: DeskIncomingHalf }>('agent.desks.answer', params, m)).half;
+  }
+}
+
+/**
+ * A page's approvals (API.md section 18): the snapshot's and `agent.thread.get`'s own `approvals`, and each reply's, by id, the
+ * page's own copy first. desk-agent before 2026-11-14's fix put them only in each reply, so a waiting card was never drawn after
+ * a reload or a restart; reading both draws it with any desk-agent. Undefined when neither has any field (a desk before approvals).
+ */
+/**
+ * A whole-thread read merged into what's held (`watchConversation`): each message and approval an event touched since the read
+ * was asked stays as held, being at least as new; the rest are the read's, which is newer than anything held before it was
+ * asked. Something held that the read hasn't, and no event touched since, was gone by then.
+ */
+function merged(held: Thread, read: ThreadSnapshot, touched: { messages: Set<string>; approvals: Set<string> }): { messages: Message[]; approvals?: Approval[] } {
+  const pick = <T extends { id: string }>(theirs: readonly T[], ours: readonly T[], kept: Set<string>): T[] => {
+    const mine = new Map(ours.map((x) => [x.id, x]));
+    const out = theirs.map((x) => (kept.has(x.id) ? (mine.get(x.id) ?? x) : x));
+    const seen = new Set(out.map((x) => x.id));
+    for (const x of ours) if (kept.has(x.id) && !seen.has(x.id)) out.push(x);
+    return out;
+  };
+  const messages = pick(read.messages ?? [], held.messages, touched.messages);
+  const approvals = read.approvals || held.approvals.length ? pick(read.approvals ?? [], held.approvals, touched.approvals) : undefined;
+  return approvals ? { messages, approvals } : { messages };
+}
+
+export function pageApprovals(own: unknown, messages: readonly Message[]): Approval[] | undefined {
+  const byId = new Map<string, Approval>();
+  const add = (list: unknown): void => {
+    if (!Array.isArray(list)) return;
+    for (const a of list as Approval[]) if (a && typeof a.id === 'string' && !byId.has(a.id)) byId.set(a.id, a);
+  };
+  add(own);
+  let any = Array.isArray(own);
+  for (const m of messages) {
+    const theirs = (m as Message & { approvals?: unknown }).approvals;
+    if (Array.isArray(theirs)) any = true;
+    add(theirs);
+  }
+  return any ? [...byId.values()] : undefined;
 }

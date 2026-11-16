@@ -1,8 +1,10 @@
-// The mark on a canvas, for tiles the Desk draws itself. It paints what AgentMark paints in the DOM: a rounded square
-// in the tone, then the icon's strokes (or the uploaded mask) in FOREGROUND and nothing else.
+// The mark on a canvas, for tiles the Desk draws itself, when the member picked a library icon or an upload instead of the hat
+// (the hat is `hat.ts`). It paints what AgentMark paints in the DOM: the icon's strokes (or the uploaded mask) in the agent's
+// colour, on its tile; from a desk that says no colour, a rounded square in the tone with them in the one FOREGROUND.
 import { GRID, iconById, STROKE } from './icons';
 import { FOREGROUND } from './foreground';
 import { toneColor, type LookTheme } from './tones';
+import { agentColorHex } from './colors';
 
 /** The `icon` id for an uploaded mask: the picture is used for its shape (alpha) only, never its colors. */
 export const PNG_ICON = 'png';
@@ -14,6 +16,8 @@ export const SMALL_TILE = 32;
 export const SMALL_GLYPH_SHARE = 0.7;
 /** The thinnest a stroke may draw on screen, in px. */
 export const MIN_STROKE_PX = 1.3;
+/** A coloured icon's share of its box, as the hat's (`AgentMark` `hatSize`). */
+export const HAT_SHARE = 0.72;
 
 /** The glyph's side for a tile of this side: 56% of it, or 70% below 32 px. Uploads use the same. */
 export function glyphSize(size: number): number {
@@ -27,6 +31,8 @@ export function strokeFor(glyph: number): number {
 
 export interface DrawMarkOptions {
   icon: string;
+  /** The agent's colour; null or absent: the tone. */
+  color?: string | null;
   tone: string;
   theme: LookTheme;
   mask?: CanvasImageSource | null;
@@ -50,14 +56,20 @@ function sizeOf(src: CanvasImageSource): { width: number; height: number } {
 }
 
 export function drawAgentMark(ctx: CanvasRenderingContext2D, o: DrawMarkOptions): void {
-  const glyph = glyphSize(o.size);
+  const hex = agentColorHex(o.color, o.theme);
+  // With a colour, the icon is drawn in it on the agent's own tile (the tile under it takes the rim, `glyphs.ts` `tileTint`),
+  // at the hat's size; without one (a desk that says none), the tone square and the one foreground, as before.
+  const glyph = hex ? o.size * HAT_SHARE : glyphSize(o.size);
+  const ink = hex ?? FOREGROUND;
   const gx = o.x + (o.size - glyph) / 2;
   const gy = o.y + (o.size - glyph) / 2;
   ctx.save();
-  ctx.fillStyle = toneColor(o.tone, o.theme);
-  ctx.beginPath();
-  ctx.roundRect(o.x, o.y, o.size, o.size, o.radius);
-  ctx.fill();
+  if (!hex) {
+    ctx.fillStyle = toneColor(o.tone, o.theme);
+    ctx.beginPath();
+    ctx.roundRect(o.x, o.y, o.size, o.size, o.radius);
+    ctx.fill();
+  }
   if (o.icon === PNG_ICON) {
     if (o.mask) {
       // Tint through a scratch canvas: the mask's alpha is kept, its colors are replaced.
@@ -69,7 +81,7 @@ export function drawAgentMark(ctx: CanvasRenderingContext2D, o: DrawMarkOptions)
         const k = Math.min(px / mw, px / mh);
         s.drawImage(o.mask, (px - mw * k) / 2, (px - mh * k) / 2, mw * k, mh * k);
         s.globalCompositeOperation = 'source-in';
-        s.fillStyle = FOREGROUND;
+        s.fillStyle = ink;
         s.fillRect(0, 0, px, px);
         ctx.drawImage(s.canvas, gx, gy, glyph, glyph);
       }
@@ -78,7 +90,7 @@ export function drawAgentMark(ctx: CanvasRenderingContext2D, o: DrawMarkOptions)
     const k = glyph / GRID;
     ctx.translate(gx, gy);
     ctx.scale(k, k);
-    ctx.strokeStyle = FOREGROUND;
+    ctx.strokeStyle = ink;
     ctx.lineWidth = strokeFor(glyph);
     ctx.lineCap = 'round';
     ctx.lineJoin = 'round';

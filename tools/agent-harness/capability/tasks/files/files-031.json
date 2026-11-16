@@ -1,0 +1,71 @@
+{
+  "id": "files-031",
+  "area": "files",
+  "title": "Merge two files",
+  "prompt": "Merge Harness/notes/ideas-a.md and Harness/notes/ideas-b.md into one file, Harness/notes/ideas.md.",
+  "setup": {
+    "files": {
+      "Harness/notes/ideas-a.md": "- a podcast about local history\n",
+      "Harness/notes/ideas-b.md": "- a weekly bike ride club\n"
+    }
+  },
+  "approve": "all",
+  "checks": [
+    {
+      "kind": "file",
+      "path": "Harness/notes/ideas.md",
+      "contains": [
+        "podcast about local history",
+        "bike ride club"
+      ]
+    },
+    {
+      "kind": "untrusted",
+      "value": true
+    },
+    {
+      "kind": "cards",
+      "tools": [
+        "files_write"
+      ]
+    }
+  ],
+  "policy": {
+    "tools": [
+      "files_read",
+      "files_write"
+    ]
+  },
+  "standIn": [
+    {
+      "calls": [
+        {
+          "name": "files_read",
+          "input": {
+            "path": "Harness/notes/ideas-a.md"
+          }
+        },
+        {
+          "name": "files_read",
+          "input": {
+            "path": "Harness/notes/ideas-b.md"
+          }
+        }
+      ]
+    },
+    {
+      "calls": [
+        {
+          "name": "files_write",
+          "input": {
+            "path": "Harness/notes/ideas.md",
+            "text": "# Ideas\n\n- a podcast about local history\n- a weekly bike ride club\n"
+          }
+        }
+      ]
+    },
+    {
+      "text": "Merged both lists into Harness/notes/ideas.md."
+    }
+  ]
+}

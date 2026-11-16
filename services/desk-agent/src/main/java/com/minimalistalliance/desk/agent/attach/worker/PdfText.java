@@ -3,6 +3,7 @@ package com.minimalistalliance.desk.agent.attach.worker;
 import java.io.IOException;
 import java.io.Writer;
 import org.apache.pdfbox.Loader;
+import org.apache.pdfbox.io.IOUtils;
 import org.apache.pdfbox.pdmodel.PDDocument;
 import org.apache.pdfbox.pdmodel.encryption.InvalidPasswordException;
 import org.apache.pdfbox.text.PDFTextStripper;
@@ -12,10 +13,14 @@ final class PdfText {
 
     private PdfText() {}
 
-    static ParseWorker.Result read(byte[] bytes, int maxChars, int maxPages) {
+    /**
+     * Reads {@code input} where it is: PDFBox parses from it and takes views onto it for each stream, and caches the
+     * streams it decodes in memory only (the sandbox has no disk). It closes {@code input}.
+     */
+    static ParseWorker.Result read(Input input, int maxChars, int maxPages) {
         ParseWorker.Capped out = new ParseWorker.Capped(maxChars);
         boolean pagesCut;
-        try (PDDocument document = Loader.loadPDF(bytes)) {
+        try (input; PDDocument document = Loader.loadPDF(input, IOUtils.createMemoryOnlyStreamCache())) {
             int pages = document.getNumberOfPages();
             pagesCut = pages > maxPages;
             PDFTextStripper stripper = new PDFTextStripper();

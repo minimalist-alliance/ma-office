@@ -34,6 +34,20 @@ public final class KeyRing implements AutoCloseable {
 
     /** What a key id looks like: Platform's {@code KeyId}, or a test's. Never the key. */
     private static final Pattern KEY_ID = Pattern.compile("[A-Za-z0-9][A-Za-z0-9_-]{0,63}");
+
+    /**
+     * Desk Maia's "key": Minimalist Alliance's own AI service (provider {@code ma}), which holds no key material on the desk
+     * (the owner, Nov 14: "Maia ALWAYS runs on the company account"). It's always here, reported as provider {@code ma} and
+     * lent as an empty lease, never held, sealed, listed or put: no key can be added under this id or for that provider,
+     * and only Desk Maia's binding names it ({@code LlmGateway} refuses it to any other agent).
+     */
+    public static final String COMPANY = "ma-maia";
+    /**
+     * The member's MA credits as a helper's "key" (provider {@code ma-credits}; ma-platform {@code desk-helpers.md}): like
+     * {@link #COMPANY}, no key material, always here, lent as an empty lease and never held, sealed or put. Any of the member's
+     * own agents may bind it; Desk Maia never ({@code LlmGateway}).
+     */
+    public static final String CREDITS = "ma-credits";
     static final int MIN_BYTES = 8;
     static final int MAX_BYTES = 1024;
 
@@ -48,7 +62,14 @@ public final class KeyRing implements AutoCloseable {
     }
 
     static boolean validKeyId(String keyId) {
-        return KEY_ID.matcher(keyId).matches();
+        return KEY_ID.matcher(keyId).matches() && !COMPANY.equals(keyId) && !CREDITS.equals(keyId);
+    }
+
+    /** A member's key is never Minimalist Alliance's service's, and nothing goes under {@link #COMPANY}. */
+    private static void notCompany(ProviderId provider) {
+        if (ProviderId.MA.equals(provider) || ProviderId.MA_CREDITS.equals(provider)) {
+            throw new IllegalArgumentException("no key is kept for Minimalist Alliance's service");
+        }
     }
 
     /**
@@ -61,6 +82,7 @@ public final class KeyRing implements AutoCloseable {
      */
     public void put(String keyId, ProviderId provider, byte[] secret) {
         try {
+            notCompany(provider);
             check(keyId, secret);
             try {
                 recorder.record("key.add", "key:" + keyId, "provider:" + provider.id());
@@ -82,6 +104,7 @@ public final class KeyRing implements AutoCloseable {
      */
     public void restore(String keyId, ProviderId provider, byte[] secret) {
         try {
+            notCompany(provider);
             check(keyId, secret);
             hold(keyId, provider, secret);
         } finally {
@@ -126,6 +149,7 @@ public final class KeyRing implements AutoCloseable {
         int start = secret.position();
         int length = secret.remaining();
         try {
+            notCompany(provider);
             if (!validKeyId(keyId)) {
                 throw new IllegalArgumentException("bad key id");
             }
@@ -217,8 +241,14 @@ public final class KeyRing implements AutoCloseable {
         }
     }
 
-    /** @return a lease on a copy of the key, or null if none is held under that id */
+    /** @return a lease on a copy of the key, or null if none is held under that id; {@link #COMPANY}'s is empty */
     public KeyLease lend(String keyId) {
+        if (COMPANY.equals(keyId)) {
+            return new KeyLease(COMPANY, ProviderId.MA, new byte[0]);
+        }
+        if (CREDITS.equals(keyId)) {
+            return new KeyLease(CREDITS, ProviderId.MA_CREDITS, new byte[0]);
+        }
         lock.lock();
         try {
             Held held = keys.get(keyId);
@@ -233,8 +263,14 @@ public final class KeyRing implements AutoCloseable {
         }
     }
 
-    /** @return the provider of the key under that id, or null */
+    /** @return the provider of the key under that id, or null; {@code ma} for {@link #COMPANY} */
     public ProviderId providerOf(String keyId) {
+        if (COMPANY.equals(keyId)) {
+            return ProviderId.MA;
+        }
+        if (CREDITS.equals(keyId)) {
+            return ProviderId.MA_CREDITS;
+        }
         lock.lock();
         try {
             Held held = keys.get(keyId);

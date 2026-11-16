@@ -9,6 +9,22 @@ import com.minimalistalliance.desk.deskd.auth.Revocations;
 import com.minimalistalliance.desk.deskd.boot.BootSequence;
 import com.minimalistalliance.desk.deskd.browser.BrowserModule;
 import com.minimalistalliance.desk.deskd.browser.UnitsClient;
+import com.minimalistalliance.desk.deskd.courier.CourierModule;
+import com.minimalistalliance.desk.deskd.courier.CourierSwitch;
+import com.minimalistalliance.desk.deskd.courier.keys.DeskKeys;
+import com.minimalistalliance.desk.deskd.courier.keys.PlatformKeyPublisher;
+import com.minimalistalliance.desk.deskd.courier.imsg.ImsgSink;
+import com.minimalistalliance.desk.deskd.courier.imsg.ImsgTransport;
+import com.minimalistalliance.desk.deskd.courier.imsg.connector.ConnectorLinks;
+import com.minimalistalliance.desk.deskd.courier.imsg.connector.ConnectorPath;
+import com.minimalistalliance.desk.deskd.courier.imsg.bluebubbles.BlueBubblesPath;
+import com.minimalistalliance.desk.deskd.courier.linked.LinkedMailboxes;
+import com.minimalistalliance.desk.deskd.courier.relay.PlatformCourierSend;
+import com.minimalistalliance.desk.deskd.courier.relay.PlatformRelayApi;
+import com.minimalistalliance.desk.deskd.courier.relay.RelayTransport;
+import com.minimalistalliance.desk.deskd.courier.linked.Net;
+import com.minimalistalliance.desk.deskd.courier.parse.CourierParser;
+import com.minimalistalliance.desk.deskd.courier.parse.CourierSandbox;
 import com.minimalistalliance.desk.deskd.data.DataModule;
 import com.minimalistalliance.desk.deskd.files.FilesModule;
 import com.minimalistalliance.desk.deskd.auth.JwksCache;
@@ -24,7 +40,12 @@ import com.minimalistalliance.desk.deskd.tools.BrowserTools;
 import com.minimalistalliance.desk.deskd.tools.FilesTools;
 import com.minimalistalliance.desk.deskd.tools.HostedDecls;
 import com.minimalistalliance.desk.deskd.tools.NotebookTools;
+import com.minimalistalliance.desk.deskd.tools.CourierTools;
+import com.minimalistalliance.desk.deskd.tools.TodoTools;
 import com.minimalistalliance.desk.deskd.tools.ToolHost;
+import com.minimalistalliance.desk.deskd.desks.DeskMessaging;
+import com.minimalistalliance.desk.deskd.desks.DeskTools;
+import com.minimalistalliance.desk.deskd.todo.TodoModule;
 import com.minimalistalliance.desk.deskd.platform.AgentClient;
 import com.minimalistalliance.desk.deskd.platform.AccountDefaults;
 import com.minimalistalliance.desk.deskd.platform.AgeBand;
@@ -53,8 +74,9 @@ import org.springframework.core.env.Environment;
  * Wires the client-to-desk data plane by hand. Socket paths come from the Environment when the beans
  * are made, so deskd.env (root-owned) can point them elsewhere: DESKD_RTC_SOCKET, DESKD_ADMIN_SOCKET,
  * DESKD_UNITS_SOCKET, DESKD_AGENT_SOCKET, DESKD_NOTEBOOK_SOCKET, DESKD_DATA_SOCKET, and DESKD_CDP_PORT for Chromium's
- * debugging port, with DESKD_CDP_UID for who has to hold it, DESKD_IDLE_FILE for the idle file, and DESKD_LINKS_SOCKET for
- * where the xdg-open stand-in hands deskd the links Chromium gives the OS. The apps' paths: DESKD_APPS_ROOT,
+ * debugging port, with DESKD_CDP_UID for who has to hold it, DESKD_IDLE_FILE for the idle file, DESKD_LINKS_SOCKET for
+ * where the xdg-open stand-in hands deskd the links Chromium gives the OS, and DESKD_PORTAL_URL for where a visit to the
+ * office in the Browser goes. The apps' paths: DESKD_APPS_ROOT,
  * DESKD_APPS_SOCKET (the helper's), DESKD_APPS_RUN and DESKD_APPS_KEYS (comma-separated directories).
  */
 @Configuration(proxyBeanMethods = false)
@@ -135,6 +157,12 @@ class DataPlaneConfiguration {
                 rtc, sessions, dispatcher, hub, http, units::run, unitsSocket.resolveSibling(BrowserModule.REFUSAL_MARKER), cdpPort, cdpUid);
         browser.followStreamingPause(state.streamingPause());
         browser.followAgeBand(ageBand, state.bootId());
+        // The office's easter egg, on in every band and on every host: a visit to the office in the Browser lands on the portal,
+        // by the Env tag, unless DESKD_PORTAL_URL says off. The image's policy still blocks the office (API.md section 10).
+        browser.redirectOfficeTo(environment.getProperty("deskd.portal.url"), () -> {
+            com.minimalistalliance.desk.deskd.imds.InstanceIdentity identity = state.identity();
+            return identity == null ? null : identity.env();
+        });
         // Per-site memory for the simplified view lives on the data volume, beside the desk's other state (task 47).
         // Off on every desk until /data/desk/minified-switch says on, read at run time (API.md section 14).
         browser.enableMinified(volume.directory());
@@ -143,6 +171,8 @@ class DataPlaneConfiguration {
         browser.serveLinks(Path.of(environment.getProperty("deskd.links.socket", DEFAULT_LINKS_SOCKET)), cdpUid);
         // Finished features ship on: /data/desk/protected-media-switch can only turn the DRM note off (API.md section 10).
         browser.followProtectedMediaSwitch(volume.directory());
+        // The Browser's zoom, kept beside the desk's other state and set as Chromium's own default zoom (API.md section 10).
+        browser.enableZoom(volume.directory());
         // The Agent's Browser tools, on the view's walker and switch: one Agent tab on a free desk (draft ADR section 8).
         browser.enableAgentBrowsing(() -> state.tierLimits().current() != null);
         return browser;
@@ -181,10 +211,35 @@ class DataPlaneConfiguration {
             Clock clock,
             AgeBand ageBand,
             DataVolume volume,
+            PlatformHttp http,
+            com.minimalistalliance.desk.deskd.aws.RoleCredentials credentials,
             Environment environment) {
         Path socket = Path.of(environment.getProperty("deskd.agent.socket", DEFAULT_AGENT_SOCKET));
         AgentModule agent = new AgentModule(socket, dispatcher, hub, state::deskId, clock, ageBand);
+        // Maia Mode is never turned on on a free member's desk (API.md §23): the config's tierLimits say which.
+        agent.freeDesk(() -> state.tierLimits().current() != null);
+        // Desk Maia's model (API.md §23, "Her model"): every call relayed to her service on Minimalist Alliance's AI account,
+        // as the desk role, while the config names it; refused by deskd's own facts first (Guild Desk, band, tier).
+        agent.maiaModel(new com.minimalistalliance.desk.deskd.agent.MaiaModel(
+                new com.minimalistalliance.desk.deskd.platform.DeskMaiaClient(http,
+                        com.minimalistalliance.desk.deskd.platform.DeskMaiaClient.RoleKeys.of(credentials),
+                        () -> com.minimalistalliance.desk.deskd.platform.DeskMaiaClient.Endpoint.of(state.config()), clock),
+                state::guildDesk, () -> ageBand.band() == AgeBand.Band.ADULT, () -> state.tierLimits().current() != null));
+        // Helpers on MA's credits (API.md §24): the same service and proof, other routes; refused by deskd's own facts first.
+        agent.helperModel(new com.minimalistalliance.desk.deskd.agent.HelperModel(
+                new com.minimalistalliance.desk.deskd.platform.DeskMaiaClient(http,
+                        com.minimalistalliance.desk.deskd.platform.DeskMaiaClient.RoleKeys.of(credentials),
+                        () -> com.minimalistalliance.desk.deskd.platform.DeskMaiaClient.Endpoint.of(state.config()), clock),
+                state::guildDesk, () -> ageBand.band() == AgeBand.Band.ADULT));
+        state.onConfig(config -> agent.maiaServiceChanged());
         state.accountDefaults().keepIn(volume.directory().resolve(AccountDefaults.FILE));
+        // deskd's own copy of each agent's access, which the tools deskd runs check (API.md section 18).
+        agent.keepAccessIn(volume.directory());
+        // Messages between the member's desks (draft ADR section 14): this desk's keys and its own record of the
+        // grants' halves, in /data/desk, and the client's agent.desks.*. Never on a Guild Desk.
+        DeskMessaging desks = new DeskMessaging(clock, state::deskId, state::userId, state::guildDesk);
+        desks.keepIn(volume.directory());
+        agent.desks(desks, state::guildDesk);
         agent.followPlatform(prices, state.accountDefaults());
         return agent;
     }
@@ -301,6 +356,139 @@ class DataPlaneConfiguration {
     }
 
     /**
+     * Courier (draft ADR "Courier's store", API.md section 21): the store in /data/courier (DESKD_COURIER_ROOT), the
+     * courier.* methods, the topic courier.changed, the outbound queue and retention's sweep. On, with its kill switch in
+     * deskd's directory on the volume (/data/desk/courier-switch). Refused on a guild desk and a teen's. With no
+     * /data/courier on the image, every call answers unavailable with reason store. Mail is read by desk-parse's Courier
+     * mode over its socket (DESKD_COURIER_PARSE_SOCKET, CourierSandbox; the launch plan's Wave 1.2): with no sandbox there
+     * yet (an image before it), an email waits as pending, raw bytes kept, and is read once it answers. Linked mailboxes
+     * over IMAP and SMTP (Wave 2.1, courier.linked) are attached here: their syncs, the sign-in check and their senders,
+     * stopped before the store closes; switched off by imap-off (or email-off), their sending by imap-send-off. The desk's
+     * own keys (Wave 1.4) are in /data/keys (DESKD_COURIER_KEYS), published to the platform's key directory at start and
+     * after a rotation; with no /data/keys on the image, member messages and the mail door are unavailable. Attachments
+     * (Wave 3.1) are cut out by the same sandbox and saved through Files' door (FilesModule) or sent on bulk (DataModule's
+     * transfers), refused while the Platform pauses the member at a bandwidth limit. The learning filter (Wave 3.2) has its
+     * kill switch as filter-off in the same file. The relay's
+     * transports (Wave 2.5, courier.relay) collect the mail door's mail and members' sealed messages at start, on notify
+     * relay and every 10 minutes, never waking a desk, and send members' messages sealed and the desk's address's mail
+     * through courier-send; switched off by ma-off and door-off. iMessage and iPhone texts through the member's own Mac
+     * (Wave 2.6, courier.imsg) sit behind one transport for every path to a Mac (the imsg seam): BlueBubbles Server here,
+     * reached out from the desk at the address the member gave, its address and password sealed; MA's Mac connector
+     * registers its own path. Switched off by imessage-off, its sending by imessage-send-off.
+     */
+    /**
+     * The parse sandbox deskd reaches (ADR 0097, desk-parse's Courier mode on DESKD_COURIER_PARSE_SOCKET): one request at a
+     * time, shared by Courier's mail and Documents' pages (the documents mode, API.md §25).
+     */
+    @Bean
+    CourierSandbox courierSandbox(Environment environment) {
+        return new CourierSandbox(CourierSandbox.Settings.defaults(
+                Path.of(environment.getProperty("deskd.courier.parse-socket", CourierSandbox.DEFAULT_SOCKET))));
+    }
+
+    @Bean(destroyMethod = "close")
+    CourierModule courierModule(
+            RpcDispatcher dispatcher, EventHub hub, DeskState state, AgeBand ageBand, DataVolume volume, Clock clock, Environment environment,
+            AgentClient platform, PlatformHttp http, GatewayLink link, FilesModule files, DataModule data, CourierSandbox sandbox) {
+        CourierModule.Settings defaults = CourierModule.Settings.defaults(
+                Path.of(environment.getProperty("deskd.courier.root", CourierModule.DEFAULT_ROOT)), volume.directory());
+        CourierModule.Settings settings = new CourierModule.Settings(defaults.root(), defaults.switchDirectory(),
+                Boolean.parseBoolean(environment.getProperty("deskd.courier.agents-see-other", "true")), defaults.sweepEvery(),
+                defaults.store());
+        CourierParser parser = sandbox;
+        DeskKeys.Settings keys = DeskKeys.Settings.defaults(Path.of(environment.getProperty("deskd.courier.keys", DeskKeys.DEFAULT_DIRECTORY)));
+        CourierModule courier = new CourierModule(dispatcher, hub, settings, parser, new CourierSwitch(settings.switchDirectory()),
+                state::guildDesk, ageBand::band, clock, keys, new PlatformKeyPublisher(platform));
+        new LinkedMailboxes(courier, Net.strict(), clock, LinkedMailboxes.Settings.DEFAULT).start();
+        // iMessage through the member's Mac (Wave 2.6): the imsg seam, with BlueBubbles Server as one path and MA Connector
+        // for Mac (a paired device, through the sealed relay; relay.md 0.4.3) as the other.
+        PlatformRelayApi relayApi = new PlatformRelayApi(platform, http);
+        ConnectorLinks macs = new ConnectorLinks(courier, relayApi, clock, ConnectorPath.Settings.DEFAULT);
+        ImsgTransport imsg = new ImsgTransport(courier, clock, ImsgSink.Settings.DEFAULT, java.time.Duration.ofSeconds(30))
+                .register(BlueBubblesPath.PATH, BlueBubblesPath.factory(Net.strict(), BlueBubblesPath.Settings.DEFAULT),
+                        BlueBubblesPath.prober(Net.strict(), BlueBubblesPath.Settings.DEFAULT))
+                .register(ConnectorPath.PATH, macs.factory(), null);
+        macs.transport(imsg).registerMethods(dispatcher);
+        imsg.start();
+        // Attachments (Wave 3.1): Save to Files through Files' own door; Download, previews and the raw message on bulk.
+        courier.attachmentsThrough(files.agentAccess(), data.transfers(), state.streamingPause()::pausedUntil);
+        // The relay's transports (Wave 2.5): the desk's address through the mail door and courier-send, and members' sealed
+        // messages; collected at start, on notify relay, and every 10 minutes. Never wakes a desk.
+        // A message over 4 MiB goes up to the door first, through the relay's own drop uploader (contract 0.4.1).
+        RelayTransport relay = new RelayTransport(courier, relayApi, new PlatformCourierSend(platform, relayApi::upload, () -> true),
+                clock, RelayTransport.Settings.DEFAULT).devicesThrough(macs).start(dispatcher);
+        macs.drainWith(relay::drainSoon);
+        link.onRelay(relay::notify);
+        return courier;
+    }
+
+    /**
+     * Documents (API.md section 25, the draft ADR "Documents"): the index /data/desk/docs.db with its caches, the docs.*
+     * methods, the topic docs, the intake from Files and Courier's accepted attachments (one file at a time through the
+     * parse sandbox's documents mode, the first index only while the Browser isn't in use), pages on bulk, and what Desk
+     * Maia's document tools read (DocsTools, in toolHost). On, with its kill switch beside it (/data/desk/docs-switch).
+     * Refused on a guild desk. Dates are the member's, in the account's time zone, UTC until one is known.
+     */
+    @Bean(destroyMethod = "close")
+    com.minimalistalliance.desk.deskd.docs.DocsModule docsModule(RpcDispatcher dispatcher, EventHub hub, DeskState state,
+            DataVolume volume, DataModule data, FilesModule files, CourierModule courier, CourierSandbox sandbox,
+            BrowserModule browser, TodoModule todo, AgentModule agent, AgeBand ageBand, NotebookModule notebook, Clock clock) {
+        com.minimalistalliance.desk.deskd.docs.DocsModule docs = new com.minimalistalliance.desk.deskd.docs.DocsModule(dispatcher, hub,
+                volume.directory(), files.docsAccess(), com.minimalistalliance.desk.deskd.docs.DocsModule.sandbox(sandbox),
+                state::guildDesk, () -> !browser.browserFrozen() && !browser.chromiumRefused(), () -> {
+                    java.util.Map<String, Object> defaults = state.accountDefaults().current();
+                    if (defaults == null || !(defaults.get("timeZone") instanceof String zone)) {
+                        return null;
+                    }
+                    try {
+                        return java.time.ZoneId.of(zone);
+                    } catch (java.time.DateTimeException e) {
+                        return null;
+                    }
+                }, clock);
+        docs.pagesThrough(data.transfers(), state.streamingPause()::pausedUntil);
+        docs.courier(com.minimalistalliance.desk.deskd.docs.CourierDocs.of(courier, sandbox));
+        if (courier.store() != null) {
+            courier.store().onChange(change -> docs.courierChanged());
+        }
+        docs.todos(com.minimalistalliance.desk.deskd.docs.TodoDocs.of(todo));
+        // Notebook's pages (deskd's own calls to desk-notebook, as the owner; reads only) and Desk Maia's write-ups kept on
+        // this desk (desk-agent's, over deskd's own link): looked at every 5 minutes, and when Notebook's tree changes.
+        docs.notebook(com.minimalistalliance.desk.deskd.docs.NotebookDocs.of(notebook.calls()));
+        notebook.onTreeChanged(docs::sourcesChanged);
+        docs.writeups(com.minimalistalliance.desk.deskd.docs.WriteupDocs.of(agent::docsWriteups));
+        // The reader, through desk-agent, only where Desk Maia is on (deskd's own record) and never on a teen's desk.
+        docs.readerThrough(agent::docsRead, () -> ageBand.band() == AgeBand.Band.ADULT && agent.maiaRecord() != null
+                && agent.maiaRecord().on());
+        docs.start();
+        return docs;
+    }
+
+    /**
+     * To-do (API.md section 22, the To-do VISION): the store /data/desk/todo.db, the todo.* methods, the topic todo, the
+     * nightly tidy and the export on bulk, and the store the agent's todo_* tools use (TodoTools, in toolHost). On, with
+     * its kill switch beside it (/data/desk/todo-switch). Refused on a guild desk; a teen's desk has it, with the Agent
+     * off. Dates are the member's, in the account's time zone, UTC until one is known.
+     */
+    @Bean(destroyMethod = "close")
+    TodoModule todoModule(RpcDispatcher dispatcher, EventHub hub, DeskState state, DataVolume volume, DataModule data,
+            Clock clock) {
+        TodoModule todo = new TodoModule(dispatcher, hub, volume.directory(), state::guildDesk, () -> {
+            java.util.Map<String, Object> defaults = state.accountDefaults().current();
+            if (defaults == null || !(defaults.get("timeZone") instanceof String zone)) {
+                return null;
+            }
+            try {
+                return java.time.ZoneId.of(zone);
+            } catch (java.time.DateTimeException e) {
+                return null;
+            }
+        }, clock);
+        todo.exportsThrough(data.transfers());
+        return todo;
+    }
+
+    /**
      * The desk app contract's base (API.md section 19): installs under /data/apps, the catalog, and the appApi relay to each
      * app's socket. Inert until an app is installed, and on a desk with no helper, no /data/apps or no review key no catalog
      * app can be; the first-party apps bundled in the image (/app/bundled-apps) install and run without them, kept in
@@ -350,8 +538,8 @@ class DataPlaneConfiguration {
     @Bean(destroyMethod = "")
     ToolHost toolHost(
             AgentModule agent, DeskState state, GuildModule guild, AgeBand ageBand, FilesModule files, NotebookModule notebook,
-            BrowserModule browser,
-            Clock clock) {
+            BrowserModule browser, TodoModule todo, CourierModule courier, DataVolume volume,
+            Clock clock, com.minimalistalliance.desk.deskd.docs.DocsModule docs) {
         ToolHost host = new ToolHost(clock, agentId -> {
             if (!state.guildDesk()) {
                 return Caller.THE_OWNER;
@@ -363,15 +551,69 @@ class DataPlaneConfiguration {
             return new Caller(Caller.GUILD_MEMBER, member.memberId(), member.role(),
                     Caller.effectiveGrants(member.role(), member.grants()), member.name(), member.badge(), member.teen());
         }, state::guildDesk, () -> ageBand.band() == AgeBand.Band.ADULT);
+        // deskd's own record of each agent's access: nothing runs for an agent the member hasn't set up, or in an app
+        // they switched off for it, whatever desk-agent says (draft ADR section 16).
+        host.agentApps(agent.accessRecord());
+        // The same record answers the auto-approve switches and their places (ToolHost.requireAuto; draft ADR §15): none
+        // acts on a Guild Desk. deskd's own ledger of the calls done without asking (ids once, the counts, what each made
+        // for its undo) is kept beside it on /data/desk, its day by the account's zone.
+        agent.accessRecord().guildDesk(state::guildDesk);
+        host.access(agent.accessRecord());
+        host.autoLedger().zone(() -> {
+            java.util.Map<String, Object> defaults = state.accountDefaults().current();
+            try {
+                return defaults != null && defaults.get("timeZone") instanceof String zone
+                        ? java.time.ZoneId.of(zone) : java.time.ZoneOffset.UTC;
+            } catch (java.time.DateTimeException e) {
+                return java.time.ZoneOffset.UTC;
+            }
+        });
+        host.autoLedger().keepIn(volume.directory());
         // deskd's own record of the member's yeses: nothing that asks runs without one, redeemed once.
         host.tickets((approvalId, sha256, agentId, runId, tool, context, args) -> {
             var redeemed = agent.approvalTickets().redeem(approvalId, sha256, agentId, runId, tool, context, args);
             return redeemed.ok() ? null : redeemed.refusal().code();
         });
-        host.area(HostedDecls.FILES, new FilesTools(files.agentAccess()));
+        // An agent's write is heard by Documents, so its next version is that agent's ("Made for you by", API.md §25).
+        host.area(HostedDecls.FILES, new FilesTools(files.agentAccess()).onWrite((path, agentId) -> docs.agentWrote(path, agentId,
+                agent.agentName(agentId))));
         // As the member the agent works for, whom desk-notebook checks as it checks their own session.
         host.area(HostedDecls.NOTEBOOK, new NotebookTools(notebook.calls(), state::guildDesk));
         host.area(HostedDecls.BROWSER, new BrowserTools(browser.agentBrowser()));
+        // desk_message and desk_answer: an envelope each, sealed here, on a grant deskd's own record holds.
+        if (agent.deskMessaging() != null) {
+            // Desk Maia's briefs also go by deskd's own record of her grants (Maia Mode, API.md §23).
+            host.area(HostedDecls.DESKS, new DeskTools(agent.deskMessaging(), agent::agentName)
+                    .maia(agent.maiaRecord()));
+            // To-do's source kind desk: a message given to a run, by deskd's own record (API.md §22).
+            agent.deskMessaging().sources().runs(host.ledger()::find);
+            host.origins(agent.deskMessaging().sources()::origin);
+        }
+        // To-do, on the desk's own store; offered while it's there and switched on (API.md section 22).
+        host.area(HostedDecls.TODO, new TodoTools(todo::store));
+        // Documents: Desk Maia's index tools, hers alone and only while deskd's record has Maia Mode on (API.md section 25).
+        host.area(HostedDecls.DOCS, new com.minimalistalliance.desk.deskd.tools.DocsTools(() -> docs, () -> agent.maiaRecord() != null
+                && agent.maiaRecord().on() && ageBand.band() == AgeBand.Band.ADULT, state::deskId));
+        // Courier, read only (the draft ADR's §12, API.md section 21): offered only while Courier's store is there and on,
+        // in the member's zone. Its cursor for a deleted agent goes with the agent's record.
+        host.area(HostedDecls.COURIER, new CourierTools(courier::read, () -> {
+            java.util.Map<String, Object> defaults = state.accountDefaults().current();
+            try {
+                return defaults != null && defaults.get("timeZone") instanceof String zone ? java.time.ZoneId.of(zone) : null;
+            } catch (java.time.DateTimeException e) {
+                return null;
+            }
+        }, clock));
+        agent.accessRecord().onForget(agentId -> {
+            try {
+                courier.read().forgetCursor(agentId);
+            } catch (Exception e) {
+                // A cursor left behind is an agent id and a message id, read by no one.
+            }
+        });
+        // deskd's own record of the runs the member started with their own message: attended, for To-do's policy, and
+        // the agent_chat source (the relayed agent.message.send and desk-agent's answer).
+        agent.onMemberRun(host.ledger()::memberStarted);
         agent.hostTools(host);
         return host;
     }

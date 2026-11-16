@@ -155,6 +155,8 @@ test.describe('the focus ring', () => {
 
   test('is 2 px with a 2 px gap on screen on apps and desks at any zoom, as on the chrome', async ({ page }) => {
     const errors = watchConsole(page);
+    // A screen where a focused desk is framed over 100 % (ADR 0057: 112 % at 1920 x 1080; 88 % at 1440 x 900).
+    await page.setViewportSize({ width: 1920, height: 1080 });
     await signIn(page, '/?fixture=three');
     await canvasPainted(page);
     // The chrome's, for comparison.
@@ -180,7 +182,7 @@ test.describe('the focus ring', () => {
     await page.keyboard.press('ArrowRight');
     await page.waitForTimeout(400);
     const app = page.locator('.proxy-layer :focus');
-    await expect(app).toHaveAttribute('aria-label', /^(Notebook|Browser|Chat|Agent)/);
+    await expect(app).toHaveAttribute('aria-label', /^(Notebook|Browser|Courier|Agent)/);
     const onDesk = await ringOf(app);
     expect(onDesk.s).toBeGreaterThan(1);
     for (const ring of [inOverview, onDesk]) {
@@ -255,12 +257,15 @@ test.describe('the account menu', () => {
 
     const shortcuts = dialog.getByRole('button', { name: 'Keyboard shortcuts' });
     await expect(shortcuts).toHaveAttribute('aria-expanded', 'false');
+    await expect(shortcuts).toHaveAttribute('aria-haspopup', 'dialog');
     await expect(page.getByTestId('shortcuts')).toHaveCount(0);
-    // The keyboard reaches it, as everything in the panel.
+    // The keyboard reaches it, as everything in the panel. A modal over the menu since the owner's Nov 16 tidy.
     await shortcuts.focus();
     await page.keyboard.press('Enter');
     await expect(shortcuts).toHaveAttribute('aria-expanded', 'true');
-    const list = page.getByTestId('shortcuts');
+    const modal = page.getByRole('dialog', { name: 'Keyboard shortcuts' });
+    await expect(modal).toBeFocused();
+    const list = modal.getByTestId('shortcuts');
     await expect(list).toContainText('These work while your desks have focus');
     const rows = list.locator('.about-row');
     await expect(rows).toHaveCount(19); // with #9's "Open a copied link on a desk"
@@ -268,11 +273,11 @@ test.describe('the account menu', () => {
     // Each key on its own row, beside its words.
     const [first, second] = await rows.evaluateAll((els) => els.slice(0, 2).map((el) => el.getBoundingClientRect().top));
     expect(second! - first!).toBeGreaterThan(10);
-    // Tall now, the menu draws over the bottom bar, not under it.
-    const covered = await dialog.evaluate((el) => {
+    // The modal draws over everything, the bars and the menu included.
+    const covered = await modal.evaluate((el) => {
       const r = el.getBoundingClientRect();
       const bottom = Math.min(r.bottom, window.innerHeight) - 12;
-      return [r.right - 24, r.right - 80, r.left + 24].map((x) => !!document.elementFromPoint(x, bottom)?.closest('#account-panel'));
+      return [r.right - 24, r.right - 80, r.left + 24].map((x) => !!document.elementFromPoint(x, bottom)?.closest('[data-testid="shortcuts-dialog"]'));
     });
     expect(covered).toEqual([true, true, true]);
     for (const [key, what] of [['\\', 'Privacy shield'], ['1 to 9', 'Go to a desk'], ['m', 'Move a desk or app'], ['Shift+Esc', 'Close any window']] as const) {
@@ -281,8 +286,12 @@ test.describe('the account menu', () => {
     for (const theme of THEMES) {
       await page.evaluate((t) => { document.documentElement.dataset['theme'] = t; }, theme);
       await page.waitForTimeout(250);
-      await dialog.screenshot({ path: `test-results/shots/a11y-account-menu-${theme}.png` });
+      await modal.screenshot({ path: `test-results/shots/a11y-account-menu-${theme}.png` });
     }
+    // Esc closes the inner layer first: the modal, back to its row; then the menu, back to the button.
+    await page.keyboard.press('Escape');
+    await expect(modal).toHaveCount(0);
+    await expect(shortcuts).toBeFocused();
     await page.keyboard.press('Escape');
     await expect(dialog).toHaveCount(0);
     await expect(button).toBeFocused();

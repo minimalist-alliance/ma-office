@@ -26,6 +26,8 @@ import org.slf4j.LoggerFactory;
  *   <li>the units are settled: no hold, no start, stop or restart of desk-browser under way or owed, and the age gate open
  *       ({@link BrowserStream#browserSettled});
  *   <li>Chromium is up on its port, and no member tab's main frame is loading, as far as deskd has heard;
+ *   <li>no Agent run holds its tabs: a run with a tab open whose last Browser call is under {@code AgentBrowsing.HOLD}
+ *       ago, as the freeze closes deskd's connection and every Agent tab with it ({@link Tabs#agentHolds});
  *   <li>and, checked by desk-units at the moment of the freeze, no download is being written and Chromium
  *       isn't moving data over the network. It then answers {@code busy} with its reason, and any {@code busy} is a clear
  *       no: this tries again in {@code busyRetry}.
@@ -118,6 +120,14 @@ final class BrowserFreeze implements BrowserStream.BrowserSteps {
 
         /** @return true once the connection to Chromium, and anything trying to make one, has gone within the wait */
         boolean letGo(Duration wait) throws InterruptedException;
+
+        /**
+         * An Agent run's tabs are open and in use: a freeze would close them, as it closes deskd's connection, and with
+         * them a page a card waits on (the Browser bar's gap 6; {@link AgentBrowsing#holdsChromium}). Never blocks.
+         */
+        default boolean agentHolds() {
+            return false;
+        }
     }
 
     private static final Tabs NO_TABS = new Tabs() {
@@ -570,7 +580,7 @@ final class BrowserFreeze implements BrowserStream.BrowserSteps {
 
     private void tryFreeze() {
         // Outside the lock: the stream's own lock, a read of /proc, and the tabs' lock.
-        boolean ready = settled.getAsBoolean() && chromiumUp.getAsBoolean() && !tabs.loading();
+        boolean ready = settled.getAsBoolean() && chromiumUp.getAsBoolean() && !tabs.loading() && !tabs.agentHolds();
         lock.lock();
         try {
             long now = System.nanoTime();

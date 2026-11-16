@@ -25,10 +25,10 @@ type Ink = { w: number; h: number; count: number };
 const ID = 'd-personal00001';
 // Wide enough that the name shows whole beside the hidden count and cleanup's sparkle at the smallest zoom (480 px; the
 // icons hide under 290), and off the whole numbers, so its edges land on fractions of a pixel. The notebook lies wholly
-// under the chat: one hidden.
+// under the courier: one hidden.
 const DESK = { id: ID, x: 13.37, y: 7.77, w: 2400, h: 900, items: [
   { id: `${ID}:notebook`, app: 'notebook', x: 24, y: 24, w: 76, h: 76 },
-  { id: `${ID}:chat`, app: 'chat', x: 20, y: 20, w: 84, h: 84 },
+  { id: `${ID}:courier`, app: 'courier', x: 20, y: 20, w: 84, h: 84 },
 ] };
 
 async function open(page: Page, request: APIRequestContext): Promise<void> {
@@ -400,10 +400,10 @@ test.describe('a trackpad pinch zooms the office, never the page', () => {
   test('a pinch over an app window magnifies nothing and leaves the camera where it is', async ({ page, request }) => {
     await open(page, request);
     await aim(page, 1, 'name');
-    const tile = page.getByRole('button', { name: /^Chat/ }).first();
+    const tile = page.getByRole('button', { name: /^Courier/ }).first();
     await tile.focus();
     await page.keyboard.press('Enter');
-    const win = page.getByRole('dialog', { name: /Chat/ });
+    const win = page.getByRole('dialog', { name: /Courier/ });
     await expect(win).toBeVisible();
     await page.waitForTimeout(400);
     const s0 = await page.evaluate(() => __maDesk.camera.cam.s);

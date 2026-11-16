@@ -55,6 +55,10 @@
 -XX:+DisableAttachMechanism
 # No file in /tmp and no sampling task waking the JVM 20 times a second.
 -XX:-UsePerfData
+# SQLite's library for Courier's store, extracted at build time. Otherwise sqlite-jdbc writes it to /tmp at every start,
+# and the container's /tmp is noexec.
+-Dorg.sqlite.lib.path=/app/native
+-Dorg.sqlite.lib.name=libsqlitejdbc.so
 # Uses the bean wiring generated at build time instead of working it out at each boot.
 -Dspring.aot.enabled=true
 # Holds deskd.version, from the Dockerfile's VERSION build arg. It overrides the value inside the jar.

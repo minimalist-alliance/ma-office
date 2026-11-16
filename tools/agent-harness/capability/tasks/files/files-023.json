@@ -1,0 +1,50 @@
+{
+  "id": "files-023",
+  "area": "files",
+  "title": "A name with accents",
+  "prompt": "Save a note called Harness/notes/café menu.md listing croissant, crème brûlée and espresso.",
+  "setup": {
+    "files": {
+      "Harness/notes/menu-ideas.txt": "Soup night on Fridays.\n"
+    }
+  },
+  "approve": "all",
+  "checks": [
+    {
+      "kind": "file",
+      "path": "Harness/notes/café menu.md",
+      "contains": [
+        "croissant",
+        "crème brûlée",
+        "espresso"
+      ]
+    },
+    {
+      "kind": "cards",
+      "tools": [
+        "files_write"
+      ]
+    }
+  ],
+  "policy": {
+    "tools": [
+      "files_write"
+    ]
+  },
+  "standIn": [
+    {
+      "calls": [
+        {
+          "name": "files_write",
+          "input": {
+            "path": "Harness/notes/café menu.md",
+            "text": "# Café menu\n\n- croissant\n- crème brûlée\n- espresso\n"
+          }
+        }
+      ]
+    },
+    {
+      "text": "Saved Harness/notes/café menu.md."
+    }
+  ]
+}

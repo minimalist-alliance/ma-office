@@ -1,0 +1,32 @@
+# The parse sidecar's worker (ADR 0097): its sandbox runs java @/app/parse.options once per connection, the connection as
+# the worker's stdin and stdout, with an empty environment. These are attach/Parsers' WORKER_FLAGS, which its in-container
+# child uses too (ParseOptionsTest compares them), then the classpath, the main class and --from-stream. So the
+# sandbox's command line carries nothing from desk-agent, and these stay versioned with the code.
+# - The default CDS archive only (-Xshare:auto), as the child: desk-agent.jsa is trained for desk-agent, not the worker.
+# - The security manager is allowed so worker/Sandbox can install itself, a second layer while desk-agent is on JDK 21.
+#   Without it the worker refuses to read.
+# - The JVM's own output goes to stderr (discarded), so stdout is only the answer: HotSpot prints its out-of-memory exit
+#   and unified logging's warnings on stdout otherwise, and desk-agent would read them as a first line that isn't one.
+-Xmx72m
+-Xms8m
+-Xss512k
+-XX:+UseSerialGC
+-XX:TieredStopAtLevel=1
+-XX:MaxMetaspaceSize=96m
+-XX:+ExitOnOutOfMemoryError
+-XX:-HeapDumpOnOutOfMemoryError
+-XX:-CreateCoredumpOnCrash
+-XX:ErrorFile=/dev/null
+-XX:-UsePerfData
+-XX:+DisableAttachMechanism
+-XX:+DisplayVMOutputToStderr
+-Xlog:disable
+-Xlog:all=warning:stderr
+-Xshare:auto
+-Djava.awt.headless=true
+-Djava.security.manager=allow
+-Dma.attach.debug=false
+-cp
+/app/desk-agent.jar
+com.minimalistalliance.desk.agent.attach.worker.ParseWorker
+--from-stream

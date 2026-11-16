@@ -1,0 +1,15 @@
+From: =?windows-1256?B?x+Hj38rI?= <office@example.net>
+To: me@desk.example
+Date: Fri, 13 Nov 2026 10:00:00 +0000
+Subject: =?windows-1256?B?x8zK48faIMfh3dHt3g==?=
+Message-ID: <charset-windows-1256-qp@corpus.example>
+MIME-Version: 1.0
+X-Corpus-Note: text/plain in windows-1256, quoted-printable, subject and sender name as encoded words in the same charset
+Content-Type: text/plain; charset="windows-1256"
+Content-Transfer-Encoding: quoted-printable
+
+=E3=D1=CD=C8=C7=A1
+
+=CA=E3 =CA=C3=CC=ED=E1 =C7=CC=CA=E3=C7=DA =C7=E1=DD=D1=ED=DE =C5=E1=EC =ED=
+=E6=E3 =C7=E1=CE=E3=ED=D3.
+=D4=DF=D1=C7 =E1=DF=E3.

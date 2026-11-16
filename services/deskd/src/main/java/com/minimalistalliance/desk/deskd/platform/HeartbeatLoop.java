@@ -215,6 +215,15 @@ public final class HeartbeatLoop {
         guildVersion = listener;
     }
 
+    /** Maia while the member is away (agent.md, ADR 0141): the heartbeat's {@code maia}, and its reply. Set before start. */
+    private volatile Supplier<Map<String, Object>> maiaBlock = () -> null;
+    private volatile java.util.function.Consumer<Map<String, Object>> maiaReply = m -> {};
+
+    public void reportMaia(Supplier<Map<String, Object>> block, java.util.function.Consumer<Map<String, Object>> reply) {
+        this.maiaBlock = block == null ? () -> null : block;
+        this.maiaReply = reply == null ? m -> {} : reply;
+    }
+
     /** Starts beating, the first one at once. Later calls do nothing. */
     public void start() {
         lock.lock();
@@ -406,6 +415,11 @@ public final class HeartbeatLoop {
 
     private void handle(Map<String, Object> response) {
         state.streamingPause().apply(Json.object(response, "streaming"));
+        try {
+            maiaReply.accept(Json.object(response, "maia"));
+        } catch (RuntimeException e) {
+            log.warn("the heartbeat's maia wasn't read: {}", e.getClass().getSimpleName());
+        }
         if (response.get("guildVersion") instanceof Number roster) {
             guildVersion.accept(roster.longValue());
         }
@@ -461,6 +475,10 @@ public final class HeartbeatLoop {
         }
         body.put("dataVolume", dataVolume());
         body.put("guild", guildBlock.apply(lastStats));
+        Map<String, Object> maia = last ? null : maiaBlock.get();
+        if (maia != null) {
+            body.put("maia", maia);
+        }
         // Only after a prepare_stop: Platform powers off on this, so a plain restart must never say it.
         body.put("readyToStop", readyToStop || (last && prepareStopSeen));
         body.put("final", last);

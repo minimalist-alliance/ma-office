@@ -199,7 +199,8 @@ fi
 [ -z "$ENV_NOTE" ] || echo "note: $ENV_NOTE"
 
 step "users (the cloud desk's fixed uids, plus selfhost)"
-for spec in desk:1100 rtc:1101 kiosk:1102 agent:1103 stream:1104 notebook:1105 agent-filter:1106 selfhost:1110; do
+# parse (1113): the Agent's attachment reader, desk-parse (ADR 0097), as on a cloud desk.
+for spec in desk:1100 rtc:1101 kiosk:1102 agent:1103 stream:1104 notebook:1105 agent-filter:1106 selfhost:1110 parse:1113; do
   n=${spec%%:*}; u=${spec##*:}
   getent group "$n" >/dev/null || groupadd -g "$u" "$n"
   id "$n" >/dev/null 2>&1 || useradd -u "$u" -g "$u" -M -d /nonexistent -s /usr/sbin/nologin "$n"
@@ -252,7 +253,7 @@ chmod 0755 /opt/ma/smoke-test /opt/ma/bin/ma-update /usr/local/lib/ma/desk-first
   /usr/local/lib/ma/desk-units /usr/local/lib/ma/desk-browser-start /usr/local/lib/ma/desk-xorg-ready /usr/local/lib/ma/desk-preread \
   /usr/local/lib/ma/desk-browser-policy /usr/local/lib/ma/desk-adblock /usr/local/lib/ma/desk-browser-close /usr/local/lib/ma/desk-xauth \
   /usr/local/lib/ma/desk-browser-quit /usr/local/lib/ma/desk-browser-prewarm /usr/local/lib/ma/desk-data \
-  /usr/local/lib/ma/desk-restart-reset /usr/local/lib/ma/desk-oom-container \
+  /usr/local/lib/ma/desk-restart-reset /usr/local/lib/ma/desk-oom-container /usr/local/lib/ma/desk-parse-run /usr/local/lib/ma/desk-parse-ask /usr/local/lib/ma/desk-parse-courier-run \
   /usr/local/lib/ma/selfhost/ma-selfhost /usr/local/lib/ma/selfhost/ma-selfhost-prep /usr/local/lib/ma/selfhost/ma-selfhost-dtls \
   /usr/local/lib/ma/selfhost/ma-selfhost-port /usr/local/lib/ma/selfhost/ma-selfhost-net /usr/local/lib/ma/selfhost/ma-selfhost-bundle \
   /usr/local/sbin/ma-selfhost
@@ -283,8 +284,15 @@ done
 # The ad blocker (ADR 0076), built from the pinned lists as build.sh builds it (a new id each install, which reinstalls it and
 # loses nothing), then its policy, from the member's per-site list if this desk has one already. Rendered again before
 # every start of the Browser.
+# Courier's tracker list from the same release, as build.sh makes it (one fetch, checked against the pin, read by both).
 install -d -m 0755 /usr/share/ma/adblock
-python3 -I "$RECIPE/adblock/build-blocker.py" build /usr/share/ma/adblock || die "the blocker didn't build"
+BLOCKER_ZIP=$(mktemp /tmp/ma-blocker.XXXXXX.zip)
+curl -fsSL --proto =https --proto-redir =https --retry 5 --retry-all-errors -o "$BLOCKER_ZIP" "$(sed -n 's/^url=//p' "$RECIPE/adblock/blocker.pin")" \
+  || { rm -f "$BLOCKER_ZIP"; die "couldn't fetch the blocker's release"; }
+echo "$(sed -n 's/^sha256=//p' "$RECIPE/adblock/blocker.pin")  $BLOCKER_ZIP" | sha256sum -c --status || { rm -f "$BLOCKER_ZIP"; die "the blocker's release doesn't hash to blocker.pin's sha256"; }
+python3 -I "$RECIPE/adblock/build-blocker.py" build /usr/share/ma/adblock --zip "$BLOCKER_ZIP" || { rm -f "$BLOCKER_ZIP"; die "the blocker didn't build"; }
+python3 -I "$RECIPE/adblock/courier-trackers.py" "$BLOCKER_ZIP" /usr/share/ma/adblock/courier-trackers.txt || { rm -f "$BLOCKER_ZIP"; die "Courier's tracker list didn't build"; }
+rm -f "$BLOCKER_ZIP"
 chown -R root:root /usr/share/ma/adblock; chmod 0644 /usr/share/ma/adblock/*
 BLOCKER_ID=$(cat /usr/share/ma/adblock/blocker-id); [[ $BLOCKER_ID =~ ^[a-p]{32}$ ]] || die "the blocker's id: $BLOCKER_ID"
 sed -i "s/__BLOCKER_ID__/$BLOCKER_ID/g" /etc/ma/chromium-adblock.json
@@ -300,6 +308,16 @@ install -m 0644 "$nft_tmp" /etc/nftables.conf; rm -f "$nft_tmp"
 install -d -m 0755 /data
 systemd-tmpfiles --create /etc/tmpfiles.d/ma.conf
 systemd-tmpfiles --create /etc/tmpfiles.d/desk-links.conf
+# The Agent's attachment reader (ADR 0097), as a cloud desk: its directories and marker now, and desk-svc, process 1 of its
+# container. desk-svc is a file of this installer (build-bundle.sh builds it for amd64 from this installer's commit and puts it in
+# files/usr/local/lib/ma/ before installer.sha256 is made), so the check above covered it and the copy of files/ put it in place.
+# Root's, read-only to the container.
+systemd-tmpfiles --create /etc/tmpfiles.d/desk-parse.conf
+# Courier's mail reader for deskd (desk-parse-courier, the same sandbox; docs/sub-status/mm-courier-parse.md): its directories.
+systemd-tmpfiles --create /etc/tmpfiles.d/desk-parse-courier.conf
+[ -f "$HERE/files/usr/local/lib/ma/desk-svc" ] || die "this installer carries no desk-svc"
+chown root:root /usr/local/lib/ma/desk-svc; chmod 0755 /usr/local/lib/ma/desk-svc
+sha256sum /usr/local/lib/ma/desk-svc | cut -d' ' -f1 > /usr/local/lib/ma/desk-svc.sha256; chmod 0644 /usr/local/lib/ma/desk-svc.sha256
 # hello's imageVersion: the bundle's commit (build-bundle.sh's header), or else this checkout's, so the platform knows which
 # installer and releases a desk came from (and which update batches it may take). A copied folder has no .git.
 rev=${BUNDLE_COMMIT:-$(git -C "$HERE" rev-parse --short HEAD 2>/dev/null || echo unknown)}
@@ -451,6 +469,10 @@ step "starting the desk"
 # deskd don't wait for each other.
 # desk-agent's condition skips it with no release, and its unit waits for the ruleset with agent_redirect (DA-2).
 systemctl start desk-units.socket desk-data.socket desk-agent-filter.service desk-rtc.service desk-notebook.service desk-agent.service
+# desk-parse (ADR 0097): desk-agent's start pulls it in; on an update of a desk whose desk-agent was already running it's started
+# here, and restarted so it runs this bundle's desk-svc. Its condition skips it with no desk-agent release.
+systemctl restart desk-parse.service || echo "install.sh: desk-parse didn't start: journalctl -u desk-parse" >&2
+systemctl restart desk-parse-courier.service || echo "install.sh: desk-parse-courier didn't start: journalctl -u desk-parse-courier" >&2
 systemctl start desk-restart-reset.timer desk-batch.socket desk-batch.timer
 # desk-rtc's start hands its DTLS fingerprint to ma-selfhost, which signs it with the desk's key. The platform takes
 # deskd's hello only after that (otherwise deskd waits a minute and tries again), so give it a moment first.
@@ -472,7 +494,7 @@ for _ in $(seq 1 60); do
   sleep 3
 done
 /opt/ma/smoke-test || true
-[ "$ok" = 1 ] || echo "install.sh: the desk's services aren't healthy yet. Check: journalctl -u deskd -u desk-rtc -u desk-notebook -u desk-agent -u ma-selfhost" >&2
+[ "$ok" = 1 ] || echo "install.sh: the desk's services aren't healthy yet. Check: journalctl -u deskd -u desk-rtc -u desk-notebook -u desk-agent -u desk-parse -u desk-parse-courier -u ma-selfhost" >&2
 /usr/local/sbin/ma-selfhost status || true
 echo
 echo "CHROMIUM_VERSION: $chromium_version"

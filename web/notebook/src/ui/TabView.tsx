@@ -11,6 +11,7 @@ import { InlineName, Menu, type MenuItem } from './controls.tsx';
 import { PageEditor } from './Editor.tsx';
 import { paletteItems, SWATCH_COLUMNS } from './editorMenu.ts';
 import { exportHtml, exportMarkdown } from './exporting.ts';
+import { AgentEditLine, useLastAgentEdit, type AgentNames } from './agentEdits.tsx';
 import { HistoryPane } from './History.tsx';
 import { Icon } from './icons.tsx';
 import type { MenuAnchor } from './menu/Menu.tsx';
@@ -223,6 +224,7 @@ export function TabView({
   lastColor,
   onLastColor,
   manageSpaces,
+  agentNames,
 }: {
   backend: NotebookBackend;
   tree: Tree;
@@ -239,10 +241,13 @@ export function TabView({
   onLastColor: (id: PaletteId) => void;
   /** May create, rename and recolor notebooks and tabs (a Guild Desk's Founder, or an Officer with manage_spaces; always on a member's own desk). */
   manageSpaces: boolean;
+  /** The host's names for agents, for "Edited by {agent}". */
+  agentNames?: AgentNames;
 }) {
   const { notebook, tab, page } = resolved;
   const live = useMemo(createLiveTitles, []);
   const session = usePageSession(backend, page?.id);
+  const agentEdit = useLastAgentEdit(backend, page ?? null);
   const [renaming, setRenaming] = useState<string | null>(null);
   // Built when it renders, so a menu left open (the filter) shows what it changes.
   const [menu, setMenu] = useState<{ build: () => MenuItem[]; anchor: MenuAnchor; label: string; avoid?: Rect | null; touch?: boolean; fallback?: HTMLElement | null } | null>(null);
@@ -601,7 +606,15 @@ export function TabView({
               </button>
             </div>
           ) : history ? (
-            <HistoryPane backend={backend} page={page} onClose={() => setHistory(false)} />
+            <HistoryPane
+              backend={backend}
+              page={page}
+              agentNames={agentNames}
+              onClose={() => {
+                setHistory(false);
+                agentEdit.refresh();
+              }}
+            />
           ) : (
             <>
               {session ? (
@@ -624,6 +637,7 @@ export function TabView({
                 <span className="nb-foot-meta">
                   Created {formatWhen(page.createdAt)} · Edited {formatWhen(page.updatedAt)} · {page.wordCount} {page.wordCount === 1 ? 'word' : 'words'}
                 </span>
+                {agentEdit.edit && <AgentEditLine backend={backend} edit={agentEdit.edit} names={agentNames} onDone={agentEdit.refresh} />}
                 {confirmDelete === page.id ? (
                   <span className="nb-confirm" role="group" aria-label="Delete this page?">
                     Delete this page?

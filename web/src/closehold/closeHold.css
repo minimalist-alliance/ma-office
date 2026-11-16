@@ -1,0 +1,63 @@
+/* The close hold's notice (closehold/Card.tsx): a card among the shell's notices that stays until the member
+   says "Got it". Like the new-version notice, it sits under windows and menus, so it never covers what's in use, and
+   comes up over a window only while it has focus. The panel's surface and ring, as the office's own notice card has. */
+.notice.close-hold {
+  width: min(440px, calc(100% - 32px));
+  padding: 16px 18px;
+  border-radius: 16px;
+  background: var(--ma-surface-panel);
+  box-shadow: var(--ma-elevation-panel);
+  color: var(--ma-text-secondary);
+  font-size: 14px;
+  line-height: 20px;
+  text-wrap: pretty;
+  z-index: 9;
+}
+.notice.close-hold:focus-within {
+  z-index: 61;
+}
+.close-hold-title {
+  font-size: 15px;
+  line-height: 22px;
+  font-weight: 600;
+  color: var(--ma-text-primary);
+}
+.close-hold p {
+  margin-top: 6px;
+}
+.close-hold-error {
+  color: var(--ma-text-danger);
+  font-weight: 600;
+}
+/* The office's own button (`.btn`, as the office card's "Try again"), ringed so it reads as one on the panel in every
+   theme, at the card's right. */
+.close-hold .close-hold-ok {
+  display: flex;
+  height: 36px;
+  margin: 12px 0 0 auto;
+  font-weight: 600;
+  cursor: pointer;
+}
+.close-hold .close-hold-ok[aria-disabled='true'] {
+  cursor: default;
+}
+/* A finger's 44 px. */
+@media (pointer: coarse) {
+  .close-hold .close-hold-ok {
+    height: 44px;
+  }
+}
+/* With no desks, the office's own card (chrome/CalmScreen.tsx, in the middle of the screen) is the whole office, and the
+   two covered each other. This one takes its place, centered the same way, until "Got it"; the office's card shows after
+   it. `.ma-shell` is the screen, with no transform, so `fixed` centers on it as the office's card does. */
+.desks-main:has(> .desk-notice) .notice.close-hold {
+  position: fixed;
+  top: 50%;
+  left: 50%;
+  translate: -50% -50%;
+  max-height: calc(100% - 2 * (72px + env(safe-area-inset-top, 0px)));
+  overflow-y: auto;
+}
+.desks-main:has(.notice.close-hold) > .desk-notice {
+  display: none;
+}

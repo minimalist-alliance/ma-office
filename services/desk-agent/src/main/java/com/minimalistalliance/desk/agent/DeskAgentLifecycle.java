@@ -86,6 +86,8 @@ final class DeskAgentLifecycle implements SmartLifecycle {
             ledger.open();
             store.open();
             service.restore();
+            // Maia Mode (API.md §23): dark until the member turns it on; its to-do runs only for agents they chose.
+            service.startMaia();
             if (ledger.orphansAtOpen() > 0) {
                 audit.append(AuditLog.Entry.of("system", "usage.orphaned", "ledger", "kept:" + ledger.orphansAtOpen()));
             }
@@ -104,6 +106,7 @@ final class DeskAgentLifecycle implements SmartLifecycle {
     public void stop() {
         socket.close();
         service.stopAll();
+        service.stopMaia();
         keys.dropAll();
         if (audit.isOpen()) {
             try {

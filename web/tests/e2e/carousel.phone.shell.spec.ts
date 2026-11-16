@@ -195,12 +195,12 @@ for (const size of PHONES) {
       await expect(page.locator('.carousel-slide')).toHaveCount(1);
       // A tap just after a quick swipe stops what the swipe set going rather than pressing, as on any touch screen.
       await page.waitForTimeout(1200);
-      await tap(page, tab(page, 'Chat'));
-      await expect(slide(page)).toHaveAttribute('aria-label', /^Chat, 1 of \d$/);
+      await tap(page, tab(page, 'Courier'));
+      await expect(slide(page)).toHaveAttribute('aria-label', /^Courier, 1 of \d$/);
       await page.waitForTimeout(300);
       await swipe(cdp, along, 160);
       await page.waitForTimeout(300);
-      await expect(slide(page)).toHaveAttribute('aria-label', /^Chat, 1 of \d$/);
+      await expect(slide(page)).toHaveAttribute('aria-label', /^Courier, 1 of \d$/);
       expect(errors).toEqual([]);
     });
 
@@ -220,8 +220,8 @@ for (const size of PHONES) {
       await expect(tile(page, 'Agent')).toBeFocused();
 
       // A keyboard on the phone: Esc goes back to the desk from the app, as from a window there. Arrows on the row move.
-      await openFromTile(page, 'Chat');
-      await tab(page, 'Chat').focus();
+      await openFromTile(page, 'Courier');
+      await tab(page, 'Courier').focus();
       await page.keyboard.press('ArrowRight');
       await expect(slide(page)).toHaveAttribute('aria-label', /^Notebook, 2 of \d$/);
       await expect(tab(page, 'Notebook')).toBeFocused();
@@ -229,10 +229,10 @@ for (const size of PHONES) {
       await expect(tabs(page).getByRole('tab').last()).toBeFocused();
       await expect(tabs(page).getByRole('tab').last()).toHaveAttribute('aria-selected', 'true');
       await page.keyboard.press('Home');
-      await expect(slide(page)).toHaveAttribute('aria-label', /^Chat, 1 of \d$/);
+      await expect(slide(page)).toHaveAttribute('aria-label', /^Courier, 1 of \d$/);
       await page.keyboard.press('Escape');
       await expect(stage(page)).toHaveCount(0);
-      await expect(tile(page, 'Chat')).toBeFocused();
+      await expect(tile(page, 'Courier')).toBeFocused();
       // The other desk never heard of it.
       expect((await saved(request))?.layout?.desks[WORK]?.carousel).toBeUndefined();
       expect(errors).toEqual([]);
@@ -295,8 +295,8 @@ test.describe('a phone and a larger screen', () => {
     await settled(small);
     await expect(slide(small)).toHaveAttribute('aria-label', /^Agent, 4 of \d$/);
     await expect(tab(small, 'Agent')).toHaveAttribute('aria-selected', 'true');
-    await tap(small, tab(small, 'Chat'));
-    await expect(slide(small)).toHaveAttribute('aria-label', /^Chat, 1 of \d$/);
+    await tap(small, tab(small, 'Courier'));
+    await expect(slide(small)).toHaveAttribute('aria-label', /^Courier, 1 of \d$/);
     await tap(small, stage(small).getByRole('button', { name: 'Back to the desk' }));
     await expect(stage(small)).toHaveCount(0);
     await small.waitForTimeout(3_000);
@@ -374,7 +374,7 @@ test.describe('on a 390 x 844 phone', () => {
 
   test('the row keeps clear of the home indicator', async ({ page, request }) => {
     await arrive(page, request);
-    await openFromTile(page, 'Chat');
+    await openFromTile(page, 'Courier');
     // Chromium has no notch to stand in for one, so this reads the rule: the row grows by the bottom inset and pads it.
     const rule = await page.evaluate(() => {
       for (const sheet of [...document.styleSheets]) {
@@ -395,7 +395,7 @@ test.describe('on a 390 x 844 phone', () => {
   for (const theme of ['light', 'dark'] as ThemeId[]) {
     test(`axe at WCAG 2.2 AA on the phone's carousel, ${theme}`, async ({ page, request }) => {
       await arrive(page, request, theme);
-      await openFromTile(page, 'Chat');
+      await openFromTile(page, 'Courier');
       await page.waitForTimeout(400);
       expect(await axe(page)).toEqual([]);
       await tap(page, tab(page, 'Notebook'));

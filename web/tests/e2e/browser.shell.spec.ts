@@ -1,7 +1,7 @@
 // The Browser window with MockDeskLink's generated test picture, and its stopped, waking and stopping states
 // with the real link against the harness's own `connect`. `browser.rtc.spec.ts` runs it against real media.
 import { expect, test, type APIRequestContext, type Page } from '@playwright/test';
-import { canvasPainted, harness, setTheme, signIn, watchConsole, type ThemeId } from './helpers';
+import { canvasPainted, harness, markHome, setTheme, signIn, watchConsole, type ThemeId } from './helpers';
 
 interface MockControl {
   rpc: { m: string; p: Record<string, unknown>; options?: { idem?: string; deadlineMs?: number } }[];
@@ -148,7 +148,7 @@ test('parking the window on a desk before desk.attention sends off, and coming b
   await page.waitForTimeout(300);
   await openBrowser(page);
   await expectPlaying(page);
-  await page.getByRole('button', { name: /show all desks/ }).evaluate((el) => (el as HTMLButtonElement).click());
+  await markHome(page);
   await expect.poll(() => streamCalls(page)).toEqual(['live', 'off']);
   await page.getByRole('button', { name: /^Personal desk/ }).evaluate((el) => (el as HTMLButtonElement).click());
   await expect.poll(() => streamCalls(page)).toEqual(['live', 'off', 'live']);
@@ -161,7 +161,7 @@ test('parking the window on a desk that knows desk.attention keeps live, and com
   await page.waitForTimeout(300);
   await openBrowser(page);
   await expectPlaying(page);
-  await page.getByRole('button', { name: /show all desks/ }).evaluate((el) => (el as HTMLButtonElement).click());
+  await markHome(page);
   await page.waitForTimeout(300);
   await page.getByRole('button', { name: /^Personal desk/ }).evaluate((el) => (el as HTMLButtonElement).click());
   await expectPlaying(page);

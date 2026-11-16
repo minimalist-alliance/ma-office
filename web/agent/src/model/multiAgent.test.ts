@@ -49,6 +49,7 @@ describe('timer words (task 49 fix)', () => {
     expect(lastStateText('no_key')).toBe('Skipped: no key. Pick one in Key and model.');
     expect(lastStateText('limit_reached')).toBe('Skipped: a spending limit was reached. See Usage and limits.');
     expect(lastStateText('failed')).toBe('Didn’t finish. Its thread says why.');
+    expect(lastStateText('interrupted')).toBe('Didn’t finish: the desk restarted. Its thread shows how far it got.');
     expect(lastStateText('paused')).toBe('Paused: agents can’t run on this account right now.');
     expect(lastStateText('over_cap')).toBe('Skipped: more timers than the plan allows. Delete one to start it again.');
   });
@@ -178,7 +179,7 @@ describe('proposals', () => {
       'Name: Scout',
       'Purpose: Brief me.',
       'Icon: icon compass',
-      'Color: tone teal',
+      'Tone: tone teal',
       'Key: Personal · Anthropic',
       'Model: m1',
       'Messages other agents: Yes, as its links allow',
@@ -188,7 +189,7 @@ describe('proposals', () => {
     ]);
     expect(v.links).toMatchObject([{ to: 'Writer', rules: 'Only summaries.', gone: false }]);
     expect(v.timers).toEqual([{ label: 'Morning', schedule: 'Weekdays at 8:00 AM', prompt: 'Brief.', enabled: true }]);
-    expect(v.look).toEqual({ icon: 'compass', tone: 'teal' });
+    expect(v.look).toEqual({ icon: 'compass', tone: 'teal', color: null });
   });
 
   it('says what each card costs or how to undo it, and what a removal takes', () => {

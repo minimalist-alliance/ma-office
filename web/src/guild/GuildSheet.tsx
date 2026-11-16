@@ -10,7 +10,8 @@ import { useDeskStore } from '../state/deskStore';
 import { getGuildPeople, type GuildAgentLimits, type GuildUsage } from './api';
 import { closeGuildSheet, openGuildSheet, setGuildCaps, useGuildStore, type GuildSheetView } from './guildStore';
 import { useEscape } from './useEscape';
-import { AGENT_TOOLS_LIVE, DEFAULT_LIMITS, guildPanelId, limitProblem, limitsOf, limitsPatch, mayManageAgents, maySeeUsage, MEMBER_KEYS_LIVE, runs, share, TOOL_LABELS, usd, zoneName } from './panel';
+import { AGENT_TOOLS_LIVE, limitProblem, limitsPatch, MEMBER_KEYS_LIVE, share, TOOL_LABELS, usd, zoneName } from './limits';
+import { DEFAULT_LIMITS, guildPanelId, limitsOf, mayManageAgents, maySeeUsage, runs } from './panel';
 
 const DIDNT_SAVE = "That didn't save. Try again in a moment.";
 const DIDNT_LOAD = "That didn't load. Try again in a moment.";

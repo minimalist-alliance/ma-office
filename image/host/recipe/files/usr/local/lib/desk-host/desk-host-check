@@ -37,8 +37,10 @@ DESK_UNITS = ("desk-firstboot.service data.mount desk-units@.service desk-data@.
               "desk-agent.service desk-agent-filter.service desk-notebook.service desk-egress.service desk-units.socket desk-data.socket "
               "desk-preread.service desk-xorg.service desk-audio.service desk-browser.service desk-stream.service desk-browser-thaw.service "
               "desk-adblock.service desk-kind.service desk-guild-net.service desk-guild-rtc.service commons-data.service "
-              "commons-server-address.service commons-server.service desk-restart-reset.service desk-restart-reset.timer docker.service docker.socket containerd.service zramswap.service").split()
-DESK_UIDS = range(1100, 1113)
+              "commons-server-address.service commons-server.service desk-restart-reset.service desk-restart-reset.timer docker.service docker.socket containerd.service zramswap.service "
+              "desk-parse-courier.service "
+              "desk-parse.service").split()
+DESK_UIDS = range(1100, 1114)   # 1113: parse, the Agent's attachment reader (ADR 0097)
 
 
 def sh(*a, **kw):
@@ -334,7 +336,7 @@ def template_tree(T, building=False):
         probs.append("not host root's")
     pw = {l.split(":")[0]: int(l.split(":")[2]) for l in open(f"{T}/etc/passwd")}
     gr = {l.split(":")[0]: int(l.split(":")[2]) for l in open(f"{T}/etc/group")}
-    for u, i in (("desk-x", 1107), ("desk-snd", 1108), ("desk-dns", 1109), ("desk-data", 1112)):
+    for u, i in (("desk-x", 1107), ("desk-snd", 1108), ("desk-dns", 1109), ("desk-data", 1112), ("parse", 1113)):   # parse: the desk image's (ADR 0097)
         if pw.get(u) != i:
             probs.append(f"user {u} not {i}")
     if gr.get("desk-audio") != 1111:
@@ -806,7 +808,7 @@ def c_ports():
     return not probs, (f"{len(run)} running slot(s), each on UDP 4430+k of {addr} alone, its own SNAT block, marked for the demux" if not probs else f"{probs[:4]}")
 
 
-SVC_ALL = ("desk-rtc", "deskd", "desk-agent", "desk-notebook", "desk-stream", "desk-data")
+SVC_ALL = ("desk-rtc", "deskd", "desk-agent", "desk-notebook", "desk-stream", "desk-data", "desk-parse-courier", "desk-parse")
 SVC_NET = ("desk-rtc", "deskd", "desk-agent")   # the sandboxes in the desk's network namespace: the ones that can look a name up
 PLACEHOLDER = "192.0.2.1"                       # the only address desk-agent-filter's DNS gives uid 1103 (desk-agent-filter/dns.go)
 
@@ -864,7 +866,8 @@ def c_svc_dns():
                        if not probs else f"{probs[:4]}")
 
 
-OOM = {"deskd": -500, "desk-rtc": -500, "desk-notebook": -200, "desk-agent": 200, "desk-stream": 100, "desk-data": 0}
+OOM = {"deskd": -500, "desk-rtc": -500, "desk-notebook": -200, "desk-agent": 200, "desk-stream": 100, "desk-data": 0, "desk-parse-courier": 500,
+       "desk-parse": 500}
 HOST_OWN = ("desk-host-link.service", "desk-ice-demux.service", "ssh.service")   # well below any desk's lowest, -500
 
 
@@ -1341,6 +1344,185 @@ def c_svc_spec():
                        f"desk-rtc and desk-stream see the stream profile read-only" if not probs else f"{probs[:4]}")
 
 
+PARSE_ARGS = ["-accept", "/run/desk-parse/sock/parse.sock", "-accept-mode", "0660", "-peer-uid", "1103", "-max-conn", "1", "-deadline-sec", "35",
+              "-conn-stdio", "-clean"]
+COURIER_ARGS = ["-accept", "/run/desk-parse-courier/sock/parse.sock", "-accept-mode", "0660", "-peer-uid", "1100", "-max-conn", "1",
+                "-deadline-sec", "15", "-conn-stdio", "-clean"]
+READER_MEM = 160 << 20   # svc-spec.py's mem="160M" for both readers (desk-parse's since aee7dc83, when this check still said 128 MiB)
+COURIER_TRACKERS = ("usr/share/ma/adblock/courier-trackers.txt", "/app/courier/trackers.txt")   # svc-spec.py's: the template's, the reader's
+
+
+def reader_problems(k, name, peer, args, options, client, marker=False):
+    """One reader sandbox of slot k (desk-parse, ADR 0097, or desk-parse-courier), read from the host's side; c_parse's and
+    c_courier_parse's whole check. Returns (problems, 1 if its sandbox runs else 0). `peer` is the one uid it serves (its share's group),
+    `client` the sandbox that has its share read-only; desk-parse's share also holds the marker."""
+    probs, base = [], 100000 + k * 65536
+    sh_ = f"/run/desk-host/share/{k}/{name}"
+    want = {sh_: (base, base + peer, 0o750, stat.S_IFDIR)}
+    if marker:
+        want[f"{sh_}/required"] = (base, base, 0o444, stat.S_IFREG)
+    want.update({f"{sh_}/sock": (base + 1113, base + peer, 0o2750, stat.S_IFDIR),
+                 f"{sh_}/sock/parse.sock": (base + 1113, base + peer, 0o660, stat.S_IFSOCK)})
+    for p, (u, g, m, t) in want.items():
+        try:
+            st = os.lstat(p)
+        except OSError:
+            probs.append(f"slot {k}: {p} is missing")
+            continue
+        if stat.S_IFMT(st.st_mode) != t or stat.S_IMODE(st.st_mode) != m or st.st_uid != u or st.st_gid != g:
+            probs.append(f"slot {k}: {p} is {st.st_uid}:{st.st_gid} {stat.S_IMODE(st.st_mode):o}, not {u}:{g} {m:o}")
+    if marker and rd(f"{sh_}/required") != "1":
+        probs.append(f"slot {k}: the marker doesn't hold 1")
+    extra = sorted(set(os.listdir(f"{sh_}/sock")) - {"parse.sock"}) if os.path.isdir(f"{sh_}/sock") else []
+    if extra:
+        probs.append(f"slot {k}: {name}/sock holds {extra[:4]}")
+    try:
+        j = json.loads(sh(RUNC, "state", f"dh-svc-{k}-{name}").stdout)
+        pid, cfg = j["pid"], json.load(open(f"{j['bundle']}/config.json"))
+    except (ValueError, KeyError, OSError):
+        return probs + [f"slot {k}: no {name} sandbox"], 0
+    pr = cfg["process"]
+    if pr["user"].get("uid") != 1113 or pr["user"].get("gid") != 1113 or pr["user"].get("additionalGids"):
+        probs.append(f"slot {k} {name}: user {pr['user']}")
+    if any(pr["capabilities"].get(c) for c in ("bounding", "effective", "permitted", "inheritable", "ambient")):
+        probs.append(f"slot {k} {name}: capabilities {pr['capabilities']}")
+    root = f"{DH}/slots/{k}/rel/desk-agent/rootfs"
+    if cfg["root"] != {"path": root, "readonly": True}:
+        probs.append(f"slot {k} {name}: root {cfg['root']}")
+    ns = {n["type"]: n.get("path") for n in cfg["linux"]["namespaces"]}
+    if ns.get("network", "x") is not None or ns.get("ipc", "x") is not None:
+        probs.append(f"slot {k} {name}: network {ns.get('network')!r} ipc {ns.get('ipc')!r}, not namespaces of its own")
+    a = pr["args"]
+    if a[:1] != ["/desk-host/desk-svc"] or "--" not in a or a[1:a.index("--")] != args or a[a.index("--") + 1:] != ["/opt/java/openjdk/bin/java", options]:
+        probs.append(f"slot {k} {name}: args {a}")
+    u = cfg["linux"]["resources"]["unified"]
+    if u.get("memory.max") != str(READER_MEM) or u.get("memory.swap.max") != "0" or u.get("pids.max") != "64":
+        probs.append(f"slot {k} {name}: limits {u}")
+    mine = f"/run/{name}/sock"
+    bad = lambda d: d == "/data" or d.startswith("/data/") or d in ("/tmp", "/dev/shm") or (d.startswith("/run/desk") and d != mine)   # noqa: E731
+    dests = [m["destination"] for m in cfg["mounts"]]
+    if any(bad(d) for d in dests):
+        probs.append(f"slot {k} {name}: mounts {dests}")
+    if name == "desk-parse-courier":   # the tracker list: the template's own file, read-only, there exactly when svc-spec.py binds it
+        src = f"{slot_tree(k)}/{COURIER_TRACKERS[0]}"
+        got = [m for m in cfg["mounts"] if m["destination"] == COURIER_TRACKERS[1]]
+        due = os.path.isfile(src) and not os.path.islink(src) and os.path.isfile(f"{root}{COURIER_TRACKERS[1]}") \
+            and not os.path.islink(f"{root}{COURIER_TRACKERS[1]}")
+        if len(got) != int(due) or any(m.get("type") != "bind" or m.get("source") != src or "ro" not in m.get("options", []) for m in got):
+            probs.append(f"slot {k} {name}: the tracker list {'is' if due else 'is not'} the template's to bind, and the mounts say {got}")
+    st_ = {l.split(":")[0]: l.split(":", 1)[1].split() for l in open(f"/proc/{pid}/status") if ":" in l}
+    if st_.get("Uid", [""])[0] != str(base + 1113) or st_.get("CapEff") != ["0000000000000000"] or st_.get("NoNewPrivs") != ["1"]:
+        probs.append(f"slot {k} {name}: process 1 is uid {st_.get('Uid')}, CapEff {st_.get('CapEff')}, no_new_privs {st_.get('NoNewPrivs')}")
+    try:   # PARSE-L1: desk-svc -clean is non-dumpable, so its /proc/<pid>/mem is root's, not the worker's own uid (no attach)
+        mem_uid = os.stat(f"/proc/{pid}/mem").st_uid
+    except OSError as e:
+        mem_uid = f"unreadable: {e}"
+    if mem_uid != 0:
+        probs.append(f"slot {k} {name}: process 1 is dumpable: /proc/{pid}/mem is owned by {mem_uid}, not root")
+    mi = [l.split()[4] for l in open(f"/proc/{pid}/mountinfo")]
+    if any(bad(m) for m in mi):
+        probs.append(f"slot {k} {name}: its mount table has {[m for m in mi if m.startswith(('/data', '/run/desk', '/tmp', '/dev/shm'))][:4]}")
+    devs = sorted(l.split(":")[0].strip() for l in open(f"/proc/{pid}/net/dev").read().splitlines()[2:])
+    if devs != ["lo"]:
+        probs.append(f"slot {k} {name}: interfaces {devs}")
+    try:
+        cpid = json.loads(sh(RUNC, "state", f"dh-svc-{k}-{client}").stdout)["pid"]
+        cm = [l.split() for l in open(f"/proc/{cpid}/mountinfo") if l.split()[4] == f"/run/{name}"]
+        if not cm or "ro" not in cm[-1][5].split(","):
+            probs.append(f"slot {k}: {client} has no read-only /run/{name}")
+    except (ValueError, KeyError, OSError):
+        probs.append(f"slot {k}: no {client} sandbox")
+    return probs, 1
+
+
+def c_parse():
+    """ADR 0097: the Agent's attachment reader in each running slot, read from the host's side (nothing entered, nothing tried):
+    - the share: desk-parse the slot root's and group agent's 0750, its marker `required` the slot root's 0444 holding 1, desk-parse/sock
+      parse:agent 2750, and parse.sock in it parse:agent 0660, a socket; nothing else in sock;
+    - desk-parse's sandbox: its config.json's process uid and gid 1113, no capabilities, its root desk-agent's release copy read-only, a
+      network and IPC namespace of its own, desk-svc -accept with ADR 0097's flags, memory.max 160 MiB, pids 64; its process 1 (the
+      host's /proc) the slot's uid 1113, CapEff 0, no_new_privs, non-dumpable, its mount table with no /data and no /run/desk* but its
+      sock, no /tmp or /dev/shm of its own, and its network namespace's only interface lo;
+    - desk-agent's sandbox has /run/desk-parse mounted read-only (connecting writes only the socket). Nothing running is nothing to check."""
+    probs, seen = [], 0
+    for k in sorted(running_slots()):
+        p, s = reader_problems(k, "desk-parse", 1103, PARSE_ARGS, "@/app/parse.options", "desk-agent", marker=True)
+        probs += p
+        seen += s
+    return not probs, (f"{len(running_slots())} running slot(s), {seen} desk-parse sandbox(es): uid 1113, no capabilities, no /data, /tmp or /dev/shm, only lo, "
+                       f"ADR 0097's flags and limits; the socket parse:agent 0660 in parse:agent 2750 in root:agent 0750, the marker root's 0444"
+                       if not probs else f"{probs[:4]}")
+
+
+def c_courier_parse():
+    """Courier's mail reader (desk-parse-courier: ADR 0097's sandbox for deskd, docs/sub-status/courier-slot.md) in each running slot, read
+    from the host's side as `parse` reads desk-parse (nothing entered, nothing tried):
+    - the share: desk-parse-courier the slot root's and group desk's 0750, desk-parse-courier/sock parse:desk 2750, and parse.sock in it
+      parse:desk 0660, a socket; nothing else in sock (no marker: deskd has no reader of its own);
+    - its sandbox: uid and gid 1113, no capabilities, desk-agent's release copy read-only as its root, a network and IPC namespace of its
+      own, desk-svc -accept serving uid 1100 alone, one at a time, killed at 15 s, -clean, java @/app/courier-parse.options, memory.max
+      160 MiB, pids 64; its process 1 the slot's uid 1113, CapEff 0, no_new_privs, non-dumpable, no /data, /tmp, /dev/shm or /run/desk*
+      but its sock, only lo; the template's tracker list read-only at /app/courier/trackers.txt exactly when the template has it and the
+      release has its placeholder;
+    - deskd's sandbox has /run/desk-parse-courier mounted read-only. Nothing running is nothing to check."""
+    probs, seen = [], 0
+    for k in sorted(running_slots()):
+        p, s = reader_problems(k, "desk-parse-courier", 1100, COURIER_ARGS, "@/app/courier-parse.options", "deskd")
+        probs += p
+        seen += s
+    return not probs, (f"{len(running_slots())} running slot(s), {seen} desk-parse-courier sandbox(es): uid 1113, no capabilities, no /data, /tmp "
+                       f"or /dev/shm, only lo, uid 1100 its only peer, 15 s, 160 MiB; the socket parse:desk 0660 in parse:desk 2750 in root:desk 0750; "
+                       f"deskd's /run/desk-parse-courier read-only" if not probs else f"{probs[:4]}")
+
+
+COURIER_DIRS = ("courier", "keys")   # deskd's /data/courier (Courier's store and vault) and /data/keys (its sealed-message keys)
+
+
+def c_courier_dirs():
+    """Courier on a shared host, as `files` checks /data/files: each running slot's deskd has /data/courier and /data/keys, each the volume's
+    own directory (on the volume's filesystem, not the placeholder tmpfs) and the desk's 1100:1100 with mode 0700. A volume without one at
+    this start (from before the bake after 0.1.16: its desk makes it, the next start mounts it), or a link or a file there (never
+    followed), is said, not failed: mounts.py skipped it on purpose. Nothing running is nothing to check."""
+    probs, good, said = [], 0, []
+    for k in sorted(running_slots()):
+        base = 100000 + k * 65536
+        try:
+            m = json.loads(rd(f"/run/desk-host/{k}.mounts.json") or "")
+        except ValueError:
+            probs.append(f"slot {k}: no mounts.json")
+            continue
+        if "deskd" in (m.get("refused") or []):
+            said.append(f"slot {k}: deskd refused (its /data/desk)")
+            continue
+        skipped = (m.get("skipped") or {}).get("deskd") or {}
+        try:
+            pid = json.loads(sh(RUNC, "state", f"dh-svc-{k}-deskd").stdout)["pid"]
+        except (ValueError, KeyError):
+            probs.append(f"slot {k}: no deskd sandbox")
+            continue
+        for sub in COURIER_DIRS:
+            if skipped.get(sub):
+                said.append(f"slot {k}: no /data/{sub} this run, the volume's {sub} {skipped[sub]} (skipped, never followed)")
+                continue
+            try:
+                st = os.lstat(f"/proc/{pid}/root/data/{sub}")
+                vol = os.stat(m.get("device") or "/nonexistent").st_rdev
+            except OSError as e:
+                probs.append(f"slot {k}: deskd's /data/{sub}: {type(e).__name__}")
+                continue
+            got = f"{st.st_uid - base}:{st.st_gid - base} {stat.S_IMODE(st.st_mode):04o}"
+            if not stat.S_ISDIR(st.st_mode) or (st.st_uid, st.st_gid, stat.S_IMODE(st.st_mode)) != (base + 1100, base + 1100, 0o700):
+                probs.append(f"slot {k}: deskd's /data/{sub} is {got}{'' if stat.S_ISDIR(st.st_mode) else ' (not a directory)'}, not 1100:1100 0700")
+            elif st.st_dev != vol:
+                probs.append(f"slot {k}: deskd's /data/{sub} isn't on its volume (device {os.major(st.st_dev)}:{os.minor(st.st_dev)}, a placeholder?)")
+            else:
+                good += 1
+    if probs:
+        return False, f"{probs[:4]}"
+    return True, (f"{len(running_slots())} running slot(s), {good} of deskd's /data/courier and /data/keys its volume's, 1100:1100 0700"
+                  + (f"; {'; '.join(said[:4])}" if said else ""))
+
+
 APT_CONF = "/etc/apt/apt.conf.d/51desk-host-unattended"
 
 
@@ -1463,7 +1645,8 @@ CHECKS = {"runc": c_runc, "kernel": c_kernel, "zswap": c_zswap, "swap": c_swap, 
           "slotmode": c_slotmode, "addresses": c_addresses, "demux": c_demux, "ports": c_ports, "svc-dns": c_svc_dns, "oom": c_oom,
           "files": c_files, "shaper": c_shaper,
           "templates": c_templates, "template-sig": c_template_sig, "update-cgroup": c_update_cgroup, "host-apt": c_host_apt,
-          "batch-sig": c_batch_sig, "svc-spec": c_svc_spec, "dirs": c_dirs}
+          "batch-sig": c_batch_sig, "svc-spec": c_svc_spec, "dirs": c_dirs, "courier-dirs": c_courier_dirs, "courier-parse": c_courier_parse,
+          "parse": c_parse}
 QUICK = ("runc", "zswap", "swap", "sysctl", "store", "cgroup", "classes", "slotmode", "templates", "dirs")
 
 

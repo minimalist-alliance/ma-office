@@ -152,7 +152,7 @@ export function circleLabel(m: BandwidthMeter, c: Clock): string {
 }
 
 /**
- * What goes on when the Browser pauses: only apps the member has and can use. Chat isn't built, so it's never named, and a
+ * What goes on when the Browser pauses: only apps the member has and can use. Courier isn't built, so it's never named, and a
  * teen has no Agent, so it isn't named for them.
  */
 export const keepsWorking = (): string => (mayHaveApp('agent') ? 'Notebook and Agent keep working' : 'Notebook keeps working');

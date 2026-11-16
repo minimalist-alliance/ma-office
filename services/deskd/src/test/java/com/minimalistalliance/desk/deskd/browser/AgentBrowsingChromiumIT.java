@@ -57,6 +57,11 @@ import org.junit.jupiter.api.io.TempDir;
  * ({@code write}, a link {@code egress}), an off-site link there (refused, and cancelled), a sensitive field (refused),
  * typed quotes and backticks (text), and a frame of another site in a process of its own whose local requests stop too.
  *
+ * <p>Every test runs under {@link CdpRecorder}: as it ends, no command deskd sent on any path (the member's tabs, the
+ * view, the walker, the Agent's) cleared or wrote storage, cookies, cache or history; every command the Agent's paths
+ * sent was on {@link AgentCdp#ALLOWED}; nothing else named an Agent session, target or context; and the Agent's log
+ * lines held no address.
+ *
  * <pre>DESKD_CHROMIUM_BIN=/path/to/chrome ./mvnw -q -pl deskd verify -Dtest=none -Dsurefire.failIfNoSpecifiedTests=false -Dit.test=AgentBrowsingChromiumIT</pre>
  * and, as a desk runs, {@code DESKD_CHROMIUM_HEADFUL=1 xvfb-run -a} before the same.
  */
@@ -77,9 +82,12 @@ class AgentBrowsingChromiumIT {
     private AgentBrowsing agent;
     private BrowserTools tools;
     private final RunLedger ledger = new RunLedger(Clock.systemUTC(), runId -> {});
+    /** Every CDP command of every path in each test, and the Agent's log lines: checked as each test ends. */
+    private CdpRecorder recorder;
 
     @BeforeEach
     void setUp() throws Exception {
+        recorder = CdpRecorder.start();
         pages = HttpServer.create(new InetSocketAddress(InetAddress.getLoopbackAddress(), 0), 0);
         port = pages.getAddress().getPort();
         pages.createContext("/", exchange -> {
@@ -133,8 +141,12 @@ class AgentBrowsingChromiumIT {
 
     @AfterEach
     void tearDown() throws Exception {
-        if (rig != null) {
-            rig.close();
+        try {
+            if (rig != null) {
+                rig.close();
+            }
+        } finally {
+            recorder.close();
         }
         if (pages != null) {
             pages.stop(0);
@@ -147,6 +159,10 @@ class AgentBrowsingChromiumIT {
                 chromium.destroyForcibly();
             }
         }
+        // The draft ADR's §17 Browser row: nothing on any path cleared or wrote storage, cookies or history; every Agent
+        // command was on the list, and nothing else named the Agent's sessions, targets or contexts; no address in its log.
+        assertThat(recorder.agentCommands()).as("the agent's commands recorded").isPositive();
+        assertThat(recorder.broken()).as("what the CDP recording found").isEmpty();
     }
 
     private static final String PROSE = "The lamp has lit the reading rooms of the world for a long time, and it is still the best way to "
@@ -155,6 +171,10 @@ class AgentBrowsingChromiumIT {
     private String html(String path) {
         return switch (path) {
             case "/set" -> "<title>Set</title><main><h1>Set</h1><p>" + PROSE.repeat(3) + "</p></main>";
+            // What the page is laid out at, as text the walker reads: the Browser's zoom must leave the Agent's at 100%.
+            case "/size" -> "<title>Size</title><main><h1>Size</h1><p id=s>unread</p><p>" + PROSE.repeat(3) + "</p></main>"
+                    + "<script>function s(){document.getElementById('s').textContent='Laid out at '+innerWidth+' by '+innerHeight"
+                    + "+' ratio '+devicePixelRatio} s(); addEventListener('resize', s)</script>";
             // What the page sees of its cookies, as text the walker reads.
             case "/show" -> "<title>Show</title><main><h1>Cookies</h1><p id=c>none</p><p>" + PROSE.repeat(3) + "</p></main>"
                     + "<script>document.getElementById('c').textContent = 'cookies: [' + document.cookie + ']'</script>";
@@ -191,6 +211,23 @@ class AgentBrowsingChromiumIT {
                     + "<p><label>Echo <input id=echo oninput=\"document.getElementById('echoed').textContent='Echoed: '+this.value\"></label></p>"
                     + "<p id=echoed>Echoed: none</p><p id=t>Touched: none</p><p>" + PROSE.repeat(6) + "</p></main>"
                     + "<script>function touched(w){document.getElementById('t').textContent='Touched: '+w}</script>";
+            // Gap 1: a form's submit control whose words say nothing of sending, and a search form's own button.
+            case "/plainform" -> "<title>Plain form</title><main><h1>Plain form</h1><p>" + PROSE.repeat(3) + "</p>"
+                    + "<p><label>Message <input name=msg id=msg form=f2></label></p><p><button form=f2>Next</button></p>"
+                    + "<p><button type=button onclick=\"document.getElementById('st').textContent='Tip shown'\">Show a tip</button></p>"
+                    + "<p id=st>No tip yet</p></main><form id=f2 action=\"/sent\" method=post></form>";
+            case "/searchform" -> "<title>Search form</title><main><h1>Search form</h1><p>" + PROSE.repeat(3) + "</p>"
+                    + "<p><label>Find <input type=search name=q id=q form=f3></label> <button form=f3>Go</button></p></main>"
+                    + "<form id=f3 action=\"/results\" method=get role=search></form>";
+            // Security's BB-L1: a search box whose form posts.
+            case "/postsearch" -> "<title>Post search</title><main><h1>Post search</h1><p>" + PROSE.repeat(3) + "</p>"
+                    + "<p><label>Look up <input type=search name=msg id=lookup form=f4></label></p></main>"
+                    + "<form id=f4 action=\"/sent\" method=post></form>";
+            // Security's BB-L3: a submit button whose value isn't its words.
+            case "/orderform" -> "<title>Order form</title><main><h1>Order form</h1><p>" + PROSE.repeat(3) + "</p>"
+                    + "<p><label>Promo code <input name=promo id=promo form=f5></label></p>"
+                    + "<p><button type=submit form=f5 name=step value=2>Place order</button></p></main>"
+                    + "<form id=f5 action=\"/sent\" method=post></form>";
             case "/sent" -> "<title>Sent</title><main><h1>Sent</h1><p id=m>Nothing</p><p>" + PROSE.repeat(3) + "</p></main>"
                     + "<script>document.getElementById('m').textContent='Sent: '+new URLSearchParams(location.search).get('msg')</script>";
             // A frame of another site, in a process of its own, with a local host in it; a local host straight in a frame; and
@@ -241,7 +278,14 @@ class AgentBrowsingChromiumIT {
 
     /** As desk-agent runs a call the member approved: with exactly the payload deskd's look gave for the card. */
     private HostedTool.Result approved(String runId, String tool, HostedTool.Look look) throws Exception {
-        return exec(runId, tool, look.payload());
+        HostedCall call = new HostedCall(1, runId, "ag-1", tool, new LinkedHashMap<>(look.payload()),
+                new HostedCall.Approval("ap-1", "0".repeat(64)), false, Caller.THE_OWNER, null);
+        RunLedger.Run run = ledger.join(runId, "ag-1", Caller.THE_OWNER, List.of());
+        HostedTool.Look again = tools.look(call, run);
+        if (again.refusal() != null) {
+            throw new AssertionError("refused at look: " + again.refusal());
+        }
+        return tools.run(call, run);
     }
 
     /** Where a page's control is in the walker's view: {node, fp, block, rev}, for a call into the action proxy itself. */
@@ -323,6 +367,31 @@ class AgentBrowsingChromiumIT {
         String next = agent.open("run-2", url("a.test", "/show")).tabId();
         assertThat(text("run-2", next)).contains("cookies: \\[\\]").doesNotContain("agent");
         assertThat(memberCookies()).containsExactly("who=member");
+    }
+
+    /**
+     * The Browser's zoom is Chromium's default page zoom, which Chromium applies to the Agent's contexts too: deskd sizes an
+     * Agent tab's viewport by it, so its page is still 1280x800 at a ratio of 1, opened before a change or after.
+     */
+    @Test
+    void anAgentTabIsLaidOutAt1280By800AtARatioOfOneWhateverTheBrowsersZoom() throws Exception {
+        rig.module.enableZoom(dir, new BrowserZoom.Timing(Duration.ofMillis(300), Duration.ofMillis(500), Duration.ofMillis(1500),
+                Duration.ofSeconds(2), Duration.ofSeconds(2), Duration.ofSeconds(10)));
+        memberTab();
+        memberGoesTo(url("a.test", "/size"));
+        String before = agent.open("run-1", url("a.test", "/size")).tabId();
+        assertThat(text("run-1", before)).contains("Laid out at 1280 by 800 ratio 1");
+
+        assertThat(rig.call(client, "browser.zoom.set", Map.of("level", 125))).containsEntry("level", 125);
+
+        String after = agent.open("run-1", url("a.test", "/size")).tabId();
+        assertThat(text("run-1", after)).contains("Laid out at 1280 by 800 ratio 1");
+        await().atMost(Duration.ofSeconds(10)).untilAsserted(() -> assertThat(text("run-1", before)).contains("Laid out at 1280 by 800 ratio 1"));
+        // Chromium's 2/3: 853x533 device pixels at 1.5, which lays out within a pixel of 1280x800 (rounding).
+        assertThat(rig.call(client, "browser.zoom.set", Map.of("level", 67))).containsEntry("level", 67);
+        java.util.regex.Pattern near = java.util.regex.Pattern.compile("Laid out at 12(79|80) by (799|800) ratio (1|0\\.99\\d*|1\\.00\\d*)\\b");
+        await().atMost(Duration.ofSeconds(10)).untilAsserted(() -> assertThat(text("run-1", before)).containsPattern(near));
+        assertThat(text("run-1", after)).containsPattern(near);
     }
 
     @Test
@@ -465,6 +534,95 @@ class AgentBrowsingChromiumIT {
     }
 
     /**
+     * Gap 1 (the Browser bar's audit): a click on a form's submit control is {@code send} whatever its label, by deskd's
+     * half on the element itself; its payload binds {@code submit: true}, and the same click without the member's yes is
+     * never done, so the form's address is never reached. A search form's own button is a search, as Enter in its box is:
+     * a read in the Agent's own context, a send in the member's session.
+     */
+    @Test
+    void gapOneASubmitWithAnOrdinaryLabelIsSendAndNeverDoneUnasked() throws Exception {
+        String tab = (String) ((Map<String, Object>) exec("run-1", "browser_open", Map.of("url", url("a.test", "/plainform"))).content())
+                .get("tabId");
+        String next = ref(text("run-1", tab), "Next");
+        HostedTool.Look look = look("run-1", "browser_click", Map.of("tabId", tab, "ref", next));
+        assertThat(look.risk()).isEqualTo(ToolRisk.SEND);
+        assertThat(look.payload()).containsEntry("submit", true);
+        // The model's own call: refused, nothing sent.
+        assertThatThrownBy(() -> exec("run-1", "browser_click", Map.of("tabId", tab, "ref", next)))
+                .isInstanceOfSatisfying(ToolFailure.class, e -> assertThat(e.reason()).isEqualTo("changed"));
+        // The model claiming the submit itself: no better.
+        assertThatThrownBy(() -> exec("run-1", "browser_click", Map.of("tabId", tab, "ref", next, "submit", true)))
+                .isInstanceOfSatisfying(ToolFailure.class, e -> assertThat(e.reason()).isEqualTo("changed"));
+        // And the action proxy itself, asked straight, won't submit what nobody approved as a submit.
+        Object[] button = control("run-1", tab, "Next");
+        assertThatThrownBy(() -> agent.act("run-1", tab, (String) button[0], "click", null, (String) button[1], (String) button[2],
+                (long) button[3], false, false)).isInstanceOfSatisfying(RpcException.class,
+                e -> assertThat(e.details()).containsEntry("reason", "changed"));
+        assertThat(hitsOf("a.test/sent")).isZero();
+        // A plain button on the same page is a read, done.
+        HostedTool.Look tip = look("run-1", "browser_click", Map.of("tabId", tab, "ref", ref(text("run-1", tab), "Show a tip")));
+        assertThat(tip.risk()).isNull();
+        assertThat(tip.payload()).doesNotContainKey("submit");
+        exec("run-1", "browser_click", tip.payload());
+        assertThat(text("run-1", tab)).contains("Tip shown");
+        // The member's yes: sent once.
+        HostedTool.Look again = look("run-1", "browser_click", Map.of("tabId", tab, "ref", ref(text("run-1", tab), "Next")));
+        assertThat((Map<String, Object>) approved("run-1", "browser_click", again).content()).containsEntry("done", true)
+                .containsEntry("title", "Sent");
+        assertThat(hitsOf("a.test/sent")).isEqualTo(1);
+
+        // A search form's button: a search, done in the Agent's own context as Enter in its box would be.
+        agent.navigate("run-1", tab, url("a.test", "/searchform"));
+        exec("run-1", "browser_type", Map.of("tabId", tab, "ref", ref(text("run-1", tab), "Find"), "text", "lamps"));
+        HostedTool.Look go = look("run-1", "browser_click", Map.of("tabId", tab, "ref", ref(text("run-1", tab), "Go")));
+        assertThat(go.risk()).isNull();
+        assertThat(go.payload()).doesNotContainKey("submit");
+        assertThat((Map<String, Object>) exec("run-1", "browser_click", go.payload()).content()).containsEntry("done", true);
+        assertThat(hitsOf("a.test/results")).isEqualTo(1);
+
+        // Enter in that search box: a search too, done.
+        agent.navigate("run-1", tab, url("a.test", "/searchform"));
+        String find = ref(text("run-1", tab), "Find");
+        exec("run-1", "browser_type", Map.of("tabId", tab, "ref", find, "text", "brass"));
+        HostedTool.Look enter = look("run-1", "browser_press", Map.of("tabId", tab, "ref", find, "key", "Enter"));
+        assertThat(enter.risk()).isNull();
+        exec("run-1", "browser_press", enter.payload());
+        assertThat(hitsOf("a.test/results")).isEqualTo(2);
+
+        // Security's BB-L1: Enter in a search box whose form posts sends it: a send, never done unasked.
+        agent.navigate("run-1", tab, url("a.test", "/postsearch"));
+        String lookup = ref(text("run-1", tab), "Look up");
+        exec("run-1", "browser_type", Map.of("tabId", tab, "ref", lookup, "text", "hello"));
+        HostedTool.Look posts = look("run-1", "browser_press", Map.of("tabId", tab, "ref", lookup, "key", "Enter"));
+        assertThat(posts.risk()).isEqualTo(ToolRisk.SEND);
+        assertThat(posts.payload()).containsEntry("submit", true);
+        assertThatThrownBy(() -> exec("run-1", "browser_press", Map.of("tabId", tab, "ref", lookup, "key", "Enter")))
+                .isInstanceOfSatisfying(ToolFailure.class, e -> assertThat(e.reason()).isEqualTo("changed"));
+        Object[] box = control("run-1", tab, "Look up");
+        assertThatThrownBy(() -> agent.act("run-1", tab, (String) box[0], "press", "Enter", (String) box[1], (String) box[2],
+                (long) box[3], false, false)).isInstanceOfSatisfying(RpcException.class,
+                e -> assertThat(e.details()).containsEntry("reason", "changed"));
+        assertThat(hitsOf("a.test/sent")).isEqualTo(1);
+        assertThat((Map<String, Object>) approved("run-1", "browser_press", posts).content()).containsEntry("submitted", true);
+        assertThat(hitsOf("a.test/sent")).isEqualTo(2);
+
+        // Security's BB-L3: Enter in a field whose form's button says it places an order is a spend, by the button's
+        // own words, not its value.
+        agent.navigate("run-1", tab, url("a.test", "/orderform"));
+        HostedTool.Look promo = look("run-1", "browser_press", Map.of("tabId", tab, "ref", ref(text("run-1", tab), "Promo code"),
+                "key", "Enter"));
+        assertThat(promo.risk()).isEqualTo(ToolRisk.SPEND);
+        assertThat(promo.payload()).containsEntry("spend", true).containsEntry("submit", true);
+
+        // In the member's session the same button is a send.
+        String session = agent.useSession("run-1", "a.test").tabId();
+        agent.navigate("run-1", session, url("a.test", "/searchform"));
+        HostedTool.Look there = look("run-1", "browser_click", Map.of("tabId", session, "ref", ref(text("run-1", session), "Go")));
+        assertThat(there.risk()).isEqualTo(ToolRisk.SEND);
+        assertThat(there.payload()).containsEntry("submit", true);
+    }
+
+    /**
      * Security (Nov 11): the type gate refuses a box the page made read-only (readonly, aria-readonly, a disabled fieldset's
      * field, and rich text inside contenteditable="false"), for typing, emptying and keys alike, so the Agent can't change
      * what a person couldn't; a box beside them still takes both.
@@ -519,19 +677,21 @@ class AgentBrowsingChromiumIT {
                 .isEqualTo("off_site");
         Object[] other = control("run-1", session, "Other site");
         assertThatThrownBy(() -> agent.act("run-1", session, (String) other[0], "click", null, (String) other[1], (String) other[2],
-                (long) other[3], false)).isInstanceOfSatisfying(RpcException.class, e -> assertThat(e.details()).containsEntry("reason", "off_site"));
+                (long) other[3], false, false)).isInstanceOfSatisfying(RpcException.class, e -> assertThat(e.details()).containsEntry("reason", "off_site"));
 
-        // A link on the site that redirects off it, and a button whose script leaves it: cancelled at the request.
+        // A link on the site that redirects off it, and a button whose script leaves it: cancelled at the request. The
+        // click itself was done (the link was followed), so its answer says what stopped after it, never that it failed
+        // (Security's BB-L5): an approved click must never read as not done.
         HostedTool.Look away = look("run-1", "browser_click", Map.of("tabId", session, "ref", ref(text("run-1", session), "Away")));
         assertThat(away.risk()).isEqualTo(ToolRisk.EGRESS);
-        assertThatThrownBy(() -> approved("run-1", "browser_click", away))
-                .isInstanceOfSatisfying(ToolFailure.class, e -> assertThat(e.reason()).isEqualTo("off_site"));
+        assertThat((Map<String, Object>) approved("run-1", "browser_click", away).content()).containsEntry("done", true)
+                .containsEntry("stopped", "off_site");
         assertThat(hitsOf("a.test/away")).isEqualTo(1);
         agent.navigate("run-1", session, url("a.test", "/links"));
         HostedTool.Look script = look("run-1", "browser_click", Map.of("tabId", session, "ref", ref(text("run-1", session), "Leave by script")));
         assertThat(script.risk()).isEqualTo(ToolRisk.WRITE);
-        assertThatThrownBy(() -> approved("run-1", "browser_click", script))
-                .isInstanceOfSatisfying(ToolFailure.class, e -> assertThat(e.reason()).isEqualTo("off_site"));
+        assertThat((Map<String, Object>) approved("run-1", "browser_click", script).content()).containsEntry("done", true)
+                .containsEntry("stopped", "off_site");
         Thread.sleep(1000);
         assertThat(hitsOf("b.test/direct-link")).as("an off-site link").isZero();
         assertThat(hitsOf("b.test/landed")).as("a redirect's other site").isZero();

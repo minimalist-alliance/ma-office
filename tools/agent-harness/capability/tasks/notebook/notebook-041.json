@@ -1,0 +1,72 @@
+{
+  "id": "notebook-041",
+  "area": "notebook",
+  "title": "Append a colored paragraph",
+  "prompt": "Add a blue paragraph Review on Friday at the end of my Q1 plan page.",
+  "setup": {
+    "notebook": [
+      {
+        "tab": "Harness",
+        "title": "Q1 plan",
+        "markdown": "# Q1 plan\n\n## Goals\n\nHire two engineers.\n"
+      }
+    ]
+  },
+  "approve": "all",
+  "checks": [
+    {
+      "kind": "page",
+      "tab": "Harness",
+      "title": "Q1 plan",
+      "contains": [
+        "Review on Friday",
+        "Hire two engineers"
+      ]
+    },
+    {
+      "kind": "cards",
+      "tools": [
+        "notebook_write"
+      ]
+    }
+  ],
+  "policy": {
+    "tools": [
+      "notebook_search",
+      "notebook_write"
+    ]
+  },
+  "standIn": [
+    {
+      "calls": [
+        {
+          "name": "notebook_search",
+          "input": {
+            "query": "Q1 plan"
+          }
+        }
+      ]
+    },
+    {
+      "calls": [
+        {
+          "name": "notebook_write",
+          "input": {
+            "pageId": {
+              "$re": {
+                "step": 0,
+                "call": 0,
+                "pattern": "\"pageId\":\"([^\"]+)\",\"title\":\"Q1 plan\""
+              }
+            },
+            "op": "append",
+            "markdown": "{color=blue}\nReview on Friday"
+          }
+        }
+      ]
+    },
+    {
+      "text": "Added Review on Friday in blue to your Q1 plan."
+    }
+  ]
+}

@@ -1,6 +1,8 @@
 import { describe, expect, it } from 'vitest';
 import { themeCss, themeTokens } from './themeCss';
-import { APP_INKS, THEME_IDS, THEMES, type Tokens } from './tokens';
+import { APP_INKS, THEME_IDS, THEMES, VIEW, type Tokens } from './tokens';
+import { oklab } from './oklab';
+import { HUES } from '../chrome/avatar';
 
 type Rgba = { r: number; g: number; b: number; a: number };
 
@@ -47,7 +49,8 @@ const PAIRS: { name: string; min: number; fg: (t: Tokens) => string; on: (t: Tok
   { name: 'text.secondary', min: 4.5, fg: (t) => t.text.secondary, on: (t) => [...surfaces(t), ...world(t)] },
   { name: 'text.tertiary', min: 4.5, fg: (t) => t.text.tertiary, on: surfaces },
   { name: 'text.primary on accent.subtle', min: 4.5, fg: (t) => t.text.primary, on: (t) => [t.accent.subtle] },
-  { name: 'text.link', min: 4.5, fg: (t) => t.text.link, on: (t) => [t.surface.tile, t.surface.panel, t.surface.window, t.surface.overlay, t.accent.subtle] },
+  // Every ground a link sits on, the fills under a tab or a chip included (Light's was 4.48:1 on surface.fill, BRAND-19/20).
+  { name: 'text.link', min: 4.5, fg: (t) => t.text.link, on: (t) => [...surfaces(t), ...world(t), t.surface.fill, t.surface.fillStrong, t.accent.subtle] },
   { name: 'text.onAccent', min: 4.5, fg: (t) => t.text.onAccent, on: (t) => [t.accent.default, t.accent.hover, t.accent.pressed] },
   { name: 'badge.fg', min: 4.5, fg: (t) => t.badge.fg, on: (t) => [t.badge.bg] },
   { name: 'mark.fg', min: 4.5, fg: (t) => t.mark.fg, on: (t) => [t.mark.disc] },
@@ -79,6 +82,17 @@ describe.each(THEME_IDS)('%s contrast', (id) => {
   });
 });
 
+// The link with no rounding allowance (the Product Designer, BRAND-19/20: Light's was 4.48:1 on surface.fill, which the
+// table's rounding let pass).
+describe.each(THEME_IDS)('%s text.link', (id) => {
+  const t = THEMES[id];
+  it('reads at 4.5:1 or more on every ground it sits on, unrounded', () => {
+    for (const bg of [...surfaces(t), ...world(t), t.surface.fill, t.surface.fillStrong, t.accent.subtle]) {
+      expect(contrast(t.text.link, bg), `${t.text.link} on ${bg}`).toBeGreaterThanOrEqual(4.5);
+    }
+  });
+});
+
 describe('the etch (ADR 0064)', () => {
   it('has the contrast in the ADR\'s table, in every theme', () => {
     expect(contrast(THEMES.light.etch.fill, THEMES.light.surface.panel)).toBeCloseTo(4.56, 2);
@@ -92,6 +106,79 @@ describe('the etch (ADR 0064)', () => {
       expect(contrast(etch.wall, '#000000'), id).toBeLessThan(contrast(etch.fill, '#000000'));
       expect(contrast(etch.fill, etch.wall), id).toBeGreaterThanOrEqual(1.5);
       expect(etch.highlight, id).not.toBe(surface.panel);
+    }
+  });
+});
+
+// The owner's rule: no green, brown or warm tint anywhere in the UI (Nov 13). The status colours, and the rating star that
+// takes warn's, are the brand's cool palette: a blue (hue 190 to 290), or a neutral (saturation 0.18 or less, the release
+// proof's own test). Red stays for a real error only, as the kit's badges note says, so `error` is left out.
+function hueSat(hex: string): { h: number; s: number } {
+  const { r, g, b } = parse(hex);
+  const [R, G, B] = [r / 255, g / 255, b / 255];
+  const max = Math.max(R, G, B);
+  const min = Math.min(R, G, B);
+  const d = max - min;
+  if (d === 0) return { h: 0, s: 0 };
+  const l = (max + min) / 2;
+  let h = max === R ? ((G - B) / d) % 6 : max === G ? (B - R) / d + 2 : (R - G) / d + 4;
+  h *= 60;
+  if (h < 0) h += 360;
+  return { h, s: d / (1 - Math.abs(2 * l - 1)) };
+}
+const cool = (hex: string): boolean => {
+  const { h, s } = hueSat(hex);
+  return s <= 0.18 || (h >= 190 && h <= 290);
+};
+
+describe.each(THEME_IDS)('%s status colours are cool', (id) => {
+  const t = THEMES[id];
+  it('online, warn, offline and the star: blue or neutral, never green, amber or brown', () => {
+    for (const [name, hex] of [['online', t.status.online], ['warn', t.status.warn], ['offline', t.status.offline], ['star', VIEW[id].star]] as const) {
+      expect(cool(hex), `${name} ${hex}`).toBe(true);
+    }
+  });
+  it('online is the accent blue, warn a neutral, and the dots stay apart', () => {
+    expect(t.status.online).toBe(t.accent.default);
+    expect(hueSat(t.status.warn).s).toBeLessThan(hueSat(t.status.online).s / 2);
+    expect(new Set([t.status.online, t.status.warn, t.status.offline, t.status.error]).size).toBe(4);
+    // warn is the stronger ink: further from the panel than offline's grey, so a waiting dot reads before an idle one.
+    expect(contrast(t.status.warn, t.surface.panel)).toBeGreaterThan(contrast(t.status.offline, t.surface.panel) + 1);
+    expect(VIEW[id].star).toBe(t.status.warn);
+  });
+});
+
+// The member avatar's six tints (the owner's no-green, no-warm rule, Nov 16: Zen's cool set taken to Light and Dark). Each
+// ink reads at 4.5:1 on both of its tint's stops; every stop is cool (a blue or a cool grey, and blue the largest channel,
+// as ma-platform's cool.test.ts asks of the same values); and the six stay apart, at least Zen's closest pair, blue and
+// steel (OKLab 0.045 between the stops' middles), so members are told apart in every theme.
+const mid = (a: string, b: string): [number, number, number] => {
+  const [x, y] = [oklab(a), oklab(b)];
+  return [0, 1, 2].map((i) => (x[i]! + y[i]!) / 2) as [number, number, number];
+};
+describe.each(THEME_IDS)('%s avatar tints', (id) => {
+  const a = THEMES[id].avatar;
+  const tint = (h: (typeof HUES)[number]) => ({ top: a[`${h}Top`], bottom: a[`${h}Bottom`], ink: a[`${h}Ink`] });
+  it.each([...HUES])('%s: its ink reads at 4.5:1 or more on both stops', (h) => {
+    const { top, bottom, ink } = tint(h);
+    for (const bg of [top, bottom]) expect(contrast(ink, bg), `${ink} on ${bg}`).toBeGreaterThanOrEqual(4.5);
+  });
+  it('are all cool: a blue or a cool grey, never green, amber, brown or rose', () => {
+    for (const h of HUES) {
+      for (const hex of [tint(h).top, tint(h).bottom]) {
+        const { r, g, b } = parse(hex);
+        expect(cool(hex), `${h} ${hex}`).toBe(true);
+        expect(b >= r && b >= g, `${h} ${hex}: blue is the largest channel`).toBe(true);
+      }
+    }
+  });
+  it('are six, each told apart from the rest', () => {
+    const mids = HUES.map((h) => mid(tint(h).top, tint(h).bottom));
+    for (let i = 0; i < mids.length; i += 1) {
+      for (let j = i + 1; j < mids.length; j += 1) {
+        const d = Math.hypot(...mids[i]!.map((v, k) => v - mids[j]![k]!));
+        expect(d, `${HUES[i]} and ${HUES[j]}`).toBeGreaterThanOrEqual(0.045);
+      }
     }
   });
 });

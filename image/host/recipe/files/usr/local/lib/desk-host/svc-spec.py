@@ -2,7 +2,8 @@
 """svc-spec.py <k> <service>: the OCI spec for one service's own sandbox in slot k (ADR 0072 section 2, WALL-06, RC-01).
 svc-spec.py shares <k> <dir>: makes the slot's shared /run directories in <dir>, the slot's fresh host tmpfs.
 
-Each of deskd, desk-agent, desk-notebook, desk-rtc, desk-stream and desk-data runs as a runc container of its own that joins
+Each of deskd, desk-agent, desk-notebook, desk-rtc, desk-stream, desk-data, desk-parse (ADR 0097) and desk-parse-courier (Courier's mail
+reader, ADR 0097's sandbox for deskd: docs/sub-status/courier-slot.md) runs as a runc container of its own that joins
 the desk's user namespace, and only what it needs of the desk's others, through the host-owned bind of each namespace file
 desk-host made at runc create (/run/desk-host/ns/<k>/, RC-01: never /proc/<pid>/ns at a later start). Every runc input is
 the host's:
@@ -19,8 +20,9 @@ the host's:
   /run/desk-links (desk:kiosk 2750), where it binds links.sock for Chromium's xdg-open stand-in (desk image 0.3.5's links out);
 - its /data directory: none here. mounts.py moves an open_tree() clone of the desk's own directory in after runc create,
   resolved with openat2() from the host's own detached mount of the volume (RESOLVE_IN_ROOT, no links, no crossings), over
-  a placeholder each `data` entry gets here (an empty tmpfs, mode 000). deskd has two: desk and files (its Files tree, free
-  walk H5); a files directory the volume hasn't yet leaves deskd its placeholder, so Files answers unavailable that run.
+  a placeholder each `data` entry gets here (an empty tmpfs, mode 000). deskd has four: desk, files (its Files tree, free
+  walk H5), courier (Courier's store and vault) and keys (its sealed-message keys); one the volume hasn't yet leaves deskd its
+  placeholder, so that part answers unavailable that run (the desk makes it, and the next start mounts it).
 Docker's isolation, as each `docker run` gave it: own mount, PID, IPC, UTS and cgroup namespaces; deskd, desk-agent and
 desk-rtc in the desk's network namespace, desk-notebook, desk-stream and desk-data in an empty one; desk-stream in the
 desk's IPC namespace (MIT-SHM from the desk's Xorg). Read-only root, its uid, no capabilities (desk-rtc NET_BIND_SERVICE,
@@ -35,6 +37,7 @@ same spec; desk-host-check svc-spec compares every running sandbox's config.json
 """
 import json
 import os
+import stat
 import sys
 
 sys.path.insert(0, os.path.dirname(os.path.abspath(__file__)))
@@ -42,6 +45,10 @@ import wallspec  # noqa: E402
 
 DH = wallspec.DH
 DESK_DATA_UID = 1112   # desk-data, added to the template by build.sh (ADR 0072, WALL-06)
+PARSE_UID = 1113       # parse, the Agent's attachment reader (ADR 0097): the desk image's own user, so the template has it
+# Courier's tracker list (ADR 0076's pinned EasyPrivacy, built at the desk image's bake from 0.3.9 on) as the template has it, and where
+# desk-parse-courier reads it in desk-agent's release (the image's empty placeholder until it's bound over)
+COURIER_TRACKERS, COURIER_TRACKERS_AT = "usr/share/ma/adblock/courier-trackers.txt", "/app/courier/trackers.txt"
 T = RESOLV = None      # set per slot by use(): the slot's own template generation (ADR 0077 1.1), never another's
 
 
@@ -76,7 +83,18 @@ def make_shares(k, d):
         g = group if isinstance(group, int) else groups[group]
         os.chown(p, base + u, base + g)
         os.chmod(p, mode)
-    print(f"slot {k}: shares {' '.join(sorted(wallspec.shares(k)))}")
+    # ADR 0097's marker, in the slot root's own desk-parse directory (never in a desk user's), on this fresh tmpfs before any desk
+    # process runs: with it desk-agent never reads a file in a child of its own. desk-parse's sandbox has only desk-parse/sock.
+    fd = os.open(os.path.join(d, "desk-parse"), os.O_RDONLY | os.O_DIRECTORY | os.O_NOFOLLOW)
+    try:
+        m = os.open("required", os.O_WRONLY | os.O_CREAT | os.O_EXCL | os.O_NOFOLLOW, 0o444, dir_fd=fd)
+        os.write(m, b"1")
+        os.fchown(m, base, base)
+        os.fchmod(m, 0o444)
+        os.close(m)
+    finally:
+        os.close(fd)
+    print(f"slot {k}: shares {' '.join(sorted(wallspec.shares(k)))}; desk-parse/required")
 
 
 def env_file(path):
@@ -96,20 +114,62 @@ def deskd_env(k):
     return [e.replace("{k}", str(k)) for e in wallspec.conf().get("DESKD_ENV", "").split(";") if "=" in e]
 
 
+def regular(path):
+    """True for a regular file there, never through a link (lstat)."""
+    try:
+        return stat.S_ISREG(os.lstat(path).st_mode)
+    except OSError:
+        return False
+
+
+def tracker_binds(root):
+    """desk-parse-courier's read-only file binds: the template's tracker list over the release's placeholder, only when the template
+    has the list (a desk image from 0.3.9 on) and the release has the placeholder (a desk-agent with Courier's mode). Both are host-owned
+    and read only by lstat; with either missing nothing is bound (no mount point is ever made in a release's root) and the reader
+    keeps the image's empty placeholder: it then removes no tracker by the list, only by size, hiding and path."""
+    src, dst = f"{T}/{COURIER_TRACKERS}", COURIER_TRACKERS_AT
+    return [(src, dst)] if regular(src) and regular(f"{root}{dst}") else []
+
+
 def spec(k, name):
     use(k)
     users, groups = ids()
     rel = f"{DH}/slots/{k}/rel/{name}"
+    agent_root = f"{DH}/slots/{k}/rel/desk-agent/rootfs"   # desk-parse's and desk-parse-courier's root: desk-agent's release copy
     java = ["/opt/java/openjdk/bin/java"]
     release_env = lambda svc: env_file(f"{rel}/image.env") + env_file(f"{rel}/{svc}.env")   # noqa: E731
     S = {
+        # deskd: desk-parse-courier's share read-only at /run/desk-parse-courier, as its run mounts it on a cloud desk (connecting writes
+        # only the socket); /data/courier and /data/keys, each the volume's own where the volume has it (mounts.py, optional)
         "deskd": dict(oom=-500, root=f"{rel}/rootfs", uid=1100, gid=1100, gids=[], cwd="/app", argv=java + ["@/app/jvm.options", "-jar", "/app/deskd.jar"],
                       sup=["-restart", "always", "-restart-sec", "3", "-stop-timeout", "60"], net="ns", ipc="new",
-                      shares=["desk", "desk-agent", "desk-notebook", "desk-links"], data=["desk", "files"], mem="512M", pids=256, weight=20,
+                      shares=["desk", "desk-agent", "desk-notebook", "desk-links", "desk-parse-courier"], ro_shares=("desk-parse-courier",),
+                      data=["desk", "files", "courier", "keys"], mem="512M", pids=256, weight=20,
                       env=release_env("deskd") + deskd_env(k) + ["HOME=/tmp"] + env_file(f"{rel}/version.env")),
         "desk-agent": dict(oom=200, root=f"{rel}/rootfs", uid=1103, gid=1103, gids=[], cwd="/app", argv=java + ["@/app/jvm.options", "-jar", "/app/desk-agent.jar"],
                            sup=["-restart", "always", "-restart-sec", "3", "-stop-timeout", "30"], net="ns", ipc="new",
-                           shares=["desk-agent"], data=["agent"], mem="320M", pids=128, weight=10, env=release_env("desk-agent") + ["HOME=/tmp"]),
+                           shares=["desk-agent", "desk-parse"], ro_shares=("desk-parse",), data=["agent"], mem="320M", pids=128, weight=10, env=release_env("desk-agent") + ["HOME=/tmp"]),
+        # desk-parse (ADR 0097): the Agent's attachment reader on desk-agent's own release root (rel/desk-agent, so a live switch of
+        # desk-agent makes this again with it), as uid 1113 with no capabilities, an empty network and IPC namespace, no /data and no
+        # writable scratch (scratch=False: no /tmp or /dev/shm, and a /run only the sandbox's root can write). desk-svc -accept forks
+        # one worker JVM per connection, the connection its stdin and stdout, uid 1103 only, one at a time, killed at 35 s, and after
+        # each it kills everything else in the sandbox, empties the sock directory but the socket and checks the listener (-clean).
+        "desk-parse": dict(oom=500, root=agent_root, uid=PARSE_UID, gid=PARSE_UID, gids=[], cwd="/",
+                           argv=java + ["@/app/parse.options"],
+                           sup=["-accept", "/run/desk-parse/sock/parse.sock", "-accept-mode", "0660", "-peer-uid", "1103", "-max-conn", "1",
+                                "-deadline-sec", "35", "-conn-stdio", "-clean"],
+                           net="new", ipc="new", shares=["desk-parse/sock"], data=[], nodata=True, scratch=False, mem="160M", pids=64, weight=10,
+                           env=[]),
+        # desk-parse-courier: Courier's mail reader (desk-parse's Courier mode, docs/sub-status/mm-courier-parse.md "The image change"
+        # item 4), exactly desk-parse's sandbox on the same root (so desk-agent's live switch makes it again too) but for deskd: its own
+        # share, uid 1100 its only peer, killed at 15 s (deskd waits 20, CP-L1), and the template's tracker list read-only over the
+        # release's placeholder where both are there (tracker_binds).
+        "desk-parse-courier": dict(oom=500, root=agent_root, uid=PARSE_UID, gid=PARSE_UID, gids=[], cwd="/",
+                                   argv=java + ["@/app/courier-parse.options"],
+                                   sup=["-accept", "/run/desk-parse-courier/sock/parse.sock", "-accept-mode", "0660", "-peer-uid", "1100",
+                                        "-max-conn", "1", "-deadline-sec", "15", "-conn-stdio", "-clean"],
+                                   net="new", ipc="new", shares=["desk-parse-courier/sock"], data=[], nodata=True, scratch=False, mem="160M",
+                                   pids=64, weight=10, files=tracker_binds(agent_root), env=[]),
         "desk-notebook": dict(oom=-200, root=f"{rel}/rootfs", uid=1105, gid=1105, gids=[], cwd="/app",
                               argv=["/usr/local/bin/node", "--max-old-space-size=192", "--disable-warning=ExperimentalWarning", "/app/desk-notebook.mjs"],
                               sup=["-restart", "always", "-restart-sec", "3", "-stop-timeout", "30"], net="new", ipc="new",
@@ -162,13 +222,16 @@ def spec(k, name):
     for m in mounts:
         if m["destination"] == "/dev/pts":
             m["options"] = [o for o in m["options"] if not o.startswith("gid=")]
-    mounts += [
-        {"destination": "/sys/fs/cgroup", "type": "cgroup", "source": "cgroup", "options": ["nosuid", "noexec", "nodev", "relatime", "ro"]},
-        {"destination": "/dev/shm", "type": "tmpfs", "source": "shm", "options": ["nosuid", "noexec", "nodev", "mode=1777", "size=64m"]},
-        {"destination": "/tmp", "type": "tmpfs", "source": "tmpfs", "options": ["nosuid", "nodev", "mode=1777", "size=128m"]},
-        {"destination": "/run", "type": "tmpfs", "source": "tmpfs", "options": ["nosuid", "nodev", "noexec", "mode=755", "size=16m"]},
-        wallspec.bind(f"{wallspec.LIB}/desk", "/desk-host", ro=True),
-    ]
+    mounts.append({"destination": "/sys/fs/cgroup", "type": "cgroup", "source": "cgroup", "options": ["nosuid", "noexec", "nodev", "relatime", "ro"]})
+    if S.get("scratch", True):
+        mounts += [
+            {"destination": "/dev/shm", "type": "tmpfs", "source": "shm", "options": ["nosuid", "noexec", "nodev", "mode=1777", "size=64m"]},
+            {"destination": "/tmp", "type": "tmpfs", "source": "tmpfs", "options": ["nosuid", "nodev", "mode=1777", "size=128m"]},
+            {"destination": "/run", "type": "tmpfs", "source": "tmpfs", "options": ["nosuid", "nodev", "noexec", "mode=755", "size=16m"]},
+        ]
+    else:   # desk-parse and desk-parse-courier: no /tmp or /dev/shm (the read-only root's own), and a /run only their mount points are in, the sandbox root's 0755
+        mounts.append({"destination": "/run", "type": "tmpfs", "source": "tmpfs", "options": ["nosuid", "nodev", "noexec", "mode=755", "size=64k"]})
+    mounts.append(wallspec.bind(f"{wallspec.LIB}/desk", "/desk-host", ro=True))
     if S.get("release"):   # desk-rtc's and desk-stream's code: the slot's copy of the host's store, never the template's /opt/ma
         mounts.append(wallspec.bind(S["release"], "/opt/ma-host/release", ro=True))
     if S.get("hostdir"):   # desk-rtc reads its port from /etc/ma/desk-rtc.conf, a link to the host's file here (ADR section 6)
@@ -181,11 +244,14 @@ def spec(k, name):
     if S["root"] == T:   # ProtectHome, as the units have it, on the image's root
         mounts += [{"destination": h, "type": "tmpfs", "source": "tmpfs", "options": ["nosuid", "nodev", "noexec", "mode=755", "size=1m"]}
                    for h in ("/home", "/root", "/data")]
-    else:
+    elif not S.get("nodata"):   # desk-parse and desk-parse-courier have no /data at all (ADR 0097)
         mounts.append({"destination": "/data", "type": "tmpfs", "source": "tmpfs", "options": ["nosuid", "nodev", "noexec", "mode=755", "size=1m"]})
     shares = wallspec.shares(k)
-    for s in S["shares"]:
-        mounts.append(wallspec.bind(f"/run/desk-host/share/{k}/{s}", shares[s][0], extra=("noexec",)))
+    for s in S["shares"]:   # desk-agent's desk-parse and deskd's desk-parse-courier read-only, as their runs mount them on a cloud desk:
+        # connecting writes only the socket
+        mounts.append(wallspec.bind(f"/run/desk-host/share/{k}/{s}", shares[s][0], ro=s in S.get("ro_shares", ()), extra=("noexec",)))
+    for src, dst in S.get("files", []):   # desk-parse-courier's tracker list: the template's file (host-owned), read-only
+        mounts.append(wallspec.bind(src, dst, ro=True, extra=("noexec",)))
     for sub in S["data"]:   # placeholders: mounts.py moves the desk's own directory over each one
         mounts.append({"destination": f"/data/{sub}", "type": "tmpfs", "source": "tmpfs", "options": ["nosuid", "nodev", "noexec", "mode=000", "size=4k"]})
     for dst, opts in S.get("tmpfs", {}).items():
@@ -209,7 +275,7 @@ def spec(k, name):
     return d
 
 
-SERVICES = ("desk-rtc", "deskd", "desk-agent", "desk-notebook", "desk-stream", "desk-data")
+SERVICES = ("desk-rtc", "deskd", "desk-agent", "desk-notebook", "desk-stream", "desk-data", "desk-parse", "desk-parse-courier")
 
 if __name__ == "__main__":
     if sys.argv[1] == "shares":

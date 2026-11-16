@@ -1,5 +1,5 @@
 // Dev and test fixtures only (never in a production bundle, see session.ts). Mock data stays here.
-import { defaultDesk, deskFromGrid, panelH, panelW, type AppId, type LayoutDesk } from '../canvas/layout';
+import { DEFAULT_DESK, defaultDesk, deskFromGrid, panelH, panelW, type AppId, type LayoutDesk } from '../canvas/layout';
 import { setDeskListDirect, type DeskInfo, type DeskKind } from '../state/deskStore';
 import { setLayoutDirect } from '../state/layoutStore';
 
@@ -7,7 +7,7 @@ function info(id: string, name: string, kind: DeskKind): DeskInfo {
   return { id, name, kind, vm: 'running', phase: 'ready', queuePosition: null, stopAt: null, givebackUntil: null, badges: {} };
 }
 
-const APPS: readonly AppId[] = ['chat', 'notebook', 'browser', 'agent'];
+const APPS: readonly AppId[] = ['courier', 'notebook', 'browser', 'agent'];
 
 /** Budget B1's fixture: 24 desks of 12 tiles (design 2.2). */
 function perf(): { desks: DeskInfo[]; layout: LayoutDesk[] } {
@@ -34,10 +34,11 @@ function perf(): { desks: DeskInfo[]; layout: LayoutDesk[] } {
 }
 
 function three(): { desks: DeskInfo[]; layout: LayoutDesk[] } {
-  const w = panelW(6);
+  // Two new desks side by side, and the third centred under them, 84 apart as they always were.
+  const { w, h } = DEFAULT_DESK;
   return {
     desks: [info('d-personal', 'Personal', 'personal'), info('d-work', 'Work', 'work'), info('d-guild', 'Guild', 'guild')],
-    layout: [defaultDesk('d-personal', 0, 0), defaultDesk('d-work', w + 72, 0), defaultDesk('d-guild', (w + 72) / 2, 320)],
+    layout: [defaultDesk('d-personal', 0, 0), defaultDesk('d-work', w + 72, 0), defaultDesk('d-guild', (w + 72) / 2, h + 84)],
   };
 }
 

@@ -13,6 +13,7 @@ import { moreContrast, moveBefore, reducedMotion } from '../lib/util';
 import { statusLine, type StatusDot } from '../desk/agentStatus';
 import { trafficHold } from '../desk/trafficStop';
 import { liveStatusInput, useLive } from '../desk/liveStore';
+import { useLayoutPrefs } from '../shell/layoutPrefs';
 import type { DeskInfo } from '../state/deskStore';
 import { moveDesk, raiseDesk, reorderItems, resizeDesk, setItemLevel, useLayoutStore } from '../state/layoutStore';
 import { beginPush, cancelPush, dropPush, pushTo } from './deskPushLive';
@@ -34,7 +35,7 @@ import { drawMark } from './glyphs';
 import { ItemTile } from './ItemTile';
 import { host, useDoor } from '../deskapps/door';
 import {
-  carouselStage, countSlotW, deskBounds, deskGeometry, ETCH_BASELINE, ETCH_ICON, fitDeskSize, G, iconsFit, iconsLeft, nameRaster, nameRoom, nameShows, overOthers, roundUnit, slotRight, stackOrder, statusClear, statusRoom, STRIP, stripTarget, switchFits,
+  appCount, carouselStage, countSlotW, deskBounds, deskGeometry, ETCH_BASELINE, ETCH_ICON, fitDeskSize, G, iconsFit, iconsLeft, nameRaster, nameRoom, nameShows, overOthers, roundUnit, slotRight, stackOrder, statusClear, statusRoom, STRIP, stripTarget, switchFits,
   type DetailLevel, type LayoutDesk,
 } from './layout';
 import { blit, blitPanel, blitPanelLive, blitScaled, blitTileLive, etchCountSprite, etchIconSprite, etchSprite, glyphSprite, newEtchHold, panelSprite, tileSprite, undoSprite, whenIdle } from './sprites';
@@ -132,6 +133,8 @@ export const DeskPanel = memo(function DeskPanel({ desk, layout, hidden, touchUI
   // A renamed desk says its kind on hover over its name, "Personal desk"; one named for its kind has nothing to add.
   const kindTip = kindTipFor(desk.name, desk.kind);
   const live = useLive(desk.id);
+  // To-do's count on its tile, unless the member turned it off in To-do's menu.
+  const todoCount = useLayoutPrefs((s) => s['todoTileCount'] !== false);
   // Installed apps' widgets come from the desk's `apps` topic, through the desk app host (ADR 0054), not `summary`.
   useDoor((s) => s.rev);
   // Behind card C or D: no counts, on tiles or the strip (`stopped.ts`).
@@ -424,9 +427,11 @@ export const DeskPanel = memo(function DeskPanel({ desk, layout, hidden, touchUI
     givebackUntil: desk.givebackUntil,
     ...liveStatusInput(live),
   });
+  // warn is the desk's own ink, as its words are: the cool warn token is a dark graphite in Light, which would vanish on a
+  // dark desk there (walnut), where this ink holds 4.5:1.
   const dotColor: Record<StatusDot, string> = {
     pulse: t.status.offline,
-    warn: t.status.warn,
+    warn: deskText,
     error: t.status.error,
   };
   const waited = useWaited(line.showAfterMs);
@@ -601,17 +606,17 @@ export const DeskPanel = memo(function DeskPanel({ desk, layout, hidden, touchUI
   // dots, on a widget's surface the size of the stage. Read at draw time, so a camera move costs a blit or two.
   const cardScene = useCallback((context: Konva.Context, shape: Konva.Shape) => {
     const ctx = context._context;
-    const { t: tokens, rev } = getTheme();
+    const { t: tokens } = getTheme();
     const size = liveSize.current;
     const st = carouselStage(size?.w ?? geo.w, size?.h ?? geo.h);
     shape.attrs.drawnApp = carouselApp ?? '';
     ctx.save();
     ctx.translate(st.x, st.y);
-    if (size) blitTileLive(ctx, st.w, st.h, null, tokens, rev, G.widgetRadius);
-    else blit(ctx, tileSprite({ w: st.w, h: st.h, app: null, glyphSize: 0, radius: G.widgetRadius, stacked: false }, tokens, rev));
+    if (size) blitTileLive(ctx, st.w, st.h, null, tokens, G.widgetRadius);
+    else blit(ctx, tileSprite({ w: st.w, h: st.h, app: null, glyphSize: 0, radius: G.widgetRadius, stacked: false }, tokens));
     if (camera.lod !== 'card' && carouselApp) {
       const g = cardGlyphSize(st.w, st.h);
-      blit(ctx, glyphSprite(carouselGlyph, tokens, rev, g), Math.round((st.w - g) / 2), Math.round(st.h / 2 - g * 0.8));
+      blit(ctx, glyphSprite(carouselGlyph, tokens, g), Math.round((st.w - g) / 2), Math.round(st.h / 2 - g * 0.8));
     }
     if (carouselCount > 1 && camera.lod === 'full') {
       const gap = 12;
@@ -863,7 +868,7 @@ export const DeskPanel = memo(function DeskPanel({ desk, layout, hidden, touchUI
             touchUI={touchUI}
             t={t}
             summary={summary}
-            badge={stopped ? 0 : (summary?.badge ?? desk.badges[item.app] ?? 0)}
+            badge={stopped ? 0 : appCount(item.app, summary?.badge, desk.badges[item.app], todoCount)}
             windowOpen={!!openApps[windowKey(desk.id, item.app)]}
             shield={shield}
             showControls={touchUI && active}

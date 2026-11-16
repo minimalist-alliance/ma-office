@@ -174,7 +174,8 @@ expect "run: starts docker" env MA_DESK_KIND_FILE="$work/desk-kind" RELEASE_DIR=
 expect "run: the image comes last" test "$(tail -n 1 "$STUB_LOG" | awk '{print $NF}')" = "$image_id"
 expect "run: the env file" logged "--env-file $release/deskd.env"
 if [ -f "$spec" ]; then
-  flags=$(sed -n '/^exec docker run/,/image-id/p' "$spec" | tr -s ' \\' '\n' | grep -vE '^(exec|docker|run|"\$.*|.*image-id.*\)")?$' | sed '/^$/d')
+  # deskd's block only: the spec has other services' (desk-parse's since ADR 0097), each ending at a later image-id.
+  flags=$(sed -n '/^exec docker run --rm --name deskd /,/image-id/p' "$spec" | tr -s ' \\' '\n' | grep -vE '^(exec|docker|run|"\$.*|.*image-id.*\)")?$' | sed '/^$/d')
   [ -n "$flags" ] || fail "run: found the flags in the spec"
   for flag in $flags; do
     # The kind file's source path is the test's own, so the expected flag moves it; its dst= stays as the spec has it.
@@ -246,6 +247,17 @@ expect "run: and the image still comes last with it" test "$(tail -n 1 "$STUB_LO
 : >"$STUB_LOG"
 expect "run: without the links directory" env MA_LINKS_DIR="$work/none" MA_DESK_KIND=personal RELEASE_DIR="$release" "$release/run"
 expect "run: no links mount then" test "$(grep -c -e 'dst=/run/desk-links' "$STUB_LOG")" = 0
+# Courier's store and its parse sandbox's socket directory are mounted only where the image made them.
+: >"$STUB_LOG"
+expect "run: no Courier directories" env MA_COURIER_DIR="$work/none" MA_COURIER_PARSE_DIR="$work/none" MA_KEYS_DIR="$work/none" MA_DESK_KIND=personal RELEASE_DIR="$release" "$release/run"
+expect "run: and no Courier mounts" test "$(grep -c -e '/data/courier\|desk-parse-courier\|/data/keys' "$STUB_LOG")" = 0
+mkdir -p "$work/courier" "$work/desk-parse-courier" "$work/keys"
+: >"$STUB_LOG"
+expect "run: with the Courier directories" env MA_COURIER_DIR="$work/courier" MA_COURIER_PARSE_DIR="$work/desk-parse-courier" MA_KEYS_DIR="$work/keys" MA_DESK_KIND=personal RELEASE_DIR="$release" "$release/run"
+expect "run: mounts /data/courier" logged "-v $work/courier:/data/courier"
+expect "run: mounts the parse socket's directory read-only" logged "--mount type=bind,src=$work/desk-parse-courier,dst=/run/desk-parse-courier,readonly"
+expect "run: mounts the desk's keys" logged "-v $work/keys:/data/keys"
+expect "run: and the image still comes last with them" test "$(tail -n 1 "$STUB_LOG" | awk '{print $NF}')" = "$image_id"
 # From the IMDS tag, with IMDSv2's token.
 cat >"$work/imds.py" <<'PY'
 import http.server, sys
@@ -319,12 +331,18 @@ else
   export PATH=$java_home/bin:$PATH
   app=$work/app
   java -Djarmode=tools -jar "$jar" extract --destination "$app"
+  dockerfile=$services_dir/deskd/Dockerfile
+  # The build stage's step for SQLite's library (Courier's store), with /extracted moved, as desk-agent's script does.
+  native_step=$(awk '/^FROM /{stage++} stage==1' "$dockerfile" |
+    awk '/^RUN /{on=1} on{print} on && !/\\$/{on=0; print ""}' |
+    awk 'BEGIN{RS=""} /libsqlitejdbc/' | sed -e 's/^RUN //' -e "s#/extracted#$app#g")
+  expect "image steps: SQLite's library for $(uname -m)" sh -c "$native_step"
+  expect "image steps: just the one library" test "$(ls "$app/native")" = libsqlitejdbc.so
   sed "s#/app/#$app/#g" "$docker_dir/jvm.options" >"$app/jvm.options"
   # The Dockerfile COPYs it beside jvm.options and its RUN chmods it.
   cp "$docker_dir/heap-guild.options" "$app/heap-guild.options"
   expect "jvm.options: the JVM accepts it" java "@$app/jvm.options" -version >/dev/null 2>&1
 
-  dockerfile=$services_dir/deskd/Dockerfile
   version=9.8.7-test
   # The last stage's RUN with its continuation lines, with the paths moved.
   steps=$(awk -v last="$(grep -c '^FROM ' "$dockerfile")" '/^FROM /{stage++} stage==last' "$dockerfile" | awk '/^RUN /{on=1} on{print} on && !/\\$/{on=0}' |
@@ -337,6 +355,8 @@ else
   expect "training: went through to the end" grep -q 'deskd CDS training finished' "$work/training.log"
   expect "training: ran a whole session" grep -q 'session timing first=true result=ok' "$work/training.log"
   expect "training: and the Browser" grep -q 'chromium connected' "$work/training.log"
+  # Only the training's part of the log: the -Xshare:on run after it starts deskd with /data/courier, which a build has not.
+  refuses "training: and Courier's store opened" sh -c 'sed "/deskd CDS training finished/q" "$1" | grep -q "store can.t be opened"' _ "$work/training.log"
   expect "training: left nothing in /tmp" test -z "$(find /tmp -maxdepth 1 -name 'deskd-train*' -newer "$training_tmp")"
   # What turns it on is a JVM system property on the training's command line, so nothing a desk runs can set it.
   refuses "training: nothing a desk runs names its property" grep -q 'ma\.cds\.train' \

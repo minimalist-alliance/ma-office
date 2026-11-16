@@ -35,7 +35,7 @@ class ToolRegistryTest {
         Map<String, Risk> classes = new HashMap<>();
         for (String name : List.of("files_list", "files_search", "files_read", "browser_open", "browser_read",
                 "browser_click", "browser_type", "browser_press", "browser_back", "browser_close", "browser_tabs",
-                "notebook_search", "notebook_read", "desk_agents", "desk_choices")) {
+                "notebook_search", "notebook_list", "notebook_read", "desk_agents", "desk_choices")) {
             classes.put(name, Risk.READ);
         }
         for (String name : List.of("workspace_list", "workspace_read", "workspace_write", "workspace_delete",
@@ -53,6 +53,8 @@ class ToolRegistryTest {
         assertThat(registry.decl("files_read").taints()).containsExactlyInAnyOrder(Taint.S, Taint.U);
         assertThat(registry.decl("files_list").taints()).containsExactly(Taint.S);
         assertThat(registry.decl("notebook_read").taints()).containsExactly(Taint.S);
+        assertThat(registry.decl("notebook_list").taints()).containsExactly(Taint.S);
+        assertThat(registry.decl("notebook_list").scope()).isEqualTo("notebook:read");
         assertThat(registry.decl("browser_read").taints()).containsExactly(Taint.U);
         assertThat(registry.decl("browser_use_my_session").taints()).containsExactly(Taint.S);
         assertThat(registry.decl("browser_use_my_session").scope()).startsWith("browser:member:");
@@ -83,8 +85,8 @@ class ToolRegistryTest {
         Path hosted = Path.of("..", "deskd", "src", "main", "java", "com", "minimalistalliance", "desk", "deskd",
                 "tools", "HostedDecls.java");
         assumeTrue(Files.exists(hosted), "deskd's sources aren't beside this module");
-        Pattern decl = Pattern.compile(
-                "new Decl\\(\"(\\w+)\", \\w+, \"[^\"]+\", ToolRisk\\.(\\w+), (NONE|S|U|SU), (true|false)\\)");
+        Pattern decl = Pattern.compile("new Decl\\(\"(\\w+)\", \\w+, \"[^\"]+\", ToolRisk\\.(\\w+), (NONE|S|U|SU),"
+                + " (true|false)(?:, (SAFE|KEYED))?\\)");
         Matcher m = decl.matcher(Files.readString(hosted));
         Set<String> seen = new HashSet<>();
         while (m.find()) {
@@ -102,6 +104,9 @@ class ToolRegistryTest {
             };
             assertThat(mine.taints()).as(name).isEqualTo(taints);
             assertThat(Boolean.parseBoolean(m.group(4))).as(name).isEqualTo(ToolRegistry.BROWSE_ACTIONS.contains(name));
+            // What a restart does to a call in flight: deskd's rule is desk-agent's (none named is KEYED, never SAFE).
+            Restart theirs = "SAFE".equals(m.group(5)) ? Restart.SAFE : Restart.RETRY_BY_KEY;
+            assertThat(mine.restart()).as(name).isEqualTo(theirs);
         }
         Set<String> mineHosted = new HashSet<>();
         for (ToolDecl d : registry.all()) {
@@ -110,6 +115,54 @@ class ToolRegistryTest {
             }
         }
         assertThat(seen).isEqualTo(mineHosted);
+    }
+
+    /**
+     * Every tool says what a restart or a lost link does to a call of it in flight (durable runs' seam, the draft ADR's
+     * §3, "Restarts"): reads and the plan are safe; what deskd runs that changes something is retried by its key; what
+     * desk-agent runs that changes something is interrupted. A new tool must be added here, so none gets a rule by
+     * accident; a declaration that names none is never {@code safe}.
+     */
+    @Test
+    void everyToolSaysWhatARestartDoesToACallInFlight() {
+        Map<String, Restart> rules = new HashMap<>();
+        for (String name : List.of("files_list", "files_search", "files_read", "browser_read", "browser_close",
+                "browser_tabs", "notebook_search", "notebook_list", "notebook_read", "workspace_list",
+                "workspace_read", "desk_agents", "desk_choices", "plan_update", "todo_list", "todo_get", "courier_list",
+                "courier_search", "courier_read", "office_desks", "office_desk_status", "office_show", "ask_member",
+                "maia_check_in", "maia_read", "working_on", "paper_note", "docs_find", "docs_handover", "docs_ask", "docs_offer_rule")) {
+            rules.put(name, Restart.SAFE);
+        }
+        for (String name : List.of("files_write", "files_mkdir", "files_move", "files_trash", "browser_open",
+                "browser_click", "browser_type", "browser_press", "browser_back", "browser_use_my_session",
+                "notebook_write", "notebook_trash", "desk_message", "desk_answer", "todo_add", "todo_update",
+                "todo_close", "courier_new")) {
+            rules.put(name, Restart.RETRY_BY_KEY);
+        }
+        for (String name : List.of("workspace_write", "workspace_delete", "message_agent", "follow_up", "memory_save",
+                "memory_forget", "propose_agent", "propose_agent_change", "propose_agent_removal", "propose_links",
+                "propose_timer", "propose_timer_removal")) {
+            rules.put(name, Restart.INTERRUPT);
+        }
+        Set<String> declared = new HashSet<>();
+        for (ToolDecl decl : registry.all()) {
+            declared.add(decl.name());
+            assertThat(rules).as("%s says what a restart does", decl.name()).containsKey(decl.name());
+            assertThat(decl.restart()).as(decl.name()).isEqualTo(rules.get(decl.name()));
+            // Nothing that may change something is safe: a write, a send or a spend that started is never run twice.
+            if (decl.risk().alwaysAsks()) {
+                assertThat(decl.restart()).as(decl.name()).isNotEqualTo(Restart.SAFE);
+            }
+            if (decl.restart() == Restart.RETRY_BY_KEY) {
+                assertThat(decl.host()).as("only deskd keeps a key: %s", decl.name()).isEqualTo(ToolDecl.Host.DESKD);
+            }
+        }
+        assertThat(declared).isEqualTo(rules.keySet());
+        // A declaration that names none gets the strict one for where it runs, never safe.
+        assertThat(new ToolDecl("x", "x", null, "files:read", Risk.READ, null, ToolDecl.Host.DESKD).restart())
+                .isEqualTo(Restart.RETRY_BY_KEY);
+        assertThat(new ToolDecl("x", "x", null, "workspace:self", Risk.READ, null, ToolDecl.Host.DESK_AGENT).restart())
+                .isEqualTo(Restart.INTERRUPT);
     }
 
     /** Every tool a run can be offered is declared, so none runs on the unknown-name path. */

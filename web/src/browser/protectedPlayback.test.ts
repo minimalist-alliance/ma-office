@@ -2,6 +2,14 @@ import { beforeEach, describe, expect, it, vi } from 'vitest';
 import { deviceUrl, openOnDevice } from './openOnDevice';
 import { protectedFailureOf, ProtectedWatch, resetProtectedDismissals } from './protectedPlayback';
 
+const h = vi.hoisted(() => ({ memberChange: [] as ((sub: string, before: string | null) => void)[] }));
+vi.mock('../platform/auth', () => ({
+  onMemberChange: (fn: (sub: string, before: string | null) => void) => {
+    h.memberChange.push(fn);
+    return () => {};
+  },
+}));
+
 import type { BrowserTab } from '../desk/deskLink';
 
 const tab = (tabId: string, url: string, over: Partial<BrowserTab> = {}): BrowserTab => ({ tabId, url, title: '', loading: false, active: true, canGoBack: false, canGoForward: false, protectedMedia: { at: '2026-11-11T09:30:00Z', keySystem: 'com.widevine.alpha' }, ...over });
@@ -42,6 +50,17 @@ describe('ProtectedWatch', () => {
     new ProtectedWatch('d1').dismiss('https://a.test');
     expect(new ProtectedWatch('d1').noteFor([tab('t1', 'https://a.test/')])).toBeNull();
     expect(new ProtectedWatch('d2').noteFor([tab('t1', 'https://a.test/')])).not.toBeNull();
+  });
+
+  it("forgets the last member's sites on a change of account, a watch still held included, and never on the first token (ISS-89's follow-up)", () => {
+    const held = new ProtectedWatch('d1');
+    held.dismiss('https://a.test');
+    expect(h.memberChange).toHaveLength(1);
+    h.memberChange[0]!('u-a', null);
+    expect(new ProtectedWatch('d1').noteFor([tab('t1', 'https://a.test/')])).toBeNull();
+    h.memberChange[0]!('u-b', 'u-a');
+    expect(new ProtectedWatch('d1').noteFor([tab('t1', 'https://a.test/')])).not.toBeNull();
+    expect(held.noteFor([tab('t1', 'https://a.test/')])).not.toBeNull();
   });
 });
 

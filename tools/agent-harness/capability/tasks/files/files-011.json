@@ -1,0 +1,53 @@
+{
+  "id": "files-011",
+  "area": "files",
+  "title": "Save a new list",
+  "prompt": "Make a packing list for a weekend camping trip and save it as Harness/trips/packing.md.",
+  "setup": {
+    "files": {
+      "Harness/trips/route.md": "Day 1: drive to the lake.\n"
+    }
+  },
+  "approve": "all",
+  "checks": [
+    {
+      "kind": "file",
+      "path": "Harness/trips/packing.md",
+      "contains": [
+        "tent",
+        "sleeping bag"
+      ]
+    },
+    {
+      "kind": "untrusted",
+      "value": false
+    },
+    {
+      "kind": "cards",
+      "tools": [
+        "files_write"
+      ]
+    }
+  ],
+  "policy": {
+    "tools": [
+      "files_write"
+    ]
+  },
+  "standIn": [
+    {
+      "calls": [
+        {
+          "name": "files_write",
+          "input": {
+            "path": "Harness/trips/packing.md",
+            "text": "# Packing\n\n- tent\n- sleeping bag\n- headlamp\n- water filter\n- warm jacket\n"
+          }
+        }
+      ]
+    },
+    {
+      "text": "Saved your packing list to Harness/trips/packing.md."
+    }
+  ]
+}

@@ -54,8 +54,8 @@ class AgentsTest {
             assertThat(lead).containsEntry("id", "manager").containsEntry("name", "Lead")
                     .containsEntry("role", "manager").containsEntry("lead", true).containsEntry("solo", true)
                     .containsEntry("purpose", "");
-            assertThat(map(lead.get("look"))).containsEntry("icon", "nodes").containsEntry("tone", "graphite")
-                    .containsEntry("png", null);
+            assertThat(map(lead.get("look"))).containsEntry("icon", "hat").containsEntry("tone", "graphite")
+                    .containsEntry("color", "indigo").containsEntry("png", null);
             assertThat(lead.get("links")).isEqualTo(List.of());
             assertThat(lead.get("timers")).isEqualTo(0);
             assertThat(map(lead.get("workspace"))).containsEntry("quotaBytes", 50L * 1024 * 1024)
@@ -109,12 +109,12 @@ class AgentsTest {
     @Test
     void createTakesPurposeIconToneAndWorkspaceSize() throws Exception {
         Map<String, Object> agent = map(desk.call("agent.create", "name", "Researcher", "purpose",
-                "Find sources and keep notes.", "icon", "compass", "tone", "teal", "workspaceMb", 5).get("agent"));
+                "Find sources and keep notes.", "icon", "compass", "tone", "harbor", "workspaceMb", 5).get("agent"));
 
         assertThat(agent).containsEntry("name", "Researcher").containsEntry("purpose", "Find sources and keep notes.")
                 .containsEntry("solo", true).containsEntry("binding", null).containsEntry("status", "no_key")
                 .containsEntry("lead", false);
-        assertThat(map(agent.get("look"))).containsEntry("icon", "compass").containsEntry("tone", "teal")
+        assertThat(map(agent.get("look"))).containsEntry("icon", "compass").containsEntry("tone", "harbor")
                 .containsEntry("png", null);
         assertThat(map(agent.get("workspace"))).containsEntry("quotaBytes", 5L * 1024 * 1024)
                 .containsEntry("usedBytes", 0L).containsEntry("sharedWith", List.of());
@@ -189,45 +189,112 @@ class AgentsTest {
     @Test
     void aNewAgentWithoutAToneGetsOneNoOtherAgentHasThenTheLeastUsed() throws Exception {
         desk.tier(m("agentCap", 30));
-        desk.agent("Picked", "tone", "clay");
+        desk.agent("Picked", "tone", "blue");
         List<String> tones = new java.util.ArrayList<>();
         for (int i = 0; i < 12; i++) {
             tones.add((String) map(desk.agentView(desk.agent("Agent " + i)).get("look")).get("tone"));
         }
 
-        assertThat(tones).as("graphite is the lead's and never a default; clay was picked").containsExactly("rose",
-                "amber", "olive", "green", "teal", "cyan", "blue", "indigo", "violet", "plum", "rose", "clay");
-        assertThat(map(desk.agentView(desk.agent("Own", "tone", "rose")).get("look"))).as("a pick is kept")
-                .containsEntry("tone", "rose");
+        assertThat(tones).as("graphite is the lead's and never a default; blue was picked").containsExactly("steel",
+                "indigo", "harbor", "navy", "iris", "steel", "blue", "indigo", "harbor", "navy", "iris", "steel");
+        assertThat(map(desk.agentView(desk.agent("Own", "tone", "navy")).get("look"))).as("a pick is kept")
+                .containsEntry("tone", "navy");
     }
 
     @Test
     void aRetiredIconOrToneComesInAsTheOneThatTookItsPlace() throws Exception {
         Map<String, Object> made = map(desk.call("agent.create", "name", "Old", "icon", "globe", "tone", "moss")
                 .get("agent"));
-        assertThat(map(made.get("look"))).containsEntry("icon", "plane").containsEntry("tone", "green");
+        assertThat(map(made.get("look"))).containsEntry("icon", "plane").containsEntry("tone", "harbor");
+        Map<String, Object> warm = map(desk.call("agent.create", "name", "Warm", "tone", "rose").get("agent"));
+        assertThat(map(warm.get("look"))).as("a warm tone, retired Nov 14").containsEntry("tone", "iris");
 
         Map<String, Object> changed = map(desk.call("agent.update", "agentId", made.get("id"), "icon", "briefcase",
                 "tone", "sky").get("agent"));
         assertThat(map(changed.get("look"))).containsEntry("icon", "document").containsEntry("tone", "blue");
     }
 
+    @Test
+    void aNewAgentWearsTheHatAndTakesTheNextFreeColourThenTheLeastUsed() throws Exception {
+        desk.tier(m("agentCap", 30));
+        List<String> colors = new java.util.ArrayList<>();
+        for (int i = 0; i < 8; i++) {
+            Map<String, Object> look = map(desk.agentView(desk.agent("Agent " + i)).get("look"));
+            assertThat(look).containsEntry("icon", "hat");
+            colors.add((String) look.get("color"));
+        }
+
+        assertThat(colors).as("indigo is the lead's; once each is used, the least used, in order")
+                .containsExactly("sage", "amber", "rose", "blue", "harbor", "clay", "sage", "amber");
+        assertThat(map(desk.agentView(desk.agent("Own", "color", "indigo")).get("look"))).as("a pick is kept")
+                .containsEntry("color", "indigo");
+        assertThat(map(desk.agentView(desk.agent("Next")).get("look"))).containsEntry("color", "rose");
+    }
+
+    @Test
+    void aGuildMembersOwnAgentShowsTheLeadsColourAndCountsForNone() throws Exception {
+        String member = "gm-member01";
+        desk.team.teamStore().createAgent(member, "Theirs", desk.clock.millis(), new com.minimalistalliance.desk.agent
+                .store.TeamStore.Extras(member, "", "hat", "steel", "sage", null, true, null, List.of()));
+
+        assertThat(map(desk.agentView(desk.agent("Mine")).get("look"))).containsEntry("color", "sage");
+        assertThat(Team.colorOf(member, desk.team.teamStore().extras(member))).isEqualTo("indigo");
+        assertThat(Team.colorOf("ag-unpainted0000", null)).as("a row no open has painted yet").isEqualTo("sage");
+    }
+
+    @Test
+    void anAgentStoredWithTheOldTeamMarkWearsTheHat() throws Exception {
+        String id = desk.agent("Old");
+        // As a rolled-back desk-agent writes it, until the next open retires it.
+        desk.team.teamStore().changeAgent(id, null, null, "nodes", null, null, null, null, false);
+
+        assertThat(map(desk.agentView(id).get("look"))).containsEntry("icon", "hat");
+        assertThat(map(map(desk.call("agent.create", "name", "Snow", "icon", "nodes").get("agent")).get("look")))
+                .containsEntry("icon", "hat");
+        assertThat(desk.team.teamStore().extras(id).icon()).isEqualTo("nodes");
+    }
+
     // ---------------------------------------------------------------- update
+
+    @Test
+    void theOwnerChangesAnAgentsColourButNeverTheLeads() throws Exception {
+        String id = desk.agent("Painter");
+
+        Map<String, Object> agent = map(desk.call("agent.update", "agentId", id, "color", "clay").get("agent"));
+        assertThat(map(agent.get("look"))).containsEntry("color", "clay").containsEntry("icon", "hat");
+        Map<String, Object> again = map(desk.call("agent.update", "agentId", id, "purpose", "Paint.").get("agent"));
+        assertThat(map(again.get("look"))).as("the colour stays").containsEntry("color", "clay");
+
+        assertRefused(desk.refused("agent.update", "agentId", id, "color", "green"), "bad_request", "detail", "color");
+        assertRefused(desk.refused("agent.update", "agentId", id, "color", 3), "bad_request", "detail", "color");
+        assertRefused(desk.refused("agent.update", "agentId", id, "purpose", "Changed", "color", null), "bad_request",
+                "detail", "color");
+        assertRefused(desk.refused("agent.create", "name", "Pink", "color", "pink"), "bad_request", "detail", "color");
+        for (String color : List.of("blue", "indigo")) {
+            assertRefused(desk.refused("agent.update", "agentId", AgentStore.MANAGER, "color", color), "bad_request",
+                    "detail", "color");
+        }
+
+        assertThat(map(desk.agentView(AgentStore.MANAGER).get("look"))).containsEntry("color", "indigo");
+        assertThat(desk.agentView(id)).containsEntry("purpose", "Paint.");
+        assertThat(map(desk.agentView(id).get("look"))).containsEntry("color", "clay");
+        assertThat(list(desk.call("agent.list").get("agents"))).hasSize(2);
+    }
 
     @Test
     void updateChangesPurposeIconToneAndSolo() throws Exception {
         String id = desk.agent("Changer");
 
         Map<String, Object> agent = map(desk.call("agent.update", "agentId", id, "purpose", "New purpose",
-                "icon", "leaf", "tone", "plum", "solo", false, "name", "Renamed").get("agent"));
+                "icon", "leaf", "tone", "iris", "solo", false, "name", "Renamed").get("agent"));
 
         assertThat(agent).containsEntry("purpose", "New purpose").containsEntry("solo", false)
                 .containsEntry("name", "Renamed");
-        assertThat(map(agent.get("look"))).containsEntry("icon", "leaf").containsEntry("tone", "plum");
+        assertThat(map(agent.get("look"))).containsEntry("icon", "leaf").containsEntry("tone", "iris");
 
-        Map<String, Object> again = map(desk.call("agent.update", "agentId", id, "tone", "rose").get("agent"));
+        Map<String, Object> again = map(desk.call("agent.update", "agentId", id, "tone", "navy").get("agent"));
         assertThat(map(again.get("look"))).as("the others stay").containsEntry("icon", "leaf")
-                .containsEntry("tone", "rose");
+                .containsEntry("tone", "navy");
         assertThat(again).containsEntry("purpose", "New purpose").containsEntry("solo", false);
     }
 
@@ -399,7 +466,7 @@ class AgentsTest {
     void aGuildMembersAgentIdIsRefusedByEveryTeamMethod() throws Exception {
         String member = "gm-member01";
         desk.team.teamStore().createAgent(member, "Theirs", desk.clock.millis(), new com.minimalistalliance.desk.agent
-                .store.TeamStore.Extras(member, "", "nodes", "rose", null, true, null, List.of()));
+                .store.TeamStore.Extras(member, "", "nodes", "rose", null, null, true, null, List.of()));
         String a = desk.agent("Mine");
 
         for (String method : List.of("agent.delete", "agent.timer.list", "agent.workspace.get", "agent.icon.get",

@@ -53,6 +53,13 @@ describe('a reply’s chips (spec 2.5)', () => {
     expect(chipOf({ name: 'weather_get', summary: 'x', ok: true, durationMs: 300 })?.time).toBe('0:01');
   });
 
+  it('To-do’s chips say what the call did, in the desk’s words (§22)', () => {
+    expect(chipOf({ name: 'todo_close', summary: 'Asked if a to-do is done', ok: true, risk: 'own' })?.word).toBe('Asked if a to-do is done');
+    expect(chipOf({ name: 'todo_add', summary: 'Merged into a to-do', ok: true, risk: 'write' })?.word).toBe('Merged into a to-do');
+    expect(chipOf({ name: 'todo_add', summary: 'Already on your to-dos', ok: true, risk: 'write' })?.word).toBe('Already on your to-dos');
+    expect(chipOf({ name: 'todo_add', summary: '', ok: true, risk: 'write' })?.word).toBe('Added a to-do');
+  });
+
   it('a failed one says so, with the desk’s reason; a stopped one says Stopped', () => {
     expect(chipOf({ name: 'browser_open', summary: 'Opened', ok: false, risk: 'egress', reason: 'The site didn’t answer.' })).toMatchObject({ word: 'Didn’t finish', result: 'failed', why: 'The site didn’t answer.', warn: true });
     expect(chipOf({ name: 'browser_read', summary: 'Read', ok: false, stopped: true })?.word).toBe('Stopped');

@@ -26,7 +26,8 @@ import org.slf4j.Logger;
 import org.slf4j.LoggerFactory;
 
 /**
- * The topics {@code agent.state} and {@code agent.conversation:<agentId>}, relayed from desk-agent.
+ * The topics {@code agent.state} and {@code agent.conversation:<agentId>}, relayed from desk-agent, with the office's
+ * carrier's {@code agent.desks.outbox} and Maia Mode's room, {@code agent.maia} (API.md §23), both the owner's alone.
  *
  * <p><b>One desk-agent subscription per topic.</b> While any attached session is subscribed to a topic, deskd holds
  * one subscription of its own on desk-agent's socket, and publishes that subscription's events to the hub, which fans
@@ -61,6 +62,10 @@ final class AgentTopics implements Topic {
 
     static final String STATE = "agent.state";
     static final String CONVERSATION = "agent.conversation:";
+    /** What waits in desk-agent's outbox for each of the member's other desks (draft ADR §14): the office's carrier. */
+    static final String OUTBOX = "agent.desks.outbox";
+    /** Maia Mode's room (API.md §23): the list, the status line and her spend, the desk owner's alone. */
+    static final String MAIA = "agent.maia";
     /** A conversation's first event when desk-agent couldn't send its snapshot: see {@link #tooLargeToSend}. */
     private static final Map<String, Object> LONG_THREAD = Map.of("messages", List.of(), "older", true);
     private static final Pattern AGENT_ID = Pattern.compile("[A-Za-z0-9_-]{1,64}");
@@ -127,6 +132,8 @@ final class AgentTopics implements Topic {
     void register() {
         hub.topics().register(STATE, this);
         hub.topics().register(CONVERSATION, this);
+        hub.topics().register(OUTBOX, this);
+        hub.topics().register(MAIA, this);
     }
 
     @Override
@@ -180,7 +187,11 @@ final class AgentTopics implements Topic {
         }
         // A refresh reauthorizes with the key the subscription is kept under.
         topicKey = topicOf(topicKey);
-        if (!topicKey.equals(STATE)
+        if ((topicKey.equals(OUTBOX) || topicKey.equals(MAIA)) && principal.isGuildMember()) {
+            // The office's carrier and Maia Mode's room are the desk owner's alone; a Guild Desk has neither.
+            throw AgentMethods.forbidden();
+        }
+        if (!topicKey.equals(STATE) && !topicKey.equals(OUTBOX) && !topicKey.equals(MAIA)
                 && !(topicKey.startsWith(CONVERSATION) && AGENT_ID.matcher(topicKey.substring(CONVERSATION.length())).matches())) {
             throw new RpcException(RpcException.NOT_FOUND, "No such topic");
         }

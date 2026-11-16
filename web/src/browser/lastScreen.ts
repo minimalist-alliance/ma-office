@@ -13,9 +13,15 @@
 // A picture past MAX_AGE_MS is deleted whenever one is read, not only skipped.
 //
 // Every call is best effort: storage that's off, full or private-mode just means no picture, never an error.
+//
+// The clear and its gate (`lastScreenGate.ts`) are in the first load, for the session; this file, the saves and the reads,
+// is the Browser's own chunk's since `sub/mm-js-budget`.
+import { useDeskStore } from '../state/deskStore';
 import { layoutMirrorWritable } from '../state/layoutStore';
+import { DB, clearsSoFar, keepingNow } from './lastScreenGate';
 
-const DB = 'ma-last-screen';
+export { clearLastScreens, keepLastScreens } from './lastScreenGate';
+
 const STORE = 'screens';
 /** Wide enough to read a page at a glance while the stream starts; the stream itself is 1280 wide at most. */
 export const MAX_WIDTH = 1280;
@@ -28,21 +34,13 @@ interface Kept {
   savedAt: number;
 }
 
-/** Bumped by each clear. A save begun before it never writes. */
-let clears = 0;
-/** Off from a clear until the next sign-in: nothing is kept while nobody's signed in. */
-let keeping = true;
-
-/** Someone has signed in: their pictures may be kept again. */
-export function keepLastScreens(): void {
-  keeping = true;
-}
-
 /**
  * And only while the layout's mirror may be written (ISS-89): a tab that another tab's sign-out left with no token, still
- * showing the office on the access token it holds, keeps no picture of a desk for whoever's next.
+ * showing the office on the access token it holds, keeps no picture of a desk for whoever's next. And only of a desk the
+ * office lists now: a change of account in this tab drops the last member's list at once, so their Browser window closing
+ * then, or their desk's session ending, keeps no picture of their screen beside the new member's (ISS-89's follow-up).
  */
-const keepsNow = (): boolean => keeping && layoutMirrorWritable();
+const keepsNow = (deskId: string): boolean => keepingNow() && layoutMirrorWritable() && useDeskStore.getState().desks.some((d) => d.id === deskId);
 
 function open(): Promise<IDBDatabase | null> {
   return new Promise((resolve) => {
@@ -82,8 +80,8 @@ export function keptSize(w: number, h: number): { w: number; h: number } {
 
 /** Keep what `source` shows now as this desk's last screen. */
 export async function saveLastScreen(deskId: string, source: HTMLVideoElement | HTMLCanvasElement, now = Date.now()): Promise<void> {
-  if (!keepsNow()) return;
-  const begun = clears;
+  if (!keepsNow(deskId)) return;
+  const begun = clearsSoFar();
   const w = source instanceof HTMLVideoElement ? source.videoWidth : source.width;
   const h = source instanceof HTMLVideoElement ? source.videoHeight : source.height;
   if (!w || !h) return;
@@ -101,7 +99,7 @@ export async function saveLastScreen(deskId: string, source: HTMLVideoElement | 
   const blob = await new Promise<Blob | null>((resolve) => canvas.toBlob(resolve, 'image/jpeg', QUALITY));
   canvas.width = 0;
   // Nothing awaits between this check and the open in `tx`, so a clear that comes later is queued behind this write.
-  if (!blob || !keepsNow() || begun !== clears) return;
+  if (!blob || !keepsNow(deskId) || begun !== clearsSoFar()) return;
   await tx('readwrite', (s) => s.put({ blob, savedAt: now } satisfies Kept, deskId));
 }
 
@@ -109,7 +107,7 @@ const expired = (k: Kept | undefined, now: number): boolean => !k || !(k.blob in
 
 /** This desk's last screen, unless there's none or it's older than MAX_AGE_MS. Every desk's picture past that age goes. */
 export async function loadLastScreen(deskId: string, now = Date.now()): Promise<Blob | null> {
-  if (!keeping) return null;
+  if (!keepingNow()) return null;
   const db = await open();
   if (!db) return null;
   return new Promise((resolve) => {
@@ -130,24 +128,6 @@ export async function loadLastScreen(deskId: string, now = Date.now()): Promise<
       resolve(null);
     } finally {
       db.close();
-    }
-  });
-}
-
-/**
- * Sign-out, or a session that ended: every desk's picture goes, a save already on its way included, and nothing more is
- * kept until `keepLastScreens`. Resolves once the database is gone, which an open connection can hold up for as long as
- * its write takes: callers cap the wait (`forAtMost`).
- */
-export function clearLastScreens(): Promise<void> {
-  clears += 1;
-  keeping = false;
-  return new Promise((resolve) => {
-    try {
-      const req = indexedDB.deleteDatabase(DB);
-      req.onsuccess = req.onerror = () => resolve();
-    } catch {
-      resolve();
     }
   });
 }

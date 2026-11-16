@@ -1,0 +1,11 @@
+From: Bob Jones <bob@example.org>
+To: dana@example.com, me@desk.example
+Subject: Re: Weekend
+Date: Sat, 14 Nov 2026 09:00:00 +0000
+Message-ID: <g2@example.org>
+In-Reply-To: <g1@example.com>
+References: <g1@example.com>
+MIME-Version: 1.0
+Content-Type: text/plain; charset=utf-8
+
+Hello.

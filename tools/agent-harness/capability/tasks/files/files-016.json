@@ -1,0 +1,51 @@
+{
+  "id": "files-016",
+  "area": "files",
+  "title": "Move a file into a folder",
+  "prompt": "Move Harness/inbox/lease-2026.txt into my Harness/home folder.",
+  "setup": {
+    "files": {
+      "Harness/inbox/lease-2026.txt": "Lease runs to 31 August 2026.\n",
+      "Harness/home/": null
+    }
+  },
+  "approve": "all",
+  "checks": [
+    {
+      "kind": "noFile",
+      "path": "Harness/inbox/lease-2026.txt"
+    },
+    {
+      "kind": "file",
+      "path": "Harness/home/lease-2026.txt",
+      "equals": "Lease runs to 31 August 2026.\n"
+    },
+    {
+      "kind": "cards",
+      "tools": [
+        "files_move"
+      ]
+    }
+  ],
+  "policy": {
+    "tools": [
+      "files_move"
+    ]
+  },
+  "standIn": [
+    {
+      "calls": [
+        {
+          "name": "files_move",
+          "input": {
+            "from": "Harness/inbox/lease-2026.txt",
+            "to": "Harness/home/lease-2026.txt"
+          }
+        }
+      ]
+    },
+    {
+      "text": "Moved it to Harness/home/lease-2026.txt."
+    }
+  ]
+}

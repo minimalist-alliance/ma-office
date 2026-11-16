@@ -1,8 +1,8 @@
 // The interface every desk connection implements (design 3.9, docs/interfaces/desk-runtime.md
 // section 7). The real one is `rtc/rtcDeskLink.ts`: one WebRTC PeerConnection per desk through the
 // gateway. Nothing outside `src/desk/` may depend on how a link is carried.
-import type { A2aPage, Agent, AgentCaps, AttachCapsView, AuditPage, KeyMeta, LimitsView, Message, ModelInfo, Proposal, Provider, ThreadSnapshot, Timer, TimerList, WorkspaceFile, WorkspaceView } from '../../agent/src/client/types';
-import type { ActivityRow, NotebookRec, PageRec, SearchHit, TabRec, VersionMeta } from '../../notebook/src/model/types.ts';
+import type { A2aPage, Agent, AgentAccess, AgentCaps, AttachCapsView, AuditPage, DeskHalves, DeskIncomingHalf, KeyMeta, LimitsView, Message, ModelInfo, Proposal, Provider, ThreadSnapshot, Timer, TimerList, WorkspaceFile, WorkspaceView } from '../../agent/src/client/types';
+import type { ActivityRow, AgentEdit, NotebookRec, PageRec, SearchHit, TabRec, VersionMeta } from '../../notebook/src/model/types.ts';
 import type { TrafficStop } from './trafficStop';
 import { guildAccess } from '../guild/access';
 import type { GuildHello, GuildSettings, GuildUsage } from '../guild/api';
@@ -50,6 +50,10 @@ export interface DeskRpc {
   'desk.attention.set': { seen?: boolean; frozen?: boolean };
   'browser.stream.set': { state?: StreamState };
   'browser.text.insert': Record<string, never>;
+  /** The desk Browser's own zoom (ADR 0055; API.md sections 4 and 10): Chromium's page zoom for every member tab, a whole percent. */
+  'browser.zoom.get': { level: number };
+  /** A mutation, with `idem`: `level` a whole percent from 50 to 200. The reply is the level applied. */
+  'browser.zoom.set': { level: number };
   /** Chromium's own zoom of the tab on screen (API.md section 10, "On a phone"). Not used: a pinch zooms the picture here. */
   'browser.pinch': Record<string, never>;
   'browser.tab.list': { tabs: BrowserTab[] };
@@ -128,6 +132,17 @@ export interface DeskRpc {
   'agent.timer.delete': Record<string, never>;
   'agent.icon.upload': { agent?: Agent };
   'agent.icon.get': { png: string; version: number };
+  // Messages between the member's desks (W6; API.md section 18, "Messages between the member's desks"). The Agent app answers
+  // offers and stops halves; the office's carrier (`deskCarrier.ts`) takes, delivers and confirms, and reads nothing: an
+  // envelope is opaque. Never on a Guild Desk, which answers every one `forbidden` `guild`.
+  'agent.desks.list': DeskHalves;
+  'agent.desks.answer': { half: DeskIncomingHalf };
+  'agent.desks.revoke': { agentId: string; access: AgentAccess };
+  /** Not a mutation: what waits for `toDeskId`, oldest first, as it is until `done`. */
+  'agent.desks.take': { envelopes?: { id?: unknown; toDeskId?: unknown; envelope?: unknown }[]; more?: boolean };
+  /** A mutation, with `idem`. `duplicate`: the desk had it, and did nothing again. */
+  'agent.desks.deliver': { id?: string; outcome?: 'delivered' | 'duplicate' };
+  'agent.desks.done': { done?: number };
   // Notebook (API.md section 13). Flat, in pages: repeat with `next` until it's null. `part`: text to join until `next` is null, then `JSON.parse`.
   'notebook.tree': { notebooks: NotebookRec[]; tabs: TabRec[]; pages: PageRec[]; rev: number; next: string | null };
   'notebook.notebook.create': { notebook: NotebookRec; tab: TabRec; page: PageRec };
@@ -154,6 +169,9 @@ export interface DeskRpc {
   'notebook.activity.days': { days: string[] };
   'notebook.search': { hits: SearchHit[] };
   'notebook.settings.set': Record<string, never>;
+  // The Agent's edits of a page, and the member's undo of one (draft ADR "the Agent's tools and approvals" section 15).
+  'notebook.page.agentEdits': { edits: AgentEdit[] };
+  'notebook.page.agentUndo': { editId: string; pageId: string; op: string; undone: boolean };
   // The Browser's simplified view (task 47): `deskd` API.md section 14 (`sub/minified-stage-a`). `simple/source.ts` is
   // the only caller, and `simple/mdoc.ts` reads `mdoc` field by field from a whitelist, so these stay loose here.
   'browser.minified.get': MinifiedView & { mdoc?: unknown; unchanged?: boolean };
@@ -197,6 +215,98 @@ export interface DeskRpc {
   'apps.view.get': Record<string, unknown>;
   'apps.call': unknown;
   'apps.mutate': unknown;
+  // To-do (API.md section 22). Read field by field in `apps/todo/wire.ts`, so these stay loose here.
+  'todo.list': Record<string, unknown>;
+  'todo.get': Record<string, unknown>;
+  'todo.summary': Record<string, unknown>;
+  'todo.changes': Record<string, unknown>;
+  'todo.export': { transferId?: number; size?: number; mtimeMs?: number; name?: string };
+  'todo.add': Record<string, unknown>;
+  'todo.update': Record<string, unknown>;
+  'todo.close': Record<string, unknown>;
+  'todo.reopen': Record<string, unknown>;
+  'todo.snooze': Record<string, unknown>;
+  'todo.pin': Record<string, unknown>;
+  'todo.answer': Record<string, unknown>;
+  'todo.trash': Record<string, unknown>;
+  'todo.restore': Record<string, unknown>;
+  'todo.undo': Record<string, unknown>;
+  'todo.seen': Record<string, never>;
+  // Documents (API.md section 24). Read field by field in `apps/documents/wire.ts`, so these stay loose here. Mutations carry `idem`.
+  'docs.list': Record<string, unknown>;
+  'docs.get': Record<string, unknown>;
+  'docs.search': Record<string, unknown>;
+  'docs.byPath': Record<string, unknown>;
+  'docs.text': Record<string, unknown>;
+  'docs.page': Record<string, unknown>;
+  'docs.page.stop': Record<string, unknown>;
+  'docs.changes': Record<string, unknown>;
+  'docs.questions': Record<string, unknown>;
+  'docs.rules': Record<string, unknown>;
+  'docs.summary': Record<string, unknown>;
+  'docs.tidy': Record<string, unknown>;
+  'docs.read': Record<string, unknown>;
+  'docs.tap': Record<string, unknown>;
+  'docs.undo': Record<string, unknown>;
+  'docs.answer': Record<string, unknown>;
+  'docs.rule.remove': Record<string, unknown>;
+  'docs.seen': Record<string, unknown>;
+  'docs.restore': Record<string, unknown>;
+  'docs.tidy.apply': Record<string, unknown>;
+  'docs.ask.allow': Record<string, unknown>;
+  /** Courier (API.md section 21): read through `apps/courier/wire.ts`, so typed loosely here. Mutations carry `idem`. */
+  'courier.status': Record<string, unknown>;
+  'courier.list': Record<string, unknown>;
+  /** The People lane's unread threads as structure only, for the focus shield (API.md §21, §23). */
+  'courier.attention': Record<string, unknown>;
+  'courier.thread': Record<string, unknown>;
+  'courier.message': Record<string, unknown>;
+  'courier.message.html': Record<string, unknown>;
+  'courier.search': Record<string, unknown>;
+  'courier.contacts.list': Record<string, unknown>;
+  'courier.contact.get': Record<string, unknown>;
+  'courier.drafts.list': Record<string, unknown>;
+  'courier.draft.get': Record<string, unknown>;
+  'courier.outbound.list': Record<string, unknown>;
+  'courier.accounts.list': Record<string, unknown>;
+  'courier.blocks.list': Record<string, unknown>;
+  'courier.read.set': Record<string, unknown>;
+  'courier.move': Record<string, unknown>;
+  'courier.done': Record<string, unknown>;
+  'courier.request.decide': Record<string, unknown>;
+  'courier.block': Record<string, unknown>;
+  'courier.unblock': Record<string, unknown>;
+  'courier.delete': Record<string, unknown>;
+  'courier.trash.empty': Record<string, unknown>;
+  'courier.draft.save': Record<string, unknown>;
+  'courier.draft.discard': Record<string, unknown>;
+  'courier.send': Record<string, unknown>;
+  'courier.send.undo': Record<string, unknown>;
+  'courier.contact.rename': Record<string, unknown>;
+  'courier.contact.merge': Record<string, unknown>;
+  'courier.accounts.add': Record<string, unknown>;
+  'courier.accounts.remove': Record<string, unknown>;
+  'courier.imsg.pair': Record<string, unknown>;
+  'courier.keys': Record<string, unknown>;
+  'courier.report': Record<string, unknown>;
+  'courier.attachment.save': Record<string, unknown>;
+  'courier.attachment.read': Record<string, unknown>;
+  'courier.attachment.image': Record<string, unknown>;
+  'courier.attachment.archive': Record<string, unknown>;
+  'courier.attachment.stop': Record<string, unknown>;
+  'courier.message.raw': Record<string, unknown>;
+  // Members' keys (Wave 2.5): an invite link's Add, pinned to the link's fingerprint; each pin's state and safety number; the
+  // member's check of a safety number.
+  'courier.contacts.add': Record<string, unknown>;
+  'courier.contact.keys': Record<string, unknown>;
+  'courier.contact.verify': Record<string, unknown>;
+  // One person across channels (the Designer's flow 11): deskd's `courier.links.*` (API.md §21).
+  'courier.links.suggest': Record<string, unknown>;
+  'courier.links.link': Record<string, unknown>;
+  'courier.links.undo': Record<string, unknown>;
+  'courier.links.unlink': Record<string, unknown>;
+  'courier.links.dismiss': Record<string, unknown>;
+  'courier.links.lookup': Record<string, unknown>;
 }
 
 /** One event of a topic as deskd sends it (API.md section 5), unflattened, for a relay that must pass `data` on as it came. */
@@ -409,6 +519,8 @@ export interface BrowserViewMessage {
   region?: { x: number; y: number; width: number; height: number };
   screen?: { width: number; height: number };
   field: { tabId?: string; kind: string; enterKey: string | null; box?: NormBox } | null;
+  /** The desk Browser's zoom (ADR 0055), whenever it changes, whoever changed it. Absent on a deskd before it. */
+  zoom?: number;
 }
 
 /** `desk.attention.set`'s `device` on a phone: the CSS size of the box the Browser's picture fills. */
@@ -425,6 +537,8 @@ export interface AgentStateMessage {
   agents: Agent[];
   /** The tier's values as the desk applies them (task 49). */
   caps?: AgentCaps;
+  /** W6: offers from the member's other desks waiting here, a count. */
+  deskOffers?: number;
 }
 
 /** `snapshot` with `messages` and perhaps `omitted`, `message` with `message`, `delta` with `messageId`, `runId` and `text`. */
@@ -475,6 +589,13 @@ export interface BrowserMinifiedEvent extends MinifiedView {
   head?: unknown;
 }
 
+/** Topic `agent.desks.outbox` (W6): what waits in a desk's outbox for each of the member's other desks, never content. */
+export interface DeskOutboxMessage {
+  seq: number;
+  type?: string;
+  pending?: { toDeskId?: unknown; count?: unknown; oldestAt?: unknown }[];
+}
+
 /** Whether any session is looking at the desk, and whether it has frozen its Chromium for want of one (task 46). */
 export interface DeskAttentionMessage {
   seq: number;
@@ -513,11 +634,18 @@ export type LinkTopics = {
   'browser.clipboard': BrowserClipboardMessage;
   'notebook.tree': NotebookTreeMessage;
   'agent.state': AgentStateMessage;
+  'agent.desks.outbox': DeskOutboxMessage;
   [conversation: `agent.conversation:${string}`]: AgentConversationMessage;
   [minified: `browser.minified:${string}`]: BrowserMinifiedEvent;
   'browser.downloads': BrowserDownloadsMessage;
   'browser.links': BrowserLinkOutMessage;
   'browser.view': BrowserViewMessage;
+  /** To-do (API.md section 22): a `snapshot` of `{rev}`, then `changed` `{op, id, rev}`. Ids only. */
+  todo: { seq: number; type?: string; op?: string; id?: string; rev?: number };
+  /** Documents (API.md section 24): a `snapshot` of `{rev, counts}`, then `changed` `{rev, ids, counts}`. Ids and counts only. */
+  docs: { seq: number; type?: string; rev?: number; ids?: unknown; counts?: unknown };
+  /** Courier (API.md section 21): a `snapshot` of `{}`, then `changed` `{channels, lanes, counts, drafts, outbound, accounts}`. Ids and lanes only. */
+  'courier.changed': { seq: number; type?: string; channels?: unknown; lanes?: unknown; counts?: unknown; drafts?: unknown; outbound?: unknown; accounts?: unknown };
 };
 
 /** What Platform last reported about this desk, through `connect` or the gateway. */

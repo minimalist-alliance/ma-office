@@ -1,0 +1,11 @@
+From: Hotel <hotel@example.net>
+To: me@desk.example
+Date: Fri, 13 Nov 2026 10:00:00 +0000
+Subject: 8bit body
+Message-ID: <cte-8bit@corpus.example>
+MIME-Version: 1.0
+X-Corpus-Note: Content-Transfer-Encoding: 8bit with raw UTF-8
+Content-Type: text/plain; charset=utf-8
+Content-Transfer-Encoding: 8bit
+
+Frühstück gibt es um acht Uhr im Erdgeschoss.

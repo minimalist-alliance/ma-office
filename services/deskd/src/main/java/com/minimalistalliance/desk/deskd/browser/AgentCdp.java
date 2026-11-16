@@ -76,6 +76,13 @@ public final class AgentCdp {
             "Runtime.evaluate",
             "Runtime.releaseObject",
             "Runtime.runIfWaitingForDebugger",
+            // How much memory an Agent tab's page holds, read only: the 300 MB a tab (the Browser bar's gap 7), each renderer
+            // process's isolate once by its id.
+            "Runtime.getHeapUsage",
+            "Runtime.getIsolateId",
+            // A full garbage collection in the tab's own renderer, only when a first look finds it past the cap, so what
+            // closes a tab is what its page holds, never garbage V8 hasn't collected yet (the Browser bar's bench).
+            "HeapProfiler.collectGarbage",
             "DOM.describeNode",
             "DOM.getBoxModel",
             "DOM.getFrameOwner",
@@ -124,6 +131,16 @@ public final class AgentCdp {
         default boolean script(String source) {
             return false;
         }
+
+        /**
+         * A session, target or context that was the Agent's and went lately (a tab closed, a frame detached, a context
+         * disposed, the connection lost). A command that's refused only for naming one is answered as Chromium answers
+         * one that's gone ({@link #send}), so a call racing its tab's end fails as gone, never as deskd's bug; nothing
+         * goes out either way.
+         */
+        default boolean went(String id) {
+            return false;
+        }
     }
 
     /** Worlds learned at once, past which the oldest is forgotten: a world goes with its document anyway. */
@@ -131,6 +148,7 @@ public final class AgentCdp {
 
     private final CdpClient cdp;
     private final Scope scope;
+    private final Scope beforeItWent;
     /** {@code session|context} of each world deskd made, from Chromium's replies; access-ordered, at most {@link #WORLDS}. */
     private final Map<String, Boolean> worlds = new LinkedHashMap<>(64, 0.75f, true) {
         private static final long serialVersionUID = 1L;
@@ -170,6 +188,39 @@ public final class AgentCdp {
             @Override
             public boolean script(String source) {
                 return outer.script(source);
+            }
+
+            @Override
+            public boolean went(String id) {
+                return outer.went(id);
+            }
+        };
+        // The same, with what went still counted as the Agent's: only to tell a command refused for naming what went.
+        Scope now = this.scope;
+        this.beforeItWent = new Scope() {
+            @Override
+            public boolean session(String sessionId) {
+                return now.session(sessionId) || now.went(sessionId);
+            }
+
+            @Override
+            public boolean target(String targetId) {
+                return now.target(targetId) || now.went(targetId);
+            }
+
+            @Override
+            public boolean context(String contextId) {
+                return now.context(contextId) || now.went(contextId);
+            }
+
+            @Override
+            public boolean world(String sessionId, Number contextId) {
+                return now.world(sessionId, contextId);
+            }
+
+            @Override
+            public boolean script(String source) {
+                return now.script(source);
             }
         };
     }
@@ -235,6 +286,23 @@ public final class AgentCdp {
         };
     }
 
+    /**
+     * {@link #check}, but a command refused only because what it names was the Agent's and went ({@link Scope#went}) is
+     * answered as Chromium answers a session or target that's gone. Nothing is sent either way.
+     */
+    private void checkOrGone(String sessionId, String method, Map<String, Object> params) throws CdpException {
+        try {
+            check(sessionId, method, params, scope);
+        } catch (NotAllowed refused) {
+            try {
+                check(sessionId, method, params, beforeItWent);
+            } catch (NotAllowed still) {
+                throw refused;
+            }
+            throw CdpException.remote(CdpException.SESSION_NOT_FOUND);
+        }
+    }
+
     private static String worldKey(String sessionId, Number contextId) {
         return sessionId + "|" + contextId.longValue();
     }
@@ -242,15 +310,25 @@ public final class AgentCdp {
     /** One command, parked on until its reply, as {@link CdpClient#call}. */
     Map<String, Object> send(String sessionId, String method, Map<String, Object> params, Duration timeout)
             throws CdpException, InterruptedException {
-        check(sessionId, method, params, scope);
-        return learned(sessionId, method, cdp.call(sessionId, method, params, timeout));
+        checkOrGone(sessionId, method, params);
+        CdpClient.AGENT.set(Boolean.TRUE);
+        try {
+            return learned(sessionId, method, cdp.call(sessionId, method, params, timeout));
+        } finally {
+            CdpClient.AGENT.remove();
+        }
     }
 
     /** As {@link #send}, with a long string allowed in the reply ({@link CdpClient#callLong}). */
     Map<String, Object> sendLong(String sessionId, String method, Map<String, Object> params, Duration timeout)
             throws CdpException, InterruptedException {
-        check(sessionId, method, params, scope);
-        return learned(sessionId, method, cdp.callLong(sessionId, method, params, timeout));
+        checkOrGone(sessionId, method, params);
+        CdpClient.AGENT.set(Boolean.TRUE);
+        try {
+            return learned(sessionId, method, cdp.callLong(sessionId, method, params, timeout));
+        } finally {
+            CdpClient.AGENT.remove();
+        }
     }
 
     /** A world deskd just made is one its scripts may go to, on that session alone. */
@@ -267,8 +345,13 @@ public final class AgentCdp {
     /** A browser-level command whose reply is taken on the read path, in its place among the events ({@link CdpClient#call}). */
     Map<String, Object> sendBrowser(String method, Map<String, Object> params, Duration timeout, Consumer<Map<String, Object>> onReply)
             throws CdpException, InterruptedException {
-        check(null, method, params, scope);
-        return cdp.call(method, params, timeout, onReply);
+        checkOrGone(null, method, params);
+        CdpClient.AGENT.set(Boolean.TRUE);
+        try {
+            return cdp.call(method, params, timeout, onReply);
+        } finally {
+            CdpClient.AGENT.remove();
+        }
     }
 
     boolean connected() {

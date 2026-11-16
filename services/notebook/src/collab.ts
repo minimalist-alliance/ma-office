@@ -1,6 +1,6 @@
 // Hocuspocus, with no server of its own: connections come from the socket through a small adapter (socket.ts), and
 // these hooks are where its documents meet storage.
-import { Hocuspocus } from '@hocuspocus/server';
+import { Hocuspocus, type Document } from '@hocuspocus/server';
 import * as Y from 'yjs';
 import * as encoding from 'lib0/encoding';
 import { applyAwarenessUpdate } from 'y-protocols/awareness';
@@ -122,6 +122,26 @@ export function renameAwareness(collab: Hocuspocus, who: Who): void {
   }
 }
 
+/**
+ * Hocuspocus, unloading a document only while it's the one Hocuspocus has under its name.
+ *
+ * Hocuspocus 4.8 ends every store with `setTimeout(() => unloadDocument(document), 0)`, and its unload goes by the
+ * document's name: `documents.has(name)`, then `documents.delete(name)` and the unload hooks, which have only the name.
+ * A direct connection (`notebook.version.save`, a restore, an agent's edit) on a page nobody had open stores and unloads
+ * the page at once, so that timer outlives its document. If an editor opened the page in between, the timer unloaded
+ * the editor's page instead: out of Hocuspocus's map and out of `Pages`, so what the editor typed was acknowledged and
+ * never stored (found Nov 12; `tests/reopen.test.ts`). A document that has already left is left alone.
+ *
+ * Nothing else can come between: from here to `documents.delete` the unload awaits only hooks that don't wait on I/O,
+ * so no connection can load the page again meanwhile, and one that arrives finds this document and keeps it.
+ */
+export class Collab extends Hocuspocus {
+  override async unloadDocument(document: Document): Promise<void> {
+    if (this.documents.get(document.name) !== document) return;
+    await super.unloadDocument(document);
+  }
+}
+
 export function createCollab(pages: Pages, notebook: Notebook, owners: Owners, removals: Removals, opts: CollabOptions): Hocuspocus {
   /**
    * A guild member's update, before it's applied: refused whole if it would take a member without `moderate` past the
@@ -157,7 +177,7 @@ export function createCollab(pages: Pages, notebook: Notebook, owners: Owners, r
     if (limited) removals.charge(pageId, memberId, verdict.cost, budget);
   };
 
-  return new Hocuspocus({
+  return new Collab({
     name: 'desk-notebook',
     quiet: true,
     debounce: opts.storeDebounceMs,

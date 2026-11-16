@@ -485,3 +485,22 @@ NOTES
 - The highlight claim (5.1 to 11:1) holds: 5.11, 6.43, 10.97. Light's link on the highlight is 4.33, as the decision says.
 - 2026-11-07: Dusk text.danger moves #F7BEB7 -> #F9CBC5. A hovered menu row in the Notebook measured 4.37:1, under 4.5. New figures in Dusk: window 5.4, overlay 5.06, fill 4.98, fillStrong about 4.4 (still a miss, unused there). It still reads as red on Dusk's grey.
 
+
+COOL STATUS (2026-11-13): the owner's rule, no green, brown or warm tint anywhere in UI. status.online is the office's accent
+and status.warn its strong cool neutral (tokens.json `cool`), computed from web/src/theme/tokens.ts with the WCAG 2.x formula.
+Bar: 3:1 for a dot or an icon, 4.5:1 for text ("Applied", a warn line). Both clear 4.5:1 everywhere, so the old misses as text
+(Light's green at 3.46 and gold at 3.62) are gone.
+
+  pair                                              Light   Zen    Dark
+  status.online on surface.panel                     5.11   5.27   6.05
+  status.online on surface.tile                      5.20   4.72   5.57
+  status.online on surface.window                    5.20   5.27   5.89
+  status.warn on surface.panel                       9.47   7.34   9.39
+  status.warn on surface.tile                        9.63   6.58   8.65
+  status.warn on surface.window                      9.63   7.34   9.14
+
+- Values: online #3D6FA8, #A9C4E4, #7FA7DD (each theme's accent.default); warn #3E4553 (the kit's graphite), #DFE3EA, #C9CDD3.
+  Red (status.error, text.danger) is unchanged: it marks a real failure only.
+- A desk's warn dot on the canvas is the desk's own ink (deskText, 4.5:1 or more on every style's base), not status.warn.
+- To-do's tab counts are text.link mixed 80/20 with text.primary (todo.css): Light 5.4 on surface.fill (the link alone 4.48),
+  Zen and Dark higher; web/src/apps/todo/todoContrast.test.ts measures them.

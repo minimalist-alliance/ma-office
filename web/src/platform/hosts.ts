@@ -44,6 +44,20 @@ export function siblingUrl(raw: unknown, hostname: string): URL | null {
   return url;
 }
 
+/**
+ * The shared sign-in's origin (ma-platform contract auth.md §2.8): on only when client-config's `auth.sso` is an object
+ * whose `origin` is an https origin (nothing after it) whose host is exactly `id.` on this site, as Platform's member
+ * service sends it (`{origin: "https://id.<suffix>"}`). Pinned to `id` (Security's SSO-L4): a client-config that named any
+ * other host of the site can't send this browser's credentialed calls there. Anything else, absent included, is off: the
+ * office calls nothing there and does what it did before. Every call goes to this origin; they're the `sso.ts` chunk's.
+ */
+export function ssoOrigin(cfg: { auth?: { sso?: unknown } } | null | undefined, hostname = globalThis.location?.hostname ?? ''): string | null {
+  const s = cfg?.auth?.sso;
+  const origin = s && typeof s === 'object' ? (s as { origin?: unknown }).origin : null;
+  const url = siblingUrl(origin, hostname);
+  return url && url.hostname.split('.')[0] === 'id' && url.origin === origin ? url.origin : null;
+}
+
 export function currentApiBase(): string | null {
   const meta = document.querySelector<HTMLMetaElement>('meta[name="ma-api-base"]');
   return apiBaseFor(window.location.hostname, meta?.content);

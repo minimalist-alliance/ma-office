@@ -168,6 +168,18 @@ describe('the member\'s own session length (auth.md 3.3 item 2)', () => {
     expect(store.outlivedChoice(NOW)).toBeNull();
   });
 
+  it('pastThirtyDays: more than 30 days from signedInAt, whatever the choice (§2.8), and never with no signedInAt', () => {
+    held('7d', 30 * DAY + 60_000, 60_000);
+    expect(store.pastThirtyDays(NOW)).toBe(true);
+    held('30d', 30 * DAY - 60_000);
+    expect(store.pastThirtyDays(NOW)).toBe(false);
+    held('30d', 31 * DAY);
+    expect(store.pastThirtyDays(NOW)).toBe(true);
+    local.clear();
+    held(null, null);
+    expect(store.pastThirtyDays(NOW)).toBe(false);
+  });
+
   it('keeps both beside the token, moves with it between stores, and clears with it', async () => {
     held('browser', 1000);
     await store.placeRefreshToken('browser');
@@ -257,3 +269,4 @@ describe("another tab's token going (ISS-67)", () => {
     expect(gone).toEqual([]);
   });
 });
+

@@ -12,13 +12,17 @@ import { billingUrl } from '../../platform/clientConfig';
 import { useSession } from '../../platform/session';
 import { chooseImageCheck } from '../../platform/imageCheckClient';
 import type { ImageCheck } from '../../platform/imageCheck';
-import { FilesApi, FilesError, toFilesError } from './api';
+import { FilesError, toFilesError } from './api';
 import { fromEntries, entriesOf, fromInput, type Collected } from './collect';
 import { ContextMenu, type MenuAt } from './ContextMenu';
 import { ConfirmDialog, MoveDialog, NameDialog } from './Dialogs';
-import { TransferEngine } from './engine';
+import { engineFor } from './engines';
 import { DRAG_TYPE, FileList, type ListActions } from './FileList';
 import { menuItems, type MenuAction } from './menu';
+import { rpcDocsClient } from '../documents/client';
+import { viewableName } from '../documents/model';
+import { openDocument } from '../documents/target';
+import { useLayoutStore } from '../../state/layoutStore';
 import { baseName, crumbs, join, parent } from './paths';
 import { askWhere } from './save';
 import { EMPTY_SEL, follow, reconcile, type Sel } from './selection';
@@ -26,7 +30,11 @@ import { Tray } from './Tray';
 import { useFilesModel, type Place, type Row } from './useFilesModel';
 import { EMPTY_FOLDER, EMPTY_SEARCH, EMPTY_TRASH, errorWords, movedToTrashWords, READ_ONLY_WORDS, SKIPPED_NOTE, TRASH_NOTE, usageDetailWords, usageWords, capDetailWords, capNote, capState, capWords, NEW_TAB, SEE_MEMBERSHIP } from './words';
 import { daysUntil } from './dates';
+import { noteFocusEvent, setFocusItem } from '../../state/focusItems';
 import './files.css';
+
+/** Said when Documents can't show a file after all (the desk found no such document, or it's an older desk). */
+const VIEW_FAILED = 'This one can’t be shown here. Download it instead.';
 
 interface Props {
   deskId: string;
@@ -138,6 +146,15 @@ export default function FilesBody({ deskId, link, session, offline, parked, shel
   if (place.kind === 'folder') lastFolder.current = place.path;
   const inFolder = place.kind === 'folder';
   const inTrash = place.kind === 'trash';
+  // Documents' viewer shows a file in the office when Documents is on this desk (its tile is there: the kill switch, a Guild Desk).
+  const docsOn = useLayoutStore((s) => s.desks[deskId]?.items.some((i) => i.app === 'documents') ?? false);
+  const viewable = (row: Row): boolean => docsOn && !inTrash && row.type === 'file' && viewableName(row.name);
+  // The folder open, for Desk Maia's model of now (the focus shield): its path stays here, and only a hash of it travels
+  // (`maiamode/focus.ts` `folderRef`), so no name leaves the browser.
+  useEffect(() => {
+    setFocusItem(deskId, 'files', inFolder ? { kind: 'folder', path: folder } : null);
+    return () => setFocusItem(deskId, 'files', null);
+  }, [deskId, inFolder, folder]);
 
   // ---- the engine: one per link, with the image check chosen once
   const [imageCheck, setImageCheck] = useState<ImageCheck | null>(null);
@@ -241,7 +258,20 @@ export default function FilesBody({ deskId, link, session, offline, parked, shel
 
   const open = (row: Row): void => {
     if (row.type === 'dir') return go({ kind: 'folder', path: row.path });
+    if (viewable(row)) return view(row);
     download(row);
+  };
+
+  /** View: the desk finds (or indexes) the file in Documents, and Documents opens at it. Download stays as it is. */
+  const view = (row: Row): void => {
+    void rpcDocsClient(link, shell.idem)
+      .byPath(row.path)
+      .then(
+        (docId) => {
+          if (!openDocument(deskId, { docId })) announce(VIEW_FAILED);
+        },
+        () => announce(VIEW_FAILED),
+      );
   };
 
   const up = (): void => {
@@ -264,6 +294,8 @@ export default function FilesBody({ deskId, link, session, offline, parked, shel
   const upload = (c: Collected, under: string): void => {
     if (!engine) return;
     if (c.files.length) engine.upload(c.files, under);
+    // A file uploaded: a completed action (the focus shield's fine break).
+    if (c.files.length) noteFocusEvent('saved');
     for (const d of c.emptyDirs) void api.mkdir(join(under, d), { parents: true }).catch(() => undefined);
     if (c.skipped) setNotice(`${c.skipped === 1 ? '1 item was' : `${c.skipped} items were`} left out because the desk can't take its name.`);
     else if (!c.files.length && !c.emptyDirs.length) setNotice('Nothing to upload there.');
@@ -362,7 +394,7 @@ export default function FilesBody({ deskId, link, session, offline, parked, shel
       const box = root.current;
       if (!box) return;
       const rs = keys ? rows.filter((r) => keys.includes(r.key)) : null;
-      const items = menuItems({ mode: inTrash ? 'trash' : place.kind === 'search' ? 'search' : 'folder', locked: readOnly || !engine, rowCount: rows.length }, rs);
+      const items = menuItems({ mode: inTrash ? 'trash' : place.kind === 'search' ? 'search' : 'folder', locked: readOnly || !engine, rowCount: rows.length }, rs?.map((r) => ({ type: r.type, viewable: viewable(r) })) ?? null);
       // The browser's own menu is already suppressed in the list; with nothing to offer, ours stays shut too.
       if (!items.length) return setMenu(null);
       // Window pixels: the window can be scaled with the office, so the point is taken back through that.
@@ -389,6 +421,8 @@ export default function FilesBody({ deskId, link, session, offline, parked, shel
     setMenu(null);
     focusList();
     switch (id) {
+      case 'view':
+        return void (one && view(one));
       case 'open':
         return void (one && open(one));
       case 'download':
@@ -755,28 +789,3 @@ export default function FilesBody({ deskId, link, session, offline, parked, shel
 
 const EMPTY_VIEWS: readonly never[] = [];
 
-interface Held {
-  engine: TransferEngine;
-  link: DeskLink;
-  /** Whoever has the window open, told when a transfer changed a folder. */
-  changed: ((folder: string) => void) | null;
-}
-const engines = new Map<string, Held>();
-
-/** This desk's engine, made the first time and kept while its link is the same one (the page's lifetime, in practice). */
-function engineFor(deskId: string, link: DeskLink, imageCheck: ImageCheck, shell: HostShell): Held {
-  const have = engines.get(deskId);
-  if (have && have.link === link) return have;
-  have?.engine.dispose();
-  const entry: Held = { link, changed: null, engine: null as unknown as TransferEngine };
-  entry.engine = new TransferEngine({
-    link,
-    api: new FilesApi(link, shell.idem),
-    imageCheck,
-    announce: shell.announce,
-    setBusy: (on) => shell.setBusy(deskId, on),
-    changed: (f) => entry.changed?.(f),
-  });
-  engines.set(deskId, entry);
-  return entry;
-}

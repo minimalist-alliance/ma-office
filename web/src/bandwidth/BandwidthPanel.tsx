@@ -48,7 +48,7 @@ export function BandwidthPanel({ id, meter, now, useMaia }: { id: string; meter:
   const maia = maiaLine(useMaia(), c);
   const offer = officerOffer(meter, currentBand(), loadedConfig());
   return (
-    <div className="bw-panel" id={id} data-testid="bandwidth-panel">
+    <div className="bw-panel ma-glass" id={id} data-testid="bandwidth-panel">
       <p className="bw-title">Bandwidth</p>
       {meter.dataGuard && (
         <div className="bw-guard" data-testid="data-guard-panel">

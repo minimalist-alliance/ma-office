@@ -1,26 +1,22 @@
 // Where installed apps' tiles go (ADR 0054), pure: one tile per installed app on its desk, a new one at the first free spot as an
-// agent's tile is placed (`placeNewTile`), and none for an app that isn't installed. Tested in `fit.test.ts`.
-import { placeNewTile } from '../../canvas/agentTiles';
-import { isDeskApp, roundUnit, settleDesk, stackOrder, withStack, type LayoutDesk, type LayoutItem } from '../../canvas/layout';
+// agent's tile is placed (`withNewTile`), and none for an app that isn't installed. Tested in `fit.test.ts`.
+import { withNewTile, type DeskScale } from '../../canvas/agentTiles';
+import { isDeskApp, stackOrder, withStack, type LayoutDesk } from '../../canvas/layout';
 import { deskApp, deskAppIdOf } from './ids';
 
 /** An app tile's item id: the desk's, then its app, as every other tile's. */
 export const appItemId = (deskId: string, appId: string): string => `${deskId}:${deskApp(appId)}`;
 
 /** This desk with one tile per installed app and none for any other. The same object if nothing changes. */
-export function fitDeskToApps(desk: LayoutDesk, installed: readonly string[]): LayoutDesk {
+export function fitDeskToApps(desk: LayoutDesk, installed: readonly string[], scale?: DeskScale): LayoutDesk {
   const want = new Set(installed);
   const kept = desk.items.filter((i) => !isDeskApp(i.app) || want.has(deskAppIdOf(i.app) ?? ''));
   const have = new Set(kept.flatMap((i) => (isDeskApp(i.app) ? [deskAppIdOf(i.app)] : [])));
   const missing = installed.filter((id) => !have.has(id));
   if (kept.length === desk.items.length && !missing.length) return desk;
   let next: LayoutDesk = withStack({ ...desk, items: kept }, stackOrder({ items: kept, stack: desk.stack }));
-  for (const id of missing) {
-    const at = placeNewTile(next);
-    const item: LayoutItem = { id: appItemId(desk.id, id), app: deskApp(id), x: roundUnit(at.x), y: roundUnit(at.y), w: at.w, h: at.h };
-    // On top, at the end: it's the newest thing on the desk.
-    next = withStack(settleDesk({ ...next, items: [...next.items, item] }), [...stackOrder(next), item.id]);
-  }
+  // On top, at the end: it's the newest thing on the desk.
+  for (const id of missing) next = withNewTile(next, appItemId(desk.id, id), deskApp(id), scale);
   return next;
 }
 

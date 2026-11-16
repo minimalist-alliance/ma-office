@@ -1,4 +1,18 @@
 import { expect, type APIRequestContext, type ConsoleMessage, type Locator, type Page } from '@playwright/test';
+import { STORED_COURIER } from '../../src/canvas/storedIds';
+
+/**
+ * Courier's id where the office stores a layout (its mirror `ma.layout.v2`, Platform's document): `chat` until the flip
+ * (`src/canvas/storedIds.ts`, `docs/sub-status/courier-id.md`), so a test seeding or reading stored JSON goes through these.
+ * `stored` turns layout JSON in memory's terms into what this build stores; `inMemory` reads stored layout JSON back as
+ * `courier`, as the office does.
+ */
+export const stored = (json: string): string => json.replaceAll('"courier"', `"${STORED_COURIER}"`).replaceAll(':courier"', `:${STORED_COURIER}"`);
+export const inMemory = (json: string): string => json.replaceAll('"chat"', '"courier"').replaceAll(':chat"', ':courier"');
+/** Layout JSON in memory's terms as every build before Courier's id stored it: `chat`, whatever this build writes. */
+export const asOldBuilds = (json: string): string => json.replaceAll('"courier"', '"chat"').replaceAll(':courier"', ':chat"');
+/** A stored layout (or anything holding one) read in memory's terms. */
+export const fromStored = <T>(value: T): T => (value == null ? value : (JSON.parse(inMemory(JSON.stringify(value))) as T));
 
 export type ThemeId = 'light' | 'dusk' | 'dark';
 
@@ -43,6 +57,18 @@ export async function watchCard(page: Page): Promise<{ seen: boolean }> {
  * Background row under it is radios too, and "Mountain light" or "Dark lake" would match a bare `{ name: 'Light' }`.
  */
 export const themeRadio = (page: Page, label: string): Locator => page.getByRole('radiogroup', { name: 'Theme' }).getByRole('radio', { name: label, exact: true });
+
+/**
+ * One of the account menu's tucked sections (`chrome/AccountPanel.tsx`, the owner's Nov 16 tidy), opened if it's shut, with
+ * the menu already open: `menu-appearance` (the system-dark choice, Blue and Contrast, Background, the setup circle's switch),
+ * `menu-maia` (Maia's rows) or `about-toggle` (the owner's About this desk). Sign out is a plain row, never a section (6.11).
+ */
+export async function openMenuSection(page: Page, testId: 'menu-appearance' | 'menu-maia' | 'about-toggle'): Promise<void> {
+  const row = page.locator('#account-panel').getByTestId(testId);
+  await expect(row).toBeVisible();
+  if ((await row.getAttribute('aria-expanded')) !== 'true') await row.click();
+  await expect(row).toHaveAttribute('aria-expanded', 'true');
+}
 
 export async function setTheme(page: Page, theme: ThemeId): Promise<void> {
   await page.addInitScript((t) => {
@@ -89,6 +115,29 @@ export function storeRefreshToken(page: Page, token: string): Promise<void> {
     if (sessionStorage.getItem('ma-desk-web-refresh') !== null) sessionStorage.setItem('ma-desk-web-refresh', value);
     else localStorage.setItem('ma-desk-web-refresh', value);
   }, token);
+}
+
+/**
+ * The mark while a mouse click on it shows all desks (`chrome/TopBar.tsx` `HomeMark`, `data-home`): a desk in front and more
+ * than one in scope. The mark is a button at other times too, "Minimalist Alliance", whose click then opens its menu.
+ */
+export const homeMark = (page: Page): Locator => page.locator('.home-mark-btn[data-home]');
+
+/**
+ * All desks, as a mouse click on the mark does, even with a window over the bar. A script's bare `click()` has no press
+ * before it, which the mark takes for the keyboard: that opens its menu instead.
+ */
+export async function markHome(page: Page): Promise<void> {
+  await homeMark(page).evaluate((el) => {
+    el.dispatchEvent(new PointerEvent('pointerdown', { bubbles: true, pointerType: 'mouse' }));
+    el.dispatchEvent(new MouseEvent('click', { bubbles: true, detail: 1 }));
+  });
+}
+
+/** All desks on a phone: a tap on the mark opens its menu, whose first row is All desks. */
+export async function tapHome(page: Page): Promise<void> {
+  await homeMark(page).tap();
+  await page.locator('#mark-menu').getByRole('button', { name: 'All desks' }).tap();
 }
 
 export async function canvasPainted(page: Page): Promise<void> {

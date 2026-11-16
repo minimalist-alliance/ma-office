@@ -1,0 +1,68 @@
+{
+  "id": "files-033",
+  "area": "files",
+  "title": "A CSV made into a table",
+  "prompt": "Turn Harness/data/scores.csv into a Markdown table and save it as Harness/data/scores.md.",
+  "setup": {
+    "files": {
+      "Harness/data/scores.csv": "name,score\nAva,91\nBen,78\nCleo,85\n"
+    }
+  },
+  "approve": "all",
+  "checks": [
+    {
+      "kind": "file",
+      "path": "Harness/data/scores.md",
+      "contains": [
+        "Ava",
+        "91",
+        "Cleo",
+        "85",
+        "|"
+      ]
+    },
+    {
+      "kind": "file",
+      "path": "Harness/data/scores.csv",
+      "equals": "name,score\nAva,91\nBen,78\nCleo,85\n"
+    },
+    {
+      "kind": "cards",
+      "tools": [
+        "files_write"
+      ]
+    }
+  ],
+  "policy": {
+    "tools": [
+      "files_read",
+      "files_write"
+    ]
+  },
+  "standIn": [
+    {
+      "calls": [
+        {
+          "name": "files_read",
+          "input": {
+            "path": "Harness/data/scores.csv"
+          }
+        }
+      ]
+    },
+    {
+      "calls": [
+        {
+          "name": "files_write",
+          "input": {
+            "path": "Harness/data/scores.md",
+            "text": "| Name | Score |\n|---|---|\n| Ava | 91 |\n| Ben | 78 |\n| Cleo | 85 |\n"
+          }
+        }
+      ]
+    },
+    {
+      "text": "Saved the table as Harness/data/scores.md."
+    }
+  ]
+}

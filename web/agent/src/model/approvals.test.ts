@@ -13,10 +13,12 @@ import {
   elapsed,
   leavesOf,
   levelOf,
+  READ_TOOLS,
   shown,
   stateOf,
   TOLD,
   tookWords,
+  toolWords,
   whyOf,
   withApprovals,
 } from './approvals';
@@ -118,6 +120,31 @@ describe('the card, from this app’s own template', () => {
     expect(fresh.note).toBeNull();
   });
 
+  it('To-do (API.md §22): §22’s words, a same_as add names the item it merges into, a close its reason', async () => {
+    const add = cardOf(await approval({ tool: 'todo_add', risk: 'write', untrusted: false, payload: { title: 'Pay the water bill', due: { date: '2026-11-14' }, source: { kind: 'agent_chat', ref: {} } }, target: { kind: 'todo', title: 'Pay the water bill' } }), agents);
+    expect(add.title).toBe('Add “Pay the water bill” to To-do');
+    expect(add.fields).toEqual([
+      { label: 'Tool', value: 'To-do · Add a to-do' },
+      { label: 'To-do', value: 'Pay the water bill' },
+      { label: 'Due', value: 'Nov 14, 2026' },
+    ]);
+    const merge = cardOf(await approval({ tool: 'todo_add', risk: 'write', untrusted: false, payload: { title: 'Settle the October water bill', same_as: 'x', source: { kind: 'agent_chat', ref: {} } }, target: { kind: 'todo', id: 'x', title: 'Settle the October water bill', mergeInto: { id: 'x', title: 'Pay the water bill' } } }), agents);
+    expect(merge.title).toBe('Merge into “Pay the water bill” in To-do');
+    expect(merge.fields).toContainEqual({ label: 'Merges into', value: 'Pay the water bill' });
+    expect([add.finished, merge.finished]).toEqual(['Added a to-do', 'Merged into a to-do']);
+    const close = cardOf(await approval({ tool: 'todo_close', risk: 'write', untrusted: true, payload: { id: 'x', as: 'not_needed', reason: 'cancelled by email' }, target: { kind: 'todo', id: 'x', title: 'Book the dentist' } }), agents);
+    expect(close.title).toBe('Mark “Book the dentist” not needed in To-do');
+    expect(close.fields).toContainEqual({ label: 'As', value: 'Not needed' });
+    expect(close.fields).toContainEqual({ label: 'Why', value: 'cancelled by email' });
+    expect(close.note).toEqual({ icon: 'undo', text: 'You can reopen it in To-do.' });
+    expect(close.finished).toBe('Marked a to-do not needed');
+    const closeDone = cardOf(await approval({ tool: 'todo_close', risk: 'write', untrusted: true, payload: { id: 'x', as: 'done', reason: 'booked' }, target: { kind: 'todo', id: 'x', title: 'Book the dentist' } }), agents);
+    expect(closeDone.title).toBe('Mark “Book the dentist” done in To-do');
+    const update = cardOf(await approval({ tool: 'todo_update', risk: 'write', untrusted: true, payload: { id: 'x', due: { date: '2026-11-14', time: '15:00' } }, target: { kind: 'todo', id: 'x', title: 'Book the dentist' } }), agents);
+    expect(update.fields).toContainEqual({ label: 'Due', value: 'Nov 14, 2026, 15:00' });
+    expect(doneWord('todo_list')).toBe('Looked at your to-dos');
+  });
+
   it('an untrusted change says the draft ADR’s line; a memory in a tainted run its own note', async () => {
     const write = cardOf(await approval({ tool: 'files_mkdir', risk: 'write', untrusted: true, payload: { path: 'x' } }), agents);
     expect(write.untrustedLine).toBe('This agent has read web pages, files or messages in this task.');
@@ -142,6 +169,21 @@ describe('the card, from this app’s own template', () => {
     for (const tool of ['files_list', 'files_search', 'files_read', 'files_write', 'files_mkdir', 'files_move', 'files_trash', 'browser_open', 'browser_read', 'browser_type', 'browser_back', 'browser_close', 'browser_tabs', 'browser_use_my_session', 'browser_click', 'browser_press', 'notebook_search', 'notebook_read', 'notebook_write', 'notebook_trash', 'plan_update', 'workspace_delete', 'follow_up', 'memory_save']) {
       expect(doneWord(tool), tool).not.toBe('Used a tool');
     }
+  });
+
+  it('words Courier’s read tools, which never ask and name no one (the draft ADR’s section 12)', () => {
+    const words: Record<string, string> = {
+      courier_list: 'Looked at your messages',
+      courier_search: 'Searched your messages',
+      courier_read: 'Read your messages',
+      courier_new: 'Checked for new messages',
+    };
+    for (const [tool, done] of Object.entries(words)) {
+      expect(doneWord(tool), tool).toBe(done);
+      expect(READ_TOOLS.has(tool), tool).toBe(true);
+      expect(toolWords(tool)?.app, tool).toBe('Courier');
+    }
+    expect(toolWords('courier_send')).toBeNull();
   });
 
   it('an unknown tool: the desk’s title and every payload field as it is', async () => {
@@ -249,6 +291,9 @@ describe('counts and the agent’s state', () => {
   it('names the rail’s count', () => {
     expect(countLabel(1, 2)).toBe('1 request waiting, 2 new replies');
     expect(countLabel(3, 0)).toBe('3 requests waiting');
+    // What a run the member didn't start did without asking, until its thread is seen (draft ADR section 15).
+    expect(countLabel(0, 1, 2)).toBe('1 new reply, 2 done without asking');
+    expect(countLabel(1, 0, 1)).toBe('1 request waiting, 1 done without asking');
   });
 
   it('says how often the task has sent something out already', () => {

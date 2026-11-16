@@ -1,0 +1,8 @@
+From: Dana <dana@example.com>
+To: me@desk.example
+Date: Mon, 2 Nov 2026 09:00:00 +0000
+Subject: Newsletter
+MIME-Version: 1.0
+Content-Type: text/html; charset=utf-8
+
+<html><body><p>Fresh <i>tomatoes</i> today</p><img src="https://t.example/p.gif" width=1 height=1></body></html>

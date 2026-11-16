@@ -1,0 +1,66 @@
+<?xml version="1.0" encoding="UTF-8"?>
+<project xmlns="http://maven.apache.org/POM/4.0.0"
+         xmlns:xsi="http://www.w3.org/2001/XMLSchema-instance"
+         xsi:schemaLocation="http://maven.apache.org/POM/4.0.0 https://maven.apache.org/xsd/maven-4.0.0.xsd">
+  <modelVersion>4.0.0</modelVersion>
+
+  <!--
+    Courier's test kit (the launch plan's Wave 0.4, the parts Waves 1.2 and 2.1 need): the MIME corpus (hand-written samples
+    and a seeded generator of thousands more), hostile HTML vectors, and a fake IMAP and SMTP server (GreenMail) for the
+    linked-mailbox transport. Test scope only, in every module that uses it; nothing here ships in an image.
+  -->
+  <parent>
+    <groupId>com.minimalistalliance.desk</groupId>
+    <artifactId>desk-services</artifactId>
+    <version>0.1.0-SNAPSHOT</version>
+  </parent>
+
+  <artifactId>courier-testkit</artifactId>
+  <name>courier-testkit</name>
+  <description>Courier's test kit: the MIME corpus, hostile HTML, fake IMAP and SMTP, a fake relay and mail door, a fake BlueBubbles server, and the soak harness.</description>
+
+  <dependencies>
+    <!-- A fake IMAP, SMTP and POP3 server in the test's own JVM, on loopback. Apache-2.0. -->
+    <dependency>
+      <groupId>com.icegreen</groupId>
+      <artifactId>greenmail</artifactId>
+      <version>${greenmail.version}</version>
+      <exclusions>
+        <exclusion>
+          <groupId>junit</groupId>
+          <artifactId>junit</artifactId>
+        </exclusion>
+      </exclusions>
+    </dependency>
+
+    <!-- The fake relay's mail door and fake peer desks seal and sign with Courier's own envelope library. -->
+    <dependency>
+      <groupId>com.minimalistalliance.desk</groupId>
+      <artifactId>courier-envelope</artifactId>
+      <version>${project.version}</version>
+    </dependency>
+
+    <!-- The fakes' JSON (maps and lists only), as deskd's. -->
+    <dependency>
+      <groupId>tools.jackson.jr</groupId>
+      <artifactId>jackson-jr-objects</artifactId>
+    </dependency>
+
+    <!-- The fake BlueBubbles server's socket (Socket.IO over a WebSocket), on loopback. MIT. -->
+    <dependency>
+      <groupId>org.java-websocket</groupId>
+      <artifactId>Java-WebSocket</artifactId>
+      <version>${java-websocket.version}</version>
+    </dependency>
+
+    <dependency>
+      <groupId>org.springframework.boot</groupId>
+      <artifactId>spring-boot-starter-test</artifactId>
+      <scope>test</scope>
+    </dependency>
+  </dependencies>
+
+  <build>
+    <finalName>courier-testkit</finalName>
+  </build>
+</project>

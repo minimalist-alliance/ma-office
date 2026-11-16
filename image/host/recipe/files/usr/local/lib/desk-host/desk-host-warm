@@ -1,0 +1,260 @@
+#!/usr/bin/python3 -I
+"""desk-host-warm: a new host's slot store read once, in parallel, at its first boot, before the first prepare needs it
+(desk-host-warm.service, beside desk-host-link, never before it). Root. Host 0.1.16 (docs/sub-status/host-0116-fixes.md).
+
+Why: the store is the AMI's second volume, restored from its snapshot lazily: each block's first read waits on the snapshot, and a
+prepare's single tar reads one file after another, so a new host's first prepare took 76 to 297 s in the lab (6 fresh hosts; 177
+and 455 s in Platform's soak) against 10 to 18 s once read. Many reads in flight load the same blocks several times faster. So at
+the first boot of a store this reads, with WARM_THREADS readers (16): the current template generation and the release store's
+current copies, every directory first (their metadata, which a prepare's room check walks), then every file once (a large one in
+4 MiB spans), then ends. What it read stays in the page cache, so the first prepare's copy reads it from memory; nothing is
+written but its marker.
+
+Only on a new host: the store's serial (desk-host-boot's store.serial) isn't the one in /var/lib/desk-host/warmed, and no slot has a
+record or a root (a host that has prepared a slot has read all of it already). The marker is written however the read ends, so it
+runs once for a store. It stops, saying so, as soon as any desk starts (a desk's cgroup under desk-host), so it never competes with
+a wake; and after WARM_MAX_S. WARM=off in desk-host.conf turns it off. Nothing here follows a link or leaves the store.
+Prints one line: what it read, how long, why it ended.
+"""
+import os
+import queue
+import stat
+import sys
+import threading
+import time
+
+E = os.environ.get   # the paths below are a test's own only in image/host/tests/test_warm.py
+DH = E("DESK_HOST_STORE", "/srv/desk-host")
+V = E("DESK_HOST_VAR", "/var/lib/desk-host")
+MARK = f"{V}/warmed"
+CGR = E("DESK_HOST_CGROUP", "/sys/fs/cgroup/desk-host")
+CONF = E("DESK_HOST_CONF", "/etc/desk-host/desk-host.conf")
+COMPS = ("deskd", "desk-agent", "desk-notebook", "desk-rtc", "desk-stream")
+CHUNK = 1 << 20
+SPAN = 4 << 20   # a large file is read as spans of this size, each its own work: one big file (Chromium, the JDK's modules) at one
+                 # reader's pace was the slowest part of a cold store (3 to 9 MB/s, 10 to 25 ms a read, in the lab's first prepares)
+
+
+def conf():
+    out = {}
+    try:
+        with open(CONF) as fh:
+            for line in fh.read().splitlines():
+                line = line.strip()
+                if line and not line.startswith("#") and "=" in line:
+                    k, v = line.split("=", 1)
+                    out[k.strip()] = v.strip().strip('"')
+    except OSError:
+        pass
+    return out
+
+
+def rd(p):
+    try:
+        with open(p) as fh:
+            return fh.read().strip()
+    except OSError:
+        return ""
+
+
+def desk_running():
+    try:
+        return any(n.startswith("desk-") for n in os.listdir(CGR))
+    except OSError:
+        return False
+
+
+def new_store():
+    """(True, serial) on a store no prepare has read; (False, why) otherwise."""
+    serial = rd(f"{V}/store.serial")
+    if not serial:
+        return False, "no store serial (desk-host-boot hasn't run)"
+    if rd(MARK).split(" ", 1)[0] == serial:
+        return False, f"this store ({serial}) was read at an earlier boot"
+    try:
+        recs = [n for n in os.listdir(f"{V}/slots") if n.endswith(".json")]
+    except OSError:
+        recs = []
+    try:
+        roots = [n for n in os.listdir(f"{DH}/slots") if n.isdigit() or n.startswith(".")]
+    except OSError:
+        roots = []
+    if recs or roots:
+        return False, f"a slot has a record or a root ({len(recs)} record(s), {len(roots)} tree(s)): its prepare read the store"
+    return True, serial
+
+
+def current_gen():
+    """The current template generation's tree (ADR 0077); on a host image without generations (the 0.1.11 line), its one template."""
+    try:
+        sys.path.insert(0, os.path.dirname(os.path.abspath(__file__)))
+        import templates
+        g = templates.current_gen()
+        if g:
+            return templates.gen_dir(g)
+    except Exception:  # noqa: BLE001 - no generations here: the single template, if there is one
+        pass
+    return f"{DH}/template" if os.path.isdir(f"{DH}/template") else None
+
+
+class Warm:
+    def __init__(self, threads, max_s):
+        # every directory before any file: the metadata (directories, inode tables) is read first, in parallel, so a prepare's room
+        # check, which walks the trees' metadata one lstat at a time, finds it read; then the files (lab: an 18 s room check
+        # behind the file reads with one queue)
+        self.q = queue.PriorityQueue()
+        self.seq = 0
+        self.threads, self.deadline = threads, time.monotonic() + max_s
+        self.lock = threading.Lock()
+        self.bytes = self.files = self.dirs = 0
+        self.stop = None   # why it stopped early
+        self.pending = 0
+        self.done = threading.Event()
+        self.looked = 0.0
+        self.inodes = set()   # each inode once: deskd's and desk-agent's releases name many files twice (hard links)
+
+    def put(self, item):
+        with self.lock:
+            self.pending += 1
+            self.seq += 1
+            n = self.seq
+        self.q.put((0 if item[1] else 1, n, item))
+
+    def finished(self):
+        with self.lock:
+            self.pending -= 1
+            if self.pending == 0:
+                self.done.set()
+
+    def worker(self, dev):
+        while True:
+            _, _, item = self.q.get()
+            if item is None:
+                return
+            try:
+                if self.stop is None:
+                    self.one(item, dev)
+            finally:
+                self.finished()
+
+    def checked(self):
+        """False once it must stop: a desk started (looked at every 0.2 s at most), or the time cap."""
+        now = time.monotonic()
+        if now > self.deadline:
+            self.stop = "the time cap"
+        elif now - self.looked > 0.2:
+            self.looked = now
+            if desk_running():
+                self.stop = "a desk started"
+        return self.stop is None
+
+    def one(self, item, dev):
+        path, is_dir, off, size = item
+        if not self.checked():
+            return
+        if is_dir:
+            try:
+                with os.scandir(path) as it:
+                    ents = list(it)
+            except OSError:
+                return
+            with self.lock:
+                self.dirs += 1
+            for e in ents:   # directories first, so the walk stays ahead of the readers
+                try:
+                    st = e.stat(follow_symlinks=False)
+                except OSError:
+                    continue
+                if stat.S_ISDIR(st.st_mode) and st.st_dev == dev:
+                    self.put((e.path, True, 0, 0))
+            for e in ents:
+                try:
+                    st = e.stat(follow_symlinks=False)
+                except OSError:
+                    continue
+                if stat.S_ISREG(st.st_mode) and st.st_size > 0 and st.st_dev == dev:
+                    with self.lock:
+                        if st.st_ino in self.inodes:
+                            continue
+                        self.inodes.add(st.st_ino)
+                    for off in range(0, st.st_size, SPAN):
+                        self.put((e.path, False, off, min(SPAN, st.st_size - off)))
+            return
+        try:
+            fd = os.open(path, os.O_RDONLY | os.O_NOFOLLOW | os.O_NOCTTY | os.O_CLOEXEC | os.O_NONBLOCK)
+        except OSError:
+            return
+        n = 0
+        try:
+            while n < size:
+                b = os.pread(fd, min(CHUNK, size - n), off + n)
+                if not b:
+                    break
+                n += len(b)
+        except OSError:
+            pass
+        finally:
+            os.close(fd)
+        with self.lock:
+            self.bytes += n
+            self.files += off == 0
+
+    def run(self, tops):
+        dev = os.stat(DH).st_dev
+        for top in tops:   # every top queued before any reader starts, so the count can't reach 0 between two of them
+            self.put((top, True, 0, 0))
+        if not tops:
+            return
+        ts = [threading.Thread(target=self.worker, args=(dev,), daemon=True) for _ in range(self.threads)]
+        for t in ts:
+            t.start()
+        self.done.wait()
+        for _ in ts:
+            self.q.put((2, 0, None))
+        for t in ts:
+            t.join()
+
+
+def main():
+    cf = conf()
+    if cf.get("WARM", "on") == "off":
+        print("desk-host-warm: off (WARM=off)")
+        return 0
+    ok, why = new_store()
+    if not ok:
+        print(f"desk-host-warm: nothing to do: {why}")
+        return 0
+    serial = why
+    tops = []
+    g = current_gen()
+    if g and os.path.isdir(g):
+        tops.append(g)
+    for c in COMPS:
+        p = os.path.realpath(f"{DH}/releases/{c}/current")
+        if p.startswith(f"{DH}/releases/") and os.path.isdir(p):
+            tops.append(p)
+    try:
+        threads = max(1, min(64, int(cf.get("WARM_THREADS", "16"))))
+        max_s = max(30, int(cf.get("WARM_MAX_S", "1200")))
+    except ValueError:
+        threads, max_s = 16, 1200
+    t0 = time.monotonic()
+    w = Warm(threads, max_s)
+    w.run(tops)
+    dt = time.monotonic() - t0
+    line = (f"{w.bytes / 1048576:.0f} MB ({w.bytes} bytes) in {w.files} files and {w.dirs} directories ({len(tops)} trees), {dt:.1f} s, "
+            f"{w.bytes / 1048576 / max(dt, 1e-9):.0f} MB/s, {threads} readers; {'stopped: ' + w.stop if w.stop else 'whole'}")
+    try:
+        tmp = f"{MARK}.tmp"
+        with open(tmp, "w") as fh:
+            fh.write(f"{serial} {time.strftime('%Y-%m-%dT%H:%M:%SZ', time.gmtime())} {line}\n")
+        os.chmod(tmp, 0o644)
+        os.replace(tmp, MARK)
+    except OSError as e:
+        print(f"desk-host-warm: the marker wasn't written ({e.strerror})", file=sys.stderr)
+    print(f"desk-host-warm: {line}")
+    return 0
+
+
+if __name__ == "__main__":
+    sys.exit(main())

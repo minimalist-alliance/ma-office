@@ -128,7 +128,7 @@ export class Db {
   }
 
   /**
-   * Guild desks' writers and names, and pages' labels (ADR 0091). Created if missing at every start, without a schema bump,
+   * Guild desks' writers and names, pages' labels (ADR 0091) and agents' edits. Created if missing at every start, without a schema bump,
    * because a build without them ignores them: a rollback still opens the file, and leaves a label as it found it, since no
    * statement of its names the column. Personal and Work desks get the guild's tables empty.
    */
@@ -138,7 +138,39 @@ export class Db {
         CREATE TABLE IF NOT EXISTS page_clients (page_id TEXT NOT NULL, client INTEGER NOT NULL, member_id TEXT NOT NULL, PRIMARY KEY (page_id, client)) WITHOUT ROWID;
         CREATE TABLE IF NOT EXISTS page_credits (page_id TEXT NOT NULL, client INTEGER NOT NULL, clock INTEGER NOT NULL, len INTEGER NOT NULL, member_id TEXT NOT NULL, PRIMARY KEY (page_id, client, clock)) WITHOUT ROWID;
         CREATE TABLE IF NOT EXISTS members (member_id TEXT PRIMARY KEY, name TEXT NOT NULL, updated_at INTEGER NOT NULL) WITHOUT ROWID;
+        -- An agent's edits (agent.ts): who, which version came before, and what undoing it needs. Kept 30 days, as versions.
+        CREATE TABLE IF NOT EXISTS agent_edits (
+          id TEXT PRIMARY KEY,
+          page_id TEXT NOT NULL,
+          op TEXT NOT NULL,
+          agent TEXT NOT NULL,
+          actor TEXT NOT NULL,
+          edit_key TEXT,
+          version_id TEXT,
+          created_at INTEGER NOT NULL,
+          undo TEXT NOT NULL,
+          undone_at INTEGER,
+          result TEXT NOT NULL,
+          undone_by TEXT,
+          untrusted INTEGER NOT NULL DEFAULT 0
+        );
+        CREATE UNIQUE INDEX IF NOT EXISTS agent_edits_by_key ON agent_edits(edit_key) WHERE edit_key IS NOT NULL;
+        CREATE INDEX IF NOT EXISTS agent_edits_by_page ON agent_edits(page_id, created_at);
+        CREATE INDEX IF NOT EXISTS agent_edits_by_version ON agent_edits(version_id) WHERE version_id IS NOT NULL;
+        CREATE INDEX IF NOT EXISTS agent_edits_by_age ON agent_edits(created_at);
+        -- Text an agent wrote from a run holding U (Security's ATN-M1): each block's text and link addresses, hashed, by page.
+        -- A page that still holds one reads back untrusted. Not pruned with the edits: it goes only with the page.
+        CREATE TABLE IF NOT EXISTS agent_marks (
+          page_id TEXT NOT NULL,
+          fp TEXT NOT NULL,
+          edit_id TEXT NOT NULL,
+          created_at INTEGER NOT NULL,
+          PRIMARY KEY (page_id, fp, edit_id)
+        ) WITHOUT ROWID;
       `);
+      const editCols = this.raw.prepare('PRAGMA table_info(agent_edits)').all() as { name: string }[];
+      if (!editCols.some((c) => c.name === 'undone_by')) this.raw.exec('ALTER TABLE agent_edits ADD COLUMN undone_by TEXT');
+      if (!editCols.some((c) => c.name === 'untrusted')) this.raw.exec('ALTER TABLE agent_edits ADD COLUMN untrusted INTEGER NOT NULL DEFAULT 0');
       const cols = this.raw.prepare('PRAGMA table_info(page_updates)').all() as { name: string }[];
       if (!cols.some((c) => c.name === 'actors')) this.raw.exec('ALTER TABLE page_updates ADD COLUMN actors TEXT');
       const pageCols = this.raw.prepare('PRAGMA table_info(pages)').all() as { name: string }[];

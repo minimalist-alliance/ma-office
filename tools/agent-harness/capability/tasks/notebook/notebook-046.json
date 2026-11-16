@@ -1,0 +1,92 @@
+{
+  "id": "notebook-046",
+  "area": "notebook",
+  "title": "An append declined with a note",
+  "prompt": "Add Call grandma on Sunday to my Weekend plan page.",
+  "setup": {
+    "notebook": [
+      {
+        "tab": "Harness",
+        "title": "Weekend plan",
+        "markdown": "# Weekend plan\n\n- Saturday: hike\n"
+      }
+    ]
+  },
+  "approve": {
+    "declineNote": "Not now, I'll add it myself later."
+  },
+  "checks": [
+    {
+      "kind": "page",
+      "tab": "Harness",
+      "title": "Weekend plan",
+      "contains": [
+        "Saturday: hike"
+      ],
+      "notContains": [
+        "grandma"
+      ]
+    },
+    {
+      "kind": "reply",
+      "contains": [
+        "myself"
+      ],
+      "state": "done"
+    },
+    {
+      "kind": "cards",
+      "tools": [
+        "notebook_write"
+      ]
+    }
+  ],
+  "policy": {
+    "tools": [
+      "notebook_search",
+      "notebook_write"
+    ]
+  },
+  "standIn": [
+    {
+      "calls": [
+        {
+          "name": "notebook_search",
+          "input": {
+            "query": "Weekend plan"
+          }
+        }
+      ]
+    },
+    {
+      "calls": [
+        {
+          "name": "notebook_write",
+          "input": {
+            "pageId": {
+              "$re": {
+                "step": 0,
+                "call": 0,
+                "pattern": "\"pageId\":\"([^\"]+)\",\"title\":\"Weekend plan\""
+              }
+            },
+            "op": "append",
+            "markdown": "- Sunday: call grandma"
+          }
+        }
+      ]
+    },
+    {
+      "text": [
+        "Okay, I didn't add it. Your note: ",
+        {
+          "$re": {
+            "step": 1,
+            "call": 0,
+            "pattern": "Their note:\\n\"((?:[^\"\\\\]|\\\\.)*)\""
+          }
+        }
+      ]
+    }
+  ]
+}

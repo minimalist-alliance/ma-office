@@ -98,21 +98,88 @@ public final class AgentView {
      */
     public Map<String, Object> act(String tabId, String nodeId, String action, Object value, String fp, String block, long rev)
             throws RpcException, InterruptedException {
-        return act(tabId, nodeId, action, value, fp, block, rev, null, false);
+        return act(tabId, nodeId, action, value, fp, block, rev, null, false, false);
     }
 
     /**
-     * As {@link #act}, with where a click or Enter would navigate checked first, and whether the member approved it as a
-     * spend ({@link ActionProxy.Request}).
+     * As {@link #act}, with where a click or Enter would navigate checked first, whether the member approved it as a
+     * spend, and whether a click may submit a form ({@link ActionProxy.Request}).
      *
      * @param navCheck an absolute URL to a refusal word ({@code off_site}, {@code blocked}), or null to let it go
+     * @param submit a click that submits a form may be done; otherwise one that does is refused {@code changed}
      */
     public Map<String, Object> act(String tabId, String nodeId, String action, Object value, String fp, String block, long rev,
-            Function<String, String> navCheck, boolean spend) throws RpcException, InterruptedException {
+            Function<String, String> navCheck, boolean spend, boolean submit) throws RpcException, InterruptedException {
         if (!on()) {
             throw disabled();
         }
-        return proxy.act(null, new ActionProxy.Request(tabId, nodeId, action, value, fp, block, rev, navCheck, spend));
+        return proxy.act(null, new ActionProxy.Request(tabId, nodeId, action, value, fp, block, rev, navCheck, spend, submit));
+    }
+
+    /**
+     * What deskd's half says a click on this node, or a key in it, would do (the {@code agentClick} or {@code agentPress}
+     * op's look), with nothing done, focused or scrolled: whether it follows a link or submits a form, where to, whether
+     * that form is a search (a GET form holding a search box), the submit button's words for a key, and whether a
+     * payment provider's frame is on the page. The node must be in the tab's current view with this fingerprint. Work:
+     * Chromium is thawed for it first.
+     *
+     * @param key null for a click, or the key ({@code Enter} is the one that can submit)
+     * @return {@code {nav, url, search, button, pay}}; {@code nav} is {@code link}, {@code submit} or null
+     * @throws RpcException {@code conflict} {@code changed} or {@code gone} (the node isn't what the view showed),
+     *     {@code forbidden} {@code sensitive}, or {@code unavailable}
+     */
+    public Map<String, Object> actLook(String tabId, String nodeId, String fp, String key) throws RpcException, InterruptedException {
+        if (!on()) {
+            throw disabled();
+        }
+        try (AutoCloseable use = module.access.use()) {
+            TabRef tab = module.access.resolve(tabId);
+            MinifiedModule.TabState state = module.existing(tab.tabId());
+            MDoc doc = state == null ? null : module.doc(state);
+            MDoc.Node node = doc == null ? null : doc.nodes.get(nodeId);
+            if (node == null || !node.fp().equals(fp)) {
+                throw conflict("changed");
+            }
+            Map<String, Object> args = new java.util.LinkedHashMap<>();
+            args.put("op", key == null ? "agentClick" : "agentPress");
+            args.put("node", nodeId);
+            args.put("fp", fp);
+            if (key != null) {
+                args.put("key", key);
+            }
+            args.put("payHosts", module.lists.payment);
+            args.put("look", true);
+            Map<String, Object> got;
+            try {
+                got = module.world.run(tab, args, module.timing.request());
+            } catch (CdpFailure e) {
+                throw e.kind() == CdpFailure.Kind.REMOTE ? conflict("changed") : MinifiedModule.unavailable();
+            }
+            Object refused = got.get("refused");
+            if ("sensitive".equals(refused)) {
+                throw new RpcException(RpcException.FORBIDDEN, "A sensitive field", Map.of("reason", "sensitive"));
+            }
+            if (refused != null || got.get("error") != null || Boolean.TRUE.equals(got.get("missing"))) {
+                throw conflict("gone".equals(refused) ? "gone" : "changed");
+            }
+            Map<String, Object> said = new java.util.LinkedHashMap<>();
+            Object nav = got.get("nav");
+            said.put("nav", "link".equals(nav) || "submit".equals(nav) ? nav : null);
+            said.put("url", got.get("url") instanceof String url && url.length() <= 8192 ? url : null);
+            said.put("search", Boolean.TRUE.equals(got.get("search")));
+            said.put("button", got.get("button") instanceof String button ? Text.clean(button, 200) : null);
+            // Anything but a plain no is a payment frame, as paymentFrame has it.
+            said.put("pay", !Boolean.FALSE.equals(got.get("pay")));
+            return said;
+        } catch (RpcException | InterruptedException e) {
+            throw e;
+        } catch (Exception e) {
+            throw MinifiedModule.unavailable();
+        }
+    }
+
+    private static RpcException conflict(String reason) {
+        return new RpcException(RpcException.CONFLICT, "Refused", Map.of("reason", reason));
     }
 
     /**

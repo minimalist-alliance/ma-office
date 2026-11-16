@@ -201,7 +201,12 @@
     "office.notice": {
       "sel": "css=section.desk-notice[data-testid^=\"desks-\"]",
       "route": "office",
-      "note": "the office's one notice when there are no desks to show (chrome/CalmScreen.tsx): its text says why"
+      "note": "the office's one notice when there are no desks to show (chrome/CalmScreen.tsx): its text says why. Its data-card is the membership card's letter; C, D and X (a closed account, whose link Download your data goes to /export) show over the desks too"
+    },
+    "office.notice.closeHold": {
+      "sel": "data-testid=close-hold-notice",
+      "route": "office",
+      "note": "the close hold's card among the notices while GET /v1/me carries close_hold_cancelled (closehold/Card.tsx): its button is \"Got it\" (data-testid=close-hold-dismiss), and a failed dismiss adds data-testid=close-hold-error. With no desks it shows alone, in office.notice's place, which is hidden until Got it"
     },
     "office.desk": {
       "sel": "css=.proxy-layer > div[role=\"group\"] > button.proxy:first-child",
@@ -218,10 +223,95 @@
       "route": "office",
       "note": "an app's tile on a desk (a list): id proxy-<deskId>:<app>, name <App>[, <problem>][, <n> unread]; style left, top, width and height in world units, the desk's own (office.desk) included; m moves, r resizes, . its menu"
     },
-    "office.home": {
-      "sel": "role=button[name=\"Your office, show all desks\"s]",
+    "office.tile.face": {
+      "sel": "css=.proxy-layer button.proxy[data-face]:not(:first-child):not(.proxy-strip)",
       "route": "office",
-      "note": "the home mark, a button only while a desk is in front and more than one is in scope (chrome/TopBar.tsx)"
+      "note": "the same buttons as office.tile, each with data-face, what its tile draws at the current zoom (the canvas's own rule, canvas/layout.ts tileFace): icon is the app's glyph, big or small, or a plain card at the farthest zoom; content is the widget card with its name and the summary's words. It flips as you zoom"
+    },
+    "office.home": {
+      "sel": "css=.home-mark-btn[data-home]",
+      "route": "office",
+      "note": "the mark while a click on it shows all desks: a desk in front and more than one in scope (chrome/TopBar.tsx HomeMark, data-home). A mouse click goes home; a script's bare click() counts as the keyboard and opens office.mark.menu instead. The mark itself is office.mark, a button at all times"
+    },
+    "office.mark": {
+      "sel": "role=button[name=\"Minimalist Alliance\"s]",
+      "route": "office",
+      "note": "the mark, always a button (chrome/TopBar.tsx HomeMark): resting a mouse on it 120 ms, a tap, Enter or Space opens office.mark.menu (aria-expanded); a mouse click shows all desks where office.home is there, else toggles the menu"
+    },
+    "office.mark.menu": {
+      "sel": "role=navigation[name=\"Minimalist Alliance\"s]",
+      "route": "office",
+      "note": "the mark's menu of the Alliance's other pages (chrome/MarkPanel.tsx, #mark-menu), open after office.mark; its links each open a new tab"
+    },
+    "office.mark.alldesks": {
+      "sel": "css=#mark-menu >> role=button[name=\"All desks\"s]",
+      "route": "office",
+      "note": "in office.mark.menu: its first row only where office.home is there; shows all desks, in this tab"
+    },
+    "office.mark.forums": {
+      "sel": "css=#mark-menu >> role=link[name=\"Forums\"s]",
+      "route": "office",
+      "note": "in office.mark.menu: Community Forums, a new tab; only once client-config sends links.forums for desk-web"
+    },
+    "office.mark.help": {
+      "sel": "css=#mark-menu >> role=link[name=\"Help\"s]",
+      "route": "office",
+      "note": "in office.mark.menu: links.help, else links.support (the Contact page) when it is on the site apex; a new tab"
+    },
+    "office.mark.account": {
+      "sel": "css=#mark-menu >> role=link[name=\"Account\"s]",
+      "route": "office",
+      "note": "in office.mark.menu: the account site, a new tab; not for a closed account"
+    },
+    "office.mark.billing": {
+      "sel": "css=#mark-menu >> role=link[name=\"Billing\"s]",
+      "route": "office",
+      "note": "in office.mark.menu: the billing page, a new tab; not for a closed account"
+    },
+    "office.mark.privacy": {
+      "sel": "css=#mark-menu >> role=link[name=\"Privacy\"s]",
+      "route": "office",
+      "note": "in office.mark.menu: the footer line; links.privacy, else /privacy on links.support's apex origin; a new tab"
+    },
+    "office.mark.terms": {
+      "sel": "css=#mark-menu >> role=link[name=\"Terms\"s]",
+      "route": "office",
+      "note": "in office.mark.menu: the footer line; links.terms, else /terms on links.support's apex origin; a new tab"
+    },
+    "office.mark.guidelines": {
+      "sel": "css=#mark-menu >> role=link[name=\"Guidelines\"s]",
+      "route": "office",
+      "note": "in office.mark.menu: the footer line; links.guidelines, else /guidelines on links.support's apex origin; a new tab"
+    },
+    "office.mark.tour": {
+      "sel": "css=#mark-menu >> role=button[name=\"Take the tour\"s]",
+      "route": "office",
+      "note": "in office.mark.menu: its first group, after office.mark.alldesks where there is one; starts the office tour (office.tour) now, whatever the setting (ADR 0056); the tour's only way in, since the account menu has none; only for a member with a Personal or Work desk, never for a closed account, nor with client-config walkthrough.enabled false"
+    },
+    "office.tour": {
+      "sel": "data-testid=tour",
+      "route": "office",
+      "note": "the office tour's card (tour/TourLayer.tsx, ADR 0056), a modal dialog named by its step's title, data-step its id (intro, desk or desks, guild, scope, app, move, maia, setup, shield, bell, account, help; each only where its target is on screen): on a member's first visit once the office is quiet, or after office.mark.tour. A fresh account meets it; office.tour.off ends it for good, office.tour.close for this page load only"
+    },
+    "office.tour.next": {
+      "sel": "data-testid=tour-next",
+      "route": "office",
+      "note": "Next in office.tour, or Done on its last step (Done turns the tour off for good)"
+    },
+    "office.tour.skip": {
+      "sel": "data-testid=tour-skip",
+      "route": "office",
+      "note": "Skip in office.tour, on its first step only (later steps have Back there): ends it and keeps nothing, so it starts again the next time the office opens (Esc and office.tour.close do the same)"
+    },
+    "office.tour.close": {
+      "sel": "data-testid=tour-close",
+      "route": "office",
+      "note": "the close button in office.tour, Close the tour, on every step: as Skip"
+    },
+    "office.tour.off": {
+      "sel": "data-testid=tour-off",
+      "route": "office",
+      "note": "Don't show this again, in office.tour on every step but the last: turns its setting off for good (no switch turns it back on; office.mark.tour still starts it) and ends it, with a short note"
     },
     "office.desknav": {
       "sel": "role=group[name=\"Switch desk\"s] >> css=.desk-nav-label",
@@ -237,6 +327,21 @@
       "sel": "css=.window-head >> role=button[name=/^Close /]",
       "route": "office",
       "note": "Close <App>, in a window's head (inside office.window)"
+    },
+    "office.app.zoom": {
+      "sel": "css=.app-zoom >> role=button[name=/^Zoom, \\d+%$/]",
+      "route": "office",
+      "note": "an app's zoom button (zoom/ZoomButton.tsx, ADR 0055), beside its expand button in a window's head, an open tile's, the carousel's or a phone's slide; named Zoom, <level>%; a Browser whose desk has no zoom has none"
+    },
+    "office.app.zoom.slider": {
+      "sel": "role=dialog[name=/^Zoom /] >> role=slider[name=\"Zoom\"]",
+      "route": "office",
+      "note": "the zoom popout's slider (zoom/ZoomPop.tsx), 50 to 200 in steps of 10, aria-valuetext <level>%; arrows, Home and End"
+    },
+    "office.app.zoom.reset": {
+      "sel": "role=dialog[name=/^Zoom /] >> role=button[name=/, back to 100%$/]",
+      "route": "office",
+      "note": "the zoom popout's level, a button that puts the app back to 100%"
     },
     "office.opentile": {
       "sel": "css=[data-testid=\"open-layer\"] [data-testid^=\"open-tile-\"]",
@@ -343,7 +448,7 @@
     "office.browser.tab": {
       "sel": "data-testid=browser-tab",
       "route": "office",
-      "note": "one tab on the desk (a list); the active one has class active"
+      "note": "one tab on the desk (a list); the active one has class active, and class loading while its page loads"
     },
     "office.browser.tab.title": {
       "sel": "css=.br-tab-title",
@@ -355,12 +460,27 @@
       "route": "office",
       "note": "Simplified, a radio in the bar (simple/BarSwitch.tsx); aria-checked while the page is simplified"
     },
+    "office.browser.full": {
+      "sel": "data-testid=browser-simple-off",
+      "route": "office",
+      "note": "Full page (its label says Real page), the other radio in the bar's View switch (simple/BarSwitch.tsx); aria-checked while the page shows in full; the switch shows only where the desk serves the simple view"
+    },
     "office.browser.panel": {
       "sel": "data-testid=browser-panel",
       "route": "office",
       "note": "the panel over the picture while the Browser starts, the desk sleeps or the picture can't show: data-panel says which",
       "check": false,
       "reason": "shows only while there's no picture; the harness's mock desk plays at once"
+    },
+    "office.browser.notice": {
+      "sel": "data-testid=browser-notice",
+      "route": "office",
+      "note": "the bar's line (browser/BrowserBar.tsx, role status) for 5 s: what the desk said when it didn't go where the address said, such as \"This desk blocks that address.\" (driver.ts onTabActionFailed)"
+    },
+    "office.browser.openhere": {
+      "sel": "data-testid=browser-open-here",
+      "route": "office",
+      "note": "Open on this device, at the address field's end; it shows only while the field shows the active tab's own http(s) address, not what's being typed or an address sent and not yet answered"
     },
     "apps.office": {
       "sel": "css=.ma-shell",
@@ -430,6 +550,11 @@
       "sel": "role=tab",
       "route": "apps",
       "note": "each tab of the open notebook, aria-selected on the open one, inside the tablist 'Tabs in <notebook>' (TabView.tsx)"
+    },
+    "notebook.side": {
+      "sel": "role=complementary[name=\"Notebooks and pages\"s]",
+      "route": "apps",
+      "note": "the notebooks and pages column (TabView.tsx), on the Notebook's own colours (its background is the scheme's side, Navy ink's from Desk release 16, palette.ts NOTEBOOK_SCHEME); a window under 640 px wide tucks it behind its toggle"
     },
     "notebook.line": {
       "sel": "data-testid=notebook-line",

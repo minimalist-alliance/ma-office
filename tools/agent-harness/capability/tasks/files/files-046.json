@@ -1,0 +1,56 @@
+{
+  "id": "files-046",
+  "area": "files",
+  "title": "Replace a file without reading it",
+  "prompt": "Overwrite Harness/site/banner.txt with the text 'Closed for the holidays until 2 January'.",
+  "setup": {
+    "files": {
+      "Harness/site/banner.txt": "Open every day 9 to 5.\n"
+    }
+  },
+  "approve": "all",
+  "checks": [
+    {
+      "kind": "file",
+      "path": "Harness/site/banner.txt",
+      "contains": [
+        "Closed for the holidays until 2 January"
+      ],
+      "notContains": [
+        "Open every day"
+      ]
+    },
+    {
+      "kind": "untrusted",
+      "value": false
+    },
+    {
+      "kind": "cards",
+      "tools": [
+        "files_write"
+      ]
+    }
+  ],
+  "policy": {
+    "tools": [
+      "files_write"
+    ]
+  },
+  "standIn": [
+    {
+      "calls": [
+        {
+          "name": "files_write",
+          "input": {
+            "path": "Harness/site/banner.txt",
+            "text": "Closed for the holidays until 2 January\n",
+            "replace": true
+          }
+        }
+      ]
+    },
+    {
+      "text": "Updated the banner. The old text is in the trash."
+    }
+  ]
+}

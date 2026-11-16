@@ -18,9 +18,10 @@ import java.util.Map;
  * No key is ever written here. desk-agent owns this file, so deskd's relay of {@code agent.*} is a pass-through
  * (docs/proposals.md section 5).
  *
- * <p>Opening it creates the manager if it's missing, and ends any reply a crash left {@code streaming}: it becomes
- * {@code failed}, {@code unavailable}, {@code interrupted}, as runs don't resume yet (ADR 0020's durable runs are
- * later).
+ * <p>Opening it creates the manager if it's missing, and ends any reply a crash left {@code streaming} whose run can't
+ * resume: it becomes {@code failed}, {@code unavailable}, {@code interrupted}, keeping the text and chips its run wrote
+ * at each step ({@link #stepped}). A reply whose run has a whole checkpoint ({@code runs}, {@code resumable}) stays
+ * {@code streaming}: its run picks up from there (durable runs, {@code run.RunCheckpoints}).
  */
 public final class AgentStore implements AutoCloseable {
 
@@ -90,6 +91,9 @@ public final class AgentStore implements AutoCloseable {
                 TeamSchema.apply(connection);
                 ApprovalSchema.apply(connection);
                 ToolSchema.apply(connection);
+                AccessSchema.apply(connection);
+                DeskSchema.apply(connection);
+                RunSchema.apply(connection);
                 return null;
             });
             interruptedAtOpen = opened.transaction(connection -> {
@@ -101,8 +105,11 @@ public final class AgentStore implements AutoCloseable {
                     insert.executeUpdate();
                 }
                 try (Statement statement = connection.createStatement()) {
+                    // A reply whose run can resume (durable runs: its checkpoint is whole) stays streaming, and its run
+                    // picks up from its last checkpoint; the rest end interrupted, keeping what each step wrote.
                     return statement.executeUpdate("UPDATE messages SET state = 'failed', error = 'unavailable',"
-                            + " error_detail = 'interrupted' WHERE state = 'streaming'");
+                            + " error_detail = 'interrupted' WHERE state = 'streaming' AND id NOT IN (SELECT"
+                            + " message_id FROM runs WHERE resumable = 1 AND ended_at IS NULL)");
                 }
             });
         } catch (SQLException | RuntimeException e) {
@@ -149,7 +156,17 @@ public final class AgentStore implements AutoCloseable {
             delete(connection, "DELETE FROM approvals WHERE agent_id = ?", id);
             delete(connection, "DELETE FROM run_marks WHERE agent_id = ?", id);
             delete(connection, "DELETE FROM run_plans WHERE agent_id = ?", id);
+            delete(connection, "DELETE FROM run_calls WHERE agent_id = ?", id);
+            // Its runs' checkpoints (durable runs): the tool results they hold go with it.
+            delete(connection, "DELETE FROM run_steps WHERE run_id IN (SELECT run_id FROM runs WHERE agent_id = ?)", id);
+            delete(connection, "DELETE FROM run_results WHERE run_id IN (SELECT run_id FROM runs WHERE agent_id = ?)",
+                    id);
+            delete(connection, "DELETE FROM run_waits WHERE agent_id = ?", id);
+            delete(connection, "DELETE FROM runs WHERE agent_id = ?", id);
             delete(connection, "DELETE FROM workspace_marks WHERE agent_id = ?", id);
+            // What the member chose for it on its setup screen, and any grant to another desk (AccessSchema).
+            delete(connection, "DELETE FROM agent_access WHERE agent_id = ?", id);
+            delete(connection, "DELETE FROM desk_grants WHERE agent_id = ?", id);
             delete(connection, "DELETE FROM timers WHERE agent_id = ?", id);
             delete(connection, "DELETE FROM links WHERE from_id = ?1 OR to_id = ?1", id);
             delete(connection, "DELETE FROM a2a WHERE from_id = ?1 OR to_id = ?1", id);
@@ -428,6 +445,23 @@ public final class AgentStore implements AutoCloseable {
     }
 
     /** Replaces a message's text and outcome, by id. */
+    /**
+     * A streaming reply's text and chips so far, written at each step of its run (durable runs' seam), so a kill keeps
+     * them: the reply then ends {@code interrupted} at open with what it had. Only while it's {@code streaming}, so a
+     * late write never undoes its end. @return whether the reply was still streaming
+     */
+    public boolean stepped(String messageId, String text, String toolsJson) throws SQLException {
+        return db().transaction(connection -> {
+            try (PreparedStatement update = connection.prepareStatement("UPDATE messages SET text = ?, tools = ?"
+                    + " WHERE id = ? AND state = 'streaming'")) {
+                update.setString(1, text);
+                update.setString(2, toolsJson);
+                update.setString(3, messageId);
+                return update.executeUpdate() == 1;
+            }
+        });
+    }
+
     public void updateMessage(MessageRow row) throws SQLException {
         db().transaction(connection -> {
             try (PreparedStatement update = connection.prepareStatement("UPDATE messages SET text = ?, at_ms = ?,"
@@ -578,6 +612,11 @@ public final class AgentStore implements AutoCloseable {
     private static KeyRow key(ResultSet r) throws SQLException {
         return new KeyRow(r.getString(1), r.getString(2), r.getString(3), r.getString(4), r.getLong(5),
                 r.getString(6));
+    }
+
+    /** The directory {@code agent.db} is in: desk-agent's data directory. */
+    public Path directory() {
+        return file.toAbsolutePath().getParent();
     }
 
     /** The open database, for the team's tables beside these ({@code TeamStore}, ADR 0047). */

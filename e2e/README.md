@@ -72,9 +72,12 @@ npx playwright test tests/agent-relay.spec.ts --output test-results-agent
 
 Both were the weekend's integration checks (`int-15c`), made part of this gate by task 33. The agent relay check's "nothing changed" needs a `deskd` from `sub/desk-followups` on: an older one says `mayHaveApplied: true` there and fails it.
 
+## The office tour (ADR 0056)
+`desk-1` meets the office tour like any member: it starts by itself on each visit until someone presses Done or "Don't show this again", and while it shows the office is inert and holds the keyboard. So `focusTestDesk` (`tests/lib.ts`) closes it with its own close button (`tour-close`) before a spec's first key, which writes nothing, so `desk-1`'s setting is left as found, and any console or CSP error it raised still fails the spec. It knows the tour isn't coming when the office has read its layout document and 5 s pass with no request for the tour's chunk (`TourLayer-*.js`). Release 19's gate failed `agent-check` on this; release 20 is the first with it.
+
 ## Agent window check
 
-`tests/agent-check.spec.ts` is a smoke check of the shipped app's Agent window on the test desk, as `desk-1`: `/health` says `agent: connected`, the Agent tile opens its window, and the window leaves its loading state (key setup, the agent's state or a thread, whichever the account has) with no console or CSP errors. It uses no provider key, adds none and sends no message, so it only reads. It has not been run (2026-11-11): typechecked only. Don't run it with another spec or a viewer on the desk.
+`tests/agent-check.spec.ts` is a smoke check of the shipped app's Agent window on the test desk, as `desk-1`: `/health` says `agent: connected`, the Agent tile opens its window, and the window leaves its loading state (key setup, the agent's state, a thread, or the agent's setup screen, whichever the account has) with no console or CSP errors. It uses no provider key, adds none, sends no message and never saves the setup screen, so it only reads. The setup screen counts since desk-agent `2026.11.13-adb0303`: that release shows every agent made before it its screen once (`docs/sub-status/agent-tools-release-1113.md`), and the spec failed on it until then. Don't run it with another spec or a viewer on the desk.
 
 ```bash
 npx playwright test tests/agent-check.spec.ts --output test-results-agent-check

@@ -8,6 +8,7 @@ import { Commons, RoomClient } from '../../../apps/commons/web/src/index.ts';
 import '../../../apps/commons/web/src/ui/commons.css';
 import 'virtual:ma-commons-themes.css';
 import type { DeskLink } from '../desk/deskLink';
+import { setCall } from '../maiamode/dnd';
 import { guildRoomLink, type GuildRoomLink } from './commonsLink';
 
 export interface CommonsBodyProps {
@@ -39,6 +40,23 @@ export default function CommonsBody({ link, title }: CommonsBodyProps) {
       made?.handle.stop();
     };
   }, [link]);
+
+  // In the room with voice on is a call: the focus shield holds what would reach the member until it ends (`maiamode/dnd.ts`).
+  // On or off only, never who or which room.
+  useEffect(() => {
+    if (!room) return;
+    const source = `commons:${link.deskId}`;
+    const look = (): void => {
+      const s = room.client.state;
+      setCall(source, s.joined && (s.voice === 'on' || s.voice === 'listening' || s.voice === 'connecting'));
+    };
+    look();
+    const off = room.client.subscribe(look);
+    return () => {
+      off();
+      setCall(source, false);
+    };
+  }, [room, link.deskId]);
 
   return (
     <div className="cmw-body" data-testid="commons-app">

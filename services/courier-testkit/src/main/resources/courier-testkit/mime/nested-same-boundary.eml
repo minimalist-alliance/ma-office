@@ -1,0 +1,22 @@
+From: Office <office@example.com>
+To: me@desk.example
+Date: Fri, 13 Nov 2026 10:00:00 +0000
+Subject: Same boundary twice
+Message-ID: <nested-same-boundary@corpus.example>
+MIME-Version: 1.0
+X-Corpus-Note: an inner multipart reusing its parent's boundary
+Content-Type: multipart/mixed; boundary="same"
+
+--same
+Content-Type: multipart/alternative; boundary="same"
+
+--same
+Content-Type: text/plain
+
+Inner text.
+--same
+Content-Type: text/html
+
+<p>Inner html.</p>
+--same--
+--same--

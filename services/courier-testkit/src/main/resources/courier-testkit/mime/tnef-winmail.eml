@@ -1,0 +1,23 @@
+From: Engineering <engineering@example.org>
+To: me@desk.example
+Date: Fri, 13 Nov 2026 10:00:00 +0000
+Subject: Spec attached
+Message-ID: <tnef-winmail@corpus.example>
+MIME-Version: 1.0
+X-Corpus-Note: an Outlook winmail.dat (TNEF) holding a file
+X-MS-TNEF-Correlator: <0002@example.org>
+Content-Type: multipart/mixed; boundary="_004_TNEF_"
+
+--_004_TNEF_
+Content-Type: text/plain; charset="us-ascii"
+
+The spec is in the attachment.
+--_004_TNEF_
+Content-Type: application/ms-tnef; name="winmail.dat"
+Content-Disposition: attachment; filename="winmail.dat"
+Content-Transfer-Encoding: base64
+
+eJ8+IgEAAQaQCAAEAAAAAAABAAEAAQeQBgAIAAAA5AQAAAAAAADoAAEIgAcAGAAAAElQTS5NaWNy
+b3NvZnQgTWFpbC5Ob3RlADEIAgKQBgAOAAAAAQD/////AAAAAAAAAAD9AwIQgAEACQAAAHNwZWMu
+dHh0ADkDAg+ABgAUAAAAU3BlYzogdmVyc2lvbiB0d28uDQqqBg==
+--_004_TNEF_--

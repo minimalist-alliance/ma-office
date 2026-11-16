@@ -1,0 +1,171 @@
+# Courier test kit: the hand-written MIME samples, one <name>.eml beside this file per row. Tab-separated, UTF-8.
+# Columns: name, outcome, subject, from, attachments, word, family.
+#   outcome      ok (read), refused:<reason> (too_large, too_deep, too_many_parts, timeout, malformed, too_complex),
+#                or either (broken input a parser may read or cleanly refuse; nothing else is checked).
+#   subject      the decoded subject: unfolded (CRLF removed, folding whitespace kept), RFC 2047 words decoded, the space
+#                between adjacent encoded words dropped, control and bidi-override characters stripped as the store does.
+#                Empty: the message has no Subject. "-": not checked.
+#   from         the lowercase address of the first From mailbox; nobody@invalid when there is none. "-": not checked.
+#   attachments  leaf parts a reader sees as attachments: every leaf except the body (the first text/plain and first
+#                text/html with no file name and not marked attachment) and parts marked Content-Disposition: inline;
+#                a message/rfc822 part counts once and is not descended. "-": not checked.
+#   word         lowercase, at least 4 letters, in the decoded body text (text/plain, or the HTML's visible text when
+#                there is no text/plain), compared ignoring case. "-": not checked.
+#   family       basic, charset, encoding, header, structure, attachment, html, links, bulk, malformed or limits.
+# Limits: 2,000 MIME entities (the message and every multipart counted), multiparts nested 20 deep (the message's own
+# counted), 40 MiB a message, 10 s a parse. The first 27 rows are deskd's samples (courier/mime in deskd's tests).
+gmail-alternative	ok	Agenda	dana@example.com	0	budget	structure
+html-only	ok	Newsletter	dana@example.com	0	tomatoes	html
+latin1-qp	ok	Réunion demain	francois@example.fr	0	réunion	charset
+iso-2022-jp	ok	こんにちは	yamada@example.jp	0	tokyo	charset
+base64-utf8	ok	🎉 Party	dana@example.com	0	snacks	encoding
+rfc2231-name	ok	Receipt	dana@example.com	1	attached	header
+inline-image	ok	Photo	dana@example.com	0	sunset	structure
+outlook-tnef	ok	Specs	bob@example.org	1	winmail	attachment
+calendar-invite	ok	Invitation: Review @ Fri	bob@example.org	1	invited	structure
+forwarded-rfc822	ok	Fwd: Old thread	dana@example.com	1	below	structure
+dangerous-attachments	ok	Invoice	dana@example.com	2	open	attachment
+bare-lf	ok	Unix	dana@example.com	0	lines	encoding
+folded-headers	ok	A very long subject that a client folded over two lines	smith@example.com	0	body	header
+group-syntax	ok	Hidden	dana@example.com	0	nobody	header
+no-from	ok	Anonymous	nobody@invalid	0	sent	header
+garbage-date	ok	When	dana@example.com	0	date	header
+display-name-address	ok	Verify	phish@evil.example	0	click	header
+bidi-subject	ok	Invoice fdp.exe	dana@example.com	0	attached	header
+nul-and-controls	ok	Ctrl chars	dana@example.com	0	escape	malformed
+missing-final-boundary	ok	Cut off	dana@example.com	0	never	malformed
+long-header	ok	xxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxx	dana@example.com	0	short	header
+too-deep	refused:too_deep	-	-	-	-	limits
+too-many-parts	refused:too_many_parts	-	-	-	-	limits
+empty	ok		nobody@invalid	0	-	malformed
+headers-only	ok	Just headers	dana@example.com	0	-	basic
+eight-bit-headers	ok	Grüße aus Köln	zoe@example.com	0	koln	header
+binary-attachment	ok	Zip	dana@example.com	1	archive	attachment
+plain-ascii	ok	Plain note	office@example.com	0	porch	basic
+reply-thread	ok	Re: Porch paint	dana@example.com	0	primer	basic
+alternative-with-pdf	ok	Minutes of the November meeting	board@example.org	1	minutes	basic
+related-cid-png	ok	New logo draft	design@example.com	0	feedback	structure
+related-alt-gif-jpeg	ok	Photos from the harbour	harbour@example.net	0	harbour	structure
+signed-pgp	ok	Release checksums	release@example.org	1	checksums	structure
+signed-smime	ok	Quarterly statement	finance@example.com	1	quarterly	structure
+encrypted-pgp	ok	Contract draft	legal@example.org	-	-	structure
+pkcs7-mime-enveloped	ok	Sealed offer	legal@example.org	-	-	structure
+dsn-bounce	ok	Delivery Status Notification (Failure)	mailer-daemon@mx.example.net	-	permanently	structure
+digest	ok	Announcements digest, Vol 12, Issue 3	announce@lists.example.org	-	announcements	structure
+format-flowed-delsp	ok	Flowed text	office@example.com	0	together	structure
+gmail-forwarded	ok	Fwd: Your warranty registration	dana@example.com	0	warranty	structure
+apple-mail-mixed	ok	Hike photos	hiking@example.net	-	favourite	structure
+calendar-request	ok	Invitation: Sprint retrospective @ Fri 20 Nov 2026 15:00 (UTC)	team@example.net	-	retrospective	structure
+rfc822-attachment-nested	ok	Fwd: Signed lease	office@example.com	1	lease	structure
+preamble-epilogue	ok	Preamble and epilogue	office@example.com	0	lighthouse	structure
+charset-iso-8859-2-qp	ok	Spotkanie w piątek	board@example.com	0	piątek	charset
+charset-windows-1250	ok	Faktura za říjen	accounts@example.com	0	splatnost	charset
+charset-iso-8859-5-base64	ok	Отчёт за квартал	accounts@example.org	0	квартальный	charset
+charset-windows-1251-qp	ok	Встреча в четверг	office@example.org	0	встреча	charset
+charset-koi8-r	ok	Договор поставки	sales@example.org	0	согласования	charset
+charset-iso-8859-7-qp	ok	Συνάντηση την Παρασκευή	office@example.net	0	συνάντηση	charset
+charset-windows-1253	ok	Τιμολόγιο Νοεμβρίου	accounts@example.net	0	τιμολόγιο	charset
+charset-iso-8859-9	ok	Toplantı notları	office@example.com	0	görüşmek	charset
+charset-windows-1255-base64	ok	פגישה ביום שלישי	office@example.org	0	הפגישה	charset
+charset-windows-1256-qp	ok	اجتماع الفريق	office@example.net	0	اجتماع	charset
+charset-big5-base64	ok	會議時間變更	admin@example.com	0	會議時間	charset
+charset-gb2312	ok	会议记录	admin@example.org	0	会议记录	charset
+charset-gbk-qp	ok	项目进度报告	project@example.org	0	进度报告	charset
+charset-gb18030-base64	ok	年度总结 🎉	hq@example.com	0	年度总结	charset
+charset-shift-jis-base64	ok	スケジュールの確認	soumu@example.com	0	スケジュール	charset
+charset-euc-jp	ok	打ち合わせのお知らせ	eigyo@example.net	0	打ち合わせ	charset
+charset-euc-kr-base64	ok	회의 일정 안내	help@example.net	0	안녕하세요	charset
+charset-iso-8859-15	ok	Œuvre et budget	contact@example.com	0	prévu	charset
+charset-windows-1252-qp	ok	“Quarterly” review – draft	review@example.com	0	comments	charset
+charset-iso-8859-1-base64	ok	Reunión mañana	oficina@example.net	0	mañana	charset
+charset-utf8-alias	ok	Příloha ke smlouvě	office@example.net	0	příloha	charset
+charset-utf-16le-bom	ok	Straßensperre	buero@example.com	0	straße	charset
+charset-utf-16be-bom	ok	Νέο γραφείο	office@example.net	0	γραφείο	charset
+charset-utf-16le-no-bom	ok	Инвентаризация	sklad@example.org	0	понедельник	charset
+charset-utf-7	ok	Menu in UTF-7	kitchen@example.com	0	ordering	charset
+charset-unknown	ok	Unknown charset	warehouse@example.org	0	warehouse	charset
+charset-mislabeled-latin1	ok	Mislabeled charset	inventory@example.com	0	inventory	charset
+charset-mislabeled-utf8	ok	Smart quotes	shipping@example.com	0	shipment	charset
+cte-7bit	ok	7bit body	warehouse@example.org	0	stock	encoding
+cte-8bit	ok	8bit body	hotel@example.net	0	frühstück	encoding
+cte-binary	ok	Binary body	routes@example.net	0	kilometres	encoding
+cte-base64-wrapped	ok	Base64 wrapped	envios@example.com	0	entrega	encoding
+cte-base64-oneline	ok	Base64 on one line	couriers@example.com	0	tomorrow	encoding
+cte-base64-64col	ok	Base64 at 64 columns	garden@example.org	0	lantern	encoding
+cte-base64-uppercase-token	ok	Upper-case token	orchard@example.net	0	orchard	encoding
+cte-padded-token	ok	Padded token	meadow@example.net	0	meadow	encoding
+cte-qp-soft-breaks	ok	Quoted-printable	travel@example.com	0	rendezvous	encoding
+cte-qp-mixed-case-token	ok	Calendrier	mairie@example.org	0	décembre	encoding
+cte-qp-invalid-escapes	ok	Sloppy QP	finance@example.com	0	budget	encoding
+cte-unknown-token	ok	Unknown encoding	archive@example.org	-	-	encoding
+cte-x-uuencode	ok	x-uuencode body	facilities@example.org	-	-	encoding
+uuencoded-inline-block	ok	Old-style attachment	facilities@example.org	-	below	encoding
+multipart-lf-endings	ok	LF-only multipart	builds@example.net	1	mailer	encoding
+endings-mixed	ok	Mixed line endings	farm@example.org	0	harvest	encoding
+long-line-body	ok	Very long line	archive@example.org	0	horizon	encoding
+nul-in-body	ok	NUL bytes	port@example.net	0	manifest	encoding
+subject-encoded-folded	ok	Quarterly planning: agenda, rooms, and catering for the offsite in Kraków — please confirm by Friday	planning@example.com	0	offsite	header
+subject-mixed-encoded	ok	Re: [ops] café crème order (2)	ops@example.net	0	coffee	header
+subject-q-specials	ok	Totals: a_b c? = 100%	reports@example.com	0	totals	header
+subject-raw-utf8	ok	Lunch 🍕 on Friday — café terrace	terrace@example.org	0	terrace	header
+ew-nested	ok	=?utf-8?Q?inner_text?=	office@example.com	0	nested	header
+ew-invalid-base64	ok	-	office@example.com	0	broken	header
+ew-unknown-charset	ok	-	crew@example.net	0	unknown	header
+ew-inside-word	ok	-	billing@example.com	0	reminder	header
+ew-overlong	ok	-	office@example.com	0	overlong	header
+ew-address-spoof	ok	Account notice	spoof@evil.example	0	review	header
+ew-in-quoted-name	ok	Opening hours	cafe@example.com	0	open	header
+from-quoted-comma-comment	ok	Invoice 2211	billing@example.com	0	invoice	header
+from-addr-spec-comment	ok	Disk check	alerts@example.net	0	disks	header
+from-group-syntax	refused:malformed	-	-	-	-	header
+duplicate-from-subject	refused:malformed	-	-	-	-	header
+header-without-colon	ok	Header without a colon	office@example.com	0	still	header
+missing-blank-line	ok	No blank line	office@example.com	0	-	header
+idn-punycode	ok	Neue Bücher	info@xn--bcher-kva.example	0	neuen	header
+idn-utf8-address	ok	Bücher on sale	info@bücher.example	0	reduziert	header
+quoted-local-parts	ok	Quoted local parts	team@example.net	0	reply	header
+rfc2231-continuations	ok	Long file names	archive@example.org	2	reports	header
+nul-in-headers	ok	-	office@example.com	0	headers	header
+outlook-html	ok	Procurement figures	procurement@example.com	0	procurement	html
+html-script-style	ok	Garden party	events@example.org	0	garden	html
+html-iframe-form	ok	Mailbox almost full	admin@mailbox-help.example	0	mailbox	html
+html-meta-refresh-base	ok	Statement ready	notices@bank.example	0	statement	html
+html-svg-mathml	ok	Diagram	diagrams@example.net	0	diagram	html
+html-entities	ok	Dessert menu	patisserie@example.com	0	crème	html
+tracking-pixels	ok	Autumn catalogue	news@catalogue.example	0	catalogue	links
+links-utm-params	ok	Waterproof boots sale	news@shop.example	0	waterproof	links
+link-paypal-deceptive	ok	Your account access is limited	service@account-review.example	0	limited	links
+links-bare-ip	ok	Invoice overdue	invoices@billing.example	0	overdue	links
+links-punycode-mixed-script	ok	Renew your account	security@account-check.example	0	renew	links
+links-javascript-data	ok	Weekly summary	reports@example.net	0	summary	links
+mailing-list	ok	[announce] Version 4.2 released	announce@lists.example.org	0	changelog	bulk
+auto-reply	ok	Automatic reply: Lunch plans	office@example.com	0	returning	bulk
+auto-generated-notice	ok	[Alert] Disk usage above 90%	monitor@example.net	0	threshold	bulk
+zip-with-exe	ok	Installer	downloads@example.net	1	installer	attachment
+zip-clean	ok	Notes archive	office@example.com	1	archive	attachment
+zip-encrypted	ok	Protected statement	billing@example.com	1	protected	attachment
+docm-macro	ok	Invoice document	accounts@invoices.example	1	enable	attachment
+jar-attachment	ok	Updater tool	tools@example.net	1	updater	attachment
+tar-archives	ok	Backups	backups@example.org	2	backups	attachment
+dangerous-programs	ok	Updates to install	updates@example.net	8	install	attachment
+dangerous-shortcuts-images	ok	Your files	files@example.net	5	files	attachment
+deceptive-names	ok	Invoice and receipt	billing@invoices.example	2	receipt	attachment
+ole2-doc-vba	ok	Report document	accounts@invoices.example	1	report	attachment
+tnef-winmail	ok	Spec attached	engineering@example.org	1	spec	attachment
+attachment-name-in-content-type	ok	Scan	scanner@example.com	1	scanned	attachment
+attachment-encoded-word-name	ok	Rechnung	buero@example.com	1	rechnung	attachment
+attachment-no-name	ok	Raw data	sensors@example.net	1	sensor	attachment
+boundary-missing	either	-	-	-	-	malformed
+boundary-mismatch	either	-	-	-	-	malformed
+truncated-base64	either	-	-	-	-	malformed
+multipart-no-parts	either	-	-	-	-	malformed
+garbage-binary	either	-	-	-	-	malformed
+endings-cr-only	either	-	-	-	-	malformed
+content-type-unbalanced-quote	either	-	-	-	-	malformed
+base64-invalid-chars	either	-	-	-	-	malformed
+nested-same-boundary	either	-	-	-	-	malformed
+header-empty-name	either	-	-	-	-	malformed
+nesting-20-ok	ok	Nested 20	office@example.com	0	bottom	limits
+nesting-21-refused	refused:too_deep	-	-	-	-	limits
+parts-2000-ok	ok	Parts 2000	office@example.com	1998	small	limits
+parts-2001-refused	refused:too_many_parts	-	-	-	-	limits

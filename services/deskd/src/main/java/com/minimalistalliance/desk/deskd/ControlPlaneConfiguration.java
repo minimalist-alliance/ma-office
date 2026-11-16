@@ -145,6 +145,38 @@ class ControlPlaneConfiguration {
         heartbeat.browserFrozenFrom(browser::browserFrozen);
         heartbeat.browserLiveSecondsFrom(browserTime::liveSecondsSinceBoot);
         heartbeat.notebookStorageFrom(notebook::storage);
+        // Maia while the member is away (API.md §23, ADR 0141): the carrier, her hold, her check-in and the bell.
+        com.minimalistalliance.desk.deskd.desks.DeskMessaging messaging = agentModule.deskMessaging();
+        if (messaging != null) {
+            com.minimalistalliance.desk.deskd.agent.MaiaAway away = new com.minimalistalliance.desk.deskd.agent.MaiaAway(
+                    new com.minimalistalliance.desk.deskd.agent.MaiaAway.Platform() {
+                        @Override
+                        public java.util.Map<String, Object> post(java.util.Map<String, Object> body) throws Exception {
+                            return agent.courier("POST", "/v1/agent/maia", body, java.util.Map.of());
+                        }
+
+                        @Override
+                        public java.util.Map<String, Object> collect() throws Exception {
+                            return agent.courier("GET", "/v1/agent/maia", null, java.util.Map.of());
+                        }
+                    },
+                    new com.minimalistalliance.desk.deskd.agent.MaiaAway.Agent() {
+                        @Override
+                        public Object call(String method, java.util.Map<String, Object> params) throws Exception {
+                            return agentModule.callAgent(method, params, java.time.Duration.ofSeconds(30));
+                        }
+
+                        @Override
+                        public boolean connected() {
+                            return agentModule.agentConnected();
+                        }
+                    },
+                    messaging, clock, state::guildDesk, state::deskId);
+            away.afterRevoke(agentModule::pushOwedDesks);
+            agentModule.onAgentState(away::onAgentState);
+            heartbeat.reportMaia(away::heartbeatBlock, away::onReply);
+            away.start();
+        }
         return heartbeat;
     }
 

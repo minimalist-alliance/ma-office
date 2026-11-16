@@ -1,9 +1,13 @@
 import { afterEach, describe, expect, it, vi } from 'vitest';
 import { wheelDeltaY, wheelZoomFactor } from './camera';
-import { gesturePinchGoes, gestureStep, listenForPinches, wheelPinchGoes } from './pinch';
+import { APP_ZOOM, gestureDelta, gesturePinchGoes, gestureStep, listenForPinches, setAppZoom, wheelPinchGoes, type AppZoomInput } from './pinch';
 
 /** An element that's inside whatever `inside` names, as `closest` would find it. */
 const el = (inside: string | null = null): Element => ({ closest: (sel: string) => (inside && sel.split(', ').includes(inside) ? {} : null) }) as unknown as Element;
+/** An app's frame (ADR 0055), inside a window (`[role="dialog"]`) as a window's is. */
+const frame = { app: 'notebook' } as unknown as Element;
+/** Something in that app: its frame is what `closest(APP_ZOOM)` finds. */
+const inApp = (alsoIn = '[role="dialog"]'): Element => ({ closest: (sel: string) => (sel === APP_ZOOM ? frame : sel.split(', ').includes(alsoIn) ? {} : null) }) as unknown as Element;
 
 describe('where a ctrl+wheel goes', () => {
   it('over the office, a pinch zooms the camera', () => {
@@ -25,11 +29,23 @@ describe('where a ctrl+wheel goes', () => {
   it('with no element under it, the browser keeps it', () => {
     expect(wheelPinchGoes(null, false, false)).toBe('browser');
   });
+  it('over an app, a pinch and the real key with the wheel both zoom the app (ADR 0055), in a window, a menu or a field of it too', () => {
+    expect(wheelPinchGoes(inApp(), false, false)).toBe('app');
+    expect(wheelPinchGoes(inApp(), false, true)).toBe('app');
+    for (const own of ['[role="menu"]', 'input', '[contenteditable="true"]', '.open-tile']) expect(wheelPinchGoes(inApp(own), false, false)).toBe('app');
+  });
+  it('over an app, one something in it already took is still theirs (the Browser\'s picture, before its desk zooms)', () => {
+    expect(wheelPinchGoes(inApp(), true, false)).toBe('browser');
+  });
 });
 
 describe('where one of Safari\'s GestureEvents goes', () => {
   it('a trackpad pinch over the office zooms the camera', () => {
     expect(gesturePinchGoes(el(), false)).toBe('camera');
+  });
+  it('a trackpad pinch over an app zooms the app; a finger\'s pinch there is still the touch\'s own', () => {
+    expect(gesturePinchGoes(inApp(), false)).toBe('app');
+    expect(gesturePinchGoes(inApp(), true)).toBe('stop');
   });
   it('a touch pinch is the canvas\'s own, and a window keeps its own: both only stop Safari magnifying', () => {
     expect(gesturePinchGoes(el(), true)).toBe('stop');
@@ -101,7 +117,7 @@ describe('listening on the page', () => {
   }
 
   const gesture = (type: string, scale: number, x = 110, y = 220): Event => Object.assign(new Event(type, { cancelable: true }), { scale, clientX: x, clientY: y });
-  const wheel = (deltaY: number, ctrlKey = true): Event => Object.assign(new Event('wheel', { cancelable: true }), { deltaY, deltaMode: 0, ctrlKey, clientX: 110, clientY: 220 });
+  const wheel = (deltaY: number, ctrlKey = true, metaKey = false): Event => Object.assign(new Event('wheel', { cancelable: true }), { deltaY, deltaMode: 0, ctrlKey, metaKey, clientX: 110, clientY: 220 });
   const key = (type: string): Event => Object.assign(new Event(type), { key: 'Control' });
 
   it('a Safari pinch zooms at the pointer, in the stage\'s pixels, step by step, and is never the page\'s', () => {
@@ -157,5 +173,68 @@ describe('listening on the page', () => {
     t.stop();
     expect(t.send(wheel(-10), el()).defaultPrevented).toBe(false);
     expect(t.send(gesture('gesturestart', 1), el()).defaultPrevented).toBe(false);
+  });
+
+  describe('over an app (ADR 0055)', () => {
+    afterEach(() => setAppZoom(null));
+    const handed = (): AppZoomInput[] => {
+      const got: AppZoomInput[] = [];
+      setAppZoom((z) => got.push(z));
+      return got;
+    };
+
+    it('a Chromium pinch goes to the app\'s zoom with its frame and delta, never the camera or the page', () => {
+      const t = setUp();
+      const got = handed();
+      const e = t.send(wheel(-6), inApp());
+      expect(e.defaultPrevented).toBe(true);
+      expect(got).toEqual([{ frame, dy: -6, pinch: true }]);
+      expect(t.zooms).toEqual([]);
+      expect(t.begins).toBe(0);
+      t.stop();
+    });
+
+    it('Ctrl and the wheel, and Cmd and the wheel, zoom the app as a held key, not a pinch', () => {
+      const t = setUp();
+      const got = handed();
+      t.send(key('keydown'), null);
+      expect(t.send(wheel(100), inApp()).defaultPrevented).toBe(true);
+      t.send(key('keyup'), null);
+      expect(t.send(wheel(-100, false, true), inApp()).defaultPrevented).toBe(true);
+      expect(got.map((z) => [z.dy, z.pinch])).toEqual([[100, false], [-100, false]]);
+      t.stop();
+    });
+
+    it('off the apps, Cmd and the wheel stay the browser\'s, and a plain wheel is nobody\'s here', () => {
+      const t = setUp();
+      const got = handed();
+      expect(t.send(wheel(-100, false, true), el()).defaultPrevented).toBe(false);
+      expect(t.send(wheel(-100, false, true), el('[role="dialog"]')).defaultPrevented).toBe(false);
+      expect(t.send(wheel(-100, false), inApp()).defaultPrevented).toBe(false);
+      expect(got).toEqual([]);
+      expect(t.zooms).toEqual([]);
+      t.stop();
+    });
+
+    it('before the zoom chunk is here, a pinch over an app still magnifies nothing', () => {
+      const t = setUp();
+      expect(t.send(wheel(-6), inApp()).defaultPrevented).toBe(true);
+      expect(t.zooms).toEqual([]);
+      t.stop();
+    });
+
+    it('a Safari pinch over an app goes to its zoom, at the camera\'s pinch rate, and is never the page\'s', () => {
+      const t = setUp();
+      const got = handed();
+      const events = [gesture('gesturestart', 1), gesture('gesturechange', 1.1), gesture('gesturechange', 1.1), gesture('gesturechange', 1.21), gesture('gestureend', 1.21)];
+      for (const e of events) t.send(e, inApp());
+      expect(events.every((e) => e.defaultPrevented)).toBe(true);
+      expect(got.map((z) => z.frame)).toEqual([frame, frame]);
+      expect(got.every((z) => z.pinch)).toBe(true);
+      expect(got[0]!.dy).toBeCloseTo(gestureDelta(1.1));
+      expect(got[0]!.dy).toBeCloseTo(-Math.log(1.1) / 0.012);
+      expect(t.zooms).toEqual([]);
+      t.stop();
+    });
   });
 });

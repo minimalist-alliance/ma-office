@@ -1,5 +1,5 @@
 // Agent status and provider badges, as rules the UI and the tests share (design 9.1, 9.4).
-import type { Agent, AgentErrorReason, AgentStatus, KeyMeta } from '../client/types';
+import type { Agent, AgentErrorReason, AgentStatus, KeyMeta, ModelInfo } from '../client/types';
 
 export const STATUS_LABEL: Record<AgentStatus, string> = {
   no_key: 'no key',
@@ -11,9 +11,22 @@ export const STATUS_LABEL: Record<AgentStatus, string> = {
   paused: 'paused',
 };
 
-/** The status word, which for an agent whose key went (a restart, a lost file) says so, not that there never was one. */
-export function statusWord(agent: Pick<Agent, 'status' | 'binding'>): string {
-  return agent.status === 'no_key' && agent.binding ? 'add key again' : STATUS_LABEL[agent.status];
+/**
+ * The status word, which for an agent whose key went (a restart, a lost file) says so, not that there never was one, and for
+ * one with a key that waits for its setup screen (draft ADR section 16) says that, as it can't run until then.
+ */
+export function statusWord(agent: Pick<Agent, 'status' | 'binding'> & { setup?: Agent['setup']; statusDetail?: Agent['statusDetail'] }): string {
+  if (agent.status === 'no_key' && agent.binding) return 'add key again';
+  if (agent.setup && agent.status === 'online') return 'set up first';
+  // W6: a run waiting for its answer from another desk is calm, not busy work, and doesn't keep the desk awake.
+  if (agent.status === 'working' && agent.statusDetail === 'waiting_desk') return 'waiting for your other desk';
+  return STATUS_LABEL[agent.status];
+}
+
+/** The status dot: hollow, as a dormant agent's, while one waits for its setup screen; steady while one waits for another desk. */
+export function statusDot(agent: Pick<Agent, 'status'> & { setup?: Agent['setup']; statusDetail?: Agent['statusDetail'] }): Dot {
+  if (agent.status === 'working' && agent.statusDetail === 'waiting_desk') return 'online';
+  return agent.setup && agent.status === 'online' ? 'hollow' : STATUS_DOT[agent.status];
 }
 
 /**
@@ -116,6 +129,20 @@ function openRouterText(detail: string | null | undefined): string | null {
   }
 }
 
+/** Minimalist Alliance's words for a helper on the member's MA credits (deskd API.md §24): credits, never money. */
+function creditsText(detail: string | null | undefined): string | null {
+  switch (detail) {
+    case 'limit':
+      return 'Your MA credits are used up for now. Give this agent your own key to keep going.';
+    case 'forbidden':
+      return 'MA credits aren’t available on this desk. Give this agent your own key.';
+    case 'rate_limited':
+      return 'Too many requests at once. Try again in a minute.';
+    default:
+      return null;
+  }
+}
+
 /** The failed replies that offer "Pick another model": OpenRouter's busy, slow and privacy-settings ones. */
 export const offersOtherModel = (detail: string | null | undefined, provider?: string | null): boolean =>
   provider === 'openrouter' && (detail === 'rate_limited' || detail === 'timeout' || detail === 'data_policy');
@@ -131,6 +158,10 @@ export function pausedText(detail: string | null | undefined): string {
 export function errorText(reason: AgentErrorReason | null | undefined, detail?: string | null, provider?: string | null): string {
   if (reason === 'provider_error' && provider === 'openrouter') {
     const own = openRouterText(detail);
+    if (own) return own;
+  }
+  if (reason === 'provider_error' && provider === 'ma-credits') {
+    const own = creditsText(detail);
     if (own) return own;
   }
   switch (reason) {
@@ -205,3 +236,15 @@ export function nameKey(name: string): string {
 
 /** Whether text holds Unicode format or bidi control characters, which the desk refuses (`hidden_chars`). */
 export const hasHiddenChars = (text: string): boolean => /\p{Cf}/u.test(text);
+
+/**
+ * The model a new agent gets unless the member picks another (the New agent form, the key screen, a key added or replaced
+ * for an agent whose model it doesn't list): the first `agent.key.models` lists, as desk-agent puts its default first
+ * (Sonnet 5.5 for an Anthropic key; deskd API.md section 11), passing over a model the desk has no price for while a priced
+ * or free one is listed. An unpriced model counts at its provider's highest price (ADR 0043), so it's never a sensible
+ * default; and an older desk-agent, which listed Anthropic's newest model first (`claude-fable-5-2`, unpriced), can't make it
+ * every new agent's model either.
+ */
+export function defaultModel<T extends ModelInfo>(models: readonly T[]): T | undefined {
+  return models.find((m) => m.free === true || (m.inputMicroUsdPerMTok != null && m.outputMicroUsdPerMTok != null)) ?? models[0];
+}

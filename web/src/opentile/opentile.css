@@ -11,14 +11,56 @@
   transform-origin: 0 0;
   pointer-events: none;
 }
+/* Its frame is in the office's glass (`styles/glass.css`, `docs/sub-status/office-glass.md`), as the tile it grew from is: it
+   shows in the head, and its light runs round the whole tile over the app's own edge, as the lit edge below did. The app stays
+   on its own solid window. Under reduced transparency or more contrast it's the frame it was: the window's surface, the tile's
+   shadow and the lit edge. */
 .open-tile {
   position: absolute;
   display: flex;
   flex-direction: column;
   overflow: hidden;
-  background: var(--ma-surface-window);
-  box-shadow: var(--ma-elevation-tile);
+  --ma-glass-solid-bg: var(--ma-surface-window);
+  --ma-glass-solid-shadow: var(--ma-elevation-tile);
   pointer-events: auto;
+  isolation: isolate;
+}
+.open-tile.ma-glass::before,
+.open-tile.ma-glass::after {
+  z-index: 5;
+}
+/* The window lift's lit edge (ADR 0029's addendum), as a window's: the top strongest, the left faint, over the tile's
+   content, the app's own raised parts included (the simplified view's are z-index 1 and up). The tile is its own stacking
+   context (`isolation`), so the edge's z-index stays inside it and never reaches a neighbouring tile. The app inside draws
+   none of its own. In glass, the glass's own light is that edge (above), and this is its fallback (below). */
+.open-tile:where(:not(.ma-glass))::after {
+  content: '';
+  position: absolute;
+  inset: 0;
+  z-index: 5;
+  border-radius: inherit;
+  box-shadow: var(--ma-window-lift-edge);
+  pointer-events: none;
+}
+.ma-window.open-tile-app::after {
+  content: none;
+}
+@media (prefers-reduced-transparency: reduce), (prefers-contrast: more) {
+  .open-tile.ma-glass::after {
+    content: '';
+    inset: 0;
+    padding: 0;
+    background: none;
+    -webkit-mask: none;
+    mask: none;
+    box-shadow: var(--ma-window-lift-edge);
+  }
+}
+@media (forced-colors: active) {
+  .open-tile::after,
+  .open-tile.ma-glass::after {
+    content: none;
+  }
 }
 .open-layer.shielded .open-tile {
   filter: blur(14px);
@@ -27,14 +69,14 @@
   visibility: hidden;
 }
 /* The head: the app's glyph and name, as a window's title bar but quieter. It moves the tile, and it's the tile's stop for
-   the keyboard. "Open as window" sits at its right end, after the app in the Tab order. */
+   the keyboard. The app's zoom and "Open as window" sit at its right end, after the app in the Tab order. */
 .open-tile-head {
   flex: none;
   display: flex;
   align-items: center;
   gap: 8px;
   height: 32px;
-  padding: 0 44px 0 12px;
+  padding: 0 76px 0 12px;
   border-bottom: 1px solid var(--ma-border-hairline);
   color: var(--ma-text-secondary);
   cursor: grab;
@@ -119,4 +161,8 @@
 /* The Browser's one ring: typing's ring is around the picture only (`.br-surface:focus-within`). */
 .open-tile:has(.br-surface) .open-tile-app:focus-visible {
   outline: none;
+}
+/* A Browser whose desk has no zoom has no zoom button (ADR 0055): its head keeps the room "Open in its window" needs. */
+.open-tile:not(:has(.open-tile-zoom)) .open-tile-head {
+  padding-right: 44px;
 }

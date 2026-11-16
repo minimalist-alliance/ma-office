@@ -17,10 +17,11 @@ import { collabToken, RELOAD_REASON } from '../../notebook/src/model/compat.ts';
 import type { ImportedPage } from '../../notebook/src/model/notebookFile.ts';
 import { DOC_FIELD, type PMNode } from '../../notebook/src/model/schema.ts';
 import { buildTree } from '../../notebook/src/model/tree.ts';
-import type { ActivityRow, NotebookRec, PageRec, SearchHit, SearchOptions, TabColor, TabRec, Tree, Version, VersionMeta } from '../../notebook/src/model/types.ts';
+import type { ActivityRow, AgentEdit, NotebookRec, PageRec, SearchHit, SearchOptions, TabColor, TabRec, Tree, Version, VersionMeta } from '../../notebook/src/model/types.ts';
 import { DeskNotConnected, type DeskLink, type DeskRpc } from '../desk/deskLink';
 import { uuidv7 } from '../desk/idem';
 import { backoffMs } from '../desk/rtc/backoff';
+import { onMemberChange } from '../platform/auth';
 import { holdClose } from '../shell/closeGuard';
 import { collabSocketClass } from './collabSocket';
 
@@ -178,6 +179,8 @@ export class DeskBackend implements NotebookBackend {
   private presenceName: string | null;
   private presenceNow: readonly string[] = [];
   private readonly presenceListeners = new Set<() => void>();
+  /** Ended (`dispose`): a read already on its way lands nowhere, and a new session asks nothing. */
+  private disposed = false;
 
   constructor(link: DeskLink, options: DeskBackendOptions = {}) {
     this.link = link;
@@ -238,8 +241,46 @@ export class DeskBackend implements NotebookBackend {
     for (const fn of this.presenceListeners) fn();
   }
 
+  /**
+   * The end of this one: this tab's tokens became another account's (`forgetNotebooks`). Every page it holds goes, text the
+   * desk hasn't confirmed with it, and so do the close guard's hold, the tree with its notebook, tab and page names, the
+   * socket and every timer. Nothing is sent, kept or written. The window is closing in the same moment.
+   */
+  dispose(): void {
+    if (this.disposed) return;
+    this.disposed = true;
+    this.active = false;
+    this.clearLoadTimer();
+    this.offTopic?.();
+    this.offTopic = null;
+    for (const entry of this.entries.values()) {
+      if (entry.tooLargeTimer) clearTimeout(entry.tooLargeTimer);
+      if (entry.unsavedTimer) clearTimeout(entry.unsavedTimer);
+      entry.readOnlyListeners.clear();
+      entry.provider.destroy();
+      entry.awareness?.destroy();
+      entry.doc.destroy();
+    }
+    this.entries.clear();
+    holdClose(this.holdId, false);
+    if (this.socketTimer) clearTimeout(this.socketTimer);
+    this.socketTimer = null;
+    this.socket?.destroy();
+    this.socket = null;
+    this.notebooks = new Map();
+    this.tabs = new Map();
+    this.pages = new Map();
+    this.current = emptyTree();
+    this.rev = null;
+    this.presenceNow = [];
+    this.statusListeners.clear();
+    this.treeListeners.clear();
+    this.presenceListeners.clear();
+  }
+
   /** The window is open and on screen, or it isn't. A window parked behind another desk asks nothing. */
   setActive(active: boolean): void {
+    if (this.disposed) return;
     if (this.active === active) return;
     this.active = active;
     if (!active) {
@@ -297,6 +338,7 @@ export class DeskBackend implements NotebookBackend {
   }
 
   private linkOpened(): void {
+    if (this.disposed) return;
     // A new session may be a new deskd, a new service, or a desk that's moved on while this one was away.
     this.rev = null;
     if (!this.active) {
@@ -317,7 +359,7 @@ export class DeskBackend implements NotebookBackend {
   }
 
   private async load(): Promise<void> {
-    if (this.loading || this.statusNow.load === 'ready') return;
+    if (this.disposed || this.loading || this.statusNow.load === 'ready') return;
     this.loading = true;
     this.clearLoadTimer();
     try {
@@ -384,6 +426,7 @@ export class DeskBackend implements NotebookBackend {
   }
 
   private adopt(read: { notebooks: Map<string, NotebookRec>; tabs: Map<string, TabRec>; pages: Map<string, PageRec>; rev: number }): void {
+    if (this.disposed) return;
     this.notebooks = read.notebooks;
     this.tabs = read.tabs;
     this.pages = read.pages;
@@ -398,6 +441,7 @@ export class DeskBackend implements NotebookBackend {
 
   /** What an answer already says, at once, so the page a create returned is there for the caller to select. */
   private merge(records: { notebook?: NotebookRec; tab?: TabRec; page?: PageRec }): void {
+    if (this.disposed) return;
     this.gen += 1;
     if (records.notebook) this.notebooks.set(records.notebook.id, records.notebook);
     if (records.tab) this.tabs.set(records.tab.id, records.tab);
@@ -437,6 +481,7 @@ export class DeskBackend implements NotebookBackend {
   }
 
   private remember(key: string, value: string): void {
+    if (this.disposed) return; // an answer that came after the end keeps nothing
     try {
       this.storage?.setItem(key, value);
     } catch {
@@ -844,6 +889,26 @@ export class DeskBackend implements NotebookBackend {
     await this.settle();
   }
 
+  // ---------------------------------------------------------------- the Agent's edits
+
+  /**
+   * The page's foot asks this by itself, whenever the page changes, so it's quiet: it neither clears nor sets the window's
+   * line, which is about what the member did (a change the desk didn't confirm stays said). A failure shows no edit.
+   */
+  async agentEdits(pageId: string): Promise<AgentEdit[]> {
+    return (await this.link.call('notebook.page.agentEdits', { pageId })).edits;
+  }
+
+  /**
+   * The desk takes out exactly what the edit put there, while it's as the agent left it; otherwise it says why. Quiet: the
+   * Undo says what happened in its own words, so a refusal (changed since, undone already) isn't the window's "didn't
+   * confirm" line too. One key across retries, as every change.
+   */
+  async undoAgentEdit(editId: string): Promise<void> {
+    await this.mutate('notebook.page.agentUndo', { editId }, true);
+    await this.settle();
+  }
+
   async versionAsOf(pageId: string, day: string): Promise<Version | null> {
     const { versionId } = await this.read('notebook.version.asOf', { pageId, day });
     return versionId ? this.version(versionId) : null;
@@ -865,7 +930,9 @@ export class DeskBackend implements NotebookBackend {
   }
 }
 
-const backends = new WeakMap<DeskLink, DeskBackend>();
+let backends = new WeakMap<DeskLink, DeskBackend>();
+/** Every one made, to end them all at once (`forgetNotebooks`), held weakly so a desk's that's gone can still be collected. */
+const made = new Set<WeakRef<DeskBackend>>();
 
 /** One per link. It outlives the window, as a page closed with unconfirmed text is still held in it. */
 export function backendFor(link: DeskLink, options: Pick<DeskBackendOptions, 'presenceName'> = {}): DeskBackend {
@@ -873,8 +940,26 @@ export function backendFor(link: DeskLink, options: Pick<DeskBackendOptions, 'pr
   if (!backend) {
     backend = new DeskBackend(link, options);
     backends.set(link, backend);
+    made.add(new WeakRef(backend));
   } else if (options.presenceName) {
     backend.setPresenceName(options.presenceName);
   }
   return backend;
 }
+
+/**
+ * This tab's tokens became another account's (a sign-in in another tab; ISS-89's follow-up): every desk's Notebook here was
+ * the last member's, so each ends (`dispose`), a page held with text its desk hadn't confirmed included, and its hold on the
+ * close guard with it: the new member is never asked to stay for the last member's words. Their links end in the same moment
+ * (`session.ts`), and a link the new member's list opens gets a backend of its own.
+ */
+export function forgetNotebooks(): void {
+  for (const ref of made) ref.deref()?.dispose();
+  made.clear();
+  backends = new WeakMap();
+}
+
+// The first token (`before` null) is nobody's change. This chunk loads with the first Notebook, so before it there's none to end.
+onMemberChange((_sub, before) => {
+  if (before !== null) forgetNotebooks();
+});

@@ -19,9 +19,9 @@ const VP = { w: 1440, h: 900 };
 const LABEL = 36; // G.label: the proxy box includes the name above the panel
 
 // The shape of REAL_V1 in web/src/canvas/layoutDoc.test.ts, with desk-1's ids: the desk moved, and grown
-// by a column and two rows with its Chat as a widget. The other desk stays a default desk.
-const items = (id, chat) => [
-  { id: `${id}:chat`, app: 'chat', size: chat },
+// by a column and two rows with its Courier as a widget. The other desk stays a default desk. Courier as that build stored it, `chat`.
+const items = (id, courier) => [
+  { id: `${id}:chat`, app: 'chat', size: courier },
   { id: `${id}:notebook`, app: 'notebook', size: 'icon' },
   { id: `${id}:browser`, app: 'browser', size: 'icon' },
   { id: `${id}:agent`, app: 'agent', size: 'icon' },
@@ -33,10 +33,10 @@ const V1 = JSON.stringify({
   },
   z: [OTHER, ALLOWED],
 });
-// What migrating that must give: panelW(7), panelH(3), with Chat at 2 x 2 cells.
+// What migrating that must give: panelW(7), panelH(3), with Courier at 2 x 2 cells.
 const WANT = { x: 728, y: 128, w: 676, h: 328 };
 const WANT_OTHER = { x: 0, y: 36, w: 584, h: 144 };
-const WANT_ITEMS = { chat: { x: 24, y: 24, w: 168, h: 168 }, notebook: { x: 208, y: 24, w: 76, h: 76 }, browser: { x: 300, y: 24, w: 76, h: 76 }, agent: { x: 392, y: 24, w: 76, h: 76 } };
+const WANT_ITEMS = { courier: { x: 24, y: 24, w: 168, h: 168 }, notebook: { x: 208, y: 24, w: 76, h: 76 }, browser: { x: 300, y: 24, w: 76, h: 76 }, agent: { x: 392, y: 24, w: 76, h: 76 } };
 
 const watchdog = setTimeout(() => void shutdown(1, 'watchdog'), 6 * 60 * 1000);
 watchdog.unref();
@@ -101,7 +101,9 @@ await openSession({
 const p = S.page;
 const btn = p.locator(`#proxy-${ALLOWED}`);
 const storage = (k) => p.evaluate((key) => localStorage.getItem(key), k);
-const savedDoc = async () => JSON.parse((await storage('ma.layout.v2')) ?? 'null');
+// Courier's id in the stored layout: `chat` until the flip (src/canvas/storedIds.ts), read as `courier` here as the office does.
+const inMemory = (s) => (s == null ? s : s.replaceAll('"chat"', '"courier"').replaceAll(':chat"', ':courier"'));
+const savedDoc = async () => JSON.parse(inMemory(await storage('ma.layout.v2')) ?? 'null');
 
 async function view() {
   const v = JSON.parse((await storage('ma.view.v1')) ?? '{}');
@@ -287,7 +289,7 @@ const tilesInDesk = (panel) =>
         if (!r) return { id, missing: true };
         return { id: id.split(':')[1], marginLeft: +(r.left - panel.left).toFixed(1), marginTop: +(r.top - panel.top).toFixed(1), marginRight: +(panel.right - r.right).toFixed(1), marginBottom: +(panel.bottom - r.bottom).toFixed(1) };
       }),
-    { ids: ['chat', 'notebook', 'browser', 'agent'].map((a) => `${ALLOWED}:${a}`), panel },
+    { ids: ['courier', 'notebook', 'browser', 'agent'].map((a) => `${ALLOWED}:${a}`), panel },
   );
 
 // ----- 1. Migration from a real old layout
@@ -298,7 +300,7 @@ const version1 = await pageVersion(p).catch(() => null);
 log(`bundle after sign-in ${version1}; view ${JSON.stringify(await view())}`);
 await settled();
 const v1After = await storage('ma.layout.v1');
-const v2Raw = await storage('ma.layout.v2');
+const v2Raw = inMemory(await storage('ma.layout.v2'));
 const doc1 = JSON.parse(v2Raw ?? 'null');
 const d1 = doc1?.desks?.[ALLOWED];
 const o1 = doc1?.desks?.[OTHER];

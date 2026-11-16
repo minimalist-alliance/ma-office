@@ -7,7 +7,7 @@ import { coveredTiles } from './covered';
 import { useWindowStore } from '../state/windowStore';
 import { shownDesk } from '../desk/attention';
 import { camera } from '../canvas/controller';
-import { countSlotW, deskGeometry, isAgentApp, slotRight, STRIP, stripTarget, switchFits, type LayoutDesk } from '../canvas/layout';
+import { appCount, comingLater, countSlotW, deskGeometry, isAgentApp, LATER, readableWidget, slotRight, STRIP, stripTarget, switchFits, tileFace, type LayoutDesk } from '../canvas/layout';
 import { host, useDoor } from '../deskapps/door';
 import { rosterAgent, teamWaiting, useRosterStore } from '../agent/roster';
 import { stripControlSize } from '../canvas/etch';
@@ -15,6 +15,7 @@ import { isPhone, useIsPhone, useIsTouch } from '../canvas/phone';
 import { statusLine } from '../desk/agentStatus';
 import { trafficHold } from '../desk/trafficStop';
 import { liveStatusInput, useLive } from '../desk/liveStore';
+import { useLayoutPrefs } from '../shell/layoutPrefs';
 import { useFree } from '../free/door';
 import { useDeskStore, type DeskInfo } from '../state/deskStore';
 import { useLayoutStore } from '../state/layoutStore';
@@ -51,11 +52,19 @@ function HiddenRing() {
 /** Memoized per desk, so moving the focus or the active desk re-renders only the desks it touches. */
 const DeskProxies = memo(function DeskProxies({ desk, layout, stop, covered }: { desk: DeskInfo; layout: LayoutDesk; stop: string | null; covered: string }) {
   const live = useLive(desk.id);
+  const todoCount = useLayoutPrefs((s) => s['todoTileCount'] !== false);
   // Agents' names label their own tiles (task 49): a rename on the desk is a new label here. So do installed apps' (ADR 0054).
   useRosterStore((s) => s.desks[desk.id]);
   useDoor((s) => s.rev);
   const phone = useIsPhone();
   const touch = useIsTouch();
+  // The zoom's level of detail, read when the camera settles, so each tile's `data-face` follows the canvas's own face.
+  const shield = useViewStore((s) => s.privacyShield);
+  const [lod, setLod] = useState(camera.lod);
+  useEffect(() => {
+    setLod(camera.lod);
+    return camera.onSettle(() => setLod(camera.lod));
+  }, []);
   const geo = deskGeometry(layout, phone);
   const editing = useViewStore((s) => (s.kbEdit ? s.kbFocus : null));
   const proxyClass = (id: string): string => (editing === id ? 'proxy editing' : 'proxy');
@@ -133,9 +142,11 @@ const DeskProxies = memo(function DeskProxies({ desk, layout, stop, covered }: {
         if (!it || !slot) return null;
         // An installed app's (`app:` ids, none of the desk's `summary`) comes from the desk app host.
         const sum = live.apps[it.app] ?? host?.summary(desk.id, it.app);
-        const deskCount = sum?.badge ?? desk.badges[it.app] ?? 0;
+        const deskCount = appCount(it.app, sum?.badge, desk.badges[it.app], todoCount);
         // An installed app that's stopped by a problem says so in its name, in the contract's words (section 2.6).
         const problem = (sum as { problem?: string } | undefined)?.problem;
+        // An app that comes later (Courier) says so after its name, at any zoom, as its tile's chip does where it can be read.
+        const later = comingLater(it.app) ? `, ${LATER.toLowerCase()}` : '';
         // The lead's tile counts the team's waiting requests where the desk's own word says fewer (S-14), as the canvas does.
         const count = (isAgentApp(it.app) ? rosterAgent(it.app, desk.id)?.unseen : undefined) ?? (it.app === 'agent' ? Math.max(deskCount, teamWaiting(desk.id)) : deskCount);
         // The lead's tile speaks for the team's approvals; an agent's own counts its unseen replies.
@@ -146,6 +157,8 @@ const DeskProxies = memo(function DeskProxies({ desk, layout, stop, covered }: {
             ? ''
             : it.app === 'agent'
               ? `, ${count} need you`
+              : it.app === 'todo'
+                ? `, ${count} due`
               : ownWaiting > 0
                 ? `, ${ownWaiting} ${ownWaiting === 1 ? 'request' : 'requests'} waiting${count > ownWaiting ? `, ${count - ownWaiting} unread` : ''}`
                 : `, ${count} unread`;
@@ -155,9 +168,12 @@ const DeskProxies = memo(function DeskProxies({ desk, layout, stop, covered }: {
             type="button"
             id={`proxy-${it.id}`}
             className={proxyClass(it.id)}
+            // Its tile's size class: the tour rounds its highlight with the canvas's own corner for it (`tour/TourLayer.tsx`).
+            data-level={slot.level}
+            data-face={tileFace(slot.level, lod, !shield && !comingLater(it.app) && readableWidget((sum as { widget?: { title?: string; text?: string } } | undefined)?.widget)) === 'widget' ? 'content' : 'icon'}
             tabIndex={stop === it.id && !covered.split(',').includes(it.id) ? 0 : -1}
             aria-keyshortcuts={keys}
-            aria-label={`${appLabel(it.app, desk.id)}${problem ? `, ${problem}` : ''}${suffix}`}
+            aria-label={`${appLabel(it.app, desk.id)}${later}${problem ? `, ${problem}` : ''}${suffix}`}
             style={{ left: layout.x + slot.x, top: layout.y + slot.y, width: slot.w, height: slot.h }}
             onFocus={() => appFocused(desk.id, it.id)}
             onClick={() => openItem(desk.id, it.id)}

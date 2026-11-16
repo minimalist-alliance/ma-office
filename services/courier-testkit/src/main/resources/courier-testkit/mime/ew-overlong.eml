@@ -1,0 +1,10 @@
+From: Office <office@example.com>
+To: me@desk.example
+Date: Fri, 13 Nov 2026 10:00:00 +0000
+Subject: =?utf-8?B?QW4gZW5jb2RlZCB3b3JkIGZhciBsb25nZXIgdGhhbiB0aGUgc2V2ZW50eS1maXZlIGNoYXJhY3RlcnMgUkZDIDIwNDcgYWxsb3dzLCBBbiBlbmNvZGVkIHdvcmQgZmFyIGxvbmdlciB0aGFuIHRoZSBzZXZlbnR5LWZpdmUgY2hhcmFjdGVycyBSRkMgMjA0NyBhbGxvd3MsIEFuIGVuY29kZWQgd29yZCBmYXIgbG9uZ2VyIHRoYW4gdGhlIHNldmVudHktZml2ZSBjaGFyYWN0ZXJzIFJGQyAyMDQ3IGFsbG93cywgQW4gZW5jb2RlZCB3b3JkIGZhciBsb25nZXIgdGhhbiB0aGUgc2V2ZW50eS1maXZlIGNoYXJhY3RlcnMgUkZDIDIwNDcgYWxsb3dzLCA=?=
+Message-ID: <ew-overlong@corpus.example>
+MIME-Version: 1.0
+X-Corpus-Note: one encoded word of several hundred characters
+Content-Type: text/plain; charset=utf-8
+
+Overlong encoded word.

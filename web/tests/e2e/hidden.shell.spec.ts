@@ -4,7 +4,7 @@ import { expect, test, type APIRequestContext, type Locator, type Page } from '@
 import { canvasPainted, harness, setTheme, signIn, watchConsole, type ThemeId } from './helpers';
 
 const PERSONAL = 'd-personal00001';
-const CHAT = `${PERSONAL}:chat`;
+const COURIER = `${PERSONAL}:courier`;
 const NOTEBOOK = `${PERSONAL}:notebook`;
 const BROWSER = `${PERSONAL}:browser`;
 const AGENT = `${PERSONAL}:agent`;
@@ -19,7 +19,7 @@ declare const __maDesk: {
 };
 
 const item = (id: string, app: string, x: number, y: number, w = 76, h = 76): Item => ({ id, app, x, y, w, h });
-const SPREAD = [item(CHAT, 'chat', 40, 40), item(NOTEBOOK, 'notebook', 300, 24), item(BROWSER, 'browser', 500, 100, 200, 200), item(AGENT, 'agent', 650, 24)];
+const SPREAD = [item(COURIER, 'courier', 40, 40), item(NOTEBOOK, 'notebook', 300, 24), item(BROWSER, 'browser', 500, 100, 200, 200), item(AGENT, 'agent', 650, 24)];
 
 test.beforeEach(async ({ request }) => {
   await harness(request, { reset: true });
@@ -104,7 +104,7 @@ test('an app wholly under another shows the icon with 1, and moved away it goes'
   expect(await drawnCount(page)).toBe('');
   expect(await inkIn(page, countSlot(r))).toBe(0);
 
-  // The big one, dropped over Chat. It's pressed, so it's on top, and Chat has nothing left to press.
+  // The big one, dropped over Courier. It's pressed, so it's on top, and Courier has nothing left to press.
   await dragApp(page, BROWSER, -460, -60);
   await expect(countButton(page, 1)).toHaveCount(1);
   expect(await drawnCount(page)).toBe('1');
@@ -125,7 +125,7 @@ test('an app wholly under another shows the icon with 1, and moved away it goes'
 });
 
 test('the count sits past the sparkle, beside it, nothing slides, and it has its target and tooltip', async ({ page, request }) => {
-  await seeded(page, request, [item(CHAT, 'chat', 100, 100), item(BROWSER, 'browser', 80, 80, 200, 200), item(AGENT, 'agent', 500, 24), item(NOTEBOOK, 'notebook', 650, 24)]);
+  await seeded(page, request, [item(COURIER, 'courier', 100, 100), item(BROWSER, 'browser', 80, 80, 200, 200), item(AGENT, 'agent', 500, 24), item(NOTEBOOK, 'notebook', 650, 24)]);
   const r = await deskRect(page);
   await expect(countButton(page, 1)).toHaveCount(1);
   const away = async (): Promise<void> => { await page.mouse.move(5, 600); await page.waitForTimeout(150); };
@@ -188,25 +188,25 @@ test('the count sits past the sparkle, beside it, nothing slides, and it has its
 
 test('a click opens the list above the icon, and choosing brings the app to the front, closes it, rings it and drops the count', async ({ page, request }) => {
   const errors = watchConsole(page);
-  await seeded(page, request, [item(CHAT, 'chat', 100, 100), item(AGENT, 'agent', 110, 110, 56, 56), item(BROWSER, 'browser', 80, 80, 200, 200), item(NOTEBOOK, 'notebook', 650, 24)]);
+  await seeded(page, request, [item(COURIER, 'courier', 100, 100), item(AGENT, 'agent', 110, 110, 56, 56), item(BROWSER, 'browser', 80, 80, 200, 200), item(NOTEBOOK, 'notebook', 650, 24)]);
   await expect(countButton(page, 2)).toHaveCount(1);
   const cam = await page.evaluate(() => ({ ...__maDesk.camera.cam }));
   const b = (await countButton(page, 2).boundingBox())!;
   await clickProxy(page, countButton(page, 2));
   await expect(list(page)).toBeVisible();
   const rows = list(page).getByRole('menuitem');
-  await expect(rows).toHaveText(['Chat', 'Agent']); // reading order
+  await expect(rows).toHaveText(['Courier', 'Agent']); // reading order
   await expect(rows.first().locator('canvas')).toHaveCount(1); // its icon
   const box = (await list(page).boundingBox())!;
   expect(box.y + box.height).toBeLessThanOrEqual(b.y);
   expect(Math.abs(box.x + box.width - (b.x + b.width))).toBeLessThanOrEqual(1);
 
-  await rows.filter({ hasText: 'Chat' }).click();
+  await rows.filter({ hasText: 'Courier' }).click();
   await expect(list(page)).toHaveCount(0);
-  expect(await topApp(page)).toBe(CHAT);
-  await expect(said(page)).toHaveText('Chat brought to front');
+  expect(await topApp(page)).toBe(COURIER);
+  await expect(said(page)).toHaveText('Courier brought to front');
   await expect(page.locator('.hidden-ring')).toHaveCount(1);
-  await expect(page.locator('.hidden-ring')).toHaveAttribute('data-item', CHAT);
+  await expect(page.locator('.hidden-ring')).toHaveAttribute('data-item', COURIER);
   await expect(countButton(page, 1)).toHaveCount(1); // Agent, which is still under there
   await expect(page.locator('.hidden-ring')).toHaveCount(0, { timeout: 1500 });
   await expect(said(page)).toHaveText('1 hidden app on the Personal desk');
@@ -215,10 +215,10 @@ test('a click opens the list above the icon, and choosing brings the app to the 
 });
 
 test('the list opens even for one app. A click away only closes it, and Esc does too', async ({ page, request }) => {
-  await seeded(page, request, [item(CHAT, 'chat', 100, 100), item(BROWSER, 'browser', 80, 80, 200, 200), item(AGENT, 'agent', 500, 24), item(NOTEBOOK, 'notebook', 650, 24)]);
+  await seeded(page, request, [item(COURIER, 'courier', 100, 100), item(BROWSER, 'browser', 80, 80, 200, 200), item(AGENT, 'agent', 500, 24), item(NOTEBOOK, 'notebook', 650, 24)]);
   await clickProxy(page, countButton(page, 1));
-  await expect(list(page).getByRole('menuitem')).toHaveText(['Chat']);
-  expect(await topApp(page)).not.toBe(CHAT);
+  await expect(list(page).getByRole('menuitem')).toHaveText(['Courier']);
+  expect(await topApp(page)).not.toBe(COURIER);
   await page.mouse.click(5, 300);
   await expect(list(page)).toHaveCount(0);
   await expect(countButton(page, 1)).toHaveCount(1);
@@ -231,7 +231,7 @@ test('the list opens even for one app. A click away only closes it, and Esc does
 
 test('the keyboard: arrows reach the icon, Enter opens, arrows move, Enter chooses, Esc closes', async ({ page, request }) => {
   const errors = watchConsole(page);
-  await seeded(page, request, [item(CHAT, 'chat', 100, 100), item(AGENT, 'agent', 200, 200, 56, 56), item(BROWSER, 'browser', 80, 80, 200, 200), item(NOTEBOOK, 'notebook', 650, 24)]);
+  await seeded(page, request, [item(COURIER, 'courier', 100, 100), item(AGENT, 'agent', 200, 200, 56, 56), item(BROWSER, 'browser', 80, 80, 200, 200), item(NOTEBOOK, 'notebook', 650, 24)]);
   const count = countButton(page, 2);
   // Arrows go through the desk's apps by place and then on to the strip, left to right as drawn: this, then cleanup's button.
   await page.locator(`[id="proxy-${NOTEBOOK}"]`).focus();
@@ -274,15 +274,15 @@ test('the keyboard: arrows reach the icon, Enter opens, arrows move, Enter choos
   const last = countButton(page, 1);
   await last.focus();
   await page.keyboard.press('Enter');
-  await expect(rows).toHaveText(['Chat']);
+  await expect(rows).toHaveText(['Courier']);
   await page.keyboard.press('Enter');
   await expect(anyCount(page)).toHaveCount(0);
-  await expect(page.locator(`[id="proxy-${CHAT}"]`)).toBeFocused();
+  await expect(page.locator(`[id="proxy-${COURIER}"]`)).toBeFocused();
   expect(errors).toEqual([]);
 });
 
 test('Cleanup takes the count to zero, and Undo brings it back', async ({ page, request }) => {
-  await seeded(page, request, [item(CHAT, 'chat', 100, 100), item(BROWSER, 'browser', 80, 80, 200, 200), item(AGENT, 'agent', 500, 24), item(NOTEBOOK, 'notebook', 650, 24)]);
+  await seeded(page, request, [item(COURIER, 'courier', 100, 100), item(BROWSER, 'browser', 80, 80, 200, 200), item(AGENT, 'agent', 500, 24), item(NOTEBOOK, 'notebook', 650, 24)]);
   const r = await deskRect(page);
   await expect(countButton(page, 1)).toHaveCount(1);
   await clickProxy(page, page.getByRole('button', { name: 'Clean up Personal desk', exact: true }));
@@ -301,7 +301,7 @@ test('Cleanup takes the count to zero, and Undo brings it back', async ({ page, 
 });
 
 test('a raise, a reload and a corner drag all keep it right', async ({ page, request }) => {
-  await seeded(page, request, [item(CHAT, 'chat', 100, 100), item(BROWSER, 'browser', 80, 80, 200, 200), item(AGENT, 'agent', 500, 24), item(NOTEBOOK, 'notebook', 650, 24)]);
+  await seeded(page, request, [item(COURIER, 'courier', 100, 100), item(BROWSER, 'browser', 80, 80, 200, 200), item(AGENT, 'agent', 500, 24), item(NOTEBOOK, 'notebook', 650, 24)]);
   await expect(countButton(page, 1)).toHaveCount(1);
   await page.waitForTimeout(1200); // the mirror is debounced by 1 s
   await page.reload();
@@ -327,7 +327,7 @@ test('a raise, a reload and a corner drag all keep it right', async ({ page, req
 });
 
 test('at most six rows and then it scrolls, and the keyboard scrolls it', async ({ page, request }) => {
-  const apps = ['chat', 'notebook', 'browser', 'agent'];
+  const apps = ['courier', 'notebook', 'browser', 'agent'];
   const pile = Array.from({ length: 8 }, (_, i) => item(`${PERSONAL}:x${i}`, apps[i % 4]!, 100 + i, 100 + i));
   await seeded(page, request, [...pile, item(BROWSER, 'browser', 80, 80, 200, 200)]);
   await expect(countButton(page, 8)).toHaveCount(1);
@@ -339,18 +339,20 @@ test('at most six rows and then it scrolls, and the keyboard scrolls it', async 
   expect(Math.round(row.height)).toBe(40);
   expect(box.height).toBeLessThanOrEqual(6 * 40 + 14);
   expect(box.height).toBeGreaterThanOrEqual(6 * 40);
-  expect(await list(page).evaluate((el) => el.scrollHeight > el.clientHeight)).toBe(true);
+  // The rows scroll, inside the menu's glass, whose light stays put (`styles/glass.css`).
+  const scroller = list(page).locator('.hidden-list-rows');
+  expect(await scroller.evaluate((el) => el.scrollHeight > el.clientHeight)).toBe(true);
   await page.keyboard.press('End');
   await expect(rows.last()).toBeFocused();
   await expect(rows.last()).toBeInViewport();
-  expect(await list(page).evaluate((el) => el.scrollTop)).toBeGreaterThan(0);
+  expect(await scroller.evaluate((el) => el.scrollTop)).toBeGreaterThan(0);
   await page.keyboard.press('Escape');
 });
 
 test('a phone keeps its grid, so a stored pile shows no count', async ({ browser, request }) => {
   const context = await browser.newContext({ viewport: { width: 390, height: 800 } });
   const page = await context.newPage();
-  await seeded(page, request, [item(CHAT, 'chat', 100, 100), item(BROWSER, 'browser', 80, 80, 200, 200), item(AGENT, 'agent', 500, 24), item(NOTEBOOK, 'notebook', 650, 24)]);
+  await seeded(page, request, [item(COURIER, 'courier', 100, 100), item(BROWSER, 'browser', 80, 80, 200, 200), item(AGENT, 'agent', 500, 24), item(NOTEBOOK, 'notebook', 650, 24)]);
   await expect(anyCount(page)).toHaveCount(0);
   expect(await page.getByRole('button', { name: /hidden/ }).count()).toBe(0);
   expect(await drawnCount(page)).toBe('');
@@ -378,7 +380,7 @@ test('never sluggish: a drag renders nothing and rasters nothing until the drop,
   await seeded(page, request);
   const s = await scale(page);
 
-  // Over Chat, through the air: the drag itself renders once as it starts and then nothing, and the count waits for the drop.
+  // Over Courier, through the air: the drag itself renders once as it starts and then nothing, and the count waits for the drop.
   const c = await centerOf(page, BROWSER);
   await page.mouse.move(c.x, c.y);
   await page.mouse.down();
@@ -433,7 +435,7 @@ test('never sluggish: a drag renders nothing and rasters nothing until the drop,
 
 test('under reduced motion the ring is static, and still goes after 600 ms', async ({ page, request }) => {
   await page.emulateMedia({ reducedMotion: 'reduce' });
-  await seeded(page, request, [item(CHAT, 'chat', 100, 100), item(BROWSER, 'browser', 80, 80, 200, 200), item(AGENT, 'agent', 500, 24), item(NOTEBOOK, 'notebook', 650, 24)]);
+  await seeded(page, request, [item(COURIER, 'courier', 100, 100), item(BROWSER, 'browser', 80, 80, 200, 200), item(AGENT, 'agent', 500, 24), item(NOTEBOOK, 'notebook', 650, 24)]);
   await clickProxy(page, countButton(page, 1));
   await list(page).getByRole('menuitem').first().click();
   const ring = page.locator('.hidden-ring');
@@ -450,7 +452,7 @@ for (const theme of ['light', 'dusk', 'dark'] as ThemeId[]) {
       const context = await browser.newContext({ viewport: { width: 1440, height: 900 }, deviceScaleFactor: dpr });
       const page = await context.newPage();
       await setTheme(page, theme);
-      await seeded(page, request, [item(CHAT, 'chat', 100, 100), item(AGENT, 'agent', 110, 110, 56, 56), item(NOTEBOOK, 'notebook', 90, 90), item(BROWSER, 'browser', 80, 80, 200, 200), item(`${PERSONAL}:free`, 'agent', 500, 24)]);
+      await seeded(page, request, [item(COURIER, 'courier', 100, 100), item(AGENT, 'agent', 110, 110, 56, 56), item(NOTEBOOK, 'notebook', 90, 90), item(BROWSER, 'browser', 80, 80, 200, 200), item(`${PERSONAL}:free`, 'agent', 500, 24)]);
       await expect(countButton(page, 3)).toHaveCount(1);
       const r = await deskRect(page);
       await page.mouse.move(5, 600);
@@ -494,7 +496,7 @@ for (const theme of ['light', 'dusk', 'dark'] as ThemeId[]) {
 test('on touch the count has a 44 px tall target at 100 % with room for its number, and a tap opens the list and a tap chooses', async ({ browser, request }) => {
   const context = await browser.newContext({ viewport: { width: 1024, height: 768 }, hasTouch: true, isMobile: true });
   const page = await context.newPage();
-  await seeded(page, request, [item(CHAT, 'chat', 100, 100), item(BROWSER, 'browser', 80, 80, 200, 200), item(AGENT, 'agent', 500, 24), item(NOTEBOOK, 'notebook', 650, 24)]);
+  await seeded(page, request, [item(COURIER, 'courier', 100, 100), item(BROWSER, 'browser', 80, 80, 200, 200), item(AGENT, 'agent', 500, 24), item(NOTEBOOK, 'notebook', 650, 24)]);
   // 44 x 62 desk units, so that on screen at 100 %, and times the zoom at any other (ADR 0064, Nov 9 note).
   const s = await scale(page);
   const b = (await countButton(page, 1).boundingBox())!;
@@ -502,18 +504,18 @@ test('on touch the count has a 44 px tall target at 100 % with room for its numb
   expect(Math.abs(b.width - 62 * s)).toBeLessThanOrEqual(1);
   await page.touchscreen.tap(b.x + b.width / 2, b.y + b.height / 2);
   const row = list(page).getByRole('menuitem');
-  await expect(row).toHaveText(['Chat']);
+  await expect(row).toHaveText(['Courier']);
   await page.waitForTimeout(400); // a browser's late click would have landed by now, and closed it
   await expect(list(page)).toBeVisible();
   const r = (await row.boundingBox())!;
   await page.touchscreen.tap(r.x + r.width / 2, r.y + r.height / 2);
   await expect(anyCount(page)).toHaveCount(0);
-  expect(await topApp(page)).toBe(CHAT);
+  expect(await topApp(page)).toBe(COURIER);
   await context.close();
 });
 
 test('it scales with the desk at every zoom, and zoomed out past where the name hides it hides with the other icons and stays in the proxy', async ({ page, request }) => {
-  await seeded(page, request, [item(CHAT, 'chat', 100, 100), item(BROWSER, 'browser', 80, 80, 200, 200), item(AGENT, 'agent', 500, 24), item(NOTEBOOK, 'notebook', 650, 24)]);
+  await seeded(page, request, [item(COURIER, 'courier', 100, 100), item(BROWSER, 'browser', 80, 80, 200, 200), item(AGENT, 'agent', 500, 24), item(NOTEBOOK, 'notebook', 650, 24)]);
   const aim = async (zoom: number): Promise<void> => {
     await page.evaluate((z) => {
       const { camera } = __maDesk;

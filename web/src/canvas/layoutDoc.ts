@@ -5,7 +5,8 @@ import { GUILD_APPS, isGuildPanel } from '../guild/panel';
 import { adultOnly, type AgeBand } from '../platform/age';
 import { clearSpot, separateDesks } from './deskPush';
 import { isDeskStyleId } from '../theme/deskStyles';
-import { defaultDesk, deskFromGrid, G, isAgentApp, isDeskApp, panelH, placeNewDesk, roundUnit, settleDesk, stackOrder, withStack, type AppId, type DeskCarousel, type DetailLevel, type LayoutDesk, type LayoutItem } from './layout';
+import { appFromStored, appToStored, COURIER, keyFromStored, keyToStored } from './storedIds';
+import { defaultDesk, deskFromGrid, G, isAgentApp, OLD_DEFAULT_DESK, isDeskApp, panelH, placeNewDesk, roundUnit, settleDesk, stackOrder, withStack, type AppId, type DeskCarousel, type DetailLevel, type LayoutDesk, type LayoutItem } from './layout';
 
 export interface LayoutDoc {
   desks: Record<string, LayoutDesk>;
@@ -16,7 +17,7 @@ export interface LayoutDoc {
 export const LAYOUT_KEY = 'ma.layout.v2';
 export const LAYOUT_KEY_V1 = 'ma.layout.v1';
 
-const APPS: readonly string[] = ['notebook', 'browser', 'chat', 'agent', 'commons', 'files'];
+const APPS: readonly string[] = ['notebook', 'browser', 'courier', 'agent', 'commons', 'files', 'todo', 'documents'];
 const LEVELS: readonly string[] = ['icon', 'small', 'wide', 'large'];
 
 type Json = Record<string, unknown>;
@@ -24,6 +25,60 @@ const isObject = (v: unknown): v is Json => typeof v === 'object' && v !== null 
 const isNumber = (v: unknown): v is number => typeof v === 'number' && Number.isFinite(v);
 /** One of the four, an agent's own (task 49): `agent:<agentId>`, or an installed app's (ADR 0054): `app:<manifest id>`. */
 const isApp = (v: unknown): v is AppId => (typeof v === 'string' && APPS.includes(v)) || isAgentApp(v) || isDeskApp(v);
+/** An app's id as stored, read in memory's terms (Courier's `chat`, `canvas/storedIds.ts`), if it's one. */
+const storedApp = (v: unknown): AppId | null => {
+  const app = appFromStored(v);
+  return isApp(app) ? app : null;
+};
+
+/**
+ * Courier's ids on a desk, one way or the other (`canvas/storedIds.ts`): its item's `<desk>:chat` id and the same id in the
+ * stack, read in memory's terms (`in`) or written as this build stores them (`out`). An id that would land on another item's
+ * keeps its own. The same desk if there's nothing to change, as on any desk with no Courier, so a write costs nothing more.
+ */
+function courierIds(desk: LayoutDesk, way: 'in' | 'out'): LayoutDesk {
+  const key = way === 'in' ? keyFromStored : keyToStored;
+  const taken = new Set(desk.items.map((i) => i.id));
+  const renamed = new Map<string, string>();
+  for (const i of desk.items) {
+    if (i.app !== COURIER) continue;
+    const id = key(i.id);
+    if (id !== i.id && !taken.has(id)) renamed.set(i.id, id);
+  }
+  if (!renamed.size) return desk;
+  const items = desk.items.map((i) => (renamed.has(i.id) ? { ...i, id: renamed.get(i.id)! } : i));
+  return { ...desk, items, ...(desk.stack ? { stack: desk.stack.map((id) => renamed.get(id) ?? id) } : {}) };
+}
+
+/**
+ * A desk exactly as this build stores it, in Platform's document and the mirror: Courier's ids as `STORED_COURIER` says,
+ * in its items, its stack and its carousel. Only for writing: during the transition its Courier says `chat`, which no
+ * `AppId` is, so nothing reads it back but `readLayoutDoc`.
+ */
+function storedDesk(desk: LayoutDesk): LayoutDesk {
+  const d = courierIds(desk, 'out');
+  const app = appToStored(COURIER);
+  if (app === COURIER) return d;
+  const hasCourier = d.items.some((i) => i.app === COURIER) || d.carousel?.app === COURIER;
+  if (!hasCourier) return d;
+  return {
+    ...d,
+    items: d.items.map((i) => (i.app === COURIER ? { ...i, app: app as AppId } : i)),
+    ...(d.carousel ? { carousel: { ...d.carousel, app: appToStored(d.carousel.app) as AppId } } : {}),
+  };
+}
+
+/** The mirror's copy (`ma.layout.v2`): each desk as `storedDesk` has it. The same document when no desk changes. */
+export function storedLayoutDoc(doc: LayoutDoc): LayoutDoc {
+  let desks = doc.desks;
+  for (const [id, desk] of Object.entries(doc.desks)) {
+    const stored = storedDesk(desk);
+    if (stored === desk) continue;
+    if (desks === doc.desks) desks = { ...doc.desks };
+    desks[id] = stored;
+  }
+  return desks === doc.desks ? doc : { ...doc, desks };
+}
 
 function zOf(raw: Json, desks: Record<string, unknown>): string[] {
   const z = Array.isArray(raw['z']) ? raw['z'] : [];
@@ -37,25 +92,27 @@ export function migrateLayoutV1(raw: unknown): LayoutDoc | null {
   for (const [id, d] of Object.entries(raw['desks'])) {
     if (!isObject(d)) continue;
     const items = (Array.isArray(d['items']) ? d['items'] : []).flatMap((i: unknown) => {
-      if (!isObject(i) || typeof i['id'] !== 'string' || !isApp(i['app'])) return [];
+      const app = isObject(i) ? storedApp(i['app']) : null;
+      if (!isObject(i) || typeof i['id'] !== 'string' || !app) return [];
       const level = (typeof i['size'] === 'string' && LEVELS.includes(i['size']) ? i['size'] : 'icon') as DetailLevel;
-      return [{ id: i['id'], app: i['app'], level }];
+      return [{ id: i['id'], app, level }];
     });
-    desks[id] = deskFromGrid({
+    desks[id] = courierIds(deskFromGrid({
       id,
       x: isNumber(d['x']) ? d['x'] : 0,
       y: isNumber(d['y']) ? d['y'] : 0,
       cols: isNumber(d['cols']) ? Math.round(d['cols']) : 6,
       rows: isNumber(d['rows']) ? Math.round(d['rows']) : 1,
       items,
-    });
+    }), 'in');
   }
   return { desks, z: zOf(raw, desks) };
 }
 
 /** Bad numbers don't lose an app: it gets a default place and size, and settleDesk finds it a free spot. */
 function readItem(raw: unknown): { item: LayoutItem; bad: boolean } | null {
-  if (!isObject(raw) || typeof raw['id'] !== 'string' || !isApp(raw['app'])) return null;
+  const app = isObject(raw) ? storedApp(raw['app']) : null;
+  if (!isObject(raw) || typeof raw['id'] !== 'string' || !app) return null;
   const { x, y, w, h } = raw;
   const goodW = isNumber(w) && w > 0;
   const goodH = isNumber(h) && h > 0;
@@ -63,7 +120,7 @@ function readItem(raw: unknown): { item: LayoutItem; bad: boolean } | null {
     bad: !isNumber(x) || !isNumber(y) || !goodW || !goodH,
     item: {
       id: raw['id'],
-      app: raw['app'],
+      app,
       x: roundUnit(isNumber(x) ? x : G.padX),
       y: roundUnit(isNumber(y) ? y : G.padTop),
       w: roundUnit(goodW ? w : G.cell),
@@ -226,6 +283,9 @@ export function arrivingLayout(server: LayoutDoc, local: LayoutDoc, unsaved: Rea
 
 /** A first desk's height before ADR 0062's new default: one row, which is what a saved or migrated desk still has. */
 const OLD_DESK_H = panelH(1);
+/** Is this the size a first visit gave a desk, in this build (ADR 0057) or an older one (584 wide, two rows or one)? */
+const firstVisitSize = (d: LayoutDesk, fresh: LayoutDesk): boolean =>
+  (d.w === fresh.w && d.h === fresh.h) || (d.w === OLD_DEFAULT_DESK.w && (d.h === OLD_DEFAULT_DESK.h || d.h === OLD_DESK_H));
 /** A first desk's place until the name moved into the strip (`G.label`, b0de92f), so the row an older browser's desks are in. */
 const OLD_ROW_Y = 36;
 
@@ -237,8 +297,9 @@ const OLD_ROW_Y = 36;
  * only in the desk's height and how far down the row is. The list is in order of creation, so its order doesn't change.
  *
  * The stack doesn't count. Pressing an app raises it, so a browser nobody arranged anything in has one, and at these
- * places nothing overlaps, so it shows nothing. One thing reads the same either way: a new desk shrunk to its smallest
- * from the keyboard, with nothing else touched, is exactly an old default, and stays here until the next real change.
+ * places nothing overlaps, so it shows nothing. A desk at the size an older build gave a first visit (584 x 236, or 584 x 144
+ * before that) is untouched too: ADR 0057's larger default is only for a desk with nothing saved, so it keeps its size, and
+ * this browser still has nothing to send for it.
  * A teen's default is the same row without the adults-only apps, and it counts whatever the band is yet, since this can
  * run before `/v1/me` has answered. Nobody else's desk ever lacks them, so it changes nothing for anyone else.
  */
@@ -251,11 +312,11 @@ export function isUntouched(doc: LayoutDoc, ids: readonly string[]): boolean {
     if (!mine) return true;
     const inRow = mine.y === fresh.y || (n === 0 && mine.y === OLD_ROW_Y);
     // A style is only ever the member's own choice, so a desk wearing one has been touched.
-    // An agent's own tile comes from the desk's word, not the member's hand (task 49), so it doesn't make a desk arranged. Nor does Files' tile (`apps/files/tiles.ts`), or an installed app's (`deskapps/host/tiles.ts`). One
+    // An agent's own tile comes from the desk's word, not the member's hand (task 49), so it doesn't make a desk arranged. Nor do Files', To-do's and Documents' tiles (`apps/tiles.ts`), or an installed app's (`deskapps/host/tiles.ts`). One
     // that made the desk grow does: there's no telling that from a member's resize, and either way it's something to send.
-    const own = mine.items.filter((i) => !isAgentApp(i.app) && !isDeskApp(i.app) && i.app !== 'files');
+    const own = mine.items.filter((i) => !isAgentApp(i.app) && !isDeskApp(i.app) && i.app !== 'files' && i.app !== 'todo' && i.app !== 'documents');
     // The carousel is only ever the member's own choice, so a desk that has one has been touched.
-    return !mine.style && !mine.carousel && inRow && mine.x === fresh.x && mine.w === fresh.w && (mine.h === fresh.h || mine.h === OLD_DESK_H) && (sameItems(own, fresh.items) || sameItems(own, fitDeskToBand(fresh, 'teen').items));
+    return !mine.style && !mine.carousel && inRow && mine.x === fresh.x && firstVisitSize(mine, fresh) && (sameItems(own, fresh.items) || sameItems(own, fitDeskToBand(fresh, 'teen').items));
   });
 }
 
@@ -274,8 +335,9 @@ export function writeServerLayout(doc: LayoutDoc, extra: ServerExtra = {}, maxBy
   const z: string[] = [];
   const order = [...doc.z].reverse().concat(Object.keys(doc.desks));
   for (const id of order) {
-    const d = doc.desks[id];
-    if (!d || id in desks) continue;
+    const live = doc.desks[id];
+    if (!live || id in desks) continue;
+    const d = storedDesk(live);
     // `stack` only if the desk has one (ADR 0064), `style` only once the member has picked one, and `carousel` only once
     // they've used it, so a desk that has none of them saves as it always did.
     const entry = {
@@ -297,7 +359,8 @@ export function writeServerLayout(doc: LayoutDoc, extra: ServerExtra = {}, maxBy
 /** A stored `carousel`, if it's one: `on` a boolean and `app` an app's id. Anything else is no carousel, which is off. */
 function storedCarousel(d: Json): DeskCarousel | null {
   const c = d['carousel'];
-  return isObject(c) && typeof c['on'] === 'boolean' && isApp(c['app']) ? { on: c['on'], app: c['app'] } : null;
+  const app = isObject(c) ? storedApp(c['app']) : null;
+  return isObject(c) && typeof c['on'] === 'boolean' && app ? { on: c['on'], app } : null;
 }
 
 /** The ids in a stored `stack`, if it's a list at all. `stackOrder` deals with any that are missing, repeated or not on the desk. */
@@ -331,7 +394,8 @@ export function readLayoutDoc(raw: unknown): LayoutDoc | null {
     // A style is kept by its id, known here or not: one a newer build added draws as the default, and goes back as it came.
     const styled = isDeskStyleId(d['style']) ? { ...stacked, style: d['style'] } : stacked;
     const carousel = storedCarousel(d);
-    desks[id] = carousel ? { ...styled, carousel } : styled;
+    // Courier's `<desk>:chat`, in its item and the stack, is `<desk>:courier` from here on (`canvas/storedIds.ts`).
+    desks[id] = courierIds(carousel ? { ...styled, carousel } : styled, 'in');
   }
   return { desks, z: zOf(raw, desks) };
 }

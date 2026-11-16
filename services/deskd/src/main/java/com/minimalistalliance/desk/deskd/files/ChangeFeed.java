@@ -39,6 +39,23 @@ final class ChangeFeed implements Topic {
         this.timer = timer;
     }
 
+    /** Who else hears a folder change, subscribed or not: Documents' index ({@link DocsFiles}). Must only queue work. */
+    private final java.util.List<java.util.function.Consumer<String>> listeners = new java.util.concurrent.CopyOnWriteArrayList<>();
+
+    void listen(java.util.function.Consumer<String> listener) {
+        listeners.add(listener);
+    }
+
+    private void tell(String path) {
+        for (java.util.function.Consumer<String> l : listeners) {
+            try {
+                l.accept(path);
+            } catch (RuntimeException e) {
+                // The listener's own trouble.
+            }
+        }
+    }
+
     @Override
     public boolean coalescible() {
         return true;
@@ -56,6 +73,7 @@ final class ChangeFeed implements Topic {
 
     /** A folder's listing changed ({@code ""} for the root). */
     void dir(String path) {
+        tell(path);
         synchronized (lock) {
             if (dirs.size() >= MAX_DIRS) {
                 overflow = true;
@@ -68,6 +86,7 @@ final class ChangeFeed implements Topic {
     }
 
     void trash() {
+        tell(null);
         synchronized (lock) {
             trash = true;
             usage = true;

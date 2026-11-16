@@ -35,6 +35,8 @@ class AnthropicProviderTest {
             List.of(ChatMessage.user("One"), ChatMessage.user("Two"), ChatMessage.assistant("Three"),
                     ChatMessage.user("Four")), 512);
 
+    private static final Map<String, Object> EPHEMERAL = Map.of("type", "ephemeral");
+
     private FakeLlmServer server;
     private AnthropicProvider provider;
     private final KeyRing keys = new KeyRing((action, target, decision) -> {});
@@ -76,11 +78,13 @@ class AnthropicProviderTest {
         Map<String, Object> body = server.lastChatBody();
         assertThat(body).containsEntry("model", "claude-sonnet-5-5").containsEntry("max_tokens", 512)
                 .containsEntry("system", List.of(Map.of("type", "text", "text", "Be brief.", "cache_control", Map.of("type", "ephemeral")))).containsEntry("stream", true);
-        // Two user turns in a row go as one, as a failed reply leaves them.
+        // Two user turns in a row go as one, as a failed reply leaves them. The newest turn's last block carries the
+        // thread's cache breakpoint.
         assertThat(body.get("messages")).isEqualTo(List.of(
                 Map.of("role", "user", "content", "One\n\nTwo"),
                 Map.of("role", "assistant", "content", "Three"),
-                Map.of("role", "user", "content", "Four")));
+                Map.of("role", "user", "content", List.of(Map.of("type", "text", "text", "Four", "cache_control",
+                        EPHEMERAL)))));
     }
 
     @Test
@@ -208,6 +212,50 @@ class AnthropicProviderTest {
         assertThat(server.requests.peek().apiKey()).isEqualTo(FakeLlmServer.KEY);
     }
 
+    /** Anthropic's catalog as a staging lab key listed it on Nov 15, newest first. */
+    private static final List<String> NOV15 = List.of("claude-fable-5-2", "claude-haiku-5-5", "claude-sonnet-5-5",
+            "claude-opus-5-5", "claude-fable-5-1", "claude-opus-5", "claude-sonnet-5", "claude-fable-5",
+            "claude-opus-4-8", "claude-opus-4-7", "claude-sonnet-4-6", "claude-opus-4-6", "claude-opus-4-5-20251101",
+            "claude-haiku-4-5-20251001");
+
+    private static List<com.minimalistalliance.desk.agent.provider.ModelInfo> listed(List<String> ids) {
+        return ids.stream().map(id -> new com.minimalistalliance.desk.agent.provider.ModelInfo(id, id)).toList();
+    }
+
+    private static List<String> ids(List<com.minimalistalliance.desk.agent.provider.ModelInfo> models) {
+        return models.stream().map(com.minimalistalliance.desk.agent.provider.ModelInfo::id).toList();
+    }
+
+    @Test
+    void sonnet55IsTheDefaultNotTheNewestModel() {
+        List<String> out = ids(AnthropicProvider.defaultFirst(listed(NOV15)));
+        assertThat(out.getFirst()).isEqualTo("claude-sonnet-5-5");
+        // Everything else stays, in Anthropic's order.
+        List<String> rest = new java.util.ArrayList<>(NOV15);
+        rest.remove("claude-sonnet-5-5");
+        assertThat(out.subList(1, out.size())).containsExactlyElementsOf(rest);
+    }
+
+    @Test
+    void withoutSonnet55AnOlderSonnetLeadsElseTheFirstThatIsntFable() {
+        List<String> noSonnet55 = NOV15.stream().filter(id -> !id.equals("claude-sonnet-5-5")).toList();
+        assertThat(ids(AnthropicProvider.defaultFirst(listed(noSonnet55))).getFirst()).isEqualTo("claude-sonnet-5");
+        List<String> noSonnet = NOV15.stream().filter(id -> !id.startsWith("claude-sonnet")).toList();
+        assertThat(ids(AnthropicProvider.defaultFirst(listed(noSonnet))).getFirst()).isEqualTo("claude-haiku-5-5");
+        // Fable only: nothing better to lead, so the catalog as it came; an empty one stays empty.
+        List<String> fable = List.of("claude-fable-5-2", "claude-fable-5-1");
+        assertThat(ids(AnthropicProvider.defaultFirst(listed(fable)))).containsExactlyElementsOf(fable);
+        assertThat(AnthropicProvider.defaultFirst(List.of())).isEmpty();
+    }
+
+    @Test
+    void noFableModelIsEverFirstWhileAnotherIsListed() {
+        for (String fable : List.of("claude-fable-5-2", "claude-fable-5-1", "claude-fable-5", "claude-fable-6", "Claude-Fable-7")) {
+            List<String> catalog = List.of(fable, "claude-opus-4-5-20251101", "claude-haiku-4-5-20251001");
+            assertThat(ids(AnthropicProvider.defaultFirst(listed(catalog))).getFirst()).doesNotContainIgnoringCase("fable");
+        }
+    }
+
     private static final List<ToolSpec> TOOLS = List.of(new ToolSpec("read_file", "Reads a file.",
             Map.of("type", "object", "properties", Map.of("path", Map.of("type", "string")))));
 
@@ -290,7 +338,7 @@ class AnthropicProviderTest {
                 Map.of("role", "user", "content", List.of(
                         Map.of("type", "tool_result", "tool_use_id", "t1", "content", "contents"),
                         Map.of("type", "tool_result", "tool_use_id", "t2", "content", "no such file",
-                                "is_error", true)))));
+                                "is_error", true, "cache_control", EPHEMERAL)))));
     }
 
     @Test
@@ -305,7 +353,7 @@ class AnthropicProviderTest {
                         Map.of("type", "tool_use", "id", "t1", "name", "read_file", "input", Map.of()))),
                 Map.of("role", "user", "content", List.of(
                         Map.of("type", "tool_result", "tool_use_id", "t1", "content", "ok"),
-                        Map.of("type", "text", "text", "And?")))));
+                        Map.of("type", "text", "text", "And?", "cache_control", EPHEMERAL)))));
     }
 
     @Test
@@ -325,11 +373,12 @@ class AnthropicProviderTest {
                         Map.of("type", "text", "text", "Checking."),
                         Map.of("type", "tool_use", "id", "t2", "name", "read_file", "input", Map.of()))),
                 Map.of("role", "user", "content", List.of(
-                        Map.of("type", "tool_result", "tool_use_id", "t2", "content", "ok")))));
+                        Map.of("type", "tool_result", "tool_use_id", "t2", "content", "ok", "cache_control",
+                                EPHEMERAL)))));
     }
 
     @Test
-    void oneCacheBreakpointSitsOnTheSystemPromptOrElseTheLastTool() throws Exception {
+    void theFirstCacheBreakpointSitsOnTheSystemPromptOrElseTheLastTool() throws Exception {
         List<ToolSpec> two = List.of(new ToolSpec("a", "A.", Map.of("type", "object")),
                 new ToolSpec("b", "B.", Map.of("type", "object")));
         chat(new ChatRequest("claude-sonnet-5-5", "Be brief.", List.of(ChatMessage.user("Hi")), 100, two));
@@ -343,6 +392,52 @@ class AnthropicProviderTest {
         assertThat(body).doesNotContainKey("system");
         assertThat(body.get("tools").toString()).contains("cache_control");
         assertThat(((List<?>) body.get("tools")).getLast().toString()).contains("cache_control");
+    }
+
+    /** How many cache breakpoints a body holds: Anthropic allows four. */
+    private static int breakpoints(Map<String, Object> body) {
+        String json = new String(com.minimalistalliance.desk.agent.json.Json.bytes(body), StandardCharsets.UTF_8);
+        return json.split("\"cache_control\"", -1).length - 1;
+    }
+
+    /**
+     * The usage study's fix 2: the thread was never cached, so every step resent it at the full input price. The thread's
+     * last block is the second breakpoint, so a run's later steps and a warm next turn read it from the cache; a note
+     * (the lines that change on every call) goes after it, outside the cached prefix; never more than Anthropic's four.
+     */
+    @Test
+    void theThreadsLastBlockIsTheSecondBreakpointAndANoteSitsAfterIt() throws Exception {
+        List<ToolSpec> two = List.of(new ToolSpec("a", "A.", Map.of("type", "object")),
+                new ToolSpec("b", "B.", Map.of("type", "object")));
+        chat(new ChatRequest("claude-sonnet-5-5", "Be brief.", List.of(ChatMessage.user("Hi")), 100, two));
+        Map<String, Object> body = server.lastChatBody();
+        assertThat(body.get("messages")).isEqualTo(List.of(Map.of("role", "user", "content", List.of(
+                Map.of("type", "text", "text", "Hi", "cache_control", EPHEMERAL)))));
+        assertThat(breakpoints(body)).isEqualTo(2);
+
+        // With a note: the breakpoint on the block before it, and the note last, unmarked.
+        chat(new ChatRequest("claude-sonnet-5-5", "Be brief.", List.of(ChatMessage.user("Look"),
+                ChatMessage.toolCalls("", List.of(new ToolCall("t1", "a", Map.of()))),
+                ChatMessage.toolResults(List.of(new ToolResult("t1", "ok", false)))), 100, two,
+                "Now: 1:05 PM.\nBriefs left today: 3."));
+        body = server.lastChatBody();
+        @SuppressWarnings("unchecked")
+        List<Map<String, Object>> messages = (List<Map<String, Object>>) body.get("messages");
+        assertThat(messages.getFirst()).isEqualTo(Map.of("role", "user", "content", "Look"));
+        assertThat(messages.getLast().get("content")).isEqualTo(List.of(
+                Map.of("type", "tool_result", "tool_use_id", "t1", "content", "ok", "cache_control", EPHEMERAL),
+                Map.of("type", "text", "text", "Now: 1:05 PM.\nBriefs left today: 3.")));
+        assertThat(breakpoints(body)).isEqualTo(2);
+        assertThat(body.get("system").toString()).doesNotContain("Briefs left");
+
+        // No system prompt: the last tool and the thread's last block. Never more than four, whatever the shape.
+        chat(new ChatRequest("claude-sonnet-5-5", "", List.of(ChatMessage.user("Hi"), ChatMessage.assistant("Yes"),
+                ChatMessage.user("And")), 100, two, "note"));
+        body = server.lastChatBody();
+        assertThat(((List<?>) body.get("tools")).getLast().toString()).contains("cache_control");
+        assertThat(breakpoints(body)).isEqualTo(2).isLessThanOrEqualTo(4);
+        chat(REQUEST);
+        assertThat(breakpoints(server.lastChatBody())).isEqualTo(2);
     }
 
     @Test

@@ -1,0 +1,48 @@
+{
+  "id": "files-002",
+  "area": "files",
+  "title": "Find a file by name",
+  "prompt": "Somewhere under Harness I saved notes about my passport. What's that file's path?",
+  "setup": {
+    "files": {
+      "Harness/docs/travel/passport-notes.txt": "Passport expires March 2031.\n",
+      "Harness/docs/travel/visa.txt": "No visa needed for a short stay.\n",
+      "Harness/docs/home/lease.txt": "Lease ends in August.\n"
+    }
+  },
+  "approve": "all",
+  "checks": [
+    {
+      "kind": "reply",
+      "contains": [
+        "Harness/docs/travel/passport-notes.txt"
+      ],
+      "state": "done"
+    },
+    {
+      "kind": "cards",
+      "tools": []
+    }
+  ],
+  "policy": {
+    "tools": [
+      "files_search"
+    ]
+  },
+  "standIn": [
+    {
+      "calls": [
+        {
+          "name": "files_search",
+          "input": {
+            "q": "passport",
+            "under": "Harness"
+          }
+        }
+      ]
+    },
+    {
+      "text": "It's Harness/docs/travel/passport-notes.txt."
+    }
+  ]
+}

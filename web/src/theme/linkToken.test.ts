@@ -3,11 +3,13 @@
 // sign-in pages to the same value, and reads this file from our origin/main to check it (`web/platform/src/linkParity.test.ts`
 // there), so a change here is a change there: move them together. This test holds the kit's half: the token, the sign-in
 // mock that carries it, and 4.86:1 or more (rounded to two places, as contrast.txt does) on every opaque Light surface.
+// The office's own Light link is the same since Nov 14 (BRAND-19/20: the accent's #3D6FA8 was 4.48:1 on surface.fill).
 // Zen and Dark aren't touched.
 import { readFileSync } from 'node:fs';
 import { dirname, join } from 'node:path';
 import { fileURLToPath } from 'node:url';
 import { describe, expect, it } from 'vitest';
+import { THEMES } from './tokens';
 
 const LINK = '#355F91';
 const BRAND = join(dirname(fileURLToPath(import.meta.url)), '..', '..', '..', 'docs', 'assets');
@@ -40,6 +42,10 @@ describe("the kit's Light link (one link blue, Nov 11)", () => {
   it('reads at 4.86:1 or more on every opaque Light surface', () => {
     expect(GROUNDS.map(([k]) => k)).toEqual(expect.arrayContaining(['surface.worldHi', 'surface.worldBase', 'surface.worldLo', 'surface.panel', 'surface.tile', 'surface.sunken', 'surface.fill', 'surface.fillStrong', 'accent.subtle']));
     for (const [k, hex] of GROUNDS) expect(ratio(LINK, hex), `text.link on ${k} ${hex}`).toBeGreaterThanOrEqual(4.86);
+  });
+
+  it("the office's own Light text.link is the same", () => {
+    expect(THEMES.light.text.link).toBe(LINK);
   });
 
   it("the sign-in mock's Light --link is the same", () => {

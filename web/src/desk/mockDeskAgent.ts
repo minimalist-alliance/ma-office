@@ -4,15 +4,19 @@
 // and subscriptions stay quiet until it's back, when each gets a fresh snapshot.
 import { AgentError, type AgentClient } from '../../agent/src/client/agentClient';
 import { KeySecret } from '../../agent/src/client/keySecret';
-import type { AgentCaps, AttachLimits, AgentCreate, AgentLink, AgentPatch, ConversationEvent, LimitLayer, LimitsChange, TimerInput, ToolsEvent } from '../../agent/src/client/types';
+import type { AccessChange, AgentCaps, AttachLimits, AgentCreate, AgentLink, AgentPatch, Approval, ConversationEvent, LimitLayer, LimitsChange, Message, TimerInput, ToolsEvent } from '../../agent/src/client/types';
 import type { FixtureName } from '../../agent/src/mock/fixtures';
-import { MockAgentClient } from '../../agent/src/mock/mockAgentClient';
+import { MockAgentClient, type ApprovalSeed } from '../../agent/src/mock/mockAgentClient';
 import type { RpcOptions } from './deskLink';
 import type { SubWire } from './rtc/subs';
 
 /** What a dev or a `shell` test can steer, as `window.__maDeskMock.agent`. */
 export interface MockAgentControl {
-  /** `?agentFixture=fresh|ready|limit|tools`: what each desk starts with. `tools` is S-14's (approvals, running tools, memory). */
+  /**
+   * `?agentFixture=fresh|ready|limit|tools`: what each desk starts with. `tools` is S-14's (approvals, running tools, memory).
+   * Auto-approve's runs come from the client's hooks (`unasked`, `changeUnasked`, `ask(…, 'saveNotes')`), or from the demo's
+   * "keep notes" once a switch is on.
+   */
   fixture: FixtureName;
   /** `?speed=fast`: as the demo's. */
   fast: boolean;
@@ -22,15 +26,44 @@ export interface MockAgentControl {
   account?: Partial<LimitLayer> | undefined;
   /** `?agentCap=3` and the rest of multi-agent.md section 2's caps, over the built-in defaults. */
   caps?: Partial<AgentCaps> | undefined;
+  /** `?agentSetup=new|upgrade`: every agent the fixture starts with waits for its setup screen (draft ADR section 16). */
+  setup?: 'new' | 'upgrade' | undefined;
+  /** `?agentCredits=1`: the member's MA credits are usable, so a helper made with no key runs on them (API.md §24). */
+  credits?: boolean | undefined;
+  /**
+   * `?approvalsWire=messages`: a conversation's snapshot carries each approval only in its reply, as desk-agent before
+   * 2026-11-14's fix did (release 4 and `2026.11.14-dce379e`). Unset: as API.md section 18 says and desk-agent does now, the
+   * snapshot's own `approvals` and each reply's.
+   */
+  approvalsWire?: 'messages' | undefined;
   /** `desk-agent` isn't running. */
   down: boolean;
   setDown(down: boolean): void;
   /** Each desk's, once something has asked. */
   desks: Record<string, MockAgentDesk>;
+  /** A waiting approval with a known id on a desk, now or once its agent is first asked (a mock office's tray papers). */
+  seedApproval(deskId: string, seed: ApprovalSeed): void;
+  /** Seeds waiting for their desk's agent. */
+  seeds: Record<string, ApprovalSeed[]>;
+  /**
+   * A conversation's snapshot keeps only its newest this many messages, with the approvals of those, and says how many it left
+   * out in `omitted`, as deskd cuts a thread too long for one event (`EventFit`; API.md section 11). Null: whole.
+   */
+  cutSnapshots: number | null;
+  /**
+   * How long a SUB's reply takes, in ms. The subscription is made when it's asked, as deskd makes it, and its events can come
+   * first (API.md section 5). A deskd that has just started answers its first ones slowly (release 3's bug B).
+   */
+  subDelayMs: number;
   /** `desk-agent` restarts, as in `MockAgentClient.restart`. Every subscription gets a fresh snapshot. */
   restart(): void;
   /** Takes the session away for this long, as a dropped connection does. */
   dropLink(ms: number): void;
+  /**
+   * Messages between desks (W6): every `agent.desks.*` call each desk answered and every `agent.desks.outbox` SUB, in order, with
+   * `performance.now()` as it answered, the envelope ids a take gave or a deliver applied, and the outcome. For the shell spec.
+   */
+  desksLog: { desk: string; m: string; at: number; ids?: string[]; outcome?: string; refused?: string }[];
 }
 
 const MUTATIONS: ReadonlySet<string> = new Set([
@@ -55,9 +88,17 @@ const MUTATIONS: ReadonlySet<string> = new Set([
   'agent.attach.caps.set',
   // S-14
   'agent.approval.decide',
+  'agent.approval.undo',
   'agent.tool.stop',
   'agent.memory.delete',
   'agent.memory.clear',
+  // The setup screen (section 16)
+  'agent.access.set',
+  'agent.desks.revoke',
+  // Messages between desks (W6)
+  'agent.desks.answer',
+  'agent.desks.deliver',
+  'agent.desks.done',
 ]);
 
 type Emit = (subId: number, seq: number, body: { type: string; data: unknown }) => void;
@@ -74,12 +115,18 @@ export class MockAgentDesk implements SubWire {
     /** To this desk's link, which sets it. */
     public emit: Emit,
     deskName: string | undefined,
+    private readonly deskId = 'd-mock',
+    /** A Guild Desk: every `agent.desks.*` method and the outbox are `forbidden` `guild` there (W6). */
+    private readonly guildDesk = false,
   ) {
     this.client = new MockAgentClient({
+      deskId,
       fixture: control.fixture,
       keysLast: control.keysLast,
       ...(control.account ? { account: control.account } : {}),
       ...(control.caps ? { caps: control.caps } : {}),
+      ...(control.setup ? { setup: control.setup } : {}),
+      ...(control.credits ? { credits: true } : {}),
       ...(deskName ? { deskName } : {}),
       ...(control.fast ? { latencyMs: 15, streamMs: 8 } : {}),
     });
@@ -88,27 +135,61 @@ export class MockAgentDesk implements SubWire {
   answer(method: string, params: Record<string, unknown>, options?: RpcOptions): Promise<unknown> {
     if (this.control.down) return Promise.reject(wireError('unavailable', { reason: 'unavailable' }));
     if (MUTATIONS.has(method) && !options?.idem) return Promise.reject(wireError('bad_request', {}));
-    return call(this.client, method, params, options?.idem ?? '').catch((err: unknown) => {
-      if (!(err instanceof AgentError)) throw err;
-      throw wireError(err.code, {
-        ...(err.reason ? { reason: err.reason } : {}),
-        ...(err.detail ? { detail: err.detail } : {}),
-        ...(err.scope ? { scope: err.scope } : {}),
-        ...(err.file ? { name: err.file } : {}),
-        ...(err.limit ? { limit: err.limit } : {}),
+    if (method.startsWith('agent.desks.') && method !== 'agent.desks.revoke' && this.guildDesk) return Promise.reject(wireError('forbidden', { reason: 'guild' }));
+    const carried = method === 'agent.desks.take' || method === 'agent.desks.deliver' || method === 'agent.desks.done';
+    return call(this.client, method, params, options?.idem ?? '')
+      .then((r) => {
+        if (carried) this.logCarried(method, r);
+        return r;
+      })
+      .catch((err: unknown) => {
+        if (!(err instanceof AgentError)) throw err;
+        if (carried) this.control.desksLog.push({ desk: this.deskId, m: method, at: performance.now(), refused: err.reason ?? err.code });
+        throw wireError(err.code, {
+          ...(err.reason ? { reason: err.reason } : {}),
+          ...(err.detail ? { detail: err.detail } : {}),
+          ...(err.scope ? { scope: err.scope } : {}),
+          ...(err.file ? { name: err.file } : {}),
+          ...(err.limit ? { limit: err.limit } : {}),
+          ...(err.versionId ? { versionId: err.versionId } : {}),
+        });
       });
-    });
+  }
+
+  /** What a carried call answered, for the shell spec's timing: the ids a take gave, the id a deliver applied. */
+  private logCarried(method: string, r: unknown): void {
+    const at = performance.now();
+    const o = (r ?? {}) as { envelopes?: { id: string }[]; id?: string; outcome?: string };
+    if (method === 'agent.desks.take') this.control.desksLog.push({ desk: this.deskId, m: method, at, ids: (o.envelopes ?? []).map((e) => e.id) });
+    else if (method === 'agent.desks.deliver') this.control.desksLog.push({ desk: this.deskId, m: method, at, ids: o.id ? [o.id] : [], ...(o.outcome ? { outcome: o.outcome } : {}) });
+    else this.control.desksLog.push({ desk: this.deskId, m: method, at });
   }
 
   sub(body: { topic: string }): Promise<{ subId: number }> {
+    if (body.topic === 'agent.desks.outbox') {
+      this.control.desksLog.push({ desk: this.deskId, m: 'sub agent.desks.outbox', at: performance.now() });
+      if (this.guildDesk) return Promise.reject(wireError('forbidden', { reason: 'guild' }));
+    }
     const refusal = this.refuse[body.topic] ?? (body.topic.startsWith('agent.conversation:') ? this.refuse['agent.conversation'] : undefined);
     if (refusal) return Promise.reject(wireError(refusal, {}));
-    const subId = this.nextSub;
-    this.nextSub += 1;
-    const sub = { topic: body.topic, off: null as (() => void) | null };
-    this.subs.set(subId, sub);
+    // As deskd does (API.md section 5): a SUB of a topic this session already has is that same subscription, with a fresh
+    // snapshot, so an UNSUB of its id ends it for whoever asked.
+    const live = [...this.subs].find(([, s]) => s.topic === body.topic);
+    let subId: number;
+    let sub: { topic: string; off: (() => void) | null };
+    if (live) {
+      [subId, sub] = live;
+      sub.off?.();
+      sub.off = null;
+    } else {
+      subId = this.nextSub;
+      this.nextSub += 1;
+      sub = { topic: body.topic, off: null };
+      this.subs.set(subId, sub);
+    }
     if (!this.control.down) this.start(subId, sub);
-    return Promise.resolve({ subId });
+    const delay = this.control.subDelayMs;
+    return delay > 0 ? new Promise((ok) => window.setTimeout(() => ok({ subId }), delay)) : Promise.resolve({ subId });
   }
 
   unsub(subId: number): Promise<unknown> {
@@ -145,7 +226,13 @@ export class MockAgentDesk implements SubWire {
       this.emit(subId, this.seq, { type, data });
     };
     if (sub.topic === 'agent.state') {
-      sub.off = this.client.watchAgents((agents, caps) => send('snapshot', caps ? { agents, caps } : { agents }));
+      // W6: `deskOffers`, the offers from other desks waiting here, beside the agents.
+      sub.off = this.client.watchAgents((agents, caps, desk) => send('snapshot', { agents, ...(caps ? { caps } : {}), ...(desk && desk.deskOffers !== null ? { deskOffers: desk.deskOffers } : {}) }));
+      return;
+    }
+    // W6: what waits in this desk's outbox, for each other desk, never content.
+    if (sub.topic === 'agent.desks.outbox') {
+      sub.off = this.client.watchOutbox((e) => send('snapshot', e));
       return;
     }
     // The spec's section 2.8: every tool call running on the desk. No deskd serves it yet; `refuse['agent.tools']` plays one.
@@ -159,12 +246,44 @@ export class MockAgentDesk implements SubWire {
     }
     const agentId = sub.topic.slice('agent.conversation:'.length);
     sub.off = this.client.watchConversation(agentId, (e: ConversationEvent) => {
-      if (e.type === 'snapshot') send('snapshot', e.approvals ? { messages: e.messages, approvals: e.approvals } : { messages: e.messages });
+      if (e.type === 'snapshot') send('snapshot', cut(snapshotWire(e.messages, e.approvals, this.control.approvalsWire), this.control.cutSnapshots));
       else if (e.type === 'message') send('message', { message: e.message });
       else if (e.type === 'approval') send('approval', { approval: e.approval });
       else send('delta', { messageId: e.messageId, runId: e.runId, text: e.text });
     });
   }
+}
+
+/**
+ * A conversation snapshot as a desk sends it (API.md section 18): each reply lists its approvals, and the snapshot carries them
+ * all beside, unless `wire` is an older desk-agent's, which sent only the replies' own.
+ */
+function snapshotWire(messages: Message[], approvals: Approval[] | undefined, wire: MockAgentControl['approvalsWire']): Record<string, unknown> {
+  if (!approvals) return { messages };
+  const withTheirs = messages.map((m) => {
+    const theirs = approvals.filter((a) => a.messageId === m.id);
+    return theirs.length ? { ...m, approvals: theirs } : m;
+  });
+  return wire === 'messages' ? { messages: withTheirs } : { messages: withTheirs, approvals };
+}
+
+/**
+ * A snapshot cut as deskd's `EventFit` cuts one too long for an event: its newest `keep` messages, with their approvals (a left-out
+ * message's go with it), `omitted` the count left out and `older: true`.
+ */
+function cut(wire: Record<string, unknown>, keep: number | null): Record<string, unknown> {
+  const messages = (wire['messages'] as Message[] | undefined) ?? [];
+  if (keep === null || messages.length <= keep) return wire;
+  const kept = messages.slice(messages.length - keep);
+  const ids = new Set(kept.map((m) => m.id));
+  const approvals = wire['approvals'] as Approval[] | undefined;
+  return {
+    ...wire,
+    messages: kept,
+    ...(approvals ? { approvals: approvals.filter((a) => ids.has(a.messageId)) } : {}),
+    omitted: messages.length - kept.length,
+    older: true,
+  };
 }
 
 const wireError = (code: string, details: Record<string, unknown>): Error => Object.assign(new Error(code), { code, details });
@@ -278,6 +397,9 @@ async function call(c: AgentClient, method: string, p: Record<string, unknown>, 
       return { approval: await c.getApproval(p['approvalId'] as string) };
     case 'agent.approval.decide':
       return { approval: await c.decideApproval(p['approvalId'] as string, { approve: p['approve'] === true, sha256: String(p['sha256'] ?? ''), ...(typeof p['note'] === 'string' ? { note: p['note'] } : {}) }, m) };
+    // Auto-approve (API.md section 18, "Done without asking").
+    case 'agent.approval.undo':
+      return { approval: await c.undoApproval(p['approvalId'] as string, m) };
     case 'agent.tool.stop':
       await c.stopTool(p['callId'] as string, m);
       return {};
@@ -288,6 +410,29 @@ async function call(c: AgentClient, method: string, p: Record<string, unknown>, 
       return { deleted: true };
     case 'agent.memory.clear':
       return c.clearMemories(agentId, m);
+    // The setup screen and its settings (draft ADR section 16).
+    case 'agent.access.get':
+      return { access: await c.getAccess(agentId) };
+    case 'agent.access.set': {
+      const change: AccessChange = {};
+      if (p['apps'] !== undefined) change.apps = p['apps'] as AccessChange['apps'];
+      if (p['auto'] !== undefined) change.auto = p['auto'] as AccessChange['auto'];
+      if (p['desks'] !== undefined) change.desks = p['desks'] as AccessChange['desks'];
+      return { access: await c.setAccess(agentId, change, m) };
+    }
+    case 'agent.desks.revoke':
+      return c.revokeDeskGrant(p['grantId'] as string, m);
+    // Messages between desks (W6; deskd API.md section 18).
+    case 'agent.desks.list':
+      return c.listDeskHalves();
+    case 'agent.desks.answer':
+      return { half: await c.answerDeskOffer(p['grantId'] as string, p['allow'] === true ? { allow: true, agentId: String(p['agentId'] ?? '') } : { allow: false }, m) };
+    case 'agent.desks.take':
+      return (c as MockAgentClient).takeOutbox(String(p['toDeskId'] ?? ''), typeof p['limit'] === 'number' ? p['limit'] : 50);
+    case 'agent.desks.deliver':
+      return (c as MockAgentClient).deliverEnvelope(p['envelope']);
+    case 'agent.desks.done':
+      return (c as MockAgentClient).doneOutbox(Array.isArray(p['results']) ? (p['results'] as { id: string; outcome: string; reason?: string }[]) : []);
     default:
       throw wireError('not_found', {});
   }

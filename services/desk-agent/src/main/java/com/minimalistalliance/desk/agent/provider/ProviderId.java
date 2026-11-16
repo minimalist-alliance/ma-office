@@ -7,7 +7,7 @@ import java.util.regex.Pattern;
  * an enum, so an OpenAI-compatible endpoint or a test's fake is one more value rather than a code change.
  *
  * @param id lowercase, as stored and sent: {@code anthropic}, {@code openai}, {@code google}, {@code xai},
- *     {@code openrouter}
+ *     {@code openrouter}, {@code moonshot}
  * @param displayName what the badge's text fallback says
  */
 public record ProviderId(String id, String displayName) {
@@ -19,6 +19,19 @@ public record ProviderId(String id, String displayName) {
     public static final ProviderId GOOGLE = new ProviderId("google", "Google");
     public static final ProviderId XAI = new ProviderId("xai", "xAI");
     public static final ProviderId OPENROUTER = new ProviderId("openrouter", "OpenRouter");
+    /** Moonshot AI, whose keys come from its Kimi API Platform: the Kimi models, on its Chat Completions API. */
+    public static final ProviderId MOONSHOT = new ProviderId("moonshot", "Moonshot AI");
+    /**
+     * Minimalist Alliance's own AI service, Desk Maia's only provider (the owner, Nov 14: "Maia ALWAYS runs on the company
+     * account"). Never a member's: no key, no key list, no setup screen and no other agent ever names it.
+     */
+    public static final ProviderId MA = new ProviderId("ma", "Minimalist Alliance");
+    /**
+     * Minimalist Alliance as the provider of the member's own desk agents ("helpers"), paid in the member's MA credits (the
+     * owner, Nov 15; ma-platform {@code desk-helpers.md}, ADR 0142). Apart from {@link #MA}, which is Desk Maia's alone: a
+     * helper never runs on her allowance, and she never runs on the member's credits. No key: the Platform picks the model.
+     */
+    public static final ProviderId MA_CREDITS = new ProviderId("ma-credits", "Minimalist Alliance");
 
     /** OpenRouter's router across its free models, which serves only them. */
     public static final String OPENROUTER_FREE_ROUTER = "openrouter/free";

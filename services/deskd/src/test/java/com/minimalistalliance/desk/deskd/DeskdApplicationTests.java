@@ -324,7 +324,12 @@ class DeskdApplicationTests {
         };
         try (ConfigurableApplicationContext context = DeskdApplication.application().run(args)) {
             assertThat(health(dir)).contains("200 OK");
-            Files.delete(data);
+            // deskd keeps files there now (To-do's todo.db, API.md §22): the directory goes whole.
+            try (var tree = Files.walk(data)) {
+                for (Path p : tree.sorted(java.util.Comparator.reverseOrder()).toList()) {
+                    Files.delete(p);
+                }
+            }
             assertThat(health(dir)).contains("503 ", "\"status\":\"failing\"");
         }
     }

@@ -1,11 +1,12 @@
-// An agent's look in its settings (multi-agent.md section 7, task 49 item 6): a library icon or the member's own PNG, and a
-// tone from the wheel. Each pick saves at once. An upload is checked here first (type, 256 KiB, 512 by 512 by default), and
+// An agent's look in its settings (multi-agent.md section 7, task 49 item 6): its colour (the owner, Nov 15: every agent wears
+// the Agent app's own icon, the guy with the hat, in a colour of its own), and the hat, a library icon or the member's own PNG.
+// Each pick saves at once. An upload is checked here first (type, 256 KiB, 512 by 512 by default), and
 // the desk's own refusal reason shows in the same words.
 import { useEffect, useId, useRef, useState, type ChangeEvent } from 'react';
 import { AgentError, newIdem, type AgentClient } from '../client/agentClient';
 import type { Agent, AgentCaps } from '../client/types';
 import { AgentMark } from '../look/AgentMark';
-import { IconPicker, ToneWheel } from '../look/Pickers';
+import { ColorPicker, IconPicker } from '../look/Pickers';
 import type { LookTheme } from '../look/tones';
 import { errorText } from '../model/agents';
 import { pngCheck, pngRefusalText, scalePngDown, toBase64 } from '../model/png';
@@ -18,7 +19,7 @@ const DEFAULT_LIMITS = { maxBytes: 262_144, maxPx: 512 };
 
 export function LookEditor({ client, agent, caps, theme }: { client: AgentClient; agent: Agent; caps: AgentCaps | null; theme: LookTheme }) {
   const ids = useId();
-  const look = agent.look ?? { icon: 'nodes', tone: 'graphite', png: null };
+  const look = agent.look ?? { icon: 'hat', tone: 'graphite', png: null };
   const pngUrl = useMaskUrl(client, agent);
   const file = useRef<HTMLInputElement>(null);
   const [busy, setBusy] = useState(false);
@@ -27,9 +28,9 @@ export function LookEditor({ client, agent, caps, theme }: { client: AgentClient
   const limits = caps ? { maxBytes: caps.iconMaxBytes, maxPx: caps.iconMaxPx } : DEFAULT_LIMITS;
 
   // A pick shows at once and saves after a short pause, so arrowing through the icons sends one change, not twenty.
-  const [draft, setDraftState] = useState<{ icon?: string; tone?: string }>({});
+  const [draft, setDraftState] = useState<{ icon?: string; color?: string }>({});
   const draftRef = useRef(draft);
-  const setDraft = (d: { icon?: string; tone?: string }): void => {
+  const setDraft = (d: { icon?: string; color?: string }): void => {
     draftRef.current = d;
     setDraftState(d);
   };
@@ -40,7 +41,7 @@ export function LookEditor({ client, agent, caps, theme }: { client: AgentClient
     },
     [],
   );
-  const pick = (patch: { icon?: string; tone?: string }, what: string): void => {
+  const pick = (patch: { icon?: string; color?: string }, what: string): void => {
     setDraft({ ...draftRef.current, ...patch });
     setError(null);
     setSaved(null);
@@ -50,14 +51,14 @@ export function LookEditor({ client, agent, caps, theme }: { client: AgentClient
       void send(draftRef.current, what);
     }, 400);
   };
-  const send = async (patch: { icon?: string; tone?: string }, what: string): Promise<void> => {
-    if (!patch.icon && !patch.tone) return;
+  const send = async (patch: { icon?: string; color?: string }, what: string): Promise<void> => {
+    if (!patch.icon && !patch.color) return;
     try {
       await client.updateAgent(agent.id, patch, { idem: newIdem() });
       setSaved(what);
       // Already what the desk says (a pick of what it had, or its word came first): nothing left to wait for.
       const now = lookRef.current;
-      if (!timer.current && (patch.icon ?? now.icon) === now.icon && (patch.tone ?? now.tone) === now.tone) setDraft({});
+      if (!timer.current && (patch.icon ?? now.icon) === now.icon && (patch.color ?? now.color) === now.color) setDraft({});
     } catch (err) {
       setError(err instanceof AgentError ? errorText(err.reason, err.detail) : errorText(null));
       setDraft({});
@@ -67,10 +68,10 @@ export function LookEditor({ client, agent, caps, theme }: { client: AgentClient
   const lookRef = useRef(look);
   lookRef.current = look;
   useEffect(() => {
-    if (!timer.current && (draftRef.current.icon !== undefined || draftRef.current.tone !== undefined)) setDraft({});
-  }, [look.icon, look.tone]);
+    if (!timer.current && (draftRef.current.icon !== undefined || draftRef.current.color !== undefined)) setDraft({});
+  }, [look.icon, look.color]);
   const icon = draft.icon ?? look.icon;
-  const tone = draft.tone ?? look.tone;
+  const color = draft.color ?? look.color ?? null;
 
   const upload = async (e: ChangeEvent<HTMLInputElement>): Promise<void> => {
     const chosen = e.target.files?.[0];
@@ -108,7 +109,7 @@ export function LookEditor({ client, agent, caps, theme }: { client: AgentClient
   return (
     <div className="ag-look-editor" data-testid="look-editor">
       <div className="ag-look-top">
-        <AgentMark icon={icon} tone={tone} theme={theme} pngUrl={pngUrl} size={56} title={`${agent.name}’s icon`} />
+        <AgentMark icon={icon} color={color} tone={look.tone} theme={theme} pngUrl={pngUrl} size={56} title={`${agent.name}’s icon`} />
         <div className="ag-look-upload">
           <input ref={file} id={`${ids}-png`} className="ag-sr" type="file" accept="image/png,.png" aria-label="Upload a PNG as the icon" tabIndex={-1} onChange={(e) => void upload(e)} disabled={busy} data-testid="icon-file" />
           <button type="button" className="ag-btn sm" onClick={() => file.current?.click()} disabled={busy} aria-describedby={`${ids}-png-hint`} data-testid="icon-upload">
@@ -120,12 +121,12 @@ export function LookEditor({ client, agent, caps, theme }: { client: AgentClient
         </div>
       </div>
       <fieldset className="ag-field">
-        <legend>Icon</legend>
-        <IconPicker value={icon} onChange={(next) => pick({ icon: next }, 'Icon saved')} />
+        <legend>Color</legend>
+        <ColorPicker value={color} theme={theme} onChange={(next) => pick({ color: next }, 'Color saved')} />
       </fieldset>
       <fieldset className="ag-field">
-        <legend>Color</legend>
-        <ToneWheel value={tone} theme={theme} onChange={(next) => pick({ tone: next }, 'Color saved')} />
+        <legend>Icon</legend>
+        <IconPicker value={icon} color={color} theme={theme} onChange={(next) => pick({ icon: next }, 'Icon saved')} />
       </fieldset>
       <p className="ag-sr" role="status">
         {saved}

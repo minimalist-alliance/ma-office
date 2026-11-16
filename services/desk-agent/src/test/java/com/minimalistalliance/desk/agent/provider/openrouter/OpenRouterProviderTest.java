@@ -19,6 +19,7 @@ import com.minimalistalliance.desk.agent.provider.ToolCall;
 import com.minimalistalliance.desk.agent.provider.ToolResult;
 import com.minimalistalliance.desk.agent.provider.ToolSpec;
 import com.minimalistalliance.desk.agent.provider.Usage;
+import com.minimalistalliance.desk.agent.provider.chat.ChatCompletions;
 import com.minimalistalliance.desk.agent.provider.http.HttpTransport;
 import com.minimalistalliance.desk.agent.testing.FakeOpenRouter;
 import java.nio.charset.StandardCharsets;
@@ -136,9 +137,9 @@ class OpenRouterProviderTest {
         server.then(FakeOpenRouter.Reply.events(chunk(FREE, "{\"content\":\"Cut\"}", null),
                 usage(FREE, 5, 0, 256, "0", "length"), done()));
         assertThat(chat(REQUEST, new ArrayList<>()).stopReason()).isEqualTo("max_tokens");
-        assertThat(OpenRouterProvider.stopReason("content_filter", false, 1, 10)).isEqualTo("refusal");
-        assertThat(OpenRouterProvider.stopReason("stop", true, 10, 10)).isEqualTo("max_tokens");
-        assertThat(OpenRouterProvider.stopReason(null, false, 1, 10)).isEqualTo("completed");
+        assertThat(ChatCompletions.stopReason("content_filter", false, 1, 10)).isEqualTo("refusal");
+        assertThat(ChatCompletions.stopReason("stop", true, 10, 10)).isEqualTo("max_tokens");
+        assertThat(ChatCompletions.stopReason(null, false, 1, 10)).isEqualTo("completed");
     }
 
     @Test

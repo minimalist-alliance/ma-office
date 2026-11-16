@@ -1,10 +1,12 @@
 // An installed app's window body (contract 3.2, ADR 0054), once the desk can answer. A stopped app says why in the contract's words, with Restart (`apps.start`). Otherwise: the view's files from
 // `apps.view.get`, checked (`verify.ts`) before anything is built; the sandboxed `srcdoc` frame (`frame.ts`); once its boot says
-// the view runs, the bridge (`bridge.ts`) on a `MessagePort` with the theme's tokens; and the frame budget (`budget.ts`). A view
-// that fails its checks, or navigates its frame away, gets the calm "couldn't be opened safely" and nothing more.
+// the view runs, the bridge (`bridge.ts`) on a `MessagePort` with the theme's tokens; and the frame budget (`budget.ts`), which
+// counts only the view's own time. A view that fails its checks, or navigates its frame away, gets the calm "couldn't be opened
+// safely" and nothing more.
 import { useEffect, useRef, useState, type ReactNode } from 'react';
 import type { AppWindowProps } from '../../apps/registry';
 import type { AppId } from '../../canvas/layout';
+import { viewZoom } from '../../canvas/pinch';
 import { noteDeskInput, useDeskLink, useLive } from '../../desk/liveStore';
 import { useDeskStore } from '../../state/deskStore';
 import { shared } from './deps';
@@ -16,9 +18,10 @@ import bootUrl from './boot.js?url';
 import { ViewBridge } from './bridge';
 import { watchFrames } from './budget';
 import { fontBytes, forgetView, viewFor } from './cache';
-import { FRAME_ALLOW, SANDBOX, viewSrcdoc } from './frame';
+import { FRAME_ALLOW, frameNonce, SANDBOX, viewSrcdoc } from './frame';
 import { liveDeskLink } from './link';
 import { VIEW_FONT_FAMILY, viewTokens } from './tokens';
+import { rateCap, readViewZoom, VIEW_ZOOMS_PER_SECOND } from './viewZoom';
 import type { VerifiedView } from './verify';
 import { codeOf } from './wire';
 import { START_FAILED, W } from './words';
@@ -79,6 +82,10 @@ function ViewFrame({ deskId, rec, parked }: { deskId: string; rec: AppRecord; pa
   const [attempt, setAttempt] = useState(0);
   const frame = useRef<HTMLIFrameElement>(null);
   const bridge = useRef<ViewBridge | null>(null);
+  /** The port the frame's boot script answers the frame budget's probe on. */
+  const probe = useRef<MessagePort | null>(null);
+  /** The port the frame's boot script sends the member's zoom gestures over the view up on (`viewZoom.ts`). */
+  const zoomPort = useRef<MessagePort | null>(null);
   const theme = useTheme((s) => s.resolved);
   const themeRef = useRef(theme);
   themeRef.current = theme;
@@ -112,18 +119,55 @@ function ViewFrame({ deskId, rec, parked }: { deskId: string; rec: AppRecord; pa
     if (!view || !el || paused) return undefined;
     let loads = 0;
     let done = false;
+    // Only the boot script knows it (`frame.ts`): a message without it is the view's, and nothing is taken from it.
+    const nonce = frameNonce();
+    let portsTaken = false;
+    const refuse = (e: MessageEvent): void => {
+      for (const p of e.ports) p.close();
+    };
     const end = (next: Phase): void => {
       if (done) return;
       done = true;
       window.clearTimeout(timer);
       bridge.current?.close();
       bridge.current = null;
+      probe.current?.close();
+      probe.current = null;
+      zoomPort.current?.close();
+      zoomPort.current = null;
       setPhase(next);
     };
     const onMessage = (e: MessageEvent): void => {
-      if (e.source !== el.contentWindow || bridge.current || done) return;
-      const d = e.data as { t?: unknown; ok?: unknown } | null;
-      if (!d || d.t !== 'ma.boot') return;
+      if (e.source !== el.contentWindow) return;
+      const d = e.data as { t?: unknown; ok?: unknown; n?: unknown } | null;
+      if (done || !d || typeof d !== 'object' || d.n !== nonce) {
+        refuse(e);
+        return;
+      }
+      if (d.t === 'ma.ports') {
+        // Sent before the view runs: the budget's probe, and the zoom gestures over the view.
+        if (portsTaken) {
+          refuse(e);
+          return;
+        }
+        portsTaken = true;
+        probe.current = e.ports[0] ?? null;
+        // A wheel with Ctrl or Cmd, or a pinch, over the view: its window's zoom (ADR 0055), as over any office app.
+        const zooms = e.ports[1] ?? null;
+        zoomPort.current = zooms;
+        if (zooms) {
+          const allowed = rateCap(VIEW_ZOOMS_PER_SECOND);
+          zooms.onmessage = (m: MessageEvent): void => {
+            const z = readViewZoom(m.data, window.innerHeight);
+            if (z && allowed()) viewZoom(el, z.dy, z.keyHeld);
+          };
+        }
+        return;
+      }
+      if (d.t !== 'ma.boot' || bridge.current) {
+        refuse(e);
+        return;
+      }
       if (d.ok !== true) {
         end('failed');
         return;
@@ -151,6 +195,7 @@ function ViewFrame({ deskId, rec, parked }: { deskId: string; rec: AppRecord; pa
       bootUrl: new URL(bootUrl, document.baseURI).href,
       font: font ? { family: VIEW_FONT_FAMILY, bytes: font } : null,
       lang: document.documentElement.lang || 'en',
+      nonce,
     });
     return () => {
       done = true;
@@ -159,6 +204,10 @@ function ViewFrame({ deskId, rec, parked }: { deskId: string; rec: AppRecord; pa
       el.removeEventListener('load', onLoad);
       bridge.current?.close();
       bridge.current = null;
+      probe.current?.close();
+      probe.current = null;
+      zoomPort.current?.close();
+      zoomPort.current = null;
     };
   }, [view, font, deskId, rec.id, rec.version, paused]);
 
@@ -174,8 +223,12 @@ function ViewFrame({ deskId, rec, parked }: { deskId: string; rec: AppRecord; pa
     };
   }, [theme, rec.id]);
 
-  // The frame budget, while the view shows: over it, the view is unloaded until the member says Resume.
-  useEffect(() => (phase === 'ready' && !paused && !parked ? watchFrames(() => setPaused(true)) : undefined), [phase, paused, parked]);
+  // The frame budget, while the view shows: over it, the view is unloaded until the member says Resume. Only its own time
+  // counts (`budget.ts`): its frame's window and the boot script's probe port say which time that is.
+  useEffect(() => {
+    if (phase !== 'ready' || paused || parked) return undefined;
+    return watchFrames({ win: frame.current?.contentWindow ?? null, probe: probe.current, name: rec.id, pause: () => setPaused(true) });
+  }, [phase, paused, parked, rec.id]);
 
   if (phase === 'unsafe') return <Panel title={W.unsafe} kind="unsafe" />;
   if (phase === 'noWindow') return <Panel title={W.noWindow} kind="no-window" />;

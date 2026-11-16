@@ -1,0 +1,13 @@
+From: =?gb2312?B?0NDV/rK/?= <admin@example.org>
+To: me@desk.example
+Date: Fri, 13 Nov 2026 10:00:00 +0000
+Subject: =?gb2312?B?u+HS6bzHwrw=?=
+Message-ID: <charset-gb2312@corpus.example>
+MIME-Version: 1.0
+X-Corpus-Note: text/plain in gb2312, 8bit, subject and sender name as encoded words in the same charset
+Content-Type: text/plain; charset="gb2312"
+Content-Transfer-Encoding: 8bit
+
+大家好：
+
+附上今天的会议记录，请查收。

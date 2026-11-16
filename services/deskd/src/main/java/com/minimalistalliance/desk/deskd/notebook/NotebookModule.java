@@ -82,6 +82,14 @@ public final class NotebookModule implements SessionListener {
         return calls;
     }
 
+    /**
+     * Told when Notebook's tree changes while some session is subscribed to it (the member has Notebook open): Documents
+     * looks at the pages again. It must not block.
+     */
+    public void onTreeChanged(Runnable heard) {
+        links.onTree(heard);
+    }
+
     /** Never blocks: closing a link waits for nothing. */
     @Override
     public void onSessionEnded(String sessionId) {

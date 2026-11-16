@@ -1,0 +1,73 @@
+{
+  "id": "notebook-031",
+  "area": "notebook",
+  "title": "Search one tab only",
+  "prompt": "Search only my Harness Work tab for invoice and tell me the page titles you find.",
+  "setup": {
+    "notebook": [
+      {
+        "tab": "Harness Work",
+        "title": "Invoice process",
+        "markdown": "# Invoice process\n\nSend invoices on the 1st.\n"
+      },
+      {
+        "tab": "Harness",
+        "title": "Invoice from plumber",
+        "markdown": "# Invoice from plumber\n\nPaid in cash.\n"
+      }
+    ]
+  },
+  "approve": "all",
+  "checks": [
+    {
+      "kind": "reply",
+      "contains": [
+        "Invoice process"
+      ],
+      "state": "done",
+      "notContains": [
+        "plumber"
+      ]
+    },
+    {
+      "kind": "cards",
+      "tools": []
+    }
+  ],
+  "policy": {
+    "tools": [
+      "notebook_list",
+      "notebook_search"
+    ]
+  },
+  "standIn": [
+    {
+      "calls": [
+        {
+          "name": "notebook_list",
+          "input": {}
+        }
+      ]
+    },
+    {
+      "calls": [
+        {
+          "name": "notebook_search",
+          "input": {
+            "query": "invoice",
+            "tabId": {
+              "$re": {
+                "step": 0,
+                "call": 0,
+                "pattern": "\"tabId\":\"([^\"]+)\",\"title\":\"Harness Work\""
+              }
+            }
+          }
+        }
+      ]
+    },
+    {
+      "text": "In Harness Work I found one page: Invoice process."
+    }
+  ]
+}

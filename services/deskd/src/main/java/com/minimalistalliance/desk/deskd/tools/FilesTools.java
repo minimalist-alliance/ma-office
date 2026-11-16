@@ -34,6 +34,18 @@ public final class FilesTools implements HostedTool {
         this.files = files;
     }
 
+    /** Who hears an agent's write, after it's done (Documents: "Made for you by", API.md §25). Ids and the path only. */
+    public interface Wrote {
+        void wrote(String path, String agentId);
+    }
+
+    private volatile Wrote wrote = (path, agentId) -> {};
+
+    public FilesTools onWrite(Wrote hook) {
+        this.wrote = hook == null ? (path, agentId) -> {} : hook;
+        return this;
+    }
+
     @Override
     public boolean available() {
         return files.available();
@@ -42,6 +54,40 @@ public final class FilesTools implements HostedTool {
     @Override
     public void runEnded(String runId) {
         looked.remove(runId);
+    }
+
+    /**
+     * A new file ({@code files_write} that doesn't replace) and a new folder ({@code files_mkdir}) done without asking are
+     * held to the Files switch's folder where they're written ({@link AgentFiles#requireInside}; draft ADR §15).
+     */
+    @Override
+    public boolean checksAuto(String tool) {
+        return "files_write".equals(tool) || "files_mkdir".equals(tool);
+    }
+
+    /**
+     * The undo of a file or folder made without asking: the file to the trash while its SHA-256 is still what the agent
+     * wrote, the folder while it's still empty. Nothing is deleted for good.
+     */
+    @Override
+    public Map<String, Object> undoAuto(com.minimalistalliance.desk.deskd.rpc.Caller caller, AutoLedger.Entry entry)
+            throws ToolFailure {
+        Map<String, Object> made = entry.made();
+        if (made == null || !(made.get("path") instanceof String path)) {
+            throw ToolFailure.notFound("approval");
+        }
+        try {
+            switch (String.valueOf(made.get("kind"))) {
+                case "file" -> files.trashIfUnchanged(path, made.get("sha256") instanceof String sha ? sha : null);
+                case "folder" -> files.trashIfEmptyFolder(path);
+                default -> throw ToolFailure.notFound("approval");
+            }
+        } catch (AgentFiles.Refusal e) {
+            throw failure(e);
+        }
+        Map<String, Object> out = new LinkedHashMap<>();
+        out.put("trashed", path);
+        return out;
     }
 
     @Override
@@ -184,8 +230,12 @@ public final class FilesTools implements HostedTool {
                 case "files_write" -> runWrite(call, run);
                 case "files_mkdir" -> {
                     String path = string(call.args(), "path");
+                    if (call.autoPlace() != null) {
+                        files.requireInside(path, call.autoPlace().folder());
+                    }
                     files.mkdir(path);
-                    yield Result.of(Map.of("created", path));
+                    Result made = Result.of(Map.of("created", path));
+                    yield call.autoPlace() == null ? made : made.withMade(Map.of("kind", "folder", "path", path));
                 }
                 case "files_move" -> {
                     String from = string(call.args(), "from");
@@ -214,7 +264,16 @@ public final class FilesTools implements HostedTool {
     private Result runWrite(HostedCall call, RunLedger.Run run) throws ToolFailure, AgentFiles.Refusal {
         Map<String, Object> payload = writePayload(call.args());
         String path = (String) payload.get("path");
+        // The path first, so a path that's never allowed says so before anything about the look it was bound to.
+        files.path(path, false);
         boolean replace = (Boolean) payload.get("replace");
+        if (call.autoPlace() != null) {
+            // Done without asking: a new file only, inside the switch's folder by deskd's own record (draft ADR §15).
+            if (replace) {
+                throw ToolFailure.forbidden("approval_unknown");
+            }
+            files.requireInside(path, call.autoPlace().folder());
+        }
         byte[] data = AgentFiles.encode((String) payload.get("text"));
         AgentFiles.Expect expect = null;
         if (replace) {
@@ -225,13 +284,26 @@ public final class FilesTools implements HostedTool {
             }
         }
         files.write(path, data, replace, expect);
+        try {
+            wrote.wrote(path, call.agentId());
+        } catch (RuntimeException e) {
+            // The hearer's own trouble; the write is done.
+        }
         Map<String, Object> out = new LinkedHashMap<>();
         out.put("saved", path);
         out.put("bytes", data.length);
         if (replace) {
             out.put("replaced", true);
         }
-        return Result.of(out);
+        Result result = Result.of(out);
+        if (call.autoPlace() != null) {
+            Map<String, Object> made = new LinkedHashMap<>();
+            made.put("kind", "file");
+            made.put("path", path);
+            made.put("sha256", AgentFiles.sha256(data));
+            result = result.withMade(made);
+        }
+        return result;
     }
 
     private void remember(String runId, String hash, AgentFiles.Expect expect) {
@@ -307,7 +379,7 @@ public final class FilesTools implements HostedTool {
     private static ToolFailure failure(AgentFiles.Refusal e) {
         String word = e.word();
         return switch (word) {
-            case "path" -> ToolFailure.badArgs("path");
+            case "path", "offset" -> ToolFailure.badArgs(word);
             case "not_found" -> ToolFailure.notFound("not_found");
             case "too_large" -> new ToolFailure(RpcException.TOO_LARGE, "too_large");
             case "no_space" -> new ToolFailure("no_space", "no_space", e.extra());

@@ -4,11 +4,11 @@ import { HUES, hueOf, initialsOf } from './avatar';
 
 describe('hueOf', () => {
   it('is FNV-1a over the id’s UTF-8 bytes, mod 6, in the spec’s order, so every app picks the same', () => {
-    expect(HUES).toEqual(['blue', 'green', 'amber', 'rose', 'violet', 'slate']);
+    expect(HUES).toEqual(['blue', 'denim', 'mist', 'periwinkle', 'steel', 'slate']);
     // FNV-1a 32 of "" is 0x811c9dc5 = 2166136261, and 2166136261 mod 6 = 1.
-    expect(hueOf('')).toBe('green');
+    expect(hueOf('')).toBe('denim');
     // "a": 0xe40c292c = 3826002220, mod 6 = 4.
-    expect(hueOf('a')).toBe('violet');
+    expect(hueOf('a')).toBe('steel');
   });
   it('is stable for a member, whatever else changes', () => {
     for (const id of ['u-test', 'dev', '9f1c2a3b-0000-4000-8000-0123456789ab', 'Ünïcödé']) expect(hueOf(id)).toBe(hueOf(id));

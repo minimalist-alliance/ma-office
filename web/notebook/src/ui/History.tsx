@@ -5,14 +5,19 @@ import type { NotebookBackend } from '../model/backend.ts';
 import { dayKey, formatDayShort, formatTime, formatWhen } from '../model/days.ts';
 import { REASON_LABELS } from '../model/history.ts';
 import type { PageRec, Version, VersionMeta } from '../model/types.ts';
+import { beforeEditLabel, undoLabel, undoRefusal, type AgentNames } from './agentEdits.tsx';
 import { ReadOnlyDoc } from './Editor.tsx';
 import { Icon } from './icons.tsx';
 
-export function HistoryPane({ backend, page, onClose }: { backend: NotebookBackend; page: PageRec; onClose: () => void }) {
+/** A version's reason, as a member reads it: the one before an agent's edit names the agent. */
+const reasonOf = (v: VersionMeta, names?: AgentNames): string => (v.reason === 'pre_agent' ? beforeEditLabel(v.agent, names) : REASON_LABELS[v.reason]);
+
+export function HistoryPane({ backend, page, onClose, agentNames }: { backend: NotebookBackend; page: PageRec; onClose: () => void; agentNames?: AgentNames }) {
   const [list, setList] = useState<VersionMeta[] | null>(null);
   const [picked, setPicked] = useState<string | null>(null);
   const [shown, setShown] = useState<Version | null>(null);
   const [busy, setBusy] = useState(false);
+  const [said, setSaid] = useState<string | null>(null);
 
   useEffect(() => {
     let live = true;
@@ -70,6 +75,22 @@ export function HistoryPane({ backend, page, onClose }: { backend: NotebookBacke
     }
   };
 
+  /** The agent's edit after the version on show, undone exactly while it's as the agent left it. */
+  const undoAgent = async () => {
+    if (!shown?.editId || !backend.undoAgentEdit) return;
+    setBusy(true);
+    setSaid(null);
+    try {
+      await backend.undoAgentEdit(shown.editId);
+      onClose();
+    } catch (err) {
+      setSaid(undoRefusal(err));
+    } finally {
+      setBusy(false);
+    }
+  };
+  const canUndo = !!(shown?.reason === 'pre_agent' && shown.editId && !shown.undone && backend.undoAgentEdit);
+
   let lastDay = '';
   return (
     <div className="nb-history" data-testid="history">
@@ -77,13 +98,23 @@ export function HistoryPane({ backend, page, onClose }: { backend: NotebookBacke
         <span className="nb-history-title">
           {shown ? (
             <>
-              <strong>{formatWhen(shown.createdAt)}</strong> · {REASON_LABELS[shown.reason]} · {shown.wordCount} words
+              <strong>{formatWhen(shown.createdAt)}</strong> · {reasonOf(shown, agentNames)} · {shown.wordCount} words
             </>
           ) : (
             <strong>History</strong>
           )}
         </span>
         <span className="nb-history-actions">
+          {said && (
+            <span className="nb-history-said" role="status">
+              {said}
+            </span>
+          )}
+          {canUndo && shown && (
+            <button type="button" className="nb-btn" disabled={busy} onClick={() => void undoAgent()}>
+              {undoLabel(shown.agent, agentNames)}
+            </button>
+          )}
           {shown && (
             <button type="button" className="nb-btn primary" disabled={busy} onClick={() => void restore()}>
               <Icon name="restore" size={16} /> Restore this version
@@ -115,7 +146,7 @@ export function HistoryPane({ backend, page, onClose }: { backend: NotebookBacke
                 {head && <div className="nb-history-day">{head}</div>}
                 <button type="button" className={`nb-history-item${v.id === picked ? ' on' : ''}`} aria-current={v.id === picked || undefined} onClick={() => setPicked(v.id)}>
                   <span className="nb-history-time">{formatTime(v.createdAt)}</span>
-                  <span className="nb-history-why">{REASON_LABELS[v.reason]}</span>
+                  <span className="nb-history-why">{reasonOf(v, agentNames)}</span>
                   <span className="nb-history-words">{v.title || 'New note'} · {v.wordCount} words</span>
                 </button>
               </li>

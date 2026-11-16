@@ -1,0 +1,103 @@
+{
+  "id": "notebook-022",
+  "area": "notebook",
+  "title": "Two edits in one step",
+  "prompt": "Create a page Book club in my Harness tab saying the next meeting is 4 December, and add Book club on 4 Dec to my Calendar notes page.",
+  "setup": {
+    "notebook": [
+      {
+        "tab": "Harness",
+        "title": "Calendar notes",
+        "markdown": "# Calendar notes\n\n- 1 Dec: dentist\n"
+      }
+    ]
+  },
+  "approve": "all",
+  "checks": [
+    {
+      "kind": "page",
+      "tab": "Harness",
+      "title": "Book club",
+      "contains": [
+        "4 December"
+      ]
+    },
+    {
+      "kind": "page",
+      "tab": "Harness",
+      "title": "Calendar notes",
+      "contains": [
+        "Book club on 4 Dec",
+        "dentist"
+      ]
+    },
+    {
+      "kind": "cards",
+      "tools": [
+        "notebook_write",
+        "notebook_write"
+      ]
+    }
+  ],
+  "policy": {
+    "tools": [
+      "notebook_list",
+      "notebook_search",
+      "notebook_write"
+    ]
+  },
+  "standIn": [
+    {
+      "calls": [
+        {
+          "name": "notebook_list",
+          "input": {}
+        },
+        {
+          "name": "notebook_search",
+          "input": {
+            "query": "Calendar notes"
+          }
+        }
+      ]
+    },
+    {
+      "calls": [
+        {
+          "name": "notebook_write",
+          "input": {
+            "op": "create",
+            "new": {
+              "tabId": {
+                "$re": {
+                  "step": 0,
+                  "call": 0,
+                  "pattern": "\"tabId\":\"([^\"]+)\",\"title\":\"Harness\""
+                }
+              },
+              "title": "Book club"
+            },
+            "markdown": "Next meeting: 4 December."
+          }
+        },
+        {
+          "name": "notebook_write",
+          "input": {
+            "pageId": {
+              "$re": {
+                "step": 0,
+                "call": 1,
+                "pattern": "\"pageId\":\"([^\"]+)\",\"title\":\"Calendar notes\""
+              }
+            },
+            "op": "append",
+            "markdown": "- Book club on 4 Dec"
+          }
+        }
+      ]
+    },
+    {
+      "text": "Made the Book club page and added it to Calendar notes."
+    }
+  ]
+}

@@ -76,7 +76,7 @@ class NotebookRelayTest {
             Map<String, Object> req = service.last().next("req");
             assertThat(req).as(method).containsEntry("m", method).containsEntry("p", params).containsKey("id");
         }
-        assertThat(all).hasSize(24).doesNotHaveDuplicates();
+        assertThat(all).hasSize(26).doesNotHaveDuplicates();
         assertThat(service.connections).hasSize(1);
     }
 

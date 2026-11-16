@@ -17,7 +17,7 @@ part=${1:-}
 bad() { echo "BAD: $*"; echo FAILED; }
 now() { date +%s.%N; }
 # table: unit adj cap
-TABLE="deskd:-500:300 desk-rtc:-500:300 desk-notebook:-200:300 desk-agent:200:300 desk-stream:100:300 commons-server:-200:300 desk-agent-filter::300 desk-egress::300 desk-browser:0:30 desk-xorg:0:30 desk-audio:0:30"
+TABLE="deskd:-500:300 desk-rtc:-500:300 desk-notebook:-200:300 desk-agent:200:300 desk-parse:500:300 desk-parse-courier:500:300 desk-stream:100:300 commons-server:-200:300 desk-agent-filter::300 desk-egress::300 desk-browser:0:30 desk-xorg:0:30 desk-audio:0:30"
 cpid() { docker inspect -f '{{.State.Pid}}' "$1" 2>/dev/null; }
 procs_of() { # every pid in the container's cgroup, or the unit's main pid
   local pid=$1 cg; cg=$(sed -n 's/^0:://p' /proc/$pid/cgroup 2>/dev/null); cat "/sys/fs/cgroup$cg/cgroup.procs" 2>/dev/null
@@ -61,8 +61,10 @@ oom)
     echo "$u main pid $p: oom_score_adj $a (want ${want[$u]})"
     [ "$a" = "${want[$u]}" ] || bad "$u: main process $p has oom_score_adj $a, not ${want[$u]}"
   done
-  for row in deskd:-500 desk-agent:200 desk-notebook:-200; do
+  for row in deskd:-500 desk-agent:200 desk-notebook:-200 desk-parse:500 desk-parse-courier:500; do   # desk-parse's and desk-parse-courier's containers get their 500 from --oom-score-adj (ADR 0097)
     u=${row%%:*}; w=${row##*:}
+    [ $u = desk-parse ] && [ ! -e /usr/local/lib/ma/desk-parse-run ] && { echo "desk-parse: not on this image"; continue; }
+    [ $u = desk-parse-courier ] && [ ! -e /usr/local/lib/ma/desk-parse-courier-run ] && { echo "desk-parse-courier: not on this image"; continue; }
     systemctl is-active --quiet $u.service || { bad "$u isn't running"; continue; }
     cp=$(cpid $u); [ "${cp:-0}" -gt 0 ] 2>/dev/null || { bad "$u: no container"; continue; }
     n=0; for p in $(procs_of $cp); do a=$(cat /proc/$p/oom_score_adj 2>/dev/null); n=$((n+1)); [ "$a" = "$w" ] || bad "$u: container process $p ($(cat /proc/$p/comm 2>/dev/null)) has oom_score_adj $a, not $w"; done

@@ -1,0 +1,27 @@
+gmail-alternative	ok	Agenda	dana@example.com	0	budget
+html-only	ok	Newsletter	dana@example.com	0	tomatoes
+latin1-qp	ok	Réunion demain	francois@example.fr	0	réunion
+iso-2022-jp	ok	こんにちは	yamada@example.jp	0	tokyo
+base64-utf8	ok	🎉 Party	dana@example.com	0	snacks
+rfc2231-name	ok	Receipt	dana@example.com	1	attached
+inline-image	ok	Photo	dana@example.com	0	sunset
+outlook-tnef	ok	Specs	bob@example.org	1	winmail
+calendar-invite	ok	Invitation: Review @ Fri	bob@example.org	1	invited
+forwarded-rfc822	ok	Fwd: Old thread	dana@example.com	1	below
+dangerous-attachments	ok	Invoice	dana@example.com	2	open
+bare-lf	ok	Unix	dana@example.com	0	lines
+folded-headers	ok	A very long subject that a client folded over two lines	smith@example.com	0	body
+group-syntax	ok	Hidden	dana@example.com	0	nobody
+no-from	ok	Anonymous	nobody@invalid	0	sent
+garbage-date	ok	When	dana@example.com	0	date
+display-name-address	ok	Verify	phish@evil.example	0	click
+bidi-subject	ok	Invoice fdp.exe	dana@example.com	0	attached
+nul-and-controls	ok	Ctrl chars	dana@example.com	0	escape
+missing-final-boundary	ok	Cut off	dana@example.com	0	never
+long-header	ok	xxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxx	dana@example.com	0	short
+too-deep	refused:too_deep			0	-
+too-many-parts	refused:too_many_parts			0	-
+empty	ok		nobody@invalid	0	-
+headers-only	ok	Just headers	dana@example.com	0	-
+eight-bit-headers	ok	Grüße aus Köln	zoe@example.com	0	koln
+binary-attachment	ok	Zip	dana@example.com	1	archive

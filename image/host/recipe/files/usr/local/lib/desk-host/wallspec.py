@@ -74,8 +74,25 @@ def shares(k):
         # which no systemd-tmpfiles runs in a slot. deskd binds links.sock here (its group kiosk by the setgid bit); Chromium's
         # xdg-open stand-in, as kiosk in the desk, connects
         "desk-links": ("/run/desk-links", "desk", "kiosk", 0o2750),
+        # The Agent's attachment reader (ADR 0097): desk-agent's sandbox has desk-parse at /run/desk-parse (root:agent 0750, with the
+        # marker `required`, root's 0444, which make_shares writes); desk-parse's sandbox has only its sock directory (parse:agent 2750),
+        # where its desk-svc binds parse.sock at 0660 (group agent by the setgid bit) and serves uid 1103 alone. Order matters: the
+        # directory is made before its sock.
+        "desk-parse": ("/run/desk-parse", 0, "agent", 0o750),
+        "desk-parse/sock": ("/run/desk-parse/sock", "parse", "agent", 0o2750),
+        # Courier's mail reader (ADR 0097's sandbox a second time, for deskd: docs/sub-status/courier-slot.md): deskd's sandbox has
+        # desk-parse-courier at /run/desk-parse-courier read-only (root:desk 0750); desk-parse-courier's sandbox has only its sock
+        # directory (parse:desk 2750), where its desk-svc binds parse.sock at 0660 (group desk by the setgid bit) and serves uid 1100
+        # alone. No marker: deskd has no reader of its own to fence off (no socket is mail kept pending). The directory before its sock.
+        "desk-parse-courier": ("/run/desk-parse-courier", 0, "desk", 0o750),
+        "desk-parse-courier/sock": ("/run/desk-parse-courier/sock", "parse", "desk", 0o2750),
         "x11": ("/tmp/.X11-unix", 0, 0, 0o1777),
     }
+
+
+# Shares no desk's own container gets: desk-parse's (ADR 0097) are the host's for desk-agent and desk-parse alone, so nothing the desk runs,
+# its root included, can reach the reader's socket or take its marker away; desk-parse-courier's are deskd's and its reader's alone.
+SANDBOX_ONLY = ("desk-parse", "desk-parse/sock", "desk-parse-courier", "desk-parse-courier/sock")
 
 
 def bind(src, dst, ro=False, extra=()):

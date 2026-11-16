@@ -33,6 +33,7 @@ var restartedUnits = []string{"desk-agent", "desk-notebook"}
 var machineParts = map[string]bool{
 	"rtc": true, "desk-egress": true, ".ma-volume": true, "lost+found": true, ".ma-export-tmp": true, ".ma-move": true,
 	"selfhost":         true, // a self-hosted desk's key and pairing (task 31): never read, moved or written
+	"keys":             true, // the desk's Courier keys: never carried yet (Wave 3.3); desk-data leaves them out too
 	"browser-readable": true, // made by the helper for the export, never stored
 }
 

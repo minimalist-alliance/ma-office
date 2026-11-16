@@ -4,3 +4,4 @@ export { BellPanel } from './BellPanel';
 export { BandwidthPanel } from '../bandwidth/BandwidthPanel';
 export { ScopeList, ZoomPanel } from './BarPanels';
 export { EditBar } from './EditBar';
+export { MarkPanel } from './MarkPanel';

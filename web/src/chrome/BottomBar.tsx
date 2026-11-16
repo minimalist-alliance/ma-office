@@ -1,11 +1,13 @@
 // Hints, desk switcher (with more than one desk) and zoom, from the prototype. The zoom label is
 // the only DOM the camera touches at rest, and it writes only when the value changes. In short-viewport mode the zoom is
 // one button showing the level, whose popover holds the same three controls (`BarMenus.tsx`). While a desk or an app is
-// moved or resized, the row is the edit's own (`EditBar.tsx`, in the popovers chunk).
+// moved or resized, the row is the edit's own (`EditBar.tsx`, in the popovers chunk). A closed account has none of it: its
+// desks only wake for the download, so switching and zooming do nothing (`platform/accountClosed.ts`).
 import { useEffect, useLayoutEffect, useRef } from 'react';
 import { camera } from '../canvas/controller';
 import { useIsShort } from '../canvas/phone';
 import { useOnDemand } from '../lib/onDemand';
+import { useClosed } from '../platform/useClosed';
 import { cycleDesk, fitScope, orderedDeskIds } from '../shell/actions';
 import { canvasHasFocus, onFocusMove } from '../shell/canvasFocus';
 import { useDeskStore } from '../state/deskStore';
@@ -28,6 +30,7 @@ export function BottomBar() {
   const zoomLabel = useRef<HTMLSpanElement>(null);
   const short = useIsShort();
   const EditBar = useOnDemand(popovers, editing || false)?.EditBar;
+  const closed = useClosed();
 
   // Again as the label changes place (the zoom group, short-viewport mode's button, back after an edit), so it says the level.
   useEffect(() => {
@@ -52,17 +55,17 @@ export function BottomBar() {
     camera.zoomBy(factor);
   };
 
-  // Nothing to zoom or pan until there's a desk.
-  if (desks.length === 0) return null;
+  // Nothing to zoom or pan until there's a desk, and nothing for a closed account.
+  if (desks.length === 0 || closed) return null;
   if (editing) return <div className="bottombar">{EditBar && <EditBar kind={editing} />}</div>;
 
   return (
     <div className="bottombar">
-      <p className="hints" aria-hidden="true">
+      <p className="hints ma-glass" aria-hidden="true">
         {many && <span className="hint-switch">← → switch desks · </span>}scroll to zoom · drag to pan<span ref={privacyHint} />
       </p>
       {many ? (
-        <div className="desk-nav" role="group" aria-label="Switch desk">
+        <div className="desk-nav ma-glass" role="group" aria-label="Switch desk">
           <button type="button" className="icon-btn chrome" onClick={() => cycleDesk(-1)} aria-label="Previous desk" title="Previous desk ( [ )"><Icon name="chevronLeft" /></button>
           <span className="desk-nav-label">
             {name}
@@ -77,7 +80,7 @@ export function BottomBar() {
           <span className="zoom-label" ref={zoomLabel}>100%</span>
         </BarMenu>
       ) : (
-      <div className="zoom-ctl" role="group" aria-label="Zoom">
+      <div className="zoom-ctl ma-glass" role="group" aria-label="Zoom">
         <button type="button" className="icon-btn chrome" onClick={() => zoom(0.8)} aria-label="Zoom out"><Icon name="minus" /></button>
         <span className="zoom-label" ref={zoomLabel}>100%</span>
         <button type="button" className="icon-btn chrome" onClick={() => zoom(1.25)} aria-label="Zoom in"><Icon name="plus" /></button>

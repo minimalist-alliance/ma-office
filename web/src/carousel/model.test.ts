@@ -1,33 +1,31 @@
 import { describe, expect, it } from 'vitest';
 import { carouselStage, G, type LayoutDesk, type LayoutItem } from '../canvas/layout';
-import {
-  carouselApps, carouselOn, EDGE_PX, fromScreenEdge, keepsArrows, positionOf, positionWords, shownApp, stageIsLive, stageOnScreen, STAGE_LIVE_MIN_W, stepApp, SWIPE_PX, toggled, touchSwipe,
-  WHEEL_QUIET_MS, WHEEL_SWIPE_PX, WheelSwipe,
-} from './model';
+import { carouselApps, carouselOn, EDGE_PX, positionOf, positionWords, shownApp, stepApp, SWIPE_PX, toggled } from './model';
+import { fromScreenEdge, keepsArrows, stageIsLive, stageOnScreen, STAGE_LIVE_MIN_W, touchSwipe, WHEEL_QUIET_MS, WHEEL_SWIPE_PX, WheelSwipe } from './stage';
 
 const item = (app: LayoutItem['app'], x: number, y = 24): LayoutItem => ({ id: `d1:${app}`, app, x, y, w: 76, h: 76 });
 // Placed out of list order on purpose: the carousel goes by where they are, as the keyboard does.
-const DESK: LayoutDesk = { id: 'd1', x: 0, y: 0, w: 584, h: 236, items: [item('agent', 316), item('chat', 24), item('browser', 224), item('notebook', 124)] };
+const DESK: LayoutDesk = { id: 'd1', x: 0, y: 0, w: 584, h: 236, items: [item('agent', 316), item('courier', 24), item('browser', 224), item('notebook', 124)] };
 const on = (app: LayoutItem['app'], d: LayoutDesk = DESK): LayoutDesk => ({ ...d, carousel: { on: true, app } });
 
 describe('which apps, and which shows', () => {
   it('goes through the desk\'s own apps in reading order, each once', () => {
-    expect(carouselApps(DESK)).toEqual(['chat', 'notebook', 'browser', 'agent']);
-    expect(carouselApps({ items: [...DESK.items, { ...item('chat', 400), id: 'other' }] })).toEqual(['chat', 'notebook', 'browser', 'agent']);
+    expect(carouselApps(DESK)).toEqual(['courier', 'notebook', 'browser', 'agent']);
+    expect(carouselApps({ items: [...DESK.items, { ...item('courier', 400), id: 'other' }] })).toEqual(['courier', 'notebook', 'browser', 'agent']);
     expect(carouselApps({ items: [item('agent:research', 24), item('files', 124)] })).toEqual(['agent:research', 'files']);
   });
 
   it('absent is off, and only `on: true` is on', () => {
     expect(carouselOn(DESK)).toBe(false);
     expect(carouselOn(undefined)).toBe(false);
-    expect(carouselOn({ carousel: { on: false, app: 'chat' } })).toBe(false);
-    expect(carouselOn(on('chat'))).toBe(true);
+    expect(carouselOn({ carousel: { on: false, app: 'courier' } })).toBe(false);
+    expect(carouselOn(on('courier'))).toBe(true);
   });
 
   it('shows the app it showed last, or the first when that app has gone from the desk', () => {
     expect(shownApp(on('browser'))).toBe('browser');
-    expect(shownApp(DESK)).toBe('chat');
-    expect(shownApp(on('files'))).toBe('chat');
+    expect(shownApp(DESK)).toBe('courier');
+    expect(shownApp(on('files'))).toBe('courier');
     expect(shownApp({ items: [] })).toBe(null);
   });
 
@@ -38,13 +36,13 @@ describe('which apps, and which shows', () => {
 
   it('steps one app at a time and stops at the ends, with no wrap', () => {
     expect(stepApp(on('notebook'), 1)).toBe('browser');
-    expect(stepApp(on('notebook'), -1)).toBe('chat');
-    expect(stepApp(on('chat'), -1)).toBe(null);
+    expect(stepApp(on('notebook'), -1)).toBe('courier');
+    expect(stepApp(on('courier'), -1)).toBe(null);
     expect(stepApp(on('agent'), 1)).toBe(null);
   });
 
   it('the switch turns it on at the app asked for, or the last one shown, and off keeping that one', () => {
-    expect(toggled(DESK, null)).toEqual({ on: true, app: 'chat' });
+    expect(toggled(DESK, null)).toEqual({ on: true, app: 'courier' });
     expect(toggled(DESK, 'browser')).toEqual({ on: true, app: 'browser' });
     expect(toggled({ ...DESK, carousel: { on: false, app: 'agent' } }, null)).toEqual({ on: true, app: 'agent' });
     expect(toggled(on('browser'), null)).toEqual({ on: false, app: 'browser' });

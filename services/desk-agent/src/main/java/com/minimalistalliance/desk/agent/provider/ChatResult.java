@@ -10,9 +10,11 @@ import java.util.Objects;
  * @param stopReason the provider's word for why it stopped, such as {@code end_turn} or {@code max_tokens}
  * @param providerMicroUsd what the provider says it billed, in µ$ rounded up, or null when it doesn't say. Only
  *     OpenRouter does ({@code usage.cost}); the gateway charges it when it's more than the price table makes the call
+ * @param centiCredits what a call on MA's credits drew, in hundredths of a credit ({@code costCredits}: Desk Maia's and an
+ *     agent's on the member's credits), or null for any other provider. Never money
  */
 public record ChatResult(String text, Usage usage, String model, String stopReason, List<ToolCall> toolCalls,
-        Long providerMicroUsd) {
+        Long providerMicroUsd, Long centiCredits) {
 
     public ChatResult {
         Objects.requireNonNull(text, "text");
@@ -22,6 +24,20 @@ public record ChatResult(String text, Usage usage, String model, String stopReas
         if (providerMicroUsd != null && providerMicroUsd < 0) {
             throw new IllegalArgumentException("negative cost");
         }
+        if (centiCredits != null && centiCredits < 0) {
+            throw new IllegalArgumentException("negative credits");
+        }
+    }
+
+    /** A call priced in dollars, or not at all. */
+    public ChatResult(String text, Usage usage, String model, String stopReason, List<ToolCall> toolCalls,
+            Long providerMicroUsd) {
+        this(text, usage, model, stopReason, toolCalls, providerMicroUsd, null);
+    }
+
+    /** The same result with other words: everything else, its cost included, kept. */
+    public ChatResult withText(String other) {
+        return new ChatResult(other, usage, model, stopReason, toolCalls, providerMicroUsd, centiCredits);
     }
 
     /** A call whose provider reports no cost. */

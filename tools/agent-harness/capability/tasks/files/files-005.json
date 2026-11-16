@@ -1,0 +1,45 @@
+{
+  "id": "files-005",
+  "area": "files",
+  "title": "Total a CSV",
+  "prompt": "Add up the amounts in Harness/budget/november.csv and tell me the total.",
+  "setup": {
+    "files": {
+      "Harness/budget/november.csv": "item,amount\nrent,300.00\ngroceries,82.25\nbus pass,30.25\n"
+    }
+  },
+  "approve": "all",
+  "checks": [
+    {
+      "kind": "reply",
+      "contains": [
+        "412.50"
+      ],
+      "state": "done"
+    },
+    {
+      "kind": "cards",
+      "tools": []
+    }
+  ],
+  "policy": {
+    "tools": [
+      "files_read"
+    ]
+  },
+  "standIn": [
+    {
+      "calls": [
+        {
+          "name": "files_read",
+          "input": {
+            "path": "Harness/budget/november.csv"
+          }
+        }
+      ]
+    },
+    {
+      "text": "The total is 412.50."
+    }
+  ]
+}

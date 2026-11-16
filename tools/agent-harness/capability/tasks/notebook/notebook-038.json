@@ -1,0 +1,100 @@
+{
+  "id": "notebook-038",
+  "area": "notebook",
+  "title": "Copy a detail between pages",
+  "prompt": "Copy the plumber's phone number from my Contacts page onto my Plumber job page.",
+  "setup": {
+    "notebook": [
+      {
+        "tab": "Harness",
+        "title": "Contacts",
+        "markdown": "# Contacts\n\n- Plumber (Rosa): 555-0142\n- Electrician: 555-0199\n"
+      },
+      {
+        "tab": "Harness",
+        "title": "Plumber job",
+        "markdown": "# Plumber job\n\nLeaking kitchen tap.\n"
+      }
+    ]
+  },
+  "approve": "all",
+  "checks": [
+    {
+      "kind": "page",
+      "tab": "Harness",
+      "title": "Plumber job",
+      "contains": [
+        "555-0142",
+        "kitchen tap"
+      ]
+    },
+    {
+      "kind": "cards",
+      "tools": [
+        "notebook_write"
+      ]
+    }
+  ],
+  "policy": {
+    "tools": [
+      "notebook_search",
+      "notebook_read",
+      "notebook_write"
+    ]
+  },
+  "standIn": [
+    {
+      "calls": [
+        {
+          "name": "notebook_search",
+          "input": {
+            "query": "Contacts"
+          }
+        },
+        {
+          "name": "notebook_search",
+          "input": {
+            "query": "Plumber job"
+          }
+        }
+      ]
+    },
+    {
+      "calls": [
+        {
+          "name": "notebook_read",
+          "input": {
+            "pageId": {
+              "$re": {
+                "step": 0,
+                "call": 0,
+                "pattern": "\"pageId\":\"([^\"]+)\",\"title\":\"Contacts\""
+              }
+            }
+          }
+        }
+      ]
+    },
+    {
+      "calls": [
+        {
+          "name": "notebook_write",
+          "input": {
+            "pageId": {
+              "$re": {
+                "step": 0,
+                "call": 1,
+                "pattern": "\"pageId\":\"([^\"]+)\",\"title\":\"Plumber job\""
+              }
+            },
+            "op": "append",
+            "markdown": "Plumber (Rosa): 555-0142"
+          }
+        }
+      ]
+    },
+    {
+      "text": "Added Rosa's number, 555-0142, to your Plumber job page."
+    }
+  ]
+}

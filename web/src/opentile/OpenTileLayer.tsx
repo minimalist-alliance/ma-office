@@ -10,8 +10,9 @@
 // hidden, so the canvas paints nothing under it, and the frame's ground is opaque.
 //
 // Each tile has a slim head (the app's glyph and name, as a window's title bar but quieter) that moves it, a grip at every
-// corner and edge that resizes it, and one button, "Open in its window". Pointer and wheel events in the app are the app's:
-// the canvas is under the DOM, so it never sees them, and a pinch there is no zoom (`canvas/pinch.ts`). The tile's stop on
+// corner and edge that resizes it, the app's zoom (ADR 0055) and "Open in its window". Pointer and wheel events in the app
+// are the app's: the canvas is under the DOM, so it never sees them, and a pinch, Ctrl or Cmd with the wheel there zoom the
+// app, never the desk (`canvas/pinch.ts`). The tile's stop on
 // the desk is its proxy, as any app's: the frame draws its ring, Tab, Enter or Space there go into the app, and an Esc the
 // app doesn't use comes back to it (the office's own keys leave everything in a tile alone: `shell/useKeyboard.ts`).
 import { useEffect, useLayoutEffect, useMemo, useRef, useState, type PointerEvent as ReactPointerEvent } from 'react';
@@ -32,6 +33,8 @@ import { placeItem, useLayoutStore } from '../state/layoutStore';
 import { getView, setView, useViewStore } from '../state/viewStore';
 import { openWindow, useWindowStore } from '../state/windowStore';
 import { LiveWindow } from '../windows/LiveWindow';
+import { ZoomButton } from '../zoom/ZoomButton';
+import { useAppLevel } from '../zoom/store';
 import { liveTiles, tileOnScreen } from './model';
 import { EDGES, resizeFrom, type Edge } from './resize';
 import './opentile.css';
@@ -167,18 +170,21 @@ function OpenTile({ deskId, deskName, desk, item, rest, ring }: { deskId: string
     openWindow(deskId, item.app, item.id);
     announce(`${label} window opened`);
   };
+  // The app's own zoom (ADR 0055): null for a Browser whose desk has none.
+  const zoomable = useAppLevel(item.app, deskId) !== null;
 
   // The frame draws the proxy's ring (its own is under the frame), and keeps it, dashed, while the keyboard moves or resizes
   // the tile, when the edit's own row has the keyboard (`chrome/EditBar.tsx`), whatever has focus.
   return (
     <div
       ref={frameRef}
-      className={`open-tile${ring || editing ? ' ring' : ''}${editing ? ' editing' : ''}`}
+      className={`open-tile ma-glass${ring || editing ? ' ring' : ''}${editing ? ' editing' : ''}`}
       style={{ left: box.left, top: box.top, width: box.width, height: box.height, borderRadius: G.widgetRadius * rest.s }}
       data-testid={`open-tile-${item.app.startsWith('agent:') ? 'agent' : item.app}`}
       data-desk={deskId}
       data-item={item.id}
       data-app={item.app}
+      data-zoom-app={zoomable ? item.app : undefined}
     >
       <div
         className="open-tile-head"
@@ -193,6 +199,7 @@ function OpenTile({ deskId, deskName, desk, item, rest, ring }: { deskId: string
         <h2 className="open-tile-name">{label}</h2>
       </div>
       <LiveWindow deskId={deskId} deskName={deskName} app={item.app} className="open-tile-app" role="group" aria-label={label} />
+      <ZoomButton app={item.app} deskId={deskId} label={label} className="open-tile-zoom" />
       <button type="button" className="icon-btn sm open-tile-expand" onClick={asWindow} aria-label={IN_ITS_WINDOW} title={IN_ITS_WINDOW}>
         <Icon name="windowFull" />
       </button>

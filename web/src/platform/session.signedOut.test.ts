@@ -1,5 +1,5 @@
 // Every way the office ends up signed out wipes the saved layout's mirror (ISS-67) and the member's other caches beside
-// it, this tab's sessionStorage keys included (ISS-89), and a sign-in as anyone else never reads the last account's: Sign out, Sign out everywhere, `/signed-out`, a start with nobody signed in, a failed
+// it, this tab's sessionStorage keys included (ISS-89), and a sign-in as anyone else never reads the last account's: Sign out, `/signed-out`, a start with nobody signed in, a failed
 // `/auth/callback`, a dead session (a refused refresh, the member's own "Stay signed in" running out) that goes to sign
 // in or ends on the card, a 401 that a refresh can't mend, a refused account (a closed one included), another tab's
 // sign-out, and a change of account. A refresh that fails for now is no sign-out, and keeps it. The session and the
@@ -20,14 +20,28 @@ const h = vi.hoisted(() => ({
   /** What the session put in the desk store (`setDeskList`, each list's ids) and how often it dropped it (`dropDeskList`). */
   listed: [] as string[][],
   listDropped: 0,
-  finishSignIn: null as null | (() => Promise<void>),
+  finishSignIn: null as null | (() => Promise<unknown>),
   postSignOut: null as null | (() => Promise<void>),
   startSignIn: 0,
   endSession: 0,
+  /** What a change of account closed and forgot beside the list (ISS-89's follow-up), in order; `links:` with the desks it named. */
+  forgot: [] as string[],
+  /** The kept pictures' calls, in order: `clear` (`clearLastScreens`) and `keep` (`keepLastScreens`). */
+  pictures: [] as string[],
+  /** The shared sign-in's calls (`keepShared`, `sso.ts`) and sign-out's, in order. */
+  order: [] as string[],
+  /** What `signedOutLine` says on the signed-out page. */
+  endAgainLine: null as string | null,
+  /** How step 3 went (`endSharedSignIn`). */
+  endOk: 'ended' as 'ended' | 'refused' | 'unanswered',
+  /** `auth.takeRevoked`: a lasting session_revoked ended this session. */
+  revoked: false,
+  /** client-config never answers (`getClientConfig`), to see who waits for it. */
+  configHangs: false,
 }));
 const { SignInRequired, CONFIG, LISTED } = vi.hoisted(() => ({
   SignInRequired: class SignInRequired extends Error {},
-  CONFIG: { auth: { signInPath: null, domain: 'https://auth.example', clientId: 'c' }, api: 'https://api.example' },
+  CONFIG: { auth: { signInPath: null, domain: 'https://auth.example', clientId: 'c', sso: undefined as unknown }, api: 'https://api.example' },
   /** A's list: a Personal desk, a Work desk and a guild's panel. */
   LISTED: { data: { desks: ['d-personal', 'd-work', 'guild-g1'].map((deskId) => ({ deskId, name: deskId, kind: 'personal', state: 'running' })), pollAfterSeconds: 60 }, etag: '"1"' },
 }));
@@ -37,6 +51,7 @@ vi.mock('./auth', () => ({
   answeredWithin: (p: Promise<unknown>) => p.then(() => true, () => false),
   endSession: async () => {
     h.endSession += 1;
+    h.order.push('endSession');
   },
   finishSignIn: () => h.finishSignIn?.() ?? Promise.resolve(),
   forAtMost: async (p: Promise<unknown>) => {
@@ -54,6 +69,11 @@ vi.mock('./auth', () => ({
     h.startSignIn += 1;
   },
   takeEndedChoice: () => null,
+  takeRevoked: () => {
+    const was = h.revoked;
+    h.revoked = false;
+    return was;
+  },
   usesManagedLogin: () => h.managedLogin,
 }));
 vi.mock('./api', () => ({
@@ -64,7 +84,21 @@ vi.mock('./api', () => ({
   },
   getDesks: () => h.getDesks?.() ?? Promise.resolve(LISTED),
   getMe: async () => ({ data: null }),
-  postSignOut: () => h.postSignOut?.() ?? Promise.resolve(),
+  keepShared: async (_cfg: unknown, token: string) => void h.order.push(`keep:${token}`),
+  postSignOut: () => {
+    h.order.push('sign-out');
+    return h.postSignOut?.() ?? Promise.resolve();
+  },
+}));
+vi.mock('./sso', () => ({
+  endSharedSignIn: async (origin: string) => {
+    h.order.push(`end ${origin}`);
+    return h.endOk;
+  },
+  signedOutLine: async (origin: string | null) => {
+    h.order.push(`line ${origin}`);
+    return h.endAgainLine;
+  },
 }));
 vi.mock('./tokenStore', () => ({
   hasStoredToken: () => h.token,
@@ -74,7 +108,7 @@ vi.mock('./tokenStore', () => ({
   },
   placeTokenFor: () => {},
 }));
-vi.mock('./clientConfig', () => ({ accountUrl: () => null, getClientConfig: async () => CONFIG, loadedConfig: () => CONFIG }));
+vi.mock('./clientConfig', () => ({ accountUrl: () => null, getClientConfig: () => (h.configHangs ? new Promise(() => {}) : Promise.resolve(CONFIG)), loadedConfig: () => CONFIG }));
 vi.mock('./lastKnown', () => ({
   checkedConfig: () => null,
   checkedLastMe: () => null,
@@ -87,12 +121,19 @@ vi.mock('./lastKnown', () => ({
 vi.mock('./signInAddress', () => ({ signInAddress: () => null }));
 vi.mock('./exportSweep', () => ({ dropExportSoon: async () => {}, keepExportFor: async () => {} }));
 vi.mock('../open/intent', () => ({ linkFromAddress: () => null, linksOn: () => false }));
-vi.mock('../browser/lastScreen', () => ({ clearLastScreens: async () => {}, keepLastScreens: () => {} }));
+vi.mock('../browser/lastScreenGate', () => ({ clearLastScreens: async () => void h.pictures.push('clear'), keepLastScreens: () => void h.pictures.push('keep') }));
 vi.mock('../bandwidth/store', () => ({ dropLastMeter: () => {}, showLastMeter: () => {} }));
 vi.mock('../chrome/avatar', () => ({ initialsOf: () => 'A' }));
-vi.mock('../desk/liveStore', () => ({ closeAllLinks: () => {}, dropAdultOnlySummaries: () => {}, syncLinks: async () => {} }));
+vi.mock('../desk/liveStore', () => ({
+  closeAllLinks: () => {},
+  dropAdultOnlySummaries: () => {},
+  syncLinks: async () => {},
+  forgetLinks: (which: (deskId: string) => boolean) => void h.forgot.push(`links:${['d-personal', 'guild-g1', 'd-b'].filter(which).join(',')}`),
+}));
 vi.mock('../desk/fixtures', () => ({ makeFixture: () => null }));
-vi.mock('../state/windowStore', () => ({ closeAdultOnlyWindows: () => {} }));
+vi.mock('../state/windowStore', () => ({ closeAdultOnlyWindows: () => {}, closeAllWindows: () => void h.forgot.push('windows') }));
+vi.mock('../state/viewStore', () => ({ forgetDeskFocus: () => void h.forgot.push('focus') }));
+vi.mock('../deskapps/door', () => ({ forgetSaid: () => void h.forgot.push('apps') }));
 vi.mock('../state/deskStore', async () => {
   const { create } = await import('zustand');
   return {
@@ -136,7 +177,7 @@ const CACHE_KEYS = ['ma.streamQuality.v1', 'ma.streamQuality.desks.v1', 'ma.boot
 const TAB_KEYS = ['ma.maia.conversation.v1', 'ma.maia.open.v1', 'ma.layout.owner.v1'];
 const EVERY_KEY = [...LAYOUT_KEYS, ...CACHE_KEYS, ...TAB_KEYS.map((k) => `tab:${k}`)];
 const app = (id: string, kind: string) => ({ id: `${id}:${kind}`, app: kind, x: 24, y: 24, w: 76, h: 76 });
-const desk = (id: string, x: number) => ({ id, x, y: 36, w: 584, h: 236, items: [app(id, 'chat'), app(id, 'browser')] });
+const desk = (id: string, x: number) => ({ id, x, y: 36, w: 584, h: 236, items: [app(id, 'courier'), app(id, 'browser')] });
 const DESKS = { 'd-personal': desk('d-personal', 0), 'd-work': desk('d-work', 700), 'guild-g1': desk('guild-g1', 1400) };
 const SCOPES = ['personal', 'work', 'guild', 'all'] as const;
 
@@ -197,7 +238,8 @@ async function signedIn(): Promise<void> {
 
 beforeEach(async () => {
   vi.useFakeTimers();
-  Object.assign(h, { token: true, session: true, refusedHere: false, managedLogin: false, getDesks: null, finishSignIn: null, postSignOut: null, startSignIn: 0, endSession: 0, listed: [], listDropped: 0 });
+  Object.assign(h, { token: true, session: true, refusedHere: false, managedLogin: false, getDesks: null, finishSignIn: null, postSignOut: null, startSignIn: 0, endSession: 0, listed: [], listDropped: 0, forgot: [], pictures: [], order: [], endAgainLine: null, endOk: 'ended', revoked: false, configHangs: false });
+  CONFIG.auth.sso = undefined;
   local = memoryStorage();
   tab = memoryStorage();
   const listeners: Record<string, (() => void)[]> = {};
@@ -274,23 +316,6 @@ describe('each signed-out state wipes the mirror', () => {
     await change();
     layout.flushLayoutMirror();
     expect(left()).toEqual([]);
-  });
-
-  it('Sign out everywhere, once Platform says yes', async () => {
-    await signedIn();
-    await session.signOut({ everywhere: true });
-    expect(h.endSession).toBe(1);
-    expect(left()).toEqual([]);
-  });
-
-  it("Sign out everywhere that Platform doesn't confirm ends nothing, and keeps it", async () => {
-    await signedIn();
-    h.postSignOut = () => Promise.reject(new Error('offline'));
-    await expect(session.signOut({ everywhere: true })).rejects.toBeInstanceOf(session.SignOutEverywhereFailed);
-    expect(status()).toBe('signedIn');
-    expect(left()).toEqual(EVERY_KEY);
-    await change();
-    expect(local.getItem('ma.layout.v2')).toContain('"x":40');
   });
 
   it('a dead session (a refused refresh, or "Stay signed in" run out) that goes off to sign in wipes it before it leaves', async () => {
@@ -379,14 +404,18 @@ describe('a different account never reads the last one', () => {
   it("a sign-in over A's kept mirror, as B, at /auth/callback: A's goes before the office opens", async () => {
     h.session = false;
     let atSignIn: string[] = [];
+    let pictures: string[] = [];
     h.finishSignIn = async () => {
+      h.pictures = [];
       h.memberChange?.('u-b', null);
       atSignIn = Object.keys(layout.useLayoutStore.getState().desks);
+      pictures = [...h.pictures];
     };
     h.getDesks = async () => ({ data: { desks: [{ deskId: 'd-b', name: 'Bakery', kind: 'personal', state: 'running' }], pollAfterSeconds: 60 }, etag: '"9"' });
     await boot('/auth/callback');
     expect(status()).toBe('signedIn');
     expect(atSignIn).toEqual([]);
+    expect(pictures).toEqual(['clear', 'keep']); // A's kept pictures go with the rest of A's storage
     expect(Object.keys(layout.useLayoutStore.getState().desks)).toEqual(['d-b']);
     await vi.advanceTimersByTimeAsync(1000);
     expect(left()).toEqual(['ma.layout.v2', 'ma.layout.owner.v1', 'tab:ma.layout.owner.v1']);
@@ -422,9 +451,14 @@ describe('a different account never reads the last one', () => {
     h.listed = [];
     const { announce, useAnnouncer } = await import('../shell/announce');
     announce('Home desk started at 5:00 AM.'); // the live region's last line, naming A's desk
+    h.pictures = [];
     h.memberChange?.('u-b', 'u-a');
     expect(h.listDropped).toBe(1);
     expect(useAnnouncer.getState().text).toBe('');
+    // The pictures kept of A's desks go, and B's may be kept from now on.
+    expect(h.pictures).toEqual(['clear', 'keep']);
+    // Their windows, the view's pointers at their desks, every desk's session and the apps' word go in the same moment.
+    expect(h.forgot).toEqual(['windows', 'focus', 'links:d-personal,guild-g1,d-b', 'apps']);
     answerA(LISTED);
     await settle();
     expect(h.listed).toEqual([['d-b']]);
@@ -433,6 +467,8 @@ describe('a different account never reads the last one', () => {
   it("the first token, or a sign-in at /auth/callback, drops no list", async () => {
     await signedIn();
     expect(h.listDropped).toBe(0);
+    expect(h.forgot).toEqual([]); // and closes no window, and forgets nothing
+    expect(h.pictures).not.toContain('clear'); // and the member's own kept pictures stay
   });
 
   it("a tab whose tokens become B's while its list still shows desks: they keep a layout, at a new desk's places, never A's arrangement", async () => {
@@ -454,5 +490,83 @@ describe('a different account never reads the last one', () => {
     await boot('/auth/callback');
     expect(left()).toEqual(EVERY_KEY);
     expect(Object.keys(layout.useLayoutStore.getState().desks)).toHaveLength(3);
+  });
+});
+
+/** ma-platform contract auth.md §2.8 (0.3.118 draft): only where client-config's `auth.sso` is an object with an https origin (`ssoOrigin`). */
+describe('the shared sign-in', () => {
+  const ID = 'https://id.minimalistalliance.com';
+  beforeEach(() => {
+    vi.stubGlobal('location', { hostname: 'office.minimalistalliance.com' });
+  });
+
+  it('Sign out: step 3 after the last words and before every other call, noted for the signed-out page if it fails', async () => {
+    CONFIG.auth.sso = { origin: ID };
+    await signedIn();
+    session.onBeforeSignOut(async () => void h.order.push('last words'));
+    await session.signOut();
+    expect(h.order).toEqual(['last words', `end ${ID}`, 'sign-out', 'endSession']);
+  });
+
+  it.each<[string, unknown]>([['absent', undefined], ['an http origin', { origin: 'http://id.minimalistalliance.com' }], ['true, a boolean', true]])('with auth.sso %s, sign-out is as before: nothing to id.', async (_, sso) => {
+    CONFIG.auth.sso = sso;
+    await signedIn();
+    await session.signOut();
+    expect(h.order).toEqual(['sign-out', 'endSession']);
+  });
+
+  it('/signed-out with a note from Sign out: its line, from the shared sign-in at its origin', async () => {
+    CONFIG.auth.sso = { origin: ID };
+    tab.setItem('ma-sso-sign-out-note', 'end');
+    h.endAgainLine = 'Other apps may still be signed in.';
+    await boot('/signed-out');
+    expect(h.order).toEqual([`line ${ID}`]);
+    expect(session.useSession.getState()).toMatchObject({ status: 'signedOut', notice: 'Other apps may still be signed in.' });
+  });
+
+  it('/signed-out with a note and no client-config: still its line, with no origin to try', async () => {
+    CONFIG.auth.sso = undefined;
+    tab.setItem('ma-sso-sign-out-note', 'end-refused');
+    h.endAgainLine = 'Other apps may still be signed in.';
+    await boot('/signed-out');
+    expect(h.order).toEqual(['line null']);
+    expect(session.useSession.getState().notice).toBe('Other apps may still be signed in.');
+  });
+
+  it("/signed-out with nothing noted: the usual line at once, without waiting for client-config or loading the chunk", async () => {
+    CONFIG.auth.sso = { origin: ID };
+    h.configHangs = true;
+    await boot('/signed-out');
+    expect(h.order).toEqual([]);
+    expect(session.useSession.getState()).toMatchObject({ status: 'signedOut', notice: "You're signed out." });
+  });
+
+  it("another app's Sign out in this browser, on the card: Sales' words", async () => {
+    CONFIG.auth.sso = { origin: ID };
+    await signedIn();
+    h.refusedHere = true;
+    h.revoked = true;
+    h.token = false;
+    h.getDesks = () => Promise.reject(new SignInRequired());
+    session.retryDesks();
+    await settle();
+    expect(session.useSession.getState()).toMatchObject({ status: 'signedOut', notice: 'You were signed out. Please sign in again.' });
+    expect(session.REVOKED_LINE).toBe('You were signed out. Please sign in again.');
+  });
+
+  it("/auth/callback: step 1 with the sign-in's own token before the office is drawn", async () => {
+    h.finishSignIn = () => Promise.resolve('access-from-sign-in');
+    let statusAtKeep: string | null = null;
+    h.order = [];
+    const order = h.order;
+    const push = order.push.bind(order);
+    order.push = (...items: string[]) => {
+      if (items[0]?.startsWith('keep:')) statusAtKeep = status();
+      return push(...items);
+    };
+    await boot('/auth/callback');
+    expect(h.order[0]).toBe('keep:access-from-sign-in');
+    expect(statusAtKeep).toBe('booting');
+    expect(status()).toBe('signedIn');
   });
 });

@@ -1,0 +1,86 @@
+From: Dana <dana@example.com>
+To: me@desk.example
+Date: Mon, 2 Nov 2026 09:00:00 +0000
+Subject: Deep
+MIME-Version: 1.0
+Content-Type: multipart/mixed; boundary=lvl0end
+
+--lvl0end
+Content-Type: multipart/mixed; boundary=lvl1end
+
+--lvl1end
+Content-Type: multipart/mixed; boundary=lvl2end
+
+--lvl2end
+Content-Type: multipart/mixed; boundary=lvl3end
+
+--lvl3end
+Content-Type: multipart/mixed; boundary=lvl4end
+
+--lvl4end
+Content-Type: multipart/mixed; boundary=lvl5end
+
+--lvl5end
+Content-Type: multipart/mixed; boundary=lvl6end
+
+--lvl6end
+Content-Type: multipart/mixed; boundary=lvl7end
+
+--lvl7end
+Content-Type: multipart/mixed; boundary=lvl8end
+
+--lvl8end
+Content-Type: multipart/mixed; boundary=lvl9end
+
+--lvl9end
+Content-Type: multipart/mixed; boundary=lvl10end
+
+--lvl10end
+Content-Type: multipart/mixed; boundary=lvl11end
+
+--lvl11end
+Content-Type: multipart/mixed; boundary=lvl12end
+
+--lvl12end
+Content-Type: multipart/mixed; boundary=lvl13end
+
+--lvl13end
+Content-Type: multipart/mixed; boundary=lvl14end
+
+--lvl14end
+Content-Type: multipart/mixed; boundary=lvl15end
+
+--lvl15end
+Content-Type: multipart/mixed; boundary=lvl16end
+
+--lvl16end
+Content-Type: multipart/mixed; boundary=lvl17end
+
+--lvl17end
+Content-Type: multipart/mixed; boundary=lvl18end
+
+--lvl18end
+Content-Type: multipart/mixed; boundary=lvl19end
+
+--lvl19end
+Content-Type: multipart/mixed; boundary=lvl20end
+
+--lvl20end
+Content-Type: multipart/mixed; boundary=lvl21end
+
+--lvl21end
+Content-Type: multipart/mixed; boundary=lvl22end
+
+--lvl22end
+Content-Type: multipart/mixed; boundary=lvl23end
+
+--lvl23end
+Content-Type: multipart/mixed; boundary=lvl24end
+
+--lvl24end
+Content-Type: multipart/mixed; boundary=lvl25end
+
+--lvl25end
+Content-Type: text/plain
+
+bottom

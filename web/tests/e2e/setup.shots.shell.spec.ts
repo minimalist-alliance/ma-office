@@ -7,7 +7,7 @@
 import { mkdirSync } from 'node:fs';
 import { join } from 'node:path';
 import { expect, test, type APIRequestContext, type Page } from '@playwright/test';
-import { canvasPainted, harness, setTheme, signIn, watchConsole, type ThemeId } from './helpers';
+import { canvasPainted, harness, setTheme, signIn, watchConsole, type ThemeId, openMenuSection } from './helpers';
 
 const OUT = process.env['SETUP_SHOTS'] ?? '';
 const THEMES: ThemeId[] = ['light', 'dusk', 'dark'];
@@ -125,6 +125,7 @@ for (const theme of THEMES) {
     // 5. The account menu's switch, with the circle hidden.
     errors = await arrive(page, request, { tier: 'officer', theme, mirror: { setup: { done: ['work-desk'], skipped: [] }, circleHidden: true } });
     await page.getByRole('button', { name: 'Account' }).click();
+    await openMenuSection(page, 'menu-appearance');
     await expect(page.getByRole('switch', { name: "Show setup and what's new" })).toBeVisible();
     await shot(page, `14-menu-switch-off-${theme}`);
     expect(errors).toEqual([]);

@@ -17,7 +17,7 @@
 //
 // The desk must be running already, unless `--wake` says this may wake it by focusing it, as a member would.
 import { existsSync, mkdirSync, readFileSync, writeFileSync } from 'node:fs';
-import { ALLOWED, getDesk, log, openSession, S, shot, shutdown, wait, waitPanel } from './rt-lib.mjs';
+import { ALLOWED, closeTour, getDesk, log, openSession, S, shot, shutdown, wait, waitPanel } from './rt-lib.mjs';
 
 const DIST = new URL('../../dist/release/', import.meta.url).pathname;
 const OUT = new URL('../../test-results/real-desk/rt-notebook/', import.meta.url).pathname;
@@ -124,6 +124,8 @@ if (desk.state !== 'running' && !process.argv.includes('--wake')) {
 await proxyButton.focus();
 await p.keyboard.press('Enter');
 step('1 online', await waitPanel(/online/, 120_000));
+// The office tour (ADR 0056) holds the keyboard while it shows: close it first, as rt-agent does.
+await closeTour(15_000).catch(() => false);
 
 const tile = p.locator(`[id="proxy-${ALLOWED}:notebook"]`);
 await tile.focus();
@@ -217,6 +219,9 @@ if (state === 'missing') {
   const reopen = async () => {
     await p.reload();
     await proxyButton.waitFor({ state: 'attached', timeout: 60_000 });
+    // The office tour opens again after a reload for this browser (its close button isn't "Don't show this again"): close
+    // it, or the keys below go to the tour.
+    await closeTour(15_000).catch(() => false);
     await proxyButton.focus();
     await p.keyboard.press('Enter');
     await wait(1_000);
@@ -248,6 +253,11 @@ if (state === 'missing') {
   await p2.goto(p.url(), { waitUntil: 'load' });
   const proxy2 = p2.locator(`[id="proxy-${ALLOWED}"]`);
   await proxy2.waitFor({ state: 'attached', timeout: 60_000 });
+  // The second tab gets the office tour too; close it the same way.
+  if (await p2.getByTestId('tour').waitFor({ state: 'visible', timeout: 15_000 }).then(() => true, () => false)) {
+    await p2.getByTestId('tour-close').click();
+    log('the office tour in the second tab: closed it');
+  }
   await proxy2.focus();
   await p2.keyboard.press('Enter');
   await wait(3_000);

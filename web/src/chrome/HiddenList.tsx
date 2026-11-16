@@ -1,9 +1,8 @@
 // The list the hidden count opens (ADR 0064): a small menu above the icon, in the normal menu style and not etched.
 // Each row is an app's icon and name. Choosing one brings it to the front. Enter opens, arrows move, Enter chooses, Esc closes.
-import { useEffect, useLayoutEffect, useRef, useState } from 'react';
+import { useEffect, useRef, useState } from 'react';
 import { camera } from '../canvas/controller';
 import { useGlyph } from '../agent/roster';
-import { drawGlyph } from '../canvas/glyphs';
 import type { AppId } from '../canvas/layout';
 import { useIsPhone } from '../canvas/phone';
 import { appLabel, focusBack } from '../shell/actions';
@@ -11,7 +10,7 @@ import { chooseHidden, closeHiddenList, hiddenOn, hiddenProxyId } from '../shell
 import { useDeskStore } from '../state/deskStore';
 import { useLayoutStore } from '../state/layoutStore';
 import { useViewStore, type ViewState } from '../state/viewStore';
-import { useTheme } from '../theme/themeStore';
+import { GlyphCanvas } from './icons';
 
 const WIDTH = 188; // matches .desk-menu
 const ROW_H = 40;
@@ -26,22 +25,10 @@ function dismiss(at: NonNullable<ViewState['hiddenList']>): void {
   if (at.fromKeyboard) focusBack(hiddenProxyId(at.deskId));
 }
 
+/** A row's icon: the DOM's glyph canvas (`GlyphCanvas`), so it follows the theme and the screen's density as the others do. */
 function RowGlyph({ app, deskId }: { app: AppId; deskId: string }) {
-  const ref = useRef<HTMLCanvasElement>(null);
-  const t = useTheme((s) => s.t);
   const glyph = useGlyph(deskId, app);
-  useLayoutEffect(() => {
-    const canvas = ref.current;
-    const ctx = canvas?.getContext('2d');
-    if (!canvas || !ctx) return;
-    const q = window.devicePixelRatio || 1;
-    const size = 24;
-    canvas.width = Math.round(size * q);
-    canvas.height = Math.round(size * q);
-    ctx.scale(q, q);
-    drawGlyph(ctx, glyph, t, size);
-  }, [glyph, t]);
-  return <canvas ref={ref} className="hidden-list-glyph" aria-hidden="true" />;
+  return <GlyphCanvas glyph={glyph} size={24} className="hidden-list-glyph" />;
 }
 
 function ListBody({ at }: { at: NonNullable<ViewState['hiddenList']> }) {
@@ -108,13 +95,16 @@ function ListBody({ at }: { at: NonNullable<ViewState['hiddenList']> }) {
     <>
       {/* A click away only dismisses, like the desk's menu: the canvas and the chrome under it never hear of it. */}
       <div className="desk-menu-away" onClick={away} onWheel={away} onContextMenu={(e) => { e.preventDefault(); away(); }} />
-      <div ref={ref} className="menu desk-menu hidden-list" role="menu" tabIndex={-1} aria-label={`Hidden apps on the ${name} desk`} style={style}>
-        {rows.map((item) => (
-          <button key={item.id} type="button" role="menuitem" className="menu-item hidden-list-item" data-item={item.id} onClick={() => chooseHidden(at.deskId, item, at.fromKeyboard)}>
-            <RowGlyph app={item.app} deskId={at.deskId} />
-            <span>{appLabel(item.app, at.deskId)}</span>
-          </button>
-        ))}
+      <div ref={ref} className="menu desk-menu hidden-list ma-glass" role="menu" tabIndex={-1} aria-label={`Hidden apps on the ${name} desk`} style={style}>
+        {/* The rows scroll on their own, inside the glass, whose light stays put (`styles/glass.css`). */}
+        <div className="hidden-list-rows">
+          {rows.map((item) => (
+            <button key={item.id} type="button" role="menuitem" className="menu-item hidden-list-item" data-item={item.id} onClick={() => chooseHidden(at.deskId, item, at.fromKeyboard)}>
+              <RowGlyph app={item.app} deskId={at.deskId} />
+              <span>{appLabel(item.app, at.deskId)}</span>
+            </button>
+          ))}
+        </div>
       </div>
     </>
   );

@@ -1,20 +1,21 @@
 import { describe, expect, it } from 'vitest';
 import {
-  clampMove, clampResize, cornerInset, defaultDesk, deskBounds, deskFromGrid, deskGeometry, detailLevel, ETCH_BASELINE, ETCH_DEPTH, ETCH_ICON, ETCH_SIZE, fitDeskSize, fitNameText, fittedLevel, fitToWidth, G, HIDDEN_MIN, hiddenItems, iconGlyphSize, iconsFit, iconsLeft, isPlaced, levelSize, minDeskSize, MIN_NAME_CHARS, nameRoom, nearestFree, nudgeMove, nudgeResize, overlaps, overOthers, packItems,
-  panelH, panelW, placeNewDesk, restacked, roundUnit, settleDesk, slotRight, countSlotW, span, stackOrder, statusClear, statusRoom, STRIP, stripTarget, STATUS_LONGEST, switchFits, tidyDesk, tidyOrder, tidyPack, unionBounds, withStack, workArea,
+  appCount, clampMove, clampResize, comingLater, cornerInset, DEFAULT_DESK, defaultDesk, OLD_DEFAULT_DESK, deskBounds, deskFromGrid, deskGeometry, detailLevel, ETCH_BASELINE, FACE_GLYPH_HOLD, FACE_GLYPH_MAX, FACE_GLYPH_SHARE, faceGlyphSize, LATER, laterShows, ETCH_DEPTH, ETCH_ICON, ETCH_SIZE, fitDeskSize, fitNameText, fittedLevel, fitToWidth, G, HIDDEN_MIN, hiddenItems, iconGlyphSize, iconsFit, iconsLeft, isPlaced, levelSize, minDeskSize, MIN_NAME_CHARS, nameRoom, nearestFree, nudgeMove, nudgeResize, overlaps, overOthers, packItems,
+  panelH, panelW, placeNewDesk, readableWidget, restacked, roundUnit, settleDesk, slotRight, countSlotW, span, stackOrder, statusClear, statusRoom, STRIP, stripTarget, STATUS_LONGEST, switchFits, tidyDesk, tidyOrder, tidyPack, tileFace, unionBounds, withStack, workArea,
   type AppId, type DetailLevel, type LayoutDesk,
 } from './layout';
 
 const entry = (id: string, level: DetailLevel = 'icon'): { id: string; level: DetailLevel } => ({ id, level });
-const app = (id: string, x: number, y: number, w = 76, h = 76, a: AppId = 'chat') => ({ id, app: a, x, y, w, h });
+const app = (id: string, x: number, y: number, w = 76, h = 76, a: AppId = 'courier') => ({ id, app: a, x, y, w, h });
 
 describe('surface (ADR 0062)', () => {
-  it('a default desk is 584 x 236: padding, 168 of work height and the strip', () => {
+  it('a default desk is 860 x 480 (ADR 0057): nine cells across, about 16:9; before it, 584 x 236', () => {
     expect(G.strip).toBe(44);
-    expect(panelW(6)).toBe(584);
-    expect(panelW(6)).toBe(2 * G.padX + span(6));
-    expect(defaultDesk('d', 0, 0)).toMatchObject({ w: 584, h: 236 });
-    expect(defaultDesk('d', 0, 0).h).toBe(G.padTop + 168 + G.strip);
+    expect(panelW(9)).toBe(860);
+    expect(panelW(9)).toBe(2 * G.padX + span(9));
+    expect(defaultDesk('d', 0, 0)).toMatchObject({ w: 860, h: 480 });
+    expect(DEFAULT_DESK).toEqual({ w: 860, h: 480 });
+    expect(OLD_DEFAULT_DESK).toEqual({ w: panelW(6), h: G.padTop + 168 + G.strip });
   });
 
   it('a row of the old grid is still what it was, since saved desks were sized by it', () => {
@@ -51,6 +52,117 @@ describe('detail levels (ADR 0062)', () => {
     for (const level of ['icon', 'small', 'wide', 'large', 'open'] as const) {
       const { w, h } = levelSize(level);
       expect(detailLevel(w, h)).toBe(level);
+    }
+  });
+});
+
+// The owner, Nov 11: a tile too small for its live app was "like a blank page with the tiny icon on the top left".
+describe('what a tile draws: never a card with nothing to read', () => {
+  const LEVELS = ['icon', 'small', 'wide', 'large', 'open'] as const;
+  const BIG = ['small', 'wide', 'large', 'open'] as const;
+
+  it('a larger tile is its widget only with words to read at the zoom that shows text', () => {
+    for (const level of BIG) {
+      expect(tileFace(level, 'full', true), level).toBe('widget');
+      expect(tileFace(level, 'full', false), level).toBe('glyph');
+      // Its text is hidden from here out, so its glyph is centred, words or not.
+      for (const lod of ['glyph', 'card'] as const) {
+        expect(tileFace(level, lod, true), `${level} ${lod}`).toBe('glyph');
+        expect(tileFace(level, lod, false), `${level} ${lod}`).toBe('glyph');
+      }
+    }
+  });
+
+  it('an icon is its glyph, words or not, and a plain card at the farthest zoom (design 3.10)', () => {
+    for (const readable of [true, false]) {
+      expect(tileFace('icon', 'full', readable)).toBe('glyph');
+      expect(tileFace('icon', 'glyph', readable)).toBe('glyph');
+      expect(tileFace('icon', 'card', readable)).toBe('plain');
+    }
+  });
+
+  it('no level and zoom leaves a larger tile without its glyph unless its words show', () => {
+    for (const level of LEVELS) {
+      for (const lod of ['full', 'glyph', 'card'] as const) {
+        for (const readable of [true, false]) {
+          const face = tileFace(level, lod, readable);
+          if (level !== 'icon') expect(face === 'widget' ? readable && lod === 'full' : face === 'glyph', `${level} ${lod} ${readable}`).toBe(true);
+        }
+      }
+    }
+  });
+
+  it('a coming-later app (Courier) shows its chip by the words\' rule: past icon size, at the zoom that shows text', () => {
+    for (const level of LEVELS) {
+      expect(laterShows(level, 'full'), level).toBe(level !== 'icon');
+      // Too small to read from here out, as a widget's words are.
+      for (const lod of ['glyph', 'card'] as const) expect(laterShows(level, lod), `${level} ${lod}`).toBe(false);
+    }
+    // Wherever it shows, a tile with words would show them too: the chip is never drawn smaller than words.
+    for (const level of LEVELS) for (const lod of ['full', 'glyph', 'card'] as const) expect(laterShows(level, lod), `${level} ${lod}`).toBe(tileFace(level, lod, true) === 'widget');
+    expect(LATER).toBe('Coming later');
+  });
+
+  it('a coming-later app (Courier) has no count, whatever its desk or Platform says; another app keeps its own', () => {
+    expect(appCount('courier', 4, undefined)).toBe(0);
+    expect(appCount('courier', undefined, 7)).toBe(0);
+    expect(appCount('courier', 4, 7)).toBe(0);
+    expect(appCount('notebook', 4, 7)).toBe(4); // the desk's word first
+    expect(appCount('notebook', undefined, 7)).toBe(7);
+    expect(appCount('browser', undefined, undefined)).toBe(0);
+    expect(appCount('agent:a-1', 2, undefined)).toBe(2);
+  });
+
+  it('Courier is the one coming-later app; the rest are built', () => {
+    expect(comingLater('courier')).toBe(true);
+    for (const a of ['notebook', 'browser', 'agent', 'files', 'commons', 'agent:a-1', 'app:com.example.x'] as AppId[]) expect(comingLater(a), a).toBe(false);
+  });
+
+  it('words to read are a title or text; a foot alone, blanks, or no summary are not', () => {
+    expect(readableWidget({ title: 'Trip notes' })).toBe(true);
+    expect(readableWidget({ title: '', text: 'Waiting for your approval' })).toBe(true);
+    expect(readableWidget({ title: '  ', text: '' })).toBe(false);
+    expect(readableWidget({ title: '' })).toBe(false);
+    expect(readableWidget(undefined)).toBe(false);
+    expect(readableWidget({ title: '', foot: 'Normal mode' } as { title: string })).toBe(false);
+  });
+
+  // min(63% of the shorter side, max(128, 45% of it), 256): the Designer's brand review, Nov 12. One case per regime.
+  it('the centred glyph: an icon and a medium tile keep the icon\'s 63%', () => {
+    expect(faceGlyphSize(76, 76)).toBe(iconGlyphSize(76, 76));
+    expect(faceGlyphSize(76, 76)).toBe(48);
+    expect(faceGlyphSize(167, 167)).toBe(iconGlyphSize(167, 167));
+    expect(faceGlyphSize(168, 168)).toBe(106);
+    expect(faceGlyphSize(352, 168)).toBe(106); // a wide tile: its shorter side is a medium's
+  });
+
+  it('the centred glyph holds at 128 where 63% would pass it and 45% hasn\'t reached it', () => {
+    expect(FACE_GLYPH_HOLD).toBe(128);
+    expect(faceGlyphSize(250, 250)).toBe(128); // 63% is 158, 45% is 113
+    expect(faceGlyphSize(284, 400)).toBe(128);
+  });
+
+  it('a large and an open tile ease to 45% of the shorter side', () => {
+    expect(FACE_GLYPH_SHARE).toBe(0.45);
+    const large = levelSize('large');
+    const open = levelSize('open');
+    expect(faceGlyphSize(large.w, large.h)).toBe(158); // 352
+    expect(faceGlyphSize(open.w, open.h)).toBe(200); // 536 x 444
+    expect(faceGlyphSize(628, 444)).toBe(200); // the Browser's 7 x 5
+  });
+
+  it('nothing passes 256', () => {
+    expect(FACE_GLYPH_MAX).toBe(256);
+    expect(faceGlyphSize(600, 600)).toBe(256); // 45% is 270
+    expect(faceGlyphSize(2000, 1500)).toBe(256);
+  });
+
+  it('the centred glyph never shrinks as a tile grows', () => {
+    let last = 0;
+    for (let side = 56; side <= 1200; side += 2) {
+      const g = faceGlyphSize(side, side);
+      expect(g, String(side)).toBeGreaterThanOrEqual(last);
+      last = g;
     }
   });
 });
@@ -93,10 +205,10 @@ describe('the phone grid', () => {
 });
 
 describe('desks', () => {
-  it('starts a primary desk at 584 x 236 with four icons in a row at the top', () => {
+  it('starts a primary desk at 860 x 480 with four icons in a row at the top', () => {
     const d = defaultDesk('d', 0, 36);
-    expect(d.items.map((i) => i.app)).toEqual(['chat', 'notebook', 'browser', 'agent']);
-    expect(deskGeometry(d)).toMatchObject({ w: 584, h: 236 });
+    expect(d.items.map((i) => i.app)).toEqual(['courier', 'notebook', 'browser', 'agent']);
+    expect(deskGeometry(d)).toMatchObject({ w: 860, h: 480 });
     expect(d.items.map((i) => i.x)).toEqual([24, 116, 208, 300]);
     expect(d.items.every((i) => i.y === 24 && i.w === 76 && i.h === 76)).toBe(true);
   });
@@ -108,13 +220,13 @@ describe('desks', () => {
   });
 
   it('is just its panel in its bounds, with nothing above it', () => {
-    expect(deskBounds(defaultDesk('d', 10, 50))).toEqual({ x: 10, y: 50, w: 584, h: 236 });
+    expect(deskBounds(defaultDesk('d', 10, 50))).toEqual({ x: 10, y: 50, w: 860, h: 480 });
   });
 
   it('places a new desk right of the last one in the bottom row, however wide it has grown', () => {
     const a = defaultDesk('a', 0, 36);
     expect(placeNewDesk([])).toEqual({ x: 0, y: 0 });
-    expect(placeNewDesk([a])).toEqual({ x: 584 + 72, y: 36 });
+    expect(placeNewDesk([a])).toEqual({ x: 860 + 72, y: 36 });
     expect(placeNewDesk([{ ...a, w: 701.5 }])).toEqual({ x: 701.5 + 72, y: 36 });
   });
 
@@ -163,35 +275,59 @@ describe('free desk growth', () => {
   });
 
   it('deskFromGrid never makes a desk too short for its apps', () => {
-    const d = deskFromGrid({ id: 'd', x: 0, y: 36, cols: 2, rows: 1, items: Array.from({ length: 5 }, (_, i) => ({ id: `i${i}`, app: 'chat' as const, level: 'icon' as const })) });
+    const d = deskFromGrid({ id: 'd', x: 0, y: 36, cols: 2, rows: 1, items: Array.from({ length: 5 }, (_, i) => ({ id: `i${i}`, app: 'courier' as const, level: 'icon' as const })) });
     expect(d.h).toBe(panelH(3));
     expect(d.w).toBe(G.minDeskW); // two cells is narrower than the smallest desk
     expect(panelW(2)).toBeLessThan(G.minDeskW);
   });
 });
 
-describe('a new desk (ADR 0062, item 7)', () => {
+describe('a new desk (ADR 0057, the owner, Nov 12)', () => {
   const fresh = defaultDesk('d', 0, 0);
+  const item = (app: AppId) => fresh.items.find((i) => i.app === app)!;
+
+  it('is naturally proportioned: between 16:10 and 2:1', () => {
+    expect(fresh.w / fresh.h).toBeGreaterThanOrEqual(1.6);
+    expect(fresh.w / fresh.h).toBeLessThanOrEqual(2);
+  });
+
+  it('holds its apps as icons along the top, with a 4 x 4 widget\'s room under the row\'s top, so it never grows for one', () => {
+    expect(fresh.items.map((i) => [i.x, i.y, i.w, i.h])).toEqual([[24, 24, 76, 76], [116, 24, 76, 76], [208, 24, 76, 76], [300, 24, 76, 76]]);
+    expect(clampResize(item('agent'), span(4), span(4), workArea(fresh.w, fresh.h))).toEqual({ w: span(4), h: span(4) });
+    expect(tidyDesk(fresh)).toBe(fresh);
+  });
+
+  it('holds nine icons in its row, and many apps take rows of nine at the old height of each', () => {
+    const many = defaultDesk('d', 0, 0, Array.from({ length: 10 }, (_, n) => `agent:a${n}` as const));
+    expect(many.items[8]).toMatchObject({ x: G.padX + 8 * G.pitch, y: G.padTop });
+    expect(many.items[9]).toMatchObject({ x: G.padX, y: G.padTop + G.pitch });
+    expect(many).toMatchObject({ w: 860, h: 480 });
+  });
+});
+
+// The default of ADR 0062 (584 x 236), which a desk saved from then keeps: its free band and its cleanup.
+describe('a new desk of ADR 0062 (item 7), as saved', () => {
+  const fresh: LayoutDesk = { ...defaultDesk('d', 0, 0), ...OLD_DEFAULT_DESK };
   const area = workArea(fresh.w, fresh.h);
   const item = (app: AppId) => fresh.items.find((i) => i.app === app)!;
   const moved = (app: AppId, change: Partial<LayoutDesk['items'][number]>): LayoutDesk => ({ ...fresh, items: fresh.items.map((i) => (i.app === app ? { ...i, ...change } : i)) });
 
   it('has a free band under its row, 92 tall, down to the strip', () => {
     expect(area.y + area.h).toBe(236 - G.strip);
-    expect(area.y + area.h - (item('chat').y + item('chat').h)).toBe(92);
+    expect(area.y + area.h - (item('courier').y + item('courier').h)).toBe(92);
   });
 
   it('an app can go under the row, along it past the others, and back up beyond them', () => {
-    const chat = item('chat');
-    const down = clampMove(chat, { x: 24, y: 116 }, area);
+    const courier = item('courier');
+    const down = clampMove(courier, { x: 24, y: 116 }, area);
     expect(down).toEqual({ x: 24, y: 116 });
-    const along = clampMove({ ...chat, ...down }, { x: 424, y: 116 }, area);
+    const along = clampMove({ ...courier, ...down }, { x: 424, y: 116 }, area);
     expect(along).toEqual({ x: 424, y: 116 });
-    expect(clampMove({ ...chat, ...along }, { x: 424, y: 24 }, area)).toEqual({ x: 424, y: 24 });
+    expect(clampMove({ ...courier, ...along }, { x: 424, y: 24 }, area)).toEqual({ x: 424, y: 24 });
   });
 
   it('a desk still 144 tall leaves an app no way under the row, which is why the default changed', () => {
-    expect(clampMove(item('chat'), { x: 24, y: 116 }, workArea(584, 144))).toEqual({ x: 24, y: 24 });
+    expect(clampMove(item('courier'), { x: 24, y: 116 }, workArea(584, 144))).toEqual({ x: 24, y: 24 });
     expect(clampResize(item('agent'), 168, 168, workArea(584, 144)).h).toBe(76);
   });
 
@@ -199,7 +335,7 @@ describe('a new desk (ADR 0062, item 7)', () => {
     expect(clampResize(item('agent'), 168, 168, area)).toEqual({ w: 168, h: 168 });
     expect(detailLevel(168, 168)).toBe('small');
     expect(clampResize(item('agent'), 168, 900, area)).toEqual({ w: 168, h: 168 });
-    expect(clampResize(item('chat'), 900, 168, area)).toEqual({ w: 552, h: 168 }); // over the Notebook and the rest
+    expect(clampResize(item('courier'), 900, 168, area)).toEqual({ w: 552, h: 168 }); // over the Notebook and the rest
   });
 
   describe('cleaning it up', () => {
@@ -208,27 +344,27 @@ describe('a new desk (ADR 0062, item 7)', () => {
     });
 
     it('puts apps at the default size back in one row at the top, with the band free and the desk the same size', () => {
-      const after = tidyDesk(moved('chat', { y: 116 }));
+      const after = tidyDesk(moved('courier', { y: 116 }));
       expect(after).toMatchObject({ w: 584, h: 236 });
       expect(after.items.every((i) => i.y === 24 && i.w === 76 && i.h === 76)).toBe(true);
       // An app dragged a whole row down reads last, so it lands at the end of the row, not back in its old place.
-      expect(Object.fromEntries(after.items.map((i) => [i.app, i.x]))).toEqual({ notebook: 24, browser: 116, agent: 208, chat: 300 });
+      expect(Object.fromEntries(after.items.map((i) => [i.app, i.x]))).toEqual({ notebook: 24, browser: 116, agent: 208, courier: 300 });
     });
 
     it('an app that\'s only slightly out of the row keeps its place in it', () => {
-      const after = tidyDesk(moved('chat', { y: 40 }));
-      expect(Object.fromEntries(after.items.map((i) => [i.app, i.x]))).toEqual({ chat: 24, notebook: 116, browser: 208, agent: 300 });
+      const after = tidyDesk(moved('courier', { y: 40 }));
+      expect(Object.fromEntries(after.items.map((i) => [i.app, i.x]))).toEqual({ courier: 24, notebook: 116, browser: 208, agent: 300 });
     });
 
     it('keeps an app at widget height, which fits exactly, so the desk doesn\'t grow', () => {
-      const after = tidyDesk(moved('chat', { x: 400, y: 24, w: 168, h: 168 }));
+      const after = tidyDesk(moved('courier', { x: 400, y: 24, w: 168, h: 168 }));
       expect(after.h).toBe(236);
-      expect(after.items.find((i) => i.app === 'chat')).toMatchObject({ w: 168, h: 168 });
+      expect(after.items.find((i) => i.app === 'courier')).toMatchObject({ w: 168, h: 168 });
     });
 
     it('grows by 16 for an app as tall as the work area, as it did at the old height, since it moves down to the padding', () => {
-      expect(tidyDesk(moved('chat', { x: 400, y: 8, h: 184 })).h).toBe(236 + 16);
-      const old: LayoutDesk = { ...moved('chat', { x: 400, y: 8, h: 92 }), h: 144 };
+      expect(tidyDesk(moved('courier', { x: 400, y: 8, h: 184 })).h).toBe(236 + 16);
+      const old: LayoutDesk = { ...moved('courier', { x: 400, y: 8, h: 92 }), h: 144 };
       expect(tidyDesk(old).h).toBe(144 + 16);
     });
   });
@@ -396,7 +532,7 @@ describe('cleanup', () => {
   it('leaves a tidy desk alone: it hands back the same desk', () => {
     const d = defaultDesk('d', 0, 0);
     expect(tidyDesk(d)).toBe(d);
-    const grid = deskFromGrid({ id: 'g', x: 0, y: 0, cols: 4, rows: 3, items: Array.from({ length: 11 }, (_, i) => ({ id: `i${i}`, app: 'chat' as const, level: i === 0 ? 'small' as const : 'icon' as const })) });
+    const grid = deskFromGrid({ id: 'g', x: 0, y: 0, cols: 4, rows: 3, items: Array.from({ length: 11 }, (_, i) => ({ id: `i${i}`, app: 'courier' as const, level: i === 0 ? 'small' as const : 'icon' as const })) });
     expect(tidyDesk(grid)).toBe(grid);
     const empty = desk(584, 144, []);
     expect(tidyDesk(empty)).toBe(empty);

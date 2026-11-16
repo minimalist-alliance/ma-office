@@ -17,6 +17,7 @@ import java.time.Instant;
 import java.time.LocalDate;
 import java.time.ZoneId;
 import java.time.temporal.TemporalAdjusters;
+import java.util.ArrayList;
 import java.util.List;
 import java.util.Map;
 import java.util.function.Supplier;
@@ -40,6 +41,11 @@ import org.slf4j.LoggerFactory;
  *
  * <p>A finished row goes once it's older than {@link #KEEP}, at open and then once a day while open, so the file stops
  * growing at about 200 bytes a call (review finding 22). A reservation still out is never pruned.
+ *
+ * <p><b>Desk Maia's calls are the company's</b> (provider {@code ma}, the owner, Nov 15): they're rows here for her run's
+ * step count, but never the member's money. They reserve and settle no dollars, any dollars an older desk-agent wrote on
+ * them count as none ({@link #MEMBER_USD}), and they're left out of the desk's and a key's scopes, which aren't checked
+ * for them either.
  */
 public final class UsageLedger implements AutoCloseable {
 
@@ -53,6 +59,11 @@ public final class UsageLedger implements AutoCloseable {
 
     /** How often an open ledger prunes, after the prune at open. */
     static final Duration PRUNE_EVERY = Duration.ofDays(1);
+
+    /** Minimalist Alliance's own AI service, Desk Maia's alone: rows of it are never the member's money. */
+    static final String COMPANY = "ma";
+    /** A row's dollars as the member's: none for a company row, whatever an older desk-agent settled it at. */
+    static final String MEMBER_USD = "CASE WHEN provider = '" + COMPANY + "' THEN 0 ELSE microusd END";
 
     /** One model call, for the ledger: who, in which run, on which key, to which model. */
     public record Call(String agentId, String runId, String keyId, ProviderId provider, String model) {}
@@ -217,12 +228,14 @@ public final class UsageLedger implements AutoCloseable {
                 refused[0] = new LimitReachedException(Scope.RUN_STEPS, "steps", policy.runMaxSteps(), steps, 1);
                 return null;
             }
-            String byAgent = "SELECT COALESCE(SUM(tokens), 0), COALESCE(SUM(microusd), 0) FROM usage"
+            String byAgent = "SELECT COALESCE(SUM(tokens), 0), COALESCE(SUM(" + MEMBER_USD + "), 0) FROM usage"
                     + " WHERE at_ms >= ? AND agent_id = ?";
-            String byDesk = "SELECT COALESCE(SUM(tokens), 0), COALESCE(SUM(microusd), 0) FROM usage WHERE at_ms >= ?";
+            String byDesk = BY_DESK;
             String byKey = byDesk + " AND key_id = ?";
-            String byRun = "SELECT COALESCE(SUM(tokens), 0), COALESCE(SUM(microusd), 0) FROM usage"
+            String byRun = "SELECT COALESCE(SUM(tokens), 0), COALESCE(SUM(" + MEMBER_USD + "), 0) FROM usage"
                     + " WHERE at_ms >= ? AND run_id = ?";
+            // Her company-paid calls aren't the member's money: the desk's and a key's limits are never theirs.
+            boolean company = COMPANY.equals(call.provider().id());
             Object[][] checks = {
                 {Scope.AGENT_DAY, policy.agentDay(), byAgent, day.toEpochMilli(), call.agentId()},
                 {Scope.AGENT_WEEK, policy.agentWeek(), byAgent, week.toEpochMilli(), call.agentId()},
@@ -235,6 +248,10 @@ public final class UsageLedger implements AutoCloseable {
             for (Object[] check : checks) {
                 Limit limit = (Limit) check[1];
                 if (limit.isNone()) {
+                    continue;
+                }
+                Scope scope = (Scope) check[0];
+                if (company && (scope == Scope.DESK_DAY || scope == Scope.DESK_MONTH || scope == Scope.KEY_MONTH)) {
                     continue;
                 }
                 Spent spent = spent(connection, (String) check[2], (Long) check[3], (String) check[4]);
@@ -268,6 +285,10 @@ public final class UsageLedger implements AutoCloseable {
         }
         return reservation;
     }
+
+    /** Every agent on the desk, the member's money only: company rows are left out, tokens and all. */
+    private static final String BY_DESK = "SELECT COALESCE(SUM(tokens), 0), COALESCE(SUM(microusd), 0) FROM usage"
+            + " WHERE at_ms >= ? AND provider <> '" + COMPANY + "'";
 
     private static LimitReachedException over(Scope scope, Limit limit, Spent spent, Estimate estimate) {
         if (limit.maxTokens() != null && spent.tokens() + estimate.tokens() > limit.maxTokens()) {
@@ -344,9 +365,9 @@ public final class UsageLedger implements AutoCloseable {
         Instant nextDay = today.plusDays(1).atStartOfDay(in).toInstant();
         Instant nextWeek = today.with(TemporalAdjusters.next(DayOfWeek.MONDAY)).atStartOfDay(in).toInstant();
         Instant nextMonth = today.withDayOfMonth(1).plusMonths(1).atStartOfDay(in).toInstant();
-        String byAgent = "SELECT COALESCE(SUM(tokens), 0), COALESCE(SUM(microusd), 0) FROM usage"
+        String byAgent = "SELECT COALESCE(SUM(tokens), 0), COALESCE(SUM(" + MEMBER_USD + "), 0) FROM usage"
                 + " WHERE at_ms >= ? AND agent_id = ?";
-        String byDesk = "SELECT COALESCE(SUM(tokens), 0), COALESCE(SUM(microusd), 0) FROM usage WHERE at_ms >= ?";
+        String byDesk = BY_DESK;
         return open(database).call(connection -> {
             List<ScopeUsage> scopes = new java.util.ArrayList<>();
             scopes.add(new ScopeUsage(Scope.AGENT_DAY, spent(connection, byAgent, day.toEpochMilli(), agentId),
@@ -415,7 +436,7 @@ public final class UsageLedger implements AutoCloseable {
         long day = startOfDay(now, in).toEpochMilli();
         long month = startOfMonth(now, in).toEpochMilli();
         String sql = "SELECT agent_id, COUNT(DISTINCT CASE WHEN state <> 'released' THEN run_id END),"
-                + " COALESCE(SUM(microusd), 0) FROM usage WHERE at_ms >= ? GROUP BY agent_id";
+                + " COALESCE(SUM(" + MEMBER_USD + "), 0) FROM usage WHERE at_ms >= ? GROUP BY agent_id";
         return open(database).call(connection -> List.of(periods(connection, sql, day), periods(connection, sql, month)));
     }
 
@@ -448,11 +469,83 @@ public final class UsageLedger implements AutoCloseable {
         });
     }
 
+    /** One agent's use on one day of the desk's zone: what the team view sums (Maia Mode, API.md §23). */
+    public record DayUse(String agentId, String day, long calls, long inputTokens, long cachedInputTokens,
+            long outputTokens, long microUsd) {}
+
+    /**
+     * Every agent's calls, tokens and spend a day, for the last {@code days} days in the desk's zone, today included:
+     * calls that were sent ({@code released} ones never were), oldest day first. Counts only.
+     */
+    public List<DayUse> daily(int days) throws SQLException {
+        ZoneId in = zone.get();
+        long now = clock.millis();
+        long since = LocalDate.ofInstant(Instant.ofEpochMilli(now), in).minusDays(Math.max(0, days - 1))
+                .atStartOfDay(in).toInstant().toEpochMilli();
+        return open(database).call(connection -> {
+            Map<String, long[]> sums = new java.util.TreeMap<>();
+            try (PreparedStatement select = connection.prepareStatement("SELECT agent_id, at_ms,"
+                    + " COALESCE(input_tokens, 0), COALESCE(cached_input_tokens, 0), COALESCE(output_tokens, 0),"
+                    + " COALESCE(" + MEMBER_USD + ", 0) FROM usage WHERE at_ms >= ? AND state <> 'released'")) {
+                select.setLong(1, since);
+                try (ResultSet result = select.executeQuery()) {
+                    while (result.next()) {
+                        String day = java.time.LocalDate.ofInstant(Instant.ofEpochMilli(result.getLong(2)), in)
+                                .toString();
+                        long[] sum = sums.computeIfAbsent(day + "\u0000" + result.getString(1), k -> new long[5]);
+                        sum[0]++;
+                        sum[1] += result.getLong(3);
+                        sum[2] += result.getLong(4);
+                        sum[3] += result.getLong(5);
+                        sum[4] += result.getLong(6);
+                    }
+                }
+            }
+            List<DayUse> out = new ArrayList<>();
+            for (Map.Entry<String, long[]> e : sums.entrySet()) {
+                String[] parts = e.getKey().split("\u0000", 2);
+                long[] v = e.getValue();
+                out.add(new DayUse(parts[1], parts[0], v[0], v[1], v[2], v[3], v[4]));
+            }
+            return out;
+        });
+    }
+
+    /**
+     * What each of these runs has spent so far, µ$, reservations still out included (what a run has used of its limits):
+     * for the team view's cost of Desk Maia's briefs (API.md §23). A run with no rows isn't in the map. Counts only.
+     */
+    public Map<String, Long> spendOfRuns(java.util.Collection<String> runIds) throws SQLException {
+        List<String> ids = runIds.stream().filter(java.util.Objects::nonNull).distinct().toList();
+        Map<String, Long> out = new java.util.HashMap<>();
+        if (ids.isEmpty()) {
+            return out;
+        }
+        return open(database).call(connection -> {
+            for (int from = 0; from < ids.size(); from += 200) {
+                List<String> chunk = ids.subList(from, Math.min(ids.size(), from + 200));
+                String marks = String.join(",", java.util.Collections.nCopies(chunk.size(), "?"));
+                try (PreparedStatement select = connection.prepareStatement("SELECT run_id, COALESCE(SUM("
+                        + MEMBER_USD + "), 0) FROM usage WHERE run_id IN (" + marks + ") GROUP BY run_id")) {
+                    for (int i = 0; i < chunk.size(); i++) {
+                        select.setString(i + 1, chunk.get(i));
+                    }
+                    try (ResultSet result = select.executeQuery()) {
+                        while (result.next()) {
+                            out.put(result.getString(1), result.getLong(2));
+                        }
+                    }
+                }
+            }
+            return out;
+        });
+    }
+
     /** What an agent has used today, for the Agent tile's "today's spend vs limit" (design 3.4). */
     public Spent agentToday(String agentId) throws SQLException {
         long day = startOfDay(clock.millis(), zone.get()).toEpochMilli();
         return open(database).call(connection -> spent(connection,
-                "SELECT COALESCE(SUM(tokens), 0), COALESCE(SUM(microusd), 0) FROM usage"
+                "SELECT COALESCE(SUM(tokens), 0), COALESCE(SUM(" + MEMBER_USD + "), 0) FROM usage"
                         + " WHERE at_ms >= ? AND agent_id = ?",
                 day, agentId));
     }

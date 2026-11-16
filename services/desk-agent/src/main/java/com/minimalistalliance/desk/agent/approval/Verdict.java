@@ -3,8 +3,8 @@ package com.minimalistalliance.desk.agent.approval;
 import java.util.Objects;
 
 /**
- * What {@link ApprovalGate#admit} decided for one call (draft ADR, sections 3 and 11). Only {@link Auto} and
- * {@link Approved} run the tool; the rest answer the model with {@link #modelText()} and run nothing.
+ * What {@link ApprovalGate#admit} decided for one call (draft ADR, sections 3 and 11). Only {@link Auto},
+ * {@link Approved} and {@link Allowed} run the tool; the rest answer the model with {@link #modelText()} and run nothing.
  */
 public sealed interface Verdict {
 
@@ -42,6 +42,34 @@ public sealed interface Verdict {
         public boolean runs() {
             return true;
         }
+    }
+
+    /**
+     * Done without asking, under the member's setting for this agent ({@link ApprovalPolicy}; the owner's decision of
+     * Nov 12, the draft ADR's §15, whose {@code Verdict.Auto(group)} this is: {@link Auto} stays "needs no approval"). It
+     * runs with exactly the payload the policy judged, and a deskd-hosted tool sends {@code auto: <group>} with the call,
+     * which deskd checks against its own record of the member's switches before it runs it, and {@code autoApprovalId}:
+     * this call's own approval id, minted by the gate, so a tool that keys what it does by its approval (the Notebook's
+     * edit key) does it once and the ADR's {@code agent.approval.undo} (W3) can find it.
+     *
+     * @param group the switch's group: {@code notebook}, {@code files}, {@code todos}
+     * @param approvalId this unasked call's approval id ({@code ap-…}, as a card's), named on its {@code approval.auto} row
+     */
+    record Allowed(String group, String approvalId) implements Verdict {
+        public Allowed {
+            Objects.requireNonNull(group, "group");
+            Objects.requireNonNull(approvalId, "approvalId");
+        }
+
+        @Override
+        public boolean runs() {
+            return true;
+        }
+    }
+
+    /** Whether the call runs with the payload the policy made (and the member or their rule judged), not the model's input. */
+    default boolean bindsPayload() {
+        return this instanceof Approved || this instanceof Allowed;
     }
 
     /** The member declined it, with their note or null. */

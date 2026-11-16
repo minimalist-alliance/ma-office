@@ -1,0 +1,17 @@
+From: Dana <dana@example.com>
+To: me@desk.example
+Date: Mon, 2 Nov 2026 09:00:00 +0000
+Subject: Agenda
+Message-ID: <a1@mail.gmail.com>
+MIME-Version: 1.0
+Content-Type: multipart/alternative; boundary="000000000000abcd"
+
+--000000000000abcd
+Content-Type: text/plain; charset="UTF-8"
+
+Items: budget, hiring.
+--000000000000abcd
+Content-Type: text/html; charset="UTF-8"
+
+<div dir="ltr">Items: <b>budget</b>, hiring.</div><script>alert(1)</script>
+--000000000000abcd--

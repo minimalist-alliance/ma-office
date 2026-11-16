@@ -9,8 +9,17 @@ set -eu
 
 image_id=$(cat "${RELEASE_DIR:?RELEASE_DIR is not set}/image-id")
 
+# The parse sidecar (ADR 0097): its marker, /run/desk-parse/required, and its socket, sock/parse.sock. Mounted read-only
+# at its own path only where the image made the directory, as docker would otherwise make a missing source as root. With
+# it desk-agent reads every document in the sidecar and never in a child of its own; without it (an image before the
+# sidecar) in its child. Connecting needs no write to the mount, only to the socket (parse:agent 0660). MA_PARSE_DIR is
+# for tests.
+parse_dir=${MA_PARSE_DIR:-/run/desk-parse}
+set --
+[ -d "$parse_dir" ] && set -- --mount "type=bind,src=$parse_dir,dst=/run/desk-parse,readonly"
+
 exec docker run --rm --name desk-agent --network host --user 1103:1103 --read-only --tmpfs /tmp \
   --cap-drop=ALL --security-opt=no-new-privileges --log-driver=journald --log-opt tag=desk-agent \
   --memory=320m --memory-swap=320m --cpu-shares=256 --pids-limit=128 --stop-timeout=30 --ulimit core=0 \
   -v /run/desk-agent:/run/desk-agent -v /data/agent:/data/agent --env-file "$RELEASE_DIR/desk-agent.env" \
-  "$image_id"
+  "$@" "$image_id"

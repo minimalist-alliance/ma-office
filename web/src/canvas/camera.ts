@@ -1,6 +1,6 @@
 // Pure camera math (design 3.1). No DOM, no Konva, so it is unit tested directly.
 import { clamp } from '../lib/util';
-import type { Rect } from './layout';
+import { DEFAULT_DESK, type Rect } from './layout';
 
 export interface Camera {
   x: number;
@@ -23,6 +23,21 @@ export const MIN_SCALE = 0.2;
 export const MAX_SCALE = 3;
 export const DESK_MAX_SCALE = 1.75;
 export const OVERVIEW_MAX_SCALE = 1;
+
+/**
+ * The owner's framing of a desk as it's first introduced (ADR 0057, Nov 12): "By default when a desk is first introduced I
+ * want it to be only 50% of a browser's width in a 16:9 layout. 4:3 and others are obviously different". On any other shape
+ * the desk keeps the visual weight it has at 16:9, the same share of the screen's area: for a desk of aspect a that's
+ * 4 / (9a), so its width on screen is two thirds of the square root of the screen's area, whatever the screen's shape.
+ */
+export const framedDeskWidth = (vp: Viewport): number => (2 / 3) * Math.sqrt(vp.w * vp.h);
+
+/**
+ * The zoom at which a new desk (`DEFAULT_DESK`) is framed as the owner asked: the most a desk as introduced (`asIntroduced`)
+ * is fit to, and the most the overview comes in while one is in it. The fit's margins can make it smaller on a short screen.
+ * A desk the member has resized is framed as before, filling the screen up to `DESK_MAX_SCALE`.
+ */
+export const deskFramingScale = (vp: Viewport): number => clamp(framedDeskWidth(vp) / DEFAULT_DESK.w, MIN_SCALE, MAX_SCALE);
 
 /** CSS cubic-bezier as a function of progress t in 0..1. */
 export function cubicBezier(x1: number, y1: number, x2: number, y2: number): (t: number) => number {

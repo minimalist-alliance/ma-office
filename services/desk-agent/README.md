@@ -8,7 +8,8 @@ which relays task 07's `agent.*` interface over a local socket. The Agent window
 backend.
 
 **State: milestone 2.** desk-agent serves all of task 07's `agent.*` methods and topics on its agent socket, and talks
-to Anthropic (Messages API), OpenAI and xAI (Responses API) and OpenRouter (Chat Completions) with thin adapters on the
+to Anthropic (Messages API), OpenAI and xAI (Responses API), and OpenRouter, Google (Gemini) and Moonshot AI (Kimi)
+(Chat Completions) with thin adapters on the
 JDK's HTTP client, streamed. They are tested against a local stand-in only: no real key has touched them. deskd
 relays the interface to it (`services/deskd`, package `agent`, `API.md` section 11, from `sub/deskd-agent-relay`), and the image gives it its unit,
 directories and egress rule (`image/README.md`, "desk-agent", from `sub/desk-agent-image`). Its first release,
@@ -53,19 +54,21 @@ On a guild desk the team (task 49) is the owner's: a member's own agent has no t
 | `provider` | `ChatProvider`, the interface every adapter implements, and its values: `ChatRequest`, `ChatResult`, `Usage`, `DeltaSink`, `ProviderId`, `ProviderInfo`, `ModelInfo`, `ProviderException`. `ProviderRegistry` |
 | `provider.anthropic` | `AnthropicProvider`: Messages API, streamed, and the model list that checks a key |
 | `provider.openai` | `OpenAiResponsesProvider`: Responses API, streamed, with `store: false`. OpenAI's and xAI's, which serve the same API |
-| `provider.openrouter` | `OpenRouterProvider`: OpenRouter's Chat Completions, streamed, its key check (`/api/v1/key`) and its free models from the public catalog ("OpenRouter", below). `ChatCompletions`: a thread as Chat Completions messages, with and without tools |
+| `provider.openrouter` | `OpenRouterProvider`: OpenRouter's Chat Completions, streamed, its key check (`/api/v1/key`) and its free models from the public catalog ("OpenRouter", below) |
+| `provider.chat` | `ChatCompletions`: the OpenAI-compatible Chat Completions shape the three share, a thread as `messages` (with and without tools) and the stream read back, usage and stream errors. `ChatCompletionsProvider`: Google's and Moonshot AI's own endpoints ("Google and Moonshot AI", below) |
 | `provider.http` | `HttpTransport` (the one HTTP/1.1 client, the idle watchdog JDK 21 lacks, https-or-loopback base URLs), `SseReader` (bounded server-sent events), `Messages` |
 | `key` | `KeyVault` (keys sealed at rest in `/data/agent/keys`), `KeyRing` (keys in RAM, in direct buffers, zeroed on drop) and `KeyLease` (one call's heap copy, zeroed on close) |
 | `limits` | `UsageLedger` (SQLite: reserve, settle, release, keep, and each scope's use, in the member's zone), `LimitSettings` (the agent's scopes per agent, the desk's once, and the layers of ADR 0043), `PriceTable` (the table in use, swapped whole), `Pricing` (one table, and what an unlisted model counts at), `LimitPolicy`, `Limit`, `Scope`, `LimitReachedException` |
 | `audit` | `AuditLog`: append-only, hash-chained, in its own SQLite file |
 | `llm` | `LlmGateway`: the only way to a model. `reserve` (every check and the limits, nothing sent), then `complete` (lend the key, call, settle, audit) |
 | `manager` | `ManagerAgent`: one per agent since task 49 (`forAgent`), with the tool loop (`RunSetup`, `Tools`). Dormant until bound to a key it holds, one run at a time, badge on every answer. `start` refuses only `no_key`, `busy` and `limit_reached`; the `Run` then ends `done`, `stopped` or `failed` on its own thread |
-| `attach` | Files on a message (ADR 0049). `Staging`: files being attached, in memory only, 10 minutes, zeroed. `Caps`: the owner's limits within ceilings. `Sniff`: what a file is, by content. `Preparer`: staged files to attachments, applying the caps. `Parsers` and `worker/*` (`ParseWorker`, `PdfText`, `OfficeText`, `PlainText`): reading in a child JVM, one at a time. `Vision`: which models take pictures. `ImageBudget`: picture bytes with model calls at once. `AttachException`: a reason word, a file's name, a limit, never content. `provider.Attachment` is what a run holds and wipes |
+| `attach` | Files on a message (ADR 0049). `Staging`: files being attached, in memory only, 10 minutes, zeroed. `Caps`: the owner's limits within ceilings. `Sniff`: what a file is, by content. `Preparer`: staged files to attachments, applying the caps. `Parsers` and `worker/*` (`ParseWorker`, `ParseRequest`, `Input`, `PdfText`, `OfficeText`, `PlainText`): reading in the parse sidecar (ADR 0097), or in a child JVM on an image without one, one at a time. `Vision`: which models take pictures. `ImageBudget`: picture bytes with model calls at once. `AttachException`: a reason word, a file's name, a limit, never content. `provider.Attachment` is what a run holds and wipes |
 | `sqlite` | `SqliteDatabase`: one file, one platform thread, WAL, migrations by `user_version` |
 | `json` | `Json`, a copy of deskd's jackson-jr helper |
 | `icon` | `PngMark`: an uploaded icon decoded as a strict, real PNG with `java.util.zip` only (no ImageIO, no AWT) and re-encoded as a new gray+alpha mask with no metadata (`docs/multi-agent.md` section 7). `IconException`: `not_png`, `too_large`, `too_many_pixels`, `corrupt`, `no_shape`, `too_thin`, never any content. The mask is trimmed and centred in a square (section 7 of the doc) |
 | `memory` | S-14. `Memories`: what an agent remembers (`memory_save`, `memory_forget`, the pinned block, `agent.memory.*`, the line's checks, the run's taint from memory). `MemoryStore`: the `memories` and `thread_summaries` rows. `Compactor`: what a run sends of a long thread, and the summary that folds the rest |
 | `tool` | The shared interface of the tools and approvals (draft ADR "the Agent's tools and approvals", §11): `ToolDecl` (one tool, declared in code: wire name, the card's `words`, schema, one narrow scope, `Risk`, `Taint`s, host), `Risk` (`read`, `own`, `write`, `delete`, `send`, `spend`, `egress`; a call's class rises, never falls), `Taint` (`U`, `S`), `RunContext` (one run: its owner, origin, reply and grow-only flags, passed on to the run upstream that reads its reply), `Classified` (a call as the policy saw it, with its card's title and an optional refusal before asking), `ToolPolicy`. The tools themselves ("Tools" below): `ToolRegistry` (every declaration), `RegistryPolicy` (the policy in use), `Schemas`, `AgentTools` (the launch tools around each run's own), `DeskLink` (to the tools deskd runs), `Plans` |
+| `run` | Durable runs (Design 1, Phase 0): `RunRecords` (what a run writes down as it goes) and `RunCalls`, the desk's: a `run_calls` row for each call before it's sent (`store.RunSchema`, `store.RunCallStore`; ids, names, classes and one-word states only), its key for deskd, each step's reply text and chips; `RunCheckpoints` (each step's plan, verdicts and results, the start context and the run's book, in `runs`, `run_steps` and `run_results` through `store.RunStore`, and what a restart reads back), `Resume` (where a run picks up), `RunWaits` and `Waits` (a call's wait on something outside the run, kept in `run_waits`); at open, what a kill left resumes or ends (below, "Restarts") |
 | `approval` | `Approvals`, the `ApprovalGate`: a step's calls that need the member wait here, the `approvals` and `run_marks` rows (`ApprovalStore`, `store.ApprovalSchema`), `agent.approvals.list`, `agent.approval.get`, `agent.approval.decide`, the `approval` event, the caps, expiry and the restart sweep. `Verdict`: what a call came to (`Auto`, `Approved`, `Declined`, `Expired`, `Refused`) |
 | `workspace` | `Workspaces`: a folder per agent under `<dataDir>/workspaces/` (section 5), with quotas, a cached use (every file and folder counts at least 4 KiB), 10,000 files, 2,000 folders, 1 MiB a write and a free-space floor of 1.5 GiB. Files with more than one hard link are refused. Paths are walked a component at a time with links never followed; a link at a file's name is replaced on write; `deleteAll` and `remove` delete links, not what they point at. `WorkspaceException`: `path`, `not_found`, `quota`, `not_text`, `too_large`, `disk_low`, `disk_budget`, `too_many_files`, `too_many_folders`. Wired in through `team.Team` (task 49); the class comment lists the limits that remain (hard links, a swap between check and use) |
 | `training` | `CdsTraining`, the AppCDS training run, with `TrainingAnthropic` (a stand-in on a loopback port) and `TrainingClient` (the socket's client side). Nothing else refers to it |
@@ -99,13 +102,16 @@ providers' endpoints vary, so a stand-in can take a provider's place.
 | `DESK_AGENT_ADMIN_SOCKET` | `/run/desk-agent/agent-admin.sock` | The health socket, `0600`. At most 107 bytes |
 | `DESK_AGENT_SOCKET` | `/run/desk-agent/agent.sock` | The agent socket, `0660`. desk-agent won't start without it |
 | `DESK_AGENT_PEER_UID` | `1100` | The one uid the agent socket accepts: deskd's |
-| `DESK_AGENT_ANTHROPIC_URL`, `DESK_AGENT_OPENAI_URL`, `DESK_AGENT_XAI_URL`, `DESK_AGENT_OPENROUTER_URL` | `https://api.anthropic.com`, `https://api.openai.com`, `https://api.x.ai`, `https://openrouter.ai` | Base URLs: `https`, or `http` only to loopback, so a key never goes anywhere else in clear text. OpenRouter's paths are under `/api/v1` of its URL |
+| `DESK_AGENT_ANTHROPIC_URL`, `DESK_AGENT_OPENAI_URL`, `DESK_AGENT_XAI_URL`, `DESK_AGENT_OPENROUTER_URL`, `DESK_AGENT_GOOGLE_URL`, `DESK_AGENT_MOONSHOT_URL` | `https://api.anthropic.com`, `https://api.openai.com`, `https://api.x.ai`, `https://openrouter.ai`, `https://generativelanguage.googleapis.com/v1beta/openai`, `https://api.moonshot.ai/v1` | Base URLs: `https`, or `http` only to loopback, so a key never goes anywhere else in clear text. OpenRouter's paths are under `/api/v1` of its URL; Google's and Moonshot's are the Chat Completions base itself. `off` for Google or Moonshot leaves that provider out (a kill switch) |
 | `DESK_AGENT_EGRESS_PROXY` | none | deskd's egress proxy (design 9.8) as `host:port`, once it exists |
 | `DESK_AGENT_VERSION` | From `/app/desk-agent.properties`, which the image writes from its `VERSION` build arg | `/health`'s `version`. Leave it unset |
+| `DESK_AGENT_PARSE_DIR` | `/run/desk-parse` | The parse sidecar's directory (ADR 0097): its marker `required` and its socket `sock/parse.sock`. Once either has been seen, documents are read there and never in desk-agent's own child; `run` mounts it read-only only where the image made it |
+| `DESK_AGENT_MAIA` | none | `on` lists this desk for Desk Maia, as `<dataDir>/maia-switch` saying `on` does; `off` turns it off at once (the kill switch), and `off` wins. Unset, with no file saying `on`, the desk refuses Desk Maia (`not_listed`; deskd `API.md` §23) |
 
 A new setting goes in `docker/desk-agent.env` too, which `test-release-scripts.sh` checks. `/health` answers
-`{"status", "version", "data", "audit", "usage", "agents", "deskd", "manager", "keys"}`: whether deskd is connected,
-the manager's status and the number of keys held are informational.
+`{"status", "version", "data", "audit", "usage", "agents", "deskd", "manager", "keys", "parse"}`: whether deskd is
+connected, the manager's status, the number of keys held and `parse` (`sidecar` or `child`, ADR 0097) are
+informational. Where the sidecar's marker exists, the image's smoke test requires `parse: sidecar`.
 
 ## The agent socket and the providers
 - **Tool calling at the adapter level** (ADR 0047, task 49): `ChatRequest.tools()` goes out as Anthropic's `tools`
@@ -143,6 +149,41 @@ the manager's status and the number of keys held are informational.
 - **Prices** for every Phase 1 model are in `pricing.json`, with Haiku 5.5's and xAI's length tiers, until deskd pushes
   the Platform's table (Limits, below). A dated model id takes its undated entry's price; nothing else is matched
   loosely. OpenRouter's free models are $0 by their id, not by the table (Limits, below).
+
+## Maia Mode: Desk Maia (Phase 1, `sub/mm-maia-runtime`)
+Maia Mode's Maia on the member's home desk (the draft ADR [Desk Maia](../../docs/decisions/draft-desk-maia.md); deskd `API.md` §23 is the contract). Support Maia, "Account help", is ma-platform's (`docs/maia.md`) and unchanged. **Dark by default:** nothing here runs until the member turns it on, and only on a listed desk: `<dataDir>/maia-switch` saying `on` (or `DESK_AGENT_MAIA=on`); saying `off` (or `DESK_AGENT_MAIA=off`) turns it off at once. Her chats go at 90 days.
+
+**She runs on Minimalist Alliance's AI service, never a member's key** (the owner, Nov 14: "Maia ALWAYS runs on the company account"; ma-platform `docs/contracts/desk-maia.md`). Her binding is the desk's own: `KeyRing.COMPANY` (`ma-maia`, lent as an empty lease, in no key list), provider `ma` (`ProviderId.MA`, in no `agent.providers` list), task `turn`; it's set when her row is made and at every start, and `agent.bind` for her is `forbidden` `company`. `provider/ma/MaiaServiceProvider` sends each call as one `maia_model` tcall through deskd, which relays it to her service as the desk role (deskd `API.md` §23, "Her model"): the task (`turn`, `step` after tool results, `notes` for the note-taker), the desk's dynamic context and the thread, never a model; files go as a line naming them. Her service picks the model and owns her Maia Mode instructions. `MaiaProfile` sends a **context** that's byte-stable across a session (the choice rule, her desks and grants; memory and the desk's tool rules join it) and a **note** with what changes on every call (the time, her choice weight, briefs left, the member's Maia credits as the service last reported them, never money: what's left of the month's and their renewal, a pace line when today's share is used, top-up credits, the lighter model; without credits the share left; a line for a day cap in credits the member set): the note goes as the contract's `note` (0.4.6), after the thread and outside every cached prefix (`RunSetup.note`, `ChatRequest.note`). **Credits, never money (contract 0.4.8, the owner, Nov 15):** her calls are the company's, so the gateway reserves and settles no dollars for them (no price row, no `costMicroUsd` kept: her reply's cost is null), the ledger leaves them out of the desk's and a key's scopes and counts any dollars on them as none (`UsageLedger.MEMBER_USD`), and no dollar limit of the member's binds her, only her run's step count. Every request asks for credits (`units: "credits"`, contract 0.4.8), so no answer carries `costMicroUsd`. Each answer's `costCredits` is counted a day on the desk (`MaiaMode.creditsSpent`, `maia_counts` kind `credits`) for the one cap of the desk's on her: the member's own `caps.coordinatorDailyCredits` (none by default), which refuses her turns `limit` `limit_cap` once reached (`MaiaServiceProvider.cap`). `coordinatorDailyUsd` is retired. On the member path `AnthropicProvider` caches the thread too: a second breakpoint on its last block (a note, if any, after it). A refusal before the call (`limit`, `rate_limited`, `forbidden`, `bad_request`, `too_large`) settles nothing. After a `429 limit` nothing is sent until it resets, and her reply carries `limit: {reason, window, resetsAt}` for the room's one line. Until deskd's hello offers `maia.model`, her sends are `unavailable` `no_service`; while the desk holds only the v1 disclosure, `precondition_failed` `disclosure` (`MaiaMode.DISCLOSURE` is `maia-mode-v2`). Her memory has her own rules (`memory/MaiaMemory`, Support Maia's: how the member likes answers, how to help, what they've set up, never anything private, checked in code); lines from before that fail the check are never pinned.
+
+| Class (`maia/`) | Holds |
+|---|---|
+| `MaiaAgent` | Her id, `maia`, and `plain`: another desk's text as the room shows it (one line, hidden and bidi characters out, cut) |
+| `MaiaMode` | On, off, the kill switch, the disclosure, her settings and caps, her grants, the list's snoozes, every `agent.maia.*` method, her choices on a reply |
+| `MaiaStore` | Her tables in `agent.db` (additive): `maia_grants`, `maia_counts`, `maia_replies`, `maia_notes` (a note's text only while it's held), `maia_pages`, `maia_items`, `maia_todo_jobs`; her settings and choice counts are `settings` rows |
+| `Attention` | The list's rules, a pure function: at most 3, one Now, urgency by the fixed rules, merging, batching, typing, the interrupt's rate, templates |
+| `Room` | What the office last observed (RAM only), typing, what was shown, the last interrupt and batch, her last show; publishes topic `agent.maia`; one timer for the next moment a rule changes |
+| `Choices` | The member's weight for choices (counts only), the asks for more or fewer read in code, the shape of `ask_member`'s choices |
+| `MaiaProfile`, `MaiaTools` | Her run's stable context and her note (her instructions are her service's) and her tools; her guard on `desk_message` (`HostedGuard`): a live `brief` grant, her caps, "keeps to itself" (a floor of `send`), `D:` flags for deskd |
+| `Notes` | The note-taker (a side call on her service's `notes` task that reads only the member's own messages, its rules as the context), code's checks and routing, filing by code (`CodeCalls`, never a card), the chips, the unsure question |
+| `TodoFiler` | To-dos from Courier: `courier_new`, the reader with no tools, code's checks, `todo_add` with a Courier source; once when switched on, then every 30 minutes and at start |
+| `TeamView` | `agent.usage.summary`: per agent per day, from the ledger, replies and approvals; each agent's headroom (its limits less the ledger, what a brief from another desk may spend, its usual task), what her briefs cost on this desk (`maiaBriefs`), and on the home desk her briefs across the desks (`maia`) |
+| `Wallet` | Her briefs and the member's wallet (Nov 15): the estimate (the answering agent's usual task times the brief's size), the member's daily budget for her briefs, ask line and "Always OK", the guard's hold (`maia_limit` at an agent's own limit, `maia_held` past the budget or for an unusual cost), code's card (`kind: "budget"`) and its taps, her note's money lines, the room's and team view's `briefs`. Never a limit: the desks' caps stay as they are |
+| `CodeCalls`, `CodeResults`, `SmallModels` | How her code calls deskd's tools (the policy, `Approvals.admitUnasked`, `AgentTools.codeCall`) and a small job: hers the service's `notes` task, the to-do reader the inbox agent's small model on its own key |
+
+**Helpers on the member's MA credits** (deskd `API.md` §24; ma-platform `desk-helpers.md`, ADR 0142): provider `ma-credits` (`provider/ma/HelperServiceProvider`, one `helpers_model` tcall per call through deskd, task `agent` or `small`, never a model), key `KeyRing.CREDITS` (no key material), model `auto`. Any of the member's own agents may bind it, never Desk Maia (`LlmGateway`); no dollars are kept for it on the desk. It's a first row of `agent.key.list` while deskd offers it, and a new agent with no key goes on it when the member has credits.
+
+**Hooks outside the package**, each small and named: `AgentService` (`MaiaHooks`: her setup, her send's counts and notes, her replies' extras, the topic, `agent.usage.summary`, the undo of a note, refusals for team methods and `agent.desks.answer`; her company binding, the disclosure and `no_service` checks, the `limit` extra, compaction after `too_large`), `KeyRing.COMPANY`, `LlmGateway`'s `ma` path, `DeskLink.maiaModel` and `Reply.details`, `AgentSocketServer`'s hello `maia`, `Memories` (her rules), `Team.teamAgents` and `agentId` (not a team agent), `AgentTools.maia`/`codeCall`, `RegistryPolicy`'s `HostedGuard`, `Approvals.admitUnasked`, `DeskMessages.inRunAnswers`, `ManagerAgent.sideCall(model, …)`, `UsageLedger.daily` and `spendOfRuns`, `Team.briefCap` (`TeamTools.deskCap`, read only), `MaiaHooks.answeringAgent` (her send half's accepted agent), `Memories.cleanNote`, `ToolRegistry` (her declarations) and `ToolDecl.SCOPES` (`office:read`, `office:show`, `maia:self`). Tests: `src/test/.../maia/` (and `eval/`); the real-socket ITs are deskd's `RealDeskAgentMaiaIT` and `RealDeskAgentMaiaBriefsIT`. The evals and the real-model plan: [`docs/maia-evals.md`](docs/maia-evals.md).
+
+## A new agent's model: Sonnet 5.5 by default (2026-11-14)
+`agent.key.models` lists a key's models with its default first (deskd `API.md` §11), and the New agent form, the key
+screen and a key added or replaced for an agent whose model it doesn't list all take the first. For an Anthropic key
+that's `claude-sonnet-5-5` (`AnthropicProvider.DEFAULT_FIRST`; an older Sonnet stands in for a key without it, then the
+first model that isn't a Fable model); the rest keep Anthropic's order. Anthropic lists its models newest first, so
+before this the newest and dearest one, `claude-fable-5-2`, became every new agent's model: the staging fleet desks'
+Leads, and Maia through "Use Lead's key", ran on it from Nov 13 to 14 though the owner had stopped Fable on Nov 11. A
+member may still pick a Fable model; it's never the default. The Agent app also passes over an unpriced first model
+(`defaultModel`), so an older desk-agent can't land a new agent on it either. Tests:
+`AnthropicProviderTest` (`sonnet55IsTheDefaultNotTheNewestModel` and the two after it), web/agent `agents.test.ts`.
 
 ## OpenRouter: the $0 first Agent run (2026-11-11)
 The owner approved it as a launch feature: a member connects OpenRouter with one click and uses its free models, so
@@ -191,11 +232,70 @@ the first agent run needs no card or key anywhere. `OpenRouterProvider`, registe
 - **Egress:** desk-agent's name filter (ADR 0070) allows only the names in `/etc/ma/agent-egress.conf`, which is the
   image's. `openrouter.ai` has to be added there before the adapter can reach it on a desk (STATUS.md, the ask).
 
+## Google and Moonshot AI: a member's own keys, direct (2026-11-15)
+The owner asked for it (Nov 15): his own Gemini and Kimi keys on a desk agent, not through OpenRouter. Both serve the
+OpenAI-compatible Chat Completions API, so one class, `provider/chat/ChatCompletionsProvider`, registered fifth and
+sixth with each one's base URL, key prefix and dialect; the thread and the stream are `provider/chat/ChatCompletions`,
+which `OpenRouterProvider` shares (moved from `provider.openrouter`, its behaviour unchanged).
+- **`google` / "Google":** `https://generativelanguage.googleapis.com/v1beta/openai`, keys from `aistudio.google.com`,
+  prefix `AIza`. **`moonshot` / "Moonshot AI":** `https://api.moonshot.ai/v1`, keys from `platform.kimi.ai` (the Kimi
+  API Platform), prefix `sk-`, the same as OpenAI's: the longest prefix decides, so a Moonshot key picked as Moonshot's
+  or OpenAI's goes on to that provider's check, and an OpenRouter (`sk-or-`) or Anthropic (`sk-ant-`) key picked as
+  Moonshot's is `provider_mismatch`. A Gemini key picked as anyone else's is too. OpenAI's own longer prefixes
+  (`ProviderInfo.ownPrefixes`: `sk-proj-`, `sk-svcacct-`, `sk-admin-`) also count in the check, so a modern OpenAI key
+  picked as Moonshot's never leaves the desk (Security's PC-L1); they aren't sent in `agent.providers`.
+- **The key check and the models:** `GET {base}/models` with the key as `Bearer`. 401 or 403 is `key_refused`, and so
+  is Gemini's 400 for a key it doesn't know (`API_KEY_INVALID`, its body read for that, possibly as Gemini's
+  `[{"error": ...}]`); any other 400 isn't. Gemini's `models/gemini-...` ids are listed without `models/`, as the chat
+  endpoint takes them. Models that don't chat (embeddings, speech, live audio, pictures, video, `aqa`) are left out, and
+  the provider's family comes first, newest version first, a preview after its version's release (`gemini-4...`, then
+  `gemini-3.8...`; `kimi-k3.1...`, then `kimi-k3`), the rest in the provider's order: a client binds the first. Every
+  listed model takes tools. Gemini's chat models take pictures (`Vision`); Moonshot's are text only here.
+- **Requests:** `POST {base}/chat/completions` with `model`, `messages`, `tools` when the step has any, the output cap
+  (`max_tokens` for Gemini, `max_completion_tokens` for Moonshot, whose `max_tokens` is deprecated), `stream: true` and
+  `stream_options: {include_usage: true}`. No reasoning effort: both families think by default, so a stream may be quiet
+  for 10 minutes before the watchdog ends it. Moonshot's tools say `strict: false`, as it checks schemas strictly by
+  default. Tool-call deltas are put together by `index`; without one (Gemini may send each call whole with none), a
+  new id, or a name while the last call has one, starts a call. A step of calls that Gemini finishes with `stop` is
+  `tool_calls`.
+- **What goes back:** Gemini 3 and 4 sign their reasoning and refuse the next step of a turn without the signature, so
+  each call's `extra_content` (`google.thought_signature`) is kept on the call (`ToolCall.reasoning`, one `chat_extra`
+  item tagged `google`, kept by a run's checkpoint) and sent back on it; a step whose first call has none gets Google's
+  documented stand-in, `skip_thought_signature_validator`. Moonshot's thinking models want the step's
+  `reasoning_content` back with its calls, so it's kept the same way (at most 512 KiB) and sent on the call's turn,
+  with `content: ""` rather than `null` when the step said nothing. Neither goes to any other provider; the Responses
+  API's adapter and Maia's service adapter skip these items (`Messages.responsesReasoning`). A plain answer's
+  reasoning isn't kept: the thread has no place for it. The shared reader cuts a call's id and name at 128 characters
+  and refuses a step whose text passes 8 Mi characters (`UNAVAILABLE`), for every Chat Completions provider.
+- **Usage:** the last chunk's top-level `usage`, or the choice's, as Moonshot's older streams had it. Cached input is
+  `prompt_tokens_details.cached_tokens` or Moonshot's top-level `cached_tokens`, whichever is more, and comes out of the
+  input with `cache_write_tokens`; output is the most of `completion_tokens` and `total_tokens` less the prompt, as
+  Gemini counts its thinking only in the total. No usage counts as the gateway estimates.
+- **Prices:** neither provider is in `pricing.json` yet, so every call counts at the whole table's highest price
+  (ADR 0043) until the Platform's table lists them: a dollar limit binds early, never late.
+- **Errors,** kinds only (the body read for them, 64 KiB at most, kept nowhere): 401, 403 and a key 400 are `auth`; 429
+  and 402 `rate_limited`; 408 and 504 `timeout`; other 4xx `bad_request`; 5xx `unavailable`. An error object in a
+  started stream goes by its numeric code or its words (`rate_limit`, `RESOURCE_EXHAUSTED`, `quota`, `auth`,
+  `permission`, `invalid`, `not_found`) and may have been billed.
+- **Egress:** `generativelanguage.googleapis.com` and `api.moonshot.ai` are in the image's
+  `/etc/ma/agent-egress.conf` from the next bake (ADR 0070's addendum of Nov 15); until a desk has them, a key check
+  there is `unavailable`.
+- **Tests:** `ChatCompletionsProviderTest` (stand-in `testing/FakeChatServer`: Gemini's stream with usage, its calls
+  without index and its signature going back, the stand-in signature, Moonshot's reasoning and top-level cached
+  tokens, its older usage, both model lists, refused keys including Gemini's 400, stream errors, a cut stream) and
+  `OwnKeyChatSocketTest` (both keys through the real socket: listed, prefix-checked, checked, their models, a bound run).
+
 ## Files on a message (S-118, ADR 0049)
 The owner's rule: files uploaded to an agent are not retained; as soon as they are processed through the LLM, they are removed. So a file only ever exists in desk-agent's memory.
 
 - **Methods** (deskd relays them): `agent.attach.put {agentId, uploadId, name, size, index, data}` (one chunk of at most 512 KiB, base64, in order), `agent.attach.remove {agentId, uploadId}`, `agent.attach.caps {agentId?}`, `agent.attach.caps.set` (the desk owner's), and `agent.message.send` takes `attachments: [uploadId]` with `text` possibly empty. Refusals are `too_large` or `bad_request` with `details: {reason, name?, limit?}` (the reasons are in `AttachException`), `conflict` + `busy`, and `precondition_failed` + `no_key` before anything is taken (the files stay staged).
-- **The path of a file:** chunks into `Staging` (zeroed after 10 minutes, on remove, on send, on stop) → `Preparer` (caps, `Sniff`, the child JVM for documents; pictures stay as bytes) → an `Attachment` on the user turn of this run's request only → wiped when the run's result completes, or at once if the run is refused. The thread keeps `message_files` (name, type, size, note) and nothing else.
+- **The path of a file:** chunks into `Staging` (zeroed after 10 minutes, on remove, on send, on stop) → `Preparer` (caps, `Sniff`, the reader for documents; pictures stay as bytes) → an `Attachment` on the user turn of this run's request only → wiped when the run's result completes, or at once if the run is refused. The thread keeps `message_files` (name, type, size, note) and nothing else.
+- **Where a document is read (ADR 0049's addendum, ADR 0097).** `Parsers` sends it to the **parse sidecar**: a sandbox on this image with uid 1113, no network, no `/data` and no capabilities, which runs `ParseWorker --from-stream` (`java @/app/parse.options`) once per connection. desk-agent writes `parse1 <kind> <maxChars> <maxPages>` and the file to `/run/desk-parse/sock/parse.sock`, half-closes and reads today's answer, one file at a time within 30 s. **Once it has seen the marker (`/run/desk-parse/required`) or the socket it never starts its own child again in that process.** Then `err busy` is tried again every 50 ms within the 15 s busy window; no socket, a refused connection, `err denied` or any first line that isn't `OK` or `ERR <word>` (`ERR bad_request` included) is `unavailable`; a stream that ends before a line (a worker out of memory or killed) is `too_complex`; the deadline is `timeout`. `unavailable` keeps the RPC code `bad_request`, since the staged files are gone by then. Only where neither has ever been seen (an image before the sidecar) does the in-container child read, as before; it goes with the move to JDK 24. The worker sends the JVM's own output to stderr (discarded), so its stdout is only the answer. The way is logged once and the counts at most hourly, never a name or content. Tests: `ParseRequestTest`, `ParseWorkerStreamTest` (every kind at 20 MiB), `ParsersSidecarTest`, `ParseOptionsTest`, `worker/InputTest`, `worker/PlainTextTest`; for real on Docker, `scripts/test-parse-sidecar.sh`; timing, `scripts/measure-attach.sh --timing-only`; memory by kind and size, `scripts/measure-attach.sh --sizes`.
+- **Documents' mode (deskd `API.md` §25), for deskd's sandbox.** `attach/worker/DocsMode` is a `courier-parse` `WorkerMode` (registered in `META-INF/services`), so deskd's Courier sandbox (`java @/app/courier-parse.options`) also answers `docs1 read` (`PdfPages`: a PDF's text page by page with each line's box and its empty signature and form fields; Office files and text through `ParseWorker.read` as a reading view) and `docs1 render` (`PdfRender`: one page as a JPEG, PDFBox's bundled fonts only, at most 4 megapixels). `MiniJson` writes its answers without a library. Tests: `worker/DocsModeTest`, `DocsWorkerProcessTest` (the real worker JVM with the sandbox's flags and security manager: a 100-page read about 0.6 s, a page about 0.55 s on the x86 build box), and `DocsCorpusExport` (`-Ddocs.corpus.out=DIR`) writes the synthetic corpus deskd's corpus run reads.
+- **Documents' reader** (`maia/DocReader`, deskd's `desk.docs.read`, never relayed for a client): one tool-less call on Desk Maia's service, task `read`, for a document deskd is about to show; every field checked by code (closed words, a real date, pages that exist, a plain line of at most 90 characters with no link, address, markup or hidden character). Only while Desk Maia is active here. Tests: `DocReaderTest`, `eval/DocReaderInjectionEvalTest` (49 hostile documents), `eval/DocReaderFakeModelEvalTest`, `eval/DocReaderRealModelCheck` (off unless `-Ddocs.reader.real=true`).
+- **Documents' write-ups** (`desk.docs.writeups`, deskd's own, never relayed for a client: refused with any caller): the write-ups kept on this desk for Desk Maia's briefs (`desk_writeups`), by cursor, one by id, or the ids kept and those marked readable, so deskd indexes them for the member's Documents; a write-up whose answer held this desk's private data is marked so and never goes to the reader. Test: `socket/DocWriteupsSocketTest`.
+- **Files to the 20 MiB ceiling read in the worker's 72 MiB heap,** every kind (the default cap is 8 MiB; the owner can raise it to 20). The worker holds a file once (`worker/Input`): a PDF or a zip in 64 KiB chunks, which PDFBox reads as its `RandomAccessRead` (its streams are views, its stream cache memory only) and the zip readers as a stream from the start each pass; text is decoded as it streams and the rest only counted. It used to end out of memory (`too_complex`) past about 16 MiB, when its input buffer doubled to 32 MiB and was copied. At 20 MiB with `files_read`'s ask, the smallest heap that reads is 24 MiB (text) to 48 MiB (a 500-page text PDF, an xlsx of data rows); what still ends a worker is the parse itself (a content stream that inflates past the heap), or the 120 MiB inflate budget a pass for a zip (`too_complex` either way). The 40 MiB guard stays: past it, `unreadable`. Measured with `scripts/measure-attach.sh --sizes`; numbers in `docs/sub-status/desk-parse-sidecar.md` item 7.
+- **A document from Files** (`files_read`) asks for 2,000,000 characters and 500 pages. The sidecar's contract allows exactly that (ADR 0097 section 2), so it is read whole through the sidecar and through the child alike.
 - **No retention is tested everywhere a file could land** (`service/AgentAttachmentsTest`): the SQLite files including the WAL, the audit table, events published to subscribers, captured logs, `agent.thread.get`, staging and the `Attachment`, after an answer, a provider failure, a stop, an expiry and a refusal. Hostile files (an order to ignore instructions, a forged closing line, a forged tool result) stay inside the one real fence (same test); the Anthropic and Responses bodies are in `provider/http/AttachmentBodiesTest`.
 - **Honest limits.** A Java `String` can't be zeroed: a document's text, the decoded chunk and the request's JSON are dropped for the collector, and may sit in the heap until it runs. The bytes of a file and a picture are zeroed. A heap dump or a crash report could hold them: `jvm.options` writes neither to a disk, and attach is disabled. The provider keeps what it keeps, under the member's own key.
 - **Footprint** (`scripts/measure-attach.sh`, a build box, x86_64, no container, `jvm.options` as shipped but `-Xmx128m`; `AttachFootprintProbe` drives the real application over its agent socket with the provider stand-in in another JVM; peaks sampled every 20 ms from /proc, RSS and anonymous, of desk-agent plus its parse child): idle 85 MiB RSS (60 anonymous). Five PDFs of 100 pages, 12 MiB in all: peak 220 to 229 MiB together (child 76 of it), heap 59 to 69 MiB, 2.0 s to read. Three pictures, 12 MiB: peak 169 to 175, heap 81 to 82, no child. Two pictures and three PDFs: 209 to 211, heap 79. Two agents at once, 12 MiB of pictures each: 204, heap 114, the second asked to wait (`ImageBudget`). Two agents at once, 12 MiB of PDFs each: 254 (209 anonymous), heap 84. At `-Xmx96m` the two-agents picture case ended the process with an out-of-memory error, hence 128. The container's `--memory=320m` holds with 66 MiB of headroom; a limit of 384m would add margin and is not needed.
@@ -464,6 +564,9 @@ Platform sets the tier's real value in `desk.account.set`, so this is a default,
   It's reached only by `-Dma.cds.train` on the training's command line, and never where `/run/desk-agent` exists.
   `test-release-scripts.sh` checks nothing a desk runs names it. A failed step fails the build. A new step on the
   path from boot to first answer belongs in it.
+- **`/app/parse.options`** is the parse sidecar's whole command (ADR 0097): `Parsers.WORKER_FLAGS`, the image's
+  classpath, the worker and `--from-stream`. `ParseOptionsTest` compares it with the child's flags, and the
+  Dockerfile's last step reads a line through it, so a build whose sidecar can't read fails.
 - AOT: as deskd's rules. Nothing varies the set of beans at runtime; paths come from the `Environment`.
 - `test-image.sh` builds with `DOCKER_BUILDKIT=0` and `--no-cache`, so every intermediate image it prints is its own,
   and removes those, its image and containers, and a base only if it pulled it. It never prunes.
@@ -582,6 +685,88 @@ happens without the member's yes, and deskd checks the yes again for the tools i
   (`declined`), past 10 asked a run, 5 pending for the agent, 20 on the desk or 2 signed-in sites a run (`ask_cap`),
   past 100 tool calls a run (`tool_cap`), a payload over 900 KiB of JSON (`too_large`) or one the canonical JSON
   can't carry (`payload`).
+- **Done without asking** (`ApprovalPolicy`, `LowRisk`; the owner's decision of Nov 12: auto-approve for low-risk
+  writes, chosen per agent at setup, ask by default; the draft ADR's §15, built as its W3 on `sub/mm-auto-approve`;
+  `services/deskd/docs/API.md` §18, "Done without asking"). The member turns a switch on per agent (setup, settings, or
+  a card's "Don't ask again", always through `agent.access.set` from their session). The gate asks the policy about a
+  call that would make a card only after every refusal before asking and after the run's declines (a payload the member
+  declined in the run is `declined_before`, never done unasked: Security's AAW-L1), and only within the counts, 20 a
+  run and 100 an agent a day by the member's midnight (ADR 0043's zone; seeded from `agent.db` at a restart). The policy
+  wired is `ApprovalPolicy.perAgentWithPlaces(access::switches, LowRisk.ADR)`: the groups on for that agent with their
+  places. `LowRisk.ADR` maps `notebook_write` (a new page, or an append; 8,000 characters with a new page's title) to
+  `notebook`, and `files_write` (no replace; 64 Ki characters) and `files_mkdir` to `files`; `todos` is declared and its
+  tools are W4's, which add them with their own rule. Whatever a map says, `LowRisk` takes only a deskd-hosted tool
+  (AAW-I5) of class `write` declared `write`, in the agent's own context, in a run with no `U`, with a rule of its own
+  that it only adds (a tool with none never does: AAW-L4), never `follow_up`, a memory save, a guild member's agent or a
+  refused call; nothing on a Guild Desk (deskd's hello says so: AAW-L3). **The place** (`LowRisk.inPlace`): a new page's
+  `new.tabId`, or the tab deskd's look found for an append's page (`target.tabId`), equal to the switch's tab; a Files
+  path inside the switch's folder part by part, at least one part below it. Such a call runs as
+  `Verdict.Allowed(group, approvalId)` with exactly the payload the policy judged. **Its row:** an approval in
+  `approvals`, `decided_by` `auto`, `auto_group` and `auto_place`, kept `approved` before it runs (so a restart makes it
+  `interrupted` or `expired`, as a card's) and settled `done` or `failed`; in `agent.approvals.list`, never a card. The
+  reply lists it in `auto: [{approvalId, tool, target, group, state, undoneAt}]` and in `approvals` (decided by
+  `auto`, never a card); in a run the member didn't start it counts on the agent's `autoUnseen` until `agent.seen`; its chip has
+  `auto` and `approval: {id, decision: "auto"}`; the model reads "Done without asking, under the member's setting for
+  this agent."; audit `tool.call` with `auto:<group>` and `approval.auto` with the id and the payload's hash. Its `tcall`
+  carries `auto` and `autoApprovalId` (the row's id), which deskd checks again from its own record, class, place, taint,
+  counts and ledger before it runs anything; when deskd refuses it (`approval_unknown`, `approval_used`, `place`), the
+  same payload asks on a card if the model tries again in that run. **Undo** (`agent.approval.undo`): deskd takes the
+  call back itself from its own ledger and relays `{approvalId, outcome}`; desk-agent stamps the row once
+  (`undone_at`, `undone_by`) for `ok`, audits `approval.undo` either way, and publishes it. **The gate checks
+  `LowRisk.ADR` itself** for every group a policy names, so however a policy is wired it only narrows the class
+  (Security's ATC-L1; tests use `LowRisk.forTest` with `lowRiskForTest`). `follow_up` runs only on `Verdict.Approved`.
+  A call after one in the same step that runs, isn't itself unasked and has a result that can add `U` asks (ATC-I1);
+  after one whose result never can (`Approvals.NEVER_ADDS_UNTRUSTED`: a Files listing, the plan, the agent's workspace
+  listing, a write's receipt), the switch decides as for a clean run (release 3's bug E, `sub/mm-fix-bundle-2`). An unasked call's row is a
+  card's in a restart: its `run_calls` record (with its approval id and `auto` group) settles it at open, or it ends
+  `interrupted`; one whose key deskd couldn't confirm after a lost link ends `interrupted`, never `failed`.
+- **Restarts** (durable runs' seam, the draft ADR's §3, "Restarts"; `run/RunCalls`, `tool/Restart`): every
+  `ToolDecl` says what a restart or a lost link does to a call of it in flight: `retry_by_key` (what deskd runs that
+  changes something), `interrupt` (what desk-agent runs that changes something) or `safe` (reads and the plan); a
+  call whose class rose to one that asks is never `safe`, and a declaration that names none is never `safe`
+  (`ToolRegistryTest` pins every tool, and deskd's `HostedDecls` to it). Each call that runs has a `run_calls` row,
+  `started` before it's sent and `done`, `failed` or `interrupted` after, keyed by a UUIDv7 that its `tcall` carries
+  as `key`. A call deskd got and didn't answer (the link went, the 60 s ran out, deskd stopped mid-call) is asked
+  again with `retry: true` on the next link that says `keys`, for up to 2 minutes: it takes deskd's real result, or
+  ends `interrupted` ("Interrupted: <word>. It may or may not have happened: check before you do it again.") for a
+  key deskd no longer holds, no link, or a deskd that keeps no keys; a `safe` call fails as before. An approved call
+  that ends `interrupted` interrupts its card, never fails it; a retry deskd was too busy for (`rate_limited`) is
+  asked again, never taken as the outcome. Each step writes its reply's text and chips so far, after the run's marks
+  (`Approvals.stepMarks`), so a kill keeps them and a later run never reads them unmarked. **At open**, before the approvals' sweep: a call that came back settles its approval from its
+  record (`tool.call`); a call still `started` ends `interrupted` (`failed` if `safe`), `detail: "restart"`, audited
+  `tool.interrupt` with its tool, run, key and approval or switch, so an unasked or `own` call in flight leaves a
+  trace; a timer left `running` ends `interrupted`. A run's end interrupts what it left `started` (`ended`).
+  Records go with their agent, and a week after they settle. **That is for a run that can't resume; a run that can
+  picks up** (durable runs' resume, below).
+- **The resume** (`run/RunCheckpoints`, `run/Resume`, `AgentService`'s "durable runs: pause and resume", the
+  draft ADR's §3): each run's start context (`Resume.Start`: instructions, thread, origin, chain, cap) is kept as it
+  starts; each step's plan (`Resume.Plan`) once its model call is back and before anything of it runs; the gate's
+  verdicts; each call's result and chip in one transaction with its record. The run's book (`Approvals.book`: calls,
+  asks, declines, declined hashes, sites, egress, admits) and taint go with each and whenever they change between them
+  (`Approvals.bookChanged`). At most 2 MiB a run (`RunCheckpoints.CAP`); a run past it can't resume. At open
+  (`AgentService.restore`), a run whose reply is still `streaming` and whose checkpoint reads whole keeps its calls,
+  cards (`Approvals.resume`: live and answerable at once) and timer (`Timers.resuming`); once deskd says hello (30 s at
+  most) it picks up (`ManagerAgent.resume`): before a model call it asks the model again, inside a step its settled
+  calls keep their results, a step not admitted is admitted again (`Approvals.admit` finds a card asked before by its
+  hash), and a call left in flight follows its rule (`retry_by_key` again by its key with `retry: true`,
+  `RunCalls.resending` and `AgentTools.retrying`; `interrupt` ends `interrupted`; `safe` ends `failed`). The reply's
+  view gets `resumed` (`messages.resumed`), and `run.resume` is audited. **SIGTERM pauses** (`stopAll`: `Run.pause`,
+  `Approvals.pausing`): nothing expires, nothing is interrupted, and the run is `paused`. A run that can't resume ends
+  as the seam ends one (`abandon`), audited `run.interrupt`. **The kill switch:** `/data/agent/resume-switch` saying
+  `off` (read at start, `AgentService.switchedOff`) keeps no checkpoints and ends every run a restart left.
+  **Waits** (`run/RunWaits`): a tool that waits on an answer from elsewhere calls `await(run, callKey, kind, ref,
+  max)` once what it waits for is on its way, and again with the same key after a restart: the kept wait with its
+  first deadline, or the answer that came meanwhile; `answer(kind, ref, answer)` delivers one, and says whether a wait
+  took it; while it waits, `statusDetail` is `waiting_<kind>`.
+- **A resend binds what the first sending bound** (Nov 14, `sub/mm-release-fixes`): deskd keys a call's reply to its run,
+  agent, tool, arguments, approval, switch and `context` (`ToolHost.fingerprint`). The `context` comes from the look,
+  which `RegistryPolicy` remembers until the call is sent; a step picked up after a restart isn't classified again, so
+  `ManagerAgent.gatedStep` hands the checkpointed calls to `ToolPolicy.resumed`, which puts each context back. A resend
+  deskd still refuses `key_mismatch` ends `interrupted` (`AgentTools.KEY_REFUSALS`), never `failed`. The tests' deskds
+  keep replies with that fingerprint (`testing/KeyFingerprint`), so a resend that binds anything else fails
+  `ResumeKillTest`'s oracle and `DeskMessagesFlowTest`'s kill of a sending desk.
+- **A page's approvals** (§18): `agent.thread.get` and the conversation snapshot carry `approvals`, every approval of
+  the page's messages, beside each reply's own list (`AgentService.page`, which counts both copies).
 - **A card** (`approvals` in `agent.db`): `ap-` and 20 base32 characters; the desk's title from the declaration's
   `words`; the exact payload as canonical JSON; `sha256` of the canonical JSON of `{v: 1, agentId, runId, tool,
   context, payload}`; `untrusted` when the run held `U`; the run's origin; 1 hour in a run the member started, 24 in
@@ -596,21 +781,46 @@ happens without the member's yes, and deskd checks the yes again for the tools i
   is `interrupted`. At open, `Approvals.restore` sweeps what a crash left the same way. Nothing re-runs.
 - **Taint** (`RunContext`, never cleared): `U` from another agent's message (the run it starts), the member's
   attachments, a reply in the run's context whose run held `U`, a memory line or summary with the mark, and whatever
-  a tool's declaration (or the tool itself, `run.add`) says; `S` likewise from a reply's mark and from memory. A run
+  a tool's declaration (or the tool itself, `run.add`) says; `S` from the member's attachments (their own file, as a
+  Files read of it is: Security's ATA-L2), a reply's mark and memory. A run
   another agent's message started passes its flags on to the sender's run, which reads its reply. At its end a run's
   flags and its count of `egress` calls are kept on its reply (`run_marks`): the reply shows `untrusted` and
   `egressCount`, a later run reading it starts with them, and a thread summary that folds it is marked.
 - **Audit:** `approval.ask` (with the hash), `approval.decide` (actor `user` or `member`), `approval.expire`
   (`timeout`, `stopped`, `restart`, `age_band`), `approval.interrupt`, `tool.call` for every call with its arguments'
-  hash and `ok`, `error:<word>` or `refused:<reason>`, `browser.session.grant`. Ids, tools and words only: never a
+  hash and `ok`, `error:<word>`, `interrupted:<word>` or `refused:<reason>`, `tool.interrupt` (a call in flight at a
+  restart or a run's end), `browser.session.grant`. Ids, tools and words only: never a
   path, a page, a file or typed text. The approvals and marks go with their agent's thread (`agent.delete`, a purge).
 - **For the tools:** a gated run calls `Tools.call(call, RunContext, Verdict)`; a deskd-hosted tool sends
   `{approvalId, sha256}` and `run.taint()`, and deskd redeems the ticket (`ApprovalTickets` in deskd). A failed
   tool's text starts "Refused: <word>." or "Failed: <word>.", which becomes the card's `result.error`.
 - Tests: `approval/ApprovalsTest` (approve, decline and its note, expiry at an hour and at a day, a wrong hash, the
   caps, spend, an unattended run, the marks and memory, egress, stop, a restart while waiting and while running, a
-  guild member, a large payload, the audit, the event) and `approval/ApprovalRulesTest` (the interface's rules, the
-  hash, the restart sweep, a member's card).
+  guild member, a large payload, the audit, the event), `approval/ApprovalRulesTest` (the interface's rules, the
+  hash, the restart sweep, a member's card), `approval/ApprovalHardeningTest` (a hash over anything but the stored
+  payload, 16 answers to one card at once, three runs waiting at once, an answer at the moment a card's time is up, a
+  restart mid-approval and the audit chain after it, a switch on for one agent and not another, what a switch never
+  reaches, a policy that fails, text claiming the member approved, the chain across every outcome) and
+  `approval/ApprovalPolicyTest` (the class's rules, which no list widens, and deskd's copy of the list). Measured, with
+  `-Dtest=ApprovalRoundTripPerf -Dperf=true`: the round trip from the decide to the run's end. Restarts:
+  `tool/DurableSeamKillTest` (killed mid-call and at settle, an unasked and an `own` call in flight, the link dropped
+  and the call asked again by key, a deskd that no longer holds it, an older deskd, a link that never comes back, a
+  read, a timer's run), `run/RunCallsTest` (the records, each step's reply, a run's end, the open after a kill, the
+  week), `tool/RestartTest`, `socket/ToolKeysSocketTest` (the link dropped over the real socket of the real
+  application) and `ToolRegistryTest`'s pin of every tool's rule; `DurableSeamKillTest` runs with the resume's kill
+  switch off, the path of a run that can't resume. The resume: `tool/ResumeKillTest` (176 cases: a read, an approved
+  write, `send`, `spend`, an unasked write and the agent's own, each with desk-agent killed or paused at a model call,
+  the plan, a pending card, the verdicts, a record started and not sent, deskd running the call and the result, with
+  deskd keeping its keys or restarting), `tool/ResumePropertyTest` (1,000 seeded runs with random steps, decisions and
+  one or two faults; `-Dresume.runs=N -Dresume.seed=S`), `tool/ResumeTest` (a card's time passing while the desk is
+  down, the cap, a checkpoint that doesn't read whole, a timer's run, a wait across a kill, a rollback's leftovers, the
+  audit), all on `tool/ResumeRig`, the in-process fault rig (a counting deskd that keeps replies by key and tickets
+  once, and restarts; kill points by name), shaped as W7's harness so it can move there.
+  **The shared harness** (W7, `harness/`;
+  `docs/sub-status/mm-harness.md`): `FaultMatrixTest` (kill points × faults × kinds of call against `CountingDeskd`,
+  with its known failures by owner), `AuditCanaryTest`, `ThreatsTest` (one per §10 row), `InjectionFixturesTest` (design
+  §9.7's pages in `src/test/resources/harness/injection/`). **A new tool adds one line to `harness/ToolCases`**, or
+  `HarnessCoverageTest` fails.
 
 ## Tools (S-14)
 The tools half of `docs/decisions/draft-agent-tools-approvals.md` (sections 1, 2, 5, 6 and 11) and deskd's `API.md`
@@ -639,8 +849,9 @@ The tools half of `docs/decisions/draft-agent-tools-approvals.md` (sections 1, 2
   sensitive field `sensitive`, refused before asking.
 - **The tools** (`AgentTools`, around each run's own in `AgentService.begin`): Files (`files_list`, `_search`,
   `_read`, `_write`, `_mkdir`, `_move`, `_trash`), the Browser (`browser_open`, `_read`, `_click`, `_type`, `_press`,
-  `_back`, `_close`, `_tabs`, `_use_my_session`) and Notebook (`notebook_search`, `_read`, `_write`, `_trash`), which
-  deskd runs; and `plan_update` (`own`, a checklist on the reply, `Plans`, kept in `run_plans`), `follow_up` (`write`,
+  `_back`, `_close`, `_tabs`, `_use_my_session`), Notebook (`notebook_search`, `_list`, `_read`, `_write`, `_trash`) and
+  To-do (`todo_list`, `_get`, `_add`, `_update`, `_close`) and Courier, read only (`courier_list`, `_search`, `_read`,
+  `_new`), which deskd runs; and `plan_update` (`own`, a checklist on the reply, `Plans`, kept in `run_plans`), `follow_up` (`write`,
   a one-shot timer on the agent within 7 days, `Team.followUp`) and `workspace_delete` (`own`, its own workspace only),
   which run here. A run is offered deskd's tools only once deskd's hello has named them; a guild member's own agent
   gets Notebook and `plan_update` only. A document from Files is read here with the attachment readers, a page at a
@@ -649,24 +860,113 @@ The tools half of `docs/decisions/draft-agent-tools-approvals.md` (sections 1, 2
   args, taint}`, plus `{approval: {approvalId, sha256}, context}` for an approved call, answered `tres` or `terr`. deskd
   redeems the approval itself before it runs anything that asks. A refusal reads "Refused: <word>." and a failure
   "Failed: <word>."; the run's flags take what deskd's result adds (`S` from the member's session, `U` on a guild
-  desk). At a run's end desk-agent sends `run_end`, and deskd lets go of its browser context and any signed-in tab.
+  desk). At a run's end desk-agent sends `run_end` (`args: {state: "done" | "ended", courier?}`), and deskd lets go
+  of its browser context and any signed-in tab, and stores a `done` run's Courier cursor.
 - **Untrusted results** reach the model as one line of JSON behind a label saying it's data, so nothing in a page,
-  file or note can close a frame and pass as the desk's or the member's words.
+  file or note can close a frame and pass as the desk's or the member's words. A tool whose declaration taints `U`
+  (`files_read`, `browser_open`, `_read`, `_click`, `_press`) is fenced whatever deskd's reply says.
+- **Paged reads** (`files_read`, `browser_read`, `notebook_read`; `AgentTools.fitPage`): a page reaches the model within
+  the run loop's cut of 20,000 characters (`ManagerAgent.MAX_RESULT_CHARS`), fenced or not, with its fields before its
+  text, and when the text doesn't fit it's cut at the end and `next` moved back to just after the last character kept
+  (in a text file's UTF-8 bytes, or a document's, page's or note's characters), with a note to read on. Before, the cut
+  took a full page's tail and its `next` with it, so nothing past a file's, page's or note's first 20,000 characters
+  could be read. deskd still sends up to 128 Ki characters of a file a page; the model reads about 19,000 of them a call.
 - **Workspace marks** (Security's finding 3, `workspace_marks` in `agent.db`, as memory marks a line): a workspace
   file a run holding `U` wrote is marked; a run that reads it, from its own workspace or a shared one, holds `U`. A
   whole new file from a clean run clears the mark, an append keeps it, and a delete takes it.
+- **Notebook marks** (Security's ATN-M1, kept by desk-notebook, checked by deskd): a `notebook_write` from a run holding
+  `U` is marked, and deskd's result for a read, a search hit or a tab's list of a page still holding that text carries
+  `U`, which the run takes as it takes any result's taints, so a browse after it asks. The fence names it "a Notebook
+  page with untrusted text in it" (`AgentTools.source`). The member's own change to that text ends the mark.
+- **To-do** (`todo_list`, `todo_get`, `todo_add`, `todo_update`, `todo_close`; deskd's `API.md` §22, the draft ADR's
+  §13; `sub/mm-todo-store`): deskd's own store, `todo:read` and `todo:write`, the app switch `todos`. deskd decides
+  each call from its own facts (the item's maker and run, its taint copy, whether the member started the run) and says
+  in its look `group: "todos"` when the call is in §15's To-do group; `RegistryPolicy` keeps it on `Classified.group`,
+  and `LowRisk` admits a To-do call unasked only on that group and the member's switch, never from a guild member's
+  agent or another context, so an add after `U` passes only when deskd's look said so (Security's ATA-L1).
+  `todo_close`'s floor is `own`: a suggestion ("Looks done?") runs with no card; only a close deskd rises to `write`
+  asks or goes through the group. A To-do read that returns an untrusted item adds `U`, fenced as "the member's To-do,
+  holding to-dos made from untrusted content". Chips: "Looked at your to-dos", "Added a to-do", "Merged into a to-do",
+  "Already on your to-dos", "Changed a to-do", "Marked a to-do done" or "Marked a to-do not needed" (by the close's `as`),
+  "Asked if a to-do is done" or "Asked if a to-do is still needed" (a suggestion, by its `as`).
+- **Courier, read only** (`courier_list`, `courier_search`, `courier_read`, `courier_new`; deskd's `API.md` §21, "The
+  agent's Courier tools"; the draft ADR's §12; `sub/mm-courier-read`): scope `courier:read`, the app switch `courier`,
+  off until the member switches it on. Every result is `U` and `S` (the declarations', so fenced whatever deskd says,
+  as "Courier, the member's messages and email, written by other people"); the run guide adds a line that messages
+  are other people's words and that it can't send. There's no send tool. `courier_new` goes by key (`RETRY_BY_KEY`:
+  it moves the run's place in deskd, so a lost reply is asked again for the same messages); `AgentTools` keeps the
+  last `cursor` each run got from it, and `run_end` names it in `args: {state: "done", courier}` only when the run
+  ended `done` (`AgentService.finish`) and no `courier_new` of the run was interrupted (Security's CR-L2), so deskd
+  stores the agent's cursor only for messages a finished run had.
+  Chips: "Looked at your messages", "Searched your messages", "Read your messages", "Checked for new messages".
 - **Chips:** `summary` is the desk's few words per tool, never content; the gate adds `risk`, `approval`, `target`,
   `untrusted` and `session`.
 - Tests: `tool/ToolRegistryTest`, `tool/RegistryPolicyTest`, `tool/AgentToolsFlowTest` (through a real service, its
-  gate and a scripted deskd, `FakeDeskLink`) and `socket/ToolCallSocketTest` (the hello and `tcall` on the real
-  socket).
+  gate and a scripted deskd, `FakeDeskLink`), `tool/HostedApprovalFlowTest` (every refusal of deskd's second check
+  reaching the card and the model as one word, a call done without asking going to deskd with its group and deskd's
+  payload, a switch never reaching a delete or a write after a file was read, the declaration's fence),
+  `tool/PagedReadFitTest` (a full page fitted under the run loop's cut with `next` moved back, read on to the end),
+  `tool/CourierToolsFlowTest` (Courier offered only with its switch, the fence, the chips, `run_end`'s cursor on `done`
+  only) and `socket/ToolCallSocketTest` (the hello and `tcall` on the real socket).
+
+## Access and the setup gate (draft ADR "the Agent's tools and approvals", section 16; `sub/lsub-agent-tools-setup`)
+`access/AccessBook` keeps what the member chose for each agent on its setup screen: apps, "without asking" switches, and the
+send halves of grants to the member's other desks (`store/AccessSchema`: `agent_access`, `desk_grants`, additive).
+- **The gate:** `AgentService.begin` refuses every run of an agent not set up, `precondition_failed` `setup` (`no_key` first
+  for one with no key), before anything reaches the thread: the member's, a timer's and another agent's.
+- **Revocable mid-run:** `tool/ToolAccess` is read at every step and every call. `AgentTools` offers only the hosted tools of
+  apps that are on, `RegistryPolicy` refuses a call of an app that's off `scope` before deskd's look, and the memory wrapper
+  re-reads the step's tools. `message_agent` to an agent not set up tells the lead it's waiting for the member.
+- **The upgrade:** the first open that makes `agent_access` gives every agent already there a `legacy` row: `setup:
+  "upgrade"`, its next run waits for the screen, which starts from Notebook, Files and Browser.
+- **Fails closed:** a row whose SHA-256 (over the agent's id and the choice) doesn't match, or that doesn't parse, is nothing
+  chosen (`setup: "confirm"`), audited once (`access.tampered`); a grant row likewise is no grant. deskd's hello naming the
+  agents it holds, or deskd refusing a call `setup`, makes any other agent wait for the member to confirm, its choice kept.
+- **Only the member:** `agent.access.set` and `agent.desks.revoke` (deskd relays them only from a session that may act); no
+  proposal, timer, tool or model reaches them. Audited: `access.set`, `desks.offer`, `desks.revoke`, `access.confirm`.
+- **Seams for the gate:** `switches(agentId)`, the groups switched on with each one's place (all off on a Guild Desk),
+  is the argument of `ApprovalPolicy.perAgentWithPlaces(switches, LowRisk.ADR)` and of the rows of calls done without
+  asking; `switchedOn(agentId)` the groups alone; `activeGrants(agentId)` for `desk_message`.
+- Tests: `access/AccessBookTest`, `tool/AccessToolsFlowTest`; and deskd's `RealDeskAgentAccessIT` against this jar.
+
+## Messages between the member's desks (draft ADR "the Agent's tools and approvals", section 14; `sub/mm-desk-messages`)
+An agent on one of the member's desks messages an agent on another, carried by the member's office (deskd `API.md` §18,
+"Messages between the member's desks"). deskd keeps the keys and its own record of the halves and makes and opens every
+envelope; the package `desks` keeps the rest:
+- **`DeskBook`** (`store/DeskSchema`, additive): `desk_answers` (offers waiting here and this desk's answer halves, each
+  row with its SHA-256), `desk_outbox` (deskd's sealed envelopes until the office took them, 7 days at most),
+  `desk_inbox` (every envelope taken in, by id: a second delivery is `duplicate`) and `desk_seq` (the last `seq` per
+  grant: an older one is `stale`), and `desk_grants` gains the other desk's answering agent. Each delivery is one
+  transaction with what it changes. Its own second check of the half: a message only on an active answer half from the
+  agent the offer named, an answer only on a live send half, 20 a grant a day.
+- **`DeskMessages`**: `agent.desks.list`, `.answer`, `.take`, `.done` and an answer half's `agent.desks.revoke`; deskd's
+  `desk.desks.queue` and `desk.desks.deliver` (refused from any frame with a caller); `desk_message`'s outbox and its
+  wait (the envelope queued, its grant's use counted and `desks.sent` audited once per envelope, `DeskBook.queueSent`,
+  so a call asked again by its key after a restart neither sends nor counts it twice); the answering run (origin `desk`: the pairing only, `U`, no memory, no `desk_message` or `message_agent`,
+  unattended, a spend cap from `a2aSpendPct`), whose reply goes back as the run's closing call (`ManagerAgent.Closing`,
+  `desk_answer`, through the gate: `send` and a 24-hour card when the run holds `S`); a failure word in place of an
+  answer for a run that can't start, fails, is stopped, is declined or is cut off by a restart; the thread's rows
+  (`origin.kind: "desk"`, `role` `message`, `answer` or `notice`); the sweep (expiry, and messages waiting for their
+  agent to be free).
+- **`DeskWaits`**: `desk_message`'s 120 s wait for the answer, one answer to exactly one place (the call, or the
+  thread). In RAM today; durable runs keep it in `run_waits` (kind `desk`, ref the message's envelope id, the deadline).
+- **Seams:** `tool/DeskHook` (a desk's name to its id, the card's names, the outbox after deskd's tool, and whether a
+  call is a run's own closing call: `desk_answer` runs only so, under an id desk-agent made, never as a model's call,
+  Security's DM-I1), `RunSetup.closing`, `AgentAccess`'s `incoming`, and `waiting_desk` on `agent.state`, with
+  `deskOffers`.
+- **To-do's source kind `desk`:** every call of a run another desk's message started, look and run, carries `origin:
+  {kind: "desk", envelopeId}` (`RegistryPolicy.putOrigin`), and `desk.desks.deliver` answers `taken: true` for an answer
+  the waiting call took, so deskd can give the run that message by its own record (`API.md` §18). `todo_add`'s `source`
+  takes `desk` with `{}`.
 
 ## Not built
 - Google's adapter (Phase 2). Paid OpenRouter models priced and listed, pictures on OpenRouter's models, and
   OpenRouter's `reasoning_details` kept across a tool run's steps (STATUS.md).
-- Durable runs that resume (ADR 0020's state machine; a restart ends a waiting run and its cards), image generation,
+- Image generation,
   the usage report to Platform, and a signed `pricing.json`. The tier's `toolCallsPerRun` (100 on every tier for now).
 - Timers that wake a stopped desk (they fire while desk-agent runs).
 - The egress proxy (deskd's), which `DESK_AGENT_EGRESS_PROXY` will name.
 - Memory recalled by search (FTS5) beyond the pinned lines; a member writing a line themselves.
+- Auto-approve's to-do tools (W4) and the agent's tile counting unasked calls of a run the member didn't start until
+  they're seen (the draft ADR's §15).
 - `STATUS.md`, "Launch scope", sorts these for launch.

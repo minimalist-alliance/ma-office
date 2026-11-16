@@ -4,7 +4,8 @@ EXP-7's class (the desk image's desk-datadirs, 3db49997) on a shared host (docs/
 (or a FIFO) where that user could, and each fails on the desk-init before the fix:
 - datadirs(): a link the Browser's user put at /data/browser/home (or downloads, profile) was followed by root's makedirs, chown and
   chmod at the slot's next start, which gave kiosk the directory it named; deskd's copy of the volume record was installed as root
-  into deskd's /data/desk, its owner and mode set by name.
+  into deskd's /data/desk, its owner and mode set by name (and, Region P2 run d47e0e, written in place, so deskd, starting beside
+  the init, could read it empty: now written aside and renamed over, which the old desk-init fails too).
 - units.sock in the slot's /run/desk (rtc:desk 0770): bound as root, then chowned and chmodded by name, so deskd, desk-data or
   desk-rtc could swap the socket for a link in between and have root chown what it named.
 - desk-audio's RuntimeDirectory /run/desk-audio/pulse, in desk-snd's share: removed as root, then made, chowned and chmodded by name,
@@ -116,7 +117,47 @@ class DataDirs(unittest.TestCase):
     def test_deskds_copy_of_the_volume_record_is_written_as_desk(self):
         self.g["datadirs"]()
         self.assertEqual(self.r.in_dirs(f"{self.tmp}/data/desk"), [], "root installed into deskd's /data/desk by name")
-        self.assertIn(("desk", ["install", "-m", "0644", f"{self.tmp}/data/.ma-volume", f"{self.tmp}/data/desk/volume.json"]), self.r.as_user)
+        new = f"{self.tmp}/data/desk/.volume.json.new"
+        steps = [a for a in self.r.as_user if a[0] == "desk"]
+        self.assertEqual(steps, [("desk", ["install", "-m", "0644", f"{self.tmp}/data/.ma-volume", new]),
+                                 ("desk", ["mv", "-fT", new, f"{self.tmp}/data/desk/volume.json"])], "written aside as desk, then renamed over")
+
+    def test_deskd_reading_its_copy_during_the_rewrite_gets_the_whole_record(self):
+        """Region P2 run d47e0e: deskd's sandbox starts beside the slot's init and reads /data/desk/volume.json once. install
+        unlinks its target, makes it empty and then writes it (slow on a capped or snapshot-restored volume: 1.8 s there), so a
+        read in between saw no record or an empty one, and deskd kept that for the run. Here install is that slow write, with
+        deskd's read in its middle; mv is rename(2)."""
+        record = '{"volumeId": "vol-0123456789abcdef0", "formattedAt": "2026-11-15T04:57:42Z"}\n'
+        pathlib.Path(f"{self.tmp}/data/.ma-volume").write_text(record)
+        pathlib.Path(f"{self.tmp}/data/desk/volume.json").write_text(record)   # the copy from the slot's last start
+        seen = []
+
+        def deskd_reads():
+            try:
+                seen.append(pathlib.Path(f"{self.tmp}/data/desk/volume.json").read_text())
+            except FileNotFoundError:
+                seen.append(None)
+
+        def as_user(user, argv, group=None, **kw):
+            if argv[:2] == ["install", "-d"]:
+                os.makedirs(argv[-1], exist_ok=True)
+            elif argv[0] == "install":
+                src, dst = argv[-2], argv[-1]
+                if os.path.lexists(dst):
+                    os.unlink(dst)
+                fd = os.open(dst, os.O_WRONLY | os.O_CREAT | os.O_EXCL, 0o644)
+                deskd_reads()                       # the new file is there, still empty
+                os.write(fd, pathlib.Path(src).read_bytes())
+                os.close(fd)
+            elif argv[:2] == ["mv", "-fT"]:
+                os.rename(argv[2], argv[3])
+            return subprocess.CompletedProcess(argv, 0, "", "")
+
+        self.g["as_user"] = as_user
+        self.g["datadirs"]()
+        self.assertEqual(seen, [record], "deskd read its copy mid-write and got no record")
+        self.assertEqual(pathlib.Path(f"{self.tmp}/data/desk/volume.json").read_text(), record)
+        self.assertFalse(os.path.lexists(f"{self.tmp}/data/desk/.volume.json.new"))
 
     def test_a_folder_kiosk_cant_make_is_said_and_the_rest_still_made(self):
         if "as_user" not in self.g:

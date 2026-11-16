@@ -1,0 +1,90 @@
+From: Office <office@example.com>
+To: me@desk.example
+Date: Fri, 13 Nov 2026 10:00:00 +0000
+Subject: Nested 20
+Message-ID: <nesting-20-ok@corpus.example>
+MIME-Version: 1.0
+X-Corpus-Note: 20 nested multiparts, the message's own included (the limit is 20): read
+Content-Type: multipart/mixed; boundary="lvl0"
+
+--lvl0
+Content-Type: multipart/mixed; boundary="lvl1"
+
+--lvl1
+Content-Type: multipart/mixed; boundary="lvl2"
+
+--lvl2
+Content-Type: multipart/mixed; boundary="lvl3"
+
+--lvl3
+Content-Type: multipart/mixed; boundary="lvl4"
+
+--lvl4
+Content-Type: multipart/mixed; boundary="lvl5"
+
+--lvl5
+Content-Type: multipart/mixed; boundary="lvl6"
+
+--lvl6
+Content-Type: multipart/mixed; boundary="lvl7"
+
+--lvl7
+Content-Type: multipart/mixed; boundary="lvl8"
+
+--lvl8
+Content-Type: multipart/mixed; boundary="lvl9"
+
+--lvl9
+Content-Type: multipart/mixed; boundary="lvl10"
+
+--lvl10
+Content-Type: multipart/mixed; boundary="lvl11"
+
+--lvl11
+Content-Type: multipart/mixed; boundary="lvl12"
+
+--lvl12
+Content-Type: multipart/mixed; boundary="lvl13"
+
+--lvl13
+Content-Type: multipart/mixed; boundary="lvl14"
+
+--lvl14
+Content-Type: multipart/mixed; boundary="lvl15"
+
+--lvl15
+Content-Type: multipart/mixed; boundary="lvl16"
+
+--lvl16
+Content-Type: multipart/mixed; boundary="lvl17"
+
+--lvl17
+Content-Type: multipart/mixed; boundary="lvl18"
+
+--lvl18
+Content-Type: multipart/mixed; boundary="lvl19"
+
+--lvl19
+Content-Type: text/plain
+
+The bottom of the nest.
+--lvl19--
+--lvl18--
+--lvl17--
+--lvl16--
+--lvl15--
+--lvl14--
+--lvl13--
+--lvl12--
+--lvl11--
+--lvl10--
+--lvl9--
+--lvl8--
+--lvl7--
+--lvl6--
+--lvl5--
+--lvl4--
+--lvl3--
+--lvl2--
+--lvl1--
+--lvl0--

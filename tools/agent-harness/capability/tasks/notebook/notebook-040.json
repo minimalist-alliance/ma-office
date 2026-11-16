@@ -1,0 +1,72 @@
+{
+  "id": "notebook-040",
+  "area": "notebook",
+  "title": "Read a page in another tab",
+  "prompt": "What goes into the Pesto page in my Harness Recipes tab?",
+  "setup": {
+    "notebook": [
+      {
+        "tab": "Harness Recipes",
+        "title": "Pesto",
+        "markdown": "# Pesto\n\nBasil, pine nuts, parmesan, garlic, olive oil.\n"
+      },
+      {
+        "tab": "Harness",
+        "title": "Inbox",
+        "markdown": "# Inbox\n\nThings to sort later.\n"
+      }
+    ]
+  },
+  "approve": "all",
+  "checks": [
+    {
+      "kind": "reply",
+      "contains": [
+        "basil",
+        "pine nuts"
+      ],
+      "state": "done"
+    },
+    {
+      "kind": "cards",
+      "tools": []
+    }
+  ],
+  "policy": {
+    "tools": [
+      "notebook_search",
+      "notebook_read"
+    ]
+  },
+  "standIn": [
+    {
+      "calls": [
+        {
+          "name": "notebook_search",
+          "input": {
+            "query": "Pesto"
+          }
+        }
+      ]
+    },
+    {
+      "calls": [
+        {
+          "name": "notebook_read",
+          "input": {
+            "pageId": {
+              "$re": {
+                "step": 0,
+                "call": 0,
+                "pattern": "\"pageId\":\"([^\"]+)\",\"title\":\"Pesto\""
+              }
+            }
+          }
+        }
+      ]
+    },
+    {
+      "text": "Basil, pine nuts, parmesan, garlic and olive oil."
+    }
+  ]
+}

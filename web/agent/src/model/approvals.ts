@@ -7,6 +7,8 @@
 // card; the agent's own reason, when a desk sends one, is one quoted line labelled as its own. Every string from a payload, a
 // target or `before` came from a model, a page or a file: it renders as text, with hidden characters shown (`shown`).
 import type { Agent, Approval, Risk } from '../client/types';
+import type { OtherDesk } from './access';
+import { deskLabel, plainName } from './deskMessages';
 import { canonicalJson, payloadChecks } from './proposals';
 
 /** The four levels a member reads (spec section 0). The desk's seven risks fold into them. */
@@ -98,6 +100,12 @@ export interface CardField {
 
 type P = Record<string, unknown>;
 
+/**
+ * What a template reads besides the payload: `before` and `target` (the desk's, not hashed), and for W6's tools the asking agent's
+ * name and the member's own desk list, which names a desk by its id.
+ */
+export type TemplateCtx = Pick<Approval, 'before' | 'target'> & { agentName?: string; desks?: readonly OtherDesk[] };
+
 interface ToolWords {
   app: string;
   /** The Tool row: "Browser · Open a page". */
@@ -109,11 +117,13 @@ interface ToolWords {
   /** Activity's "Wanted to …" and "Declined: …": the tool's verb phrase, lower case. */
   asked: string;
   /** The card's title, in the imperative, with its target, from the payload. */
-  title: (p: P, a: Pick<Approval, 'before' | 'target'>) => string;
+  title: (p: P, a: TemplateCtx) => string;
   /** Under an approved card: "Opening a page on shop.example.com", then "Opened a page on shop.example.com". */
-  running?: (p: P, a: Pick<Approval, 'before' | 'target'>) => string;
-  finished?: (p: P, a: Pick<Approval, 'before' | 'target'>) => string;
-  fields: (p: P, a: Pick<Approval, 'before' | 'target'>) => CardField[];
+  running?: (p: P, a: TemplateCtx) => string;
+  finished?: (p: P, a: TemplateCtx) => string;
+  fields: (p: P, a: TemplateCtx) => CardField[];
+  /** The card's note in place of the send note, where the tool has its own words (W6's second sentence). */
+  sendNote?: (p: P, a: TemplateCtx) => string;
   /**
    * The way back, for a change: a sentence; null for one that can't be undone ("This can’t be undone."); absent says nothing,
    * as for a new file, which the member can simply delete.
@@ -121,7 +131,27 @@ interface ToolWords {
   undo?: (p: P) => string | null | undefined;
 }
 
+/** W6: the other desk's agent, as that desk named it (plain text), and the desk, by the member's own name for it. */
+const deskTarget = (a: TemplateCtx): { agent: string; desk: string } => {
+  const t = a.target?.kind === 'desk' ? a.target : null;
+  return { agent: plainName(t?.agentName, 'an agent'), desk: deskLabel(t?.deskId, a.desks ?? []) ?? 'other' };
+};
+
 const pageTitle = (a: Pick<Approval, 'before' | 'target'>): string | null => str(a.before?.['title']) ?? (a.target?.kind === 'page' ? a.target.title : null);
+/** A to-do's title as the desk named it (`target`, else what the change replaces). */
+const todoTitle = (a: Pick<Approval, 'before' | 'target'>): string => (a.target?.kind === 'todo' ? str(a.target.title) : null) ?? str(a.before?.['title']) ?? 'a to-do';
+/** The open item a `same_as` add merges into, as the desk named it (§22's `target.mergeInto`). */
+const todoMergeInto = (a: Pick<Approval, 'before' | 'target'>): string | null => (a.target?.kind === 'todo' ? str(a.target.mergeInto?.title) : null);
+/** A to-do's `due` in words: "Nov 14, 2026", "Nov 14, 2026, 15:00" (anything but `YYYY-MM-DD` as it came). */
+function todoDue(v: unknown): string | null {
+  if (!v || typeof v !== 'object') return null;
+  const d = str((v as P)['date']);
+  const t = str((v as P)['time']);
+  if (!d) return null;
+  const m = /^(\d{4})-(\d{2})-(\d{2})$/.exec(d);
+  const day = m ? new Date(Date.UTC(Number(m[1]), Number(m[2]) - 1, Number(m[3]))).toLocaleDateString('en-US', { timeZone: 'UTC', month: 'short', day: 'numeric', year: 'numeric' }) : d;
+  return t ? `${day}, ${t}` : day;
+}
 const elementName = (p: P): string => {
   const label = str(p['label']);
   const role = str(p['role']);
@@ -209,6 +239,67 @@ const TOOLS: Record<string, ToolWords> = {
       return rows;
     },
     undo: (p) => (str(p['op']) === 'replace_text' ? null : undefined),
+  },
+  // To-do (deskd API.md §22, "The agent's To-do tools"): the card's words are §22's, and a `same_as` add names the open item it
+  // merges into (`target.mergeInto`), never the model's word for it.
+  todo_add: {
+    app: 'To-do',
+    name: 'Add a to-do',
+    doing: 'Adding a to-do',
+    done: 'Added a to-do',
+    asked: 'add a to-do',
+    title: (p, a) => {
+      const into = todoMergeInto(a);
+      return into ? `Merge into ${quote(into)} in To-do` : `Add ${quote(str(p['title']) ?? '')} to To-do`;
+    },
+    finished: (_p, a) => (todoMergeInto(a) ? 'Merged into a to-do' : 'Added a to-do'),
+    fields: (p, a) => {
+      const into = todoMergeInto(a);
+      const rows: CardField[] = [{ label: 'To-do', value: str(p['title']) ?? '' }];
+      if (into) rows.push({ label: 'Merges into', value: into });
+      const due = todoDue(p['due']);
+      if (due) rows.push({ label: 'Due', value: due });
+      const note = str(p['note']);
+      if (note) rows.push({ label: 'Note', value: note, long: true });
+      return rows;
+    },
+  },
+  todo_update: {
+    app: 'To-do',
+    name: 'Change a to-do',
+    doing: 'Changing a to-do',
+    done: 'Changed a to-do',
+    asked: 'change a to-do',
+    title: (_p, a) => `Change ${quote(todoTitle(a))} in To-do`,
+    fields: (p, a) => {
+      const rows: CardField[] = [{ label: 'To-do', value: todoTitle(a) }];
+      const title = str(p['title']);
+      if (title) rows.push({ label: 'New title', value: title });
+      if ('due' in p) rows.push({ label: 'Due', value: todoDue(p['due']) ?? 'No date' });
+      const note = str(p['note']);
+      if (note) rows.push({ label: 'Note', value: note, long: true });
+      return rows;
+    },
+    undo: () => 'You can undo it in the to-do’s History.',
+  },
+  todo_close: {
+    app: 'To-do',
+    name: 'Mark a to-do done',
+    doing: 'Marking a to-do done',
+    done: 'Marked a to-do done',
+    asked: 'mark a to-do done',
+    title: (p, a) => `Mark ${quote(todoTitle(a))} ${p['as'] === 'not_needed' ? 'not needed' : 'done'} in To-do`,
+    finished: (p) => (p['as'] === 'not_needed' ? 'Marked a to-do not needed' : 'Marked a to-do done'),
+    fields: (p, a) => {
+      const rows: CardField[] = [
+        { label: 'To-do', value: todoTitle(a) },
+        { label: 'As', value: p['as'] === 'not_needed' ? 'Not needed' : 'Done' },
+      ];
+      const reason = str(p['reason']);
+      if (reason) rows.push({ label: 'Why', value: reason });
+      return rows;
+    },
+    undo: () => 'You can reopen it in To-do.',
   },
   notebook_trash: {
     app: 'Notebook',
@@ -313,6 +404,47 @@ const TOOLS: Record<string, ToolWords> = {
     // The payload is the tab alone; the site it's on is what the desk read, shown as context.
     fields: (_p, a) => (a.target?.kind === 'site' && a.target.origin ? [{ label: 'Now on', value: a.target.origin, mono: true }] : []),
   },
+  // Messages between the member's desks (W6; deskd API.md section 18). `desk_message` asks as `send` from a run holding the
+  // member's private data; `desk_answer` asks on the other desk before an answer that read its private data goes back. The text
+  // is the exact text, shown as data.
+  desk_message: {
+    app: 'Agent',
+    name: 'Message your other desk',
+    doing: 'Messaging your other desk',
+    done: 'Messaged an agent on your other desk',
+    asked: 'message an agent on your other desk',
+    title: (_p, a) => {
+      const t = deskTarget(a);
+      return `Send this to ${t.agent} on your ${t.desk} desk?`;
+    },
+    fields: (p, a) => {
+      const t = deskTarget(a);
+      return [
+        { label: 'To', value: `${t.agent} on your ${t.desk} desk` },
+        { label: 'Text', value: str(p['text']) ?? '', long: true },
+      ];
+    },
+    sendNote: (_p, a) => `It may include things ${a.agentName ?? 'this agent'} read on this desk.`,
+  },
+  desk_answer: {
+    app: 'Agent',
+    name: 'Answer your other desk',
+    doing: 'Answering your other desk',
+    done: 'Answered an agent on your other desk',
+    asked: 'answer an agent on your other desk',
+    title: (_p, a) => {
+      const t = deskTarget(a);
+      return `Send this answer to ${t.agent} on your ${t.desk} desk?`;
+    },
+    fields: (p, a) => {
+      const t = deskTarget(a);
+      return [
+        { label: 'To', value: `${t.agent} on your ${t.desk} desk` },
+        { label: 'Answer', value: str(p['text']) ?? '', long: true },
+      ];
+    },
+    sendNote: (_p, a) => `It includes things ${a.agentName ?? 'this agent'} read here.`,
+  },
   // Calls that only read never ask, so they have no card: their words are for chips, the strip and Activity
   // (deskd API.md section 18, "The tools").
   browser_read: readOnly('Browser', 'Read a page', 'Reading a web page', 'Read a web page', 'read a web page'),
@@ -326,6 +458,13 @@ const TOOLS: Record<string, ToolWords> = {
   notebook_read: readOnly('Notebook', 'Read a note', 'Reading your note', 'Read your note', 'read a note'),
   notebook_search: readOnly('Notebook', 'Search', 'Searching your Notebook', 'Searched your Notebook', 'search your Notebook'),
   files_read: readOnly('Files', 'Read a file', 'Reading a file', 'Read a file', 'read a file'),
+  todo_list: readOnly('To-do', 'Look at your to-dos', 'Looking at your to-dos', 'Looked at your to-dos', 'look at your to-dos'),
+  todo_get: readOnly('To-do', 'Look at a to-do', 'Looking at a to-do', 'Looked at a to-do', 'look at a to-do'),
+  // Courier, read only (the draft ADR's section 12): never a name, a subject or an address, and no send.
+  courier_list: readOnly('Courier', 'Look at your messages', 'Looking at your messages', 'Looked at your messages', 'look at your messages'),
+  courier_search: readOnly('Courier', 'Search your messages', 'Searching your messages', 'Searched your messages', 'search your messages'),
+  courier_read: readOnly('Courier', 'Read your messages', 'Reading your messages', 'Read your messages', 'read your messages'),
+  courier_new: readOnly('Courier', 'Check for new messages', 'Checking for new messages', 'Checked for new messages', 'check for new messages'),
   memory_forget: {
     app: 'Memory',
     name: 'Forget a memory',
@@ -338,7 +477,7 @@ const TOOLS: Record<string, ToolWords> = {
 };
 
 /** The tools that only read, which never ask. */
-export const READ_TOOLS: ReadonlySet<string> = new Set(['browser_read', 'browser_tabs', 'browser_close', 'notebook_read', 'notebook_search', 'files_read', 'files_list', 'files_search']);
+export const READ_TOOLS: ReadonlySet<string> = new Set(['browser_read', 'browser_tabs', 'browser_close', 'notebook_read', 'notebook_search', 'files_read', 'files_list', 'files_search', 'todo_list', 'todo_get', 'courier_list', 'courier_search', 'courier_read', 'courier_new']);
 
 /** The tool's words, where this app knows the tool. */
 export function toolWords(tool: string): ToolWords | null {
@@ -443,13 +582,17 @@ export const CANT_UNDO = 'This can’t be undone.';
 /** The draft ADR's line for an untrusted run (section 6), where the note doesn't say it already. */
 export const UNTRUSTED_LINE = 'This agent has read web pages, files or messages in this task.';
 
-/** The card's words for an approval, from this app's template for its tool. */
-export function cardOf(a: Approval, agents: readonly Pick<Agent, 'id' | 'name'>[]): CardView {
+/**
+ * The card's words for an approval, from this app's template for its tool. `desks` is the member's own desk list, which names
+ * another desk by its id (W6's cards).
+ */
+export function cardOf(a: Approval, agents: readonly Pick<Agent, 'id' | 'name'>[], desks: readonly OtherDesk[] = []): CardView {
   const level = levelOf(a.risk);
   const why = whyOf(a);
   const words = toolWords(a.tool);
   const payload = (a.payload ?? {}) as P;
-  const ctx = { before: a.before, target: a.target };
+  const asking = agents.find((x) => x.id === a.agentId)?.name;
+  const ctx: TemplateCtx = { before: a.before, target: a.target, desks, ...(asking ? { agentName: asking } : {}) };
   let title: string;
   let fields: CardField[];
   if (words) {
@@ -473,14 +616,15 @@ export function cardOf(a: Approval, agents: readonly Pick<Agent, 'id' | 'name'>[
   const url = a.tool === 'browser_open' ? str(payload['url']) : null;
   let note: CardView['note'] = null;
   if (why === 'taint' || why === 'taint_memory') note = { icon: 'eye', text: NOTE_TEXT[why] };
-  else if (why === 'send') note = { icon: 'out', text: NOTE_TEXT.send };
+  else if (why === 'send') note = { icon: 'out', text: words?.sendNote ? shown(words.sendNote(payload, ctx)) : NOTE_TEXT.send };
   else if (why === 'change') {
     // A sentence is the way back; null can't be undone; nothing said (a new file, a new folder) draws no line.
     const undo = words ? words.undo?.(payload) : null;
     if (typeof undo === 'string') note = { icon: 'undo', text: undo };
     else if (undo === null || a.risk === 'delete') note = { icon: 'pencil', text: CANT_UNDO };
   }
-  const asked = lowerFirst(title);
+  // A question's mark doesn't carry into "Lead is asking to send this to …".
+  const asked = lowerFirst(title).replace(/\?$/, '');
   return {
     level,
     why,
@@ -548,6 +692,9 @@ export function failedWords(error: string | null | undefined): string {
       return 'Your desk has no room for it.';
     case 'timeout':
       return 'The site didn’t answer in time.';
+    // The desk lost its ticket for the call in a restart, before the call ran.
+    case 'approval_unknown':
+      return 'The desk restarted before this ran, so nothing was done. Ask again if you still want it.';
     default:
       return 'Your desk couldn’t do it.';
   }
@@ -624,11 +771,15 @@ export const mismatchText = (agentName: string): string => `This card doesn’t 
 /** "1 request waiting", "3 requests waiting". */
 export const waitingText = (n: number): string => `${n} ${n === 1 ? 'request' : 'requests'} waiting`;
 
-/** The rail's count's name: "1 request waiting, 2 new replies". */
-export function countLabel(waiting: number, unseen: number): string {
+/**
+ * The rail's count's name: "1 request waiting, 2 new replies, 3 done without asking". The last is what a run the member didn't
+ * start did under their setting (`autoUnseen`, draft ADR section 15), until they see the thread.
+ */
+export function countLabel(waiting: number, unseen: number, unasked = 0): string {
   const parts: string[] = [];
   if (waiting > 0) parts.push(waitingText(waiting));
   if (unseen > 0) parts.push(`${unseen} new ${unseen === 1 ? 'reply' : 'replies'}`);
+  if (unasked > 0) parts.push(`${unasked} done without asking`);
   return parts.join(', ');
 }
 

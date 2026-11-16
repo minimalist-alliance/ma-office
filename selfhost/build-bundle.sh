@@ -17,6 +17,13 @@
 #                                       same Dockerfile builds for amd64). Until it's pinned this script stops, as it
 #                                       does for an unpinned desk-rtc.
 #   desk-agent-filter the version below from image/recipe/desk-agent-filter/, the same source as a cloud desk's (ADR 0070)
+#   desk-svc       this clone's commit  from image/host/desk-svc/ at that commit, as image/bake.sh builds the cloud desk's (static
+#                                       Go, its tests first; -trimpath, no build id, CGO_ENABLED=0, so the same commit gives the
+#                                       same bytes): process 1 of desk-parse's container, the Agent's attachment reader (ADR 0097).
+#                                       Not a release and not a line of bundle.pin: a file of the INSTALLER, selfhost/files/usr/local/
+#                                       lib/ma/desk-svc, put there before installer.sha256 is made, so what is signed already covers
+#                                       it, and a desk's installed checker from before it existed (releases 1 and 2) takes the bundle.
+#                                       Written to <outdir>/desk-svc.bin (not part of the bundle); --folder places it in the folder.
 # Not here: commons-server, which runs only on a Guild Desk (image/README.md, "Guild Desk"); a self-hosted desk is a
 # member's own.
 # Pins can be overridden for a trial build, e.g. DESK_RTC_VERSION=0.3.2-35dev DESK_RTC_COMMIT=<commit>, never for a
@@ -26,11 +33,14 @@
 # example the build server (DOCKER_HOST=ssh://<user>@<build server>). Its address isn't written here on purpose.
 #
 #   DOCKER_HOST=ssh://... selfhost/build-bundle.sh [outdir]      default outdir: ../build/dist beside this clone
-#   selfhost/build-bundle.sh --sign <outdir>     sign a bundle built here with alias/ma-selfhost-release (below)
+#   selfhost/build-bundle.sh --sign <outdir>     sign a bundle built here with alias/ma-selfhost-release (below); needs DOCKER_HOST too,
+#                                                because it builds desk-svc again from the commit and compares
+#   selfhost/build-bundle.sh --folder <outdir> <dest>   the member folder: git archive of the bundle's commit (selfhost image/recipe),
+#                                                desk-svc.bin placed in it, and bundle/ with only what Platform's script takes
 #
 # Writes, in outdir:
 #   desk-rtc-<version>-amd64.tgz, deskd-<version>-amd64.tgz, desk-agent-<version>-amd64.tgz, desk-stream-<version>.tgz,
-#   desk-notebook-<version>-amd64.tgz, desk-agent-filter-<version>-amd64.tgz, each with its .sha256
+#   desk-notebook-<version>-amd64.tgz, desk-agent-filter-<version>-amd64.tgz, each with its .sha256, and desk-svc.bin
 #   bundle.pin   "# ma-selfhost-bundle/1" (install.sh takes nothing else), a header line "# bundle <commit>" naming the
 #                commit of this clone, which install.sh puts in /etc/ma-release, then one line each: component version
 #                sha256 (the format of image/recipe/releases.pin), and "installer <commit> <sha256 of installer.sha256>",
@@ -50,7 +60,8 @@
 # ECDSA P-256 SHA-256 over the file's exact bytes, DER, MessageType RAW, at most 4096 bytes, from the credentials the key
 # policy allows kms:Sign. pin-release-key.sh pins the key's public half and its anchor. --sign refuses a bundle from a
 # clone with changes ("-dirty"), one whose commit's installer has no release key matching its anchor, one whose
-# installer.sha256 isn't its commit's, one whose files don't match bundle.pin, one naming a release with no
+# installer.sha256 isn't its commit's with desk-svc built again from the commit (it rebuilds, tests first, and compares: the
+# desk-svc the installer.sha256 names must be the commit's own build, byte for byte), one whose files don't match bundle.pin, one naming a release with no
 # passed-test.json (only desk-agent-filter, which isn't published, is built from its pinned source), and the batch key. It
 # checks the signature with the installer's own check before it keeps it. A signature is the go-ahead for every member
 # who gets the bundle: sign only what you'll prove on a test machine next, and publish only what passed there.
@@ -65,11 +76,12 @@ umask 022
 # and the README, which the release doesn't carry. On a self-hosted desk it reads no allowance profile (no desk-egress, so
 # no /run/desk-egress/profile), and the shared-host settings come only from a host's slot.
 DESK_RTC_VERSION=${DESK_RTC_VERSION:-0.5.1};  DESK_RTC_COMMIT=${DESK_RTC_COMMIT:-c7ad6af}
-# deskd 2026.11.11-90528b5: its run mounts /run/desk-notebook, it writes the age band the teen lock reads, and it writes
+# deskd 2026.11.12-46f4e78 (image 0.3.8's pin; release 3): its run mounts /run/desk-notebook, it writes the age band the teen lock reads, and it writes
 # /run/desk/idle.json, which desk-batch reads (docs/interfaces/desk-runtime.md section 6.1).
-DESKD_VERSION=${DESKD_VERSION:-2026.11.11-90528b5};  DESKD_COMMIT=${DESKD_COMMIT:-90528b5}
-# desk-agent 2026.11.11-90528b5: the Agent, which deskd relays to.
-DESK_AGENT_VERSION=${DESK_AGENT_VERSION:-2026.11.11-90528b5};  DESK_AGENT_COMMIT=${DESK_AGENT_COMMIT:-90528b5}
+DESKD_VERSION=${DESKD_VERSION:-2026.11.12-46f4e78};  DESKD_COMMIT=${DESKD_COMMIT:-46f4e78}
+# desk-agent release 7, 2026.11.12-7805537: the Agent, which deskd relays to. Its run mounts /run/desk-parse read-only (ADR 0097) and
+# its parse memory fix reads a 20 MiB file within the sandbox. Never release 5 (469eb6cb). Image 0.3.8's pin is release 6.
+DESK_AGENT_VERSION=${DESK_AGENT_VERSION:-2026.11.12-7805537};  DESK_AGENT_COMMIT=${DESK_AGENT_COMMIT:-7805537}
 # desk-stream 0.3.5, published from 8e6aca1 at 03:57 MT Nov 11 (the image's pin). It has no arch (deskcap for both is
 # committed), so this must come out byte for byte the published one. It's packed from a checkout made under umask 022
 # (0.2.4 was under 002), so that's pinned too.
@@ -96,10 +108,38 @@ KEYS_DIR=selfhost/files/opt/ma/etc/selfhost-release-keys   # the key's public ha
 HERE=$(cd "$(dirname "$0")" && pwd)
 REPO=$(cd "$HERE/.." && pwd)
 
-# installer_manifest <commit>: installer.sha256 for that commit's installer, from git's own tree, never the working copy.
+DESK_SVC_REL=selfhost/files/usr/local/lib/ma/desk-svc   # the installer's copy of desk-svc; not in git
+DOCKER=${DOCKER:-docker}
+# need_docker: the amd64 Docker host (DOCKER_HOST), never this machine.
+need_docker() {
+  command -v "$DOCKER" >/dev/null || [ -x "$DOCKER" ] || die "no docker client ($DOCKER); set DOCKER"
+  [ -n "${DOCKER_HOST:-}" ] || die "set DOCKER_HOST to an amd64 Docker host (the build server), never this machine"
+  local arch; arch=$("$DOCKER" info --format '{{.Architecture}}') || die "can't reach the Docker host"
+  case $arch in x86_64 | amd64) ;; *) die "the Docker host is $arch, not amd64" ;; esac
+}
+# build_desk_svc <commit> <out>: image/host/desk-svc at that commit (git's tree), its tests first, built static for amd64 with
+# -trimpath, no build id, no VCS stamp and CGO off, so the same commit gives the same bytes on any host with this Go image.
+build_desk_svc() {
+  local c=$1 out=$2 w ctr=$TAG-svc-build-$$
+  w=$(mktemp -d); mkdir -p "$w/s"
+  git -C "$REPO" archive --format=tar "$c" image/host/desk-svc | tar -x -C "$w/s"
+  # TestCleanAsProcess1 skips itself where the container can't make user namespaces.
+  "$DOCKER" create --name "$ctr" --cpus=6 --memory=5g -w /src/image/host/desk-svc \
+    -e CGO_ENABLED=0 -e GOOS=linux -e GOARCH=amd64 -e "GOFLAGS=-p=4 -trimpath -buildvcs=false" \
+    "$GO_IMAGE" sh -c 'go test -count=1 ./... && go build -trimpath -ldflags "-s -w -buildid=" -o desk-svc.bin .' >/dev/null || { rm -rf "$w"; die "docker create"; }
+  "$DOCKER" cp "$w/s/." "$ctr:/src" && "$DOCKER" start -a "$ctr" || { "$DOCKER" rm -f "$ctr" >/dev/null 2>&1; rm -rf "$w"; die "desk-svc's tests or build failed"; }
+  "$DOCKER" cp "$ctr:/src/image/host/desk-svc/desk-svc.bin" "$out" || { "$DOCKER" rm -f "$ctr" >/dev/null 2>&1; rm -rf "$w"; die "no desk-svc out of the build"; }
+  "$DOCKER" rm -f "$ctr" >/dev/null 2>&1 || true
+  rm -rf "$w"
+}
+# installer_manifest <commit> <desk-svc binary>: installer.sha256 for that commit's installer from git's own tree, with the
+# amd64 desk-svc placed at DESK_SVC_REL (mode 0755) before everything is hashed, so it is one of the signed files.
 installer_manifest() {
   local t; t=$(mktemp -d)
+  [ -f "${2:-}" ] || { rm -rf "$t"; die "installer_manifest: no desk-svc binary ($DESK_SVC_REL is built, not committed)"; }
   git -C "$REPO" archive --format=tar "$1" selfhost image/recipe | tar -x -C "$t"
+  [ ! -e "$t/$DESK_SVC_REL" ] || { rm -rf "$t"; die "$1 commits a $DESK_SVC_REL; it is built, never committed"; }
+  install -D -m 0755 "$2" "$t/$DESK_SVC_REL"
   [ -z "$(find "$t" -type l -print -quit)" ] || { rm -rf "$t"; die "the installer at $1 has a symlink, which installer.sha256 can't name"; }
   (cd "$t" && find selfhost image/recipe -type f ! -path 'selfhost/e2e/*' ! -path 'selfhost/lab/*' ! -path 'selfhost/tests/*' -print0 \
     | LC_ALL=C sort -z | xargs -0 sha256sum)
@@ -122,15 +162,20 @@ sign_bundle() {
   mkdir "$t/folder" && git -C "$REPO" archive --format=tar "$commit" selfhost image/recipe | tar -x -C "$t/folder"
   python3 -I "$t/folder/selfhost/files/usr/local/lib/ma/selfhost/ma-selfhost-bundle" keys "$t/folder" \
     || { rm -rf "$t"; die "$commit's installer has no release key that matches its anchor ($KEYS_DIR/, selfhost/release-keys.sha256): pin it with selfhost/pin-release-key.sh and commit"; }
-  installer_manifest "$commit" > "$t/installer.sha256"
-  cmp -s "$t/installer.sha256" "$d/installer.sha256" || { rm -rf "$t"; die "installer.sha256 isn't $commit's installer"; }
+  # desk-svc is a file of the installer that git doesn't hold: build it again from the commit (tests first) and make the
+  # list with that one. An installer.sha256 naming any other desk-svc than this commit's own build is not signed.
+  need_docker
+  build_desk_svc "$commit" "$t/desk-svc.bin"
+  installer_manifest "$commit" "$t/desk-svc.bin" > "$t/installer.sha256"
+  cmp -s "$t/installer.sha256" "$d/installer.sha256" || { rm -rf "$t"; die "installer.sha256 isn't $commit's installer with desk-svc built again from it ($(grep "  $DESK_SVC_REL\$" "$d/installer.sha256" | cut -c1-16) in the list, $(sha256sum < "$t/desk-svc.bin" | cut -c1-16) from the commit): a desk-svc that isn't its build is never signed"; }
+  install -D -m 0755 "$t/desk-svc.bin" "$t/folder/$DESK_SVC_REL"
   while read -r c v sha; do
     case "$c" in ''|'#'*) continue ;; esac
     [ "$c" != installer ] || { [ "$sha" = "$(sha256sum < "$d/installer.sha256" | cut -c1-64)" ] || die "installer.sha256 isn't the one bundle.pin names"; continue; }
     [ "$c" != batch-baseline ] || { [ "$sha" = "$(sha256sum < "$d/batch-baseline" | cut -c1-64)" ] || die "batch-baseline isn't the one bundle.pin names"; continue; }
     f=$(ls "$d/$c-$v-amd64.tgz" "$d/$c-$v.tgz" 2>/dev/null | head -1 || true)
     [ -n "$f" ] && [ "$(sha256sum < "$f" | cut -c1-64)" = "$sha" ] || die "$c $v: the bundle's file isn't the one bundle.pin names"
-    if [ "$c" != desk-agent-filter ]; then
+    if [ "$c" != desk-agent-filter ]; then   # built from source here, never published
       aws s3api head-object --bucket "$RELEASE_BUCKET" --key "desk/$c/$v/passed-test.json" >/dev/null 2>&1 \
         || die "$c $v has no passed-test.json: a bundle carries released versions that passed on the test desk only"
     fi
@@ -147,8 +192,31 @@ sign_bundle() {
 }
 
 if [ "${1:-}" = --sign ]; then
-  [ $# = 2 ] || die "usage: [BUNDLE_KMS_KEY_ID=alias/ma-selfhost-release] build-bundle.sh --sign <outdir>"
+  [ $# = 2 ] || die "usage: [BUNDLE_KMS_KEY_ID=alias/ma-selfhost-release] DOCKER_HOST=ssh://... build-bundle.sh --sign <outdir>"
   sign_bundle "$(cd "$2" && pwd)"
+  exit 0
+fi
+
+# --folder <outdir> <dest>: the member folder Platform's selfhost-publish.sh takes (README.md, "The folder a member gets").
+if [ "${1:-}" = --folder ]; then
+  [ $# = 3 ] || die "usage: build-bundle.sh --folder <outdir> <dest>"
+  o=$(cd "$2" && pwd); dest=$3
+  [ ! -e "$dest" ] || die "$dest exists"
+  [ -f "$o/bundle.pin.sig" ] && [ -f "$o/desk-svc.bin" ] || die "$o has no signed bundle (bundle.pin.sig) or no desk-svc.bin"
+  commit=$(sed -n 's/^# bundle \([0-9a-f]\{7,40\}\)$/\1/p' "$o/bundle.pin")
+  [ -n "$commit" ] || die "$o/bundle.pin names no clean commit"
+  mkdir -p "$dest/bundle"
+  git -C "$REPO" archive --format=tar "$commit" selfhost image/recipe | tar -x -C "$dest"
+  install -D -m 0755 "$o/desk-svc.bin" "$dest/$DESK_SVC_REL"
+  cp "$o/bundle.pin" "$o/bundle.pin.sig" "$o/installer.sha256" "$dest/bundle/"
+  [ ! -f "$o/batch-baseline" ] || cp "$o/batch-baseline" "$dest/bundle/"
+  while read -r c v sha; do
+    case "$c" in ''|'#'*|installer|batch-baseline) continue ;; esac
+    f=$(cd "$o" && ls "$c-$v-amd64.tgz" "$c-$v.tgz" 2>/dev/null | head -1 || true); [ -n "$f" ] || die "no file for $c $v in $o"
+    cp "$o/$f" "$o/$f.sha256" "$dest/bundle/"
+  done < "$o/bundle.pin"
+  (cd "$dest" && sha256sum -c --quiet bundle/installer.sha256) || die "the folder doesn't match installer.sha256"
+  log "folder: $dest"
   exit 0
 fi
 
@@ -182,14 +250,18 @@ agent_run=$(git -C "$REPO" show "$DESK_AGENT_COMMIT:services/desk-agent/docker/r
 for want in '--network host' '--user 1103:1103' '-v /run/desk-agent:/run/desk-agent' '-v /data/agent:/data/agent'; do
   grep -q -- "$want" <<<"$agent_run" || die "desk-agent's run at $DESK_AGENT_COMMIT has no '$want'; a self-hosted desk relies on it"
 done
+# ADR 0097: a desk-agent from release N on reads files only through desk-parse, which its run mounts read-only at /run/desk-parse
+# (--mount type=bind,src=/run/desk-parse,dst=/run/desk-parse,readonly, where the image made it). One from before keeps its own child, and the sidecar waits: said here, not refused, until the pin moves to N.
+if grep -q 'desk-parse' <<<"$agent_run"; then
+  grep -q -- 'dst=/run/desk-parse,readonly' <<<"$agent_run" \
+    || die "desk-agent's run at $DESK_AGENT_COMMIT names desk-parse but doesn't mount /run/desk-parse read-only as ADR 0097 says"
+else
+  echo "build-bundle: note: desk-agent $DESK_AGENT_VERSION's run doesn't mount /run/desk-parse (a release from before ADR 0097): it reads files in its own child, and desk-parse waits"
+fi
 # The installer and bundle this names: the clone's commit, "-dirty" when it has changes (as bake.sh marks an image).
 BUNDLE_COMMIT=$(git -C "$REPO" rev-parse --short=7 HEAD)
 [ -z "$(git -C "$REPO" status --porcelain 2>/dev/null)" ] || BUNDLE_COMMIT=$BUNDLE_COMMIT-dirty
-DOCKER=${DOCKER:-docker}
-command -v "$DOCKER" >/dev/null || [ -x "$DOCKER" ] || die "no docker client ($DOCKER); set DOCKER"
-[ -n "${DOCKER_HOST:-}" ] || die "set DOCKER_HOST to an amd64 Docker host (the build server), never this machine"
-arch=$("$DOCKER" info --format '{{.Architecture}}') || die "can't reach the Docker host"
-case $arch in x86_64 | amd64) ;; *) die "the Docker host is $arch, not amd64" ;; esac
+need_docker
 
 mkdir -p "$OUT"
 OUT=$(cd "$OUT" && pwd)
@@ -269,6 +341,16 @@ printf '%s\n' "$DESK_AGENT_FILTER_VERSION" > "$stage/VERSION"; chmod 0644 "$stag
 filter_art=desk-agent-filter-$DESK_AGENT_FILTER_VERSION-amd64.tgz
 tar --sort=name --owner=0 --group=0 --numeric-owner --mtime='@0' -C "$stage" -cf - VERSION run health desk-agent-filter | gzip -n > "$OUT/$filter_art"
 filter_sha=$(sha_line "$filter_art")
+
+# ---------- desk-svc (ADR 0097: desk-parse's process 1) ----------
+# A file of the installer, not a bundle.pin line (releases 1 and 2's installed checkers take no such line): built here from this
+# clone's commit, and --sign builds it again and compares before it signs anything.
+DESK_SVC_COMMIT=$(git -C "$REPO" rev-parse HEAD)
+log "desk-svc from ${DESK_SVC_COMMIT:0:7} (this clone's commit), amd64, in $GO_IMAGE"
+build_desk_svc "$DESK_SVC_COMMIT" "$work/desk-svc.bin"
+file "$work/desk-svc.bin" | grep -q 'ELF 64-bit LSB executable, x86-64.*statically linked' || die "desk-svc isn't a static x86-64 binary: $(file -b "$work/desk-svc.bin")"
+install -m 0755 "$work/desk-svc.bin" "$OUT/desk-svc.bin"
+svc_sha=$(sha256sum < "$OUT/desk-svc.bin" | cut -c1-64)
 
 # ---------- deskd ----------
 log "deskd $DESKD_VERSION from $DESKD_COMMIT, amd64 image on the Docker host"
@@ -367,7 +449,7 @@ log "desk-stream matches the published $DESK_STREAM_VERSION byte for byte"
 
 # ---------- the installer it goes with ----------
 # Every installer file, as git has it at this clone's commit (a clone with changes gets a "-dirty" bundle, never signed).
-installer_manifest "$(git -C "$REPO" rev-parse HEAD)" > "$OUT/installer.sha256"
+installer_manifest "$(git -C "$REPO" rev-parse HEAD)" "$OUT/desk-svc.bin" > "$OUT/installer.sha256"
 installer_sha=$(sha256sum < "$OUT/installer.sha256" | cut -c1-64)
 rm -f "$OUT/batch-baseline" "$OUT/bundle.pin.sig"
 [ -z "$BATCH_BASELINE" ] || printf '{"seq": %s}\n' "$BATCH_BASELINE" > "$OUT/batch-baseline"
@@ -388,6 +470,7 @@ rm -f "$OUT/batch-baseline" "$OUT/bundle.pin.sig"
   [ -z "$BATCH_BASELINE" ] || printf '%-14s %-20s %s\n' batch-baseline "$BATCH_BASELINE" "$(sha256sum < "$OUT/batch-baseline" | cut -c1-64)"
 } > "$OUT/bundle.pin"
 log "done, in $OUT:"
+log "desk-svc.bin (in the installer as $DESK_SVC_REL): sha256 $svc_sha"
 (cd "$OUT" && ls -l "$rtc_art" "$deskd_art" "$agent_art" "$nb_art" "$stream_art" "$filter_art" | awk '{print "  " $5 "  " $9}')
 cat "$OUT/bundle.pin"
 if [ -n "$SIGN_AT_END" ]; then

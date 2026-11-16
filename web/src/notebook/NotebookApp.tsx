@@ -1,10 +1,11 @@
 // The Notebook on a desk: the lazy chunk behind `NotebookWindow`. The editor (`web/notebook/`) on this desk's `DeskBackend`, and
 // the states that come from the backend. Once the Notebook has opened it stays on screen through a dropped link, so what's
 // being typed is never taken away, and a quiet line says what isn't saved.
-import { useCallback, useEffect, useMemo, useSyncExternalStore } from 'react';
+import { useCallback, useEffect, useMemo, useRef, useSyncExternalStore } from 'react';
 import { Notebook } from '../../notebook/src/ui/Notebook.tsx';
 import '../../notebook/src/ui/notebook.css';
 import 'virtual:ma-notebook-themes.css';
+import { useRosterStore } from '../agent/roster';
 import { PanelBody } from '../browser/BrowserWindow';
 import type { BrowserPanel } from '../browser/panel';
 import type { DeskLink } from '../desk/deskLink';
@@ -12,6 +13,7 @@ import { wakeDesk } from '../desk/liveStore';
 import { chooseLinkDesk, useGuildStore } from '../guild/guildStore';
 import { DESK_WORDS, GUILD_WORDS } from '../guild/words';
 import { guildIdOfPanel, mayManageSpaces } from '../guild/panel';
+import { noteFocusEvent, setFocusItem } from '../state/focusItems';
 import { useDeskStore } from '../state/deskStore';
 import { useSession } from '../platform/session';
 import { useLayoutPrefs, type LayoutPrefs } from '../shell/layoutPrefs';
@@ -74,7 +76,24 @@ export default function NotebookApp({ deskId, link, panel, parked }: NotebookApp
   // it follows them to every desk and browser. Saved with the layout once `prefs` keeps keys it doesn't name (`sub/setup-circle`);
   // before that it lasts for this tab.
   const savedColor = useLayoutPrefs((s) => (s as unknown as Record<string, unknown>)[NOTEBOOK_COLOR_PREF]);
+  // "Edited by {agent}": the desk's agents by id, as their tiles have them. One that's gone reads "an agent".
+  const roster = useRosterStore((s) => s.desks[deskId]);
+  const agentNames = useCallback((id: string) => roster?.find((a) => a.id === id)?.name ?? null, [roster]);
   const rememberColor = useCallback((id: string) => setLayoutPref({ [NOTEBOOK_COLOR_PREF]: id } as unknown as Partial<LayoutPrefs>), []);
+  // The page in front, for Desk Maia's model of now (the focus shield): its id only, never a title or a word of it; leaving a page
+  // for another in the same notebook is a completed action (a fine break). A Guild Desk's pages are other people's: not told.
+  const lastPage = useRef<{ pageId: string; notebookId: string } | null>(null);
+  const onPageShown = useCallback(
+    (page: { pageId: string; notebookId: string } | null) => {
+      const was = lastPage.current;
+      lastPage.current = page;
+      if (guildId) return;
+      if (was && page && was.pageId !== page.pageId && was.notebookId === page.notebookId) noteFocusEvent('page_left');
+      setFocusItem(deskId, 'notebook', page ? { kind: 'page', id: page.pageId } : null);
+    },
+    [deskId, guildId],
+  );
+  useEffect(() => () => setFocusItem(deskId, 'notebook', null), [deskId]);
 
   if (status.load !== 'ready') {
     // Nothing's been shown yet, so the whole window can say what's in the way.
@@ -103,6 +122,8 @@ export default function NotebookApp({ deskId, link, panel, parked }: NotebookApp
         manageSpaces={manageSpaces}
         lastColor={typeof savedColor === 'string' ? savedColor : null}
         onLastColorChange={rememberColor}
+        agentNames={agentNames}
+        onPageShown={onPageShown}
       />
       {line && (
         <p className="nbw-line" role="status" data-testid="notebook-line">

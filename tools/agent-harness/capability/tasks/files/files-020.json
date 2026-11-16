@@ -1,0 +1,64 @@
+{
+  "id": "files-020",
+  "area": "files",
+  "title": "A decline with a note",
+  "prompt": "Clean up Harness/scratch by trashing tax-notes.txt.",
+  "setup": {
+    "files": {
+      "Harness/scratch/tax-notes.txt": "Deductions: home office.\n",
+      "Harness/scratch/tmp.txt": "x\n"
+    }
+  },
+  "approve": {
+    "declineNote": "Not that one, I still need it for taxes."
+  },
+  "checks": [
+    {
+      "kind": "file",
+      "path": "Harness/scratch/tax-notes.txt",
+      "equals": "Deductions: home office.\n"
+    },
+    {
+      "kind": "reply",
+      "contains": [
+        "taxes"
+      ],
+      "state": "done"
+    },
+    {
+      "kind": "cards",
+      "tools": [
+        "files_trash"
+      ]
+    }
+  ],
+  "policy": {
+    "tools": [
+      "files_trash"
+    ]
+  },
+  "standIn": [
+    {
+      "calls": [
+        {
+          "name": "files_trash",
+          "input": {
+            "path": "Harness/scratch/tax-notes.txt"
+          }
+        }
+      ]
+    },
+    {
+      "text": [
+        "I kept it. Your note said: ",
+        {
+          "$re": {
+            "step": 0,
+            "call": 0,
+            "pattern": "Their note:\\n\"((?:[^\"\\\\]|\\\\.)*)\""
+          }
+        }
+      ]
+    }
+  ]
+}

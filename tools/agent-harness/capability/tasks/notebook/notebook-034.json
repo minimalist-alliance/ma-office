@@ -1,0 +1,74 @@
+{
+  "id": "notebook-034",
+  "area": "notebook",
+  "title": "An append declined",
+  "prompt": "Add bread to my Shopping page.",
+  "setup": {
+    "notebook": [
+      {
+        "tab": "Harness",
+        "title": "Shopping",
+        "markdown": "# Shopping\n\n- milk\n"
+      }
+    ]
+  },
+  "approve": "none",
+  "checks": [
+    {
+      "kind": "page",
+      "tab": "Harness",
+      "title": "Shopping",
+      "contains": [
+        "milk"
+      ],
+      "notContains": [
+        "bread"
+      ]
+    },
+    {
+      "kind": "cards",
+      "tools": [
+        "notebook_write"
+      ]
+    }
+  ],
+  "policy": {
+    "tools": [
+      "notebook_search",
+      "notebook_write"
+    ]
+  },
+  "standIn": [
+    {
+      "calls": [
+        {
+          "name": "notebook_search",
+          "input": {
+            "query": "Shopping"
+          }
+        }
+      ]
+    },
+    {
+      "calls": [
+        {
+          "name": "notebook_write",
+          "input": {
+            "pageId": {
+              "$re": {
+                "step": 0,
+                "call": 0,
+                "pattern": "\"pageId\":\"([^\"]+)\",\"title\":\"Shopping\""
+              }
+            },
+            "op": "append",
+            "markdown": "- bread"
+          }
+        }
+      ]
+    },
+    {
+      "text": "Okay, I left the Shopping page as it was."
+    }
+  ]
+}

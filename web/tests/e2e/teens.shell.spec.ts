@@ -1,6 +1,6 @@
 // Teens in the Alliance tier, the Desk app's side (task 40, ma-platform contract age.md, draft-age-rules.md 3.2). The band
 // comes only from `/v1/me`. A teen has no Agent app, no way to reach it and no word of it, with Browser, Notebook and
-// Chat as ever; never a card about Pro or Officer; a calm card while waiting on a parent; and a report row wherever the
+// Courier as ever; never a card about Pro or Officer; a calm card while waiting on a parent; and a report row wherever the
 // rules are on. No band at all is today's app, which every other spec in this folder runs against as well.
 import { readFileSync } from 'node:fs';
 import { createRequire } from 'node:module';
@@ -18,8 +18,8 @@ const PRO_OPEN = { enabled: true, memberMonthlyUsd: 100 };
 const DESK = 'd-personal00001';
 const ME = 'u-test';
 const fleet = [{ deskId: DESK, name: 'Personal', kind: 'personal', state: 'running' }];
-const ALL_APPS = ['Chat', 'Notebook', 'Browser', 'Agent'];
-const TEEN_APPS = ['Chat', 'Notebook', 'Browser'];
+const ALL_APPS = ['Courier', 'Notebook', 'Browser', 'Agent'];
+const TEEN_APPS = ['Courier', 'Notebook', 'Browser'];
 
 const TEEN_BODY = 'Your desk appears here once you join. Alliance Member is one small desk with Browser.';
 const PARENT_TITLE = 'Waiting for your parent or guardian';
@@ -36,7 +36,7 @@ const deskGroup = (page: Page): Locator => page.getByRole('group', { name: /^Per
 /** The apps a screen reader and the keyboard find on the desk, by name. */
 async function appsOnDesk(page: Page): Promise<string[]> {
   const names = await deskGroup(page).getByRole('button').evaluateAll((els) => els.map((e) => e.getAttribute('aria-label') ?? ''));
-  return ['Chat', 'Notebook', 'Browser', 'Agent', 'Claude'].filter((app) => names.some((n) => n.startsWith(app)));
+  return ['Courier', 'Notebook', 'Browser', 'Agent', 'Claude'].filter((app) => names.some((n) => n.startsWith(app)));
 }
 
 async function arrive(page: Page, request: APIRequestContext, age: string | null, path = '/'): Promise<void> {
@@ -151,7 +151,7 @@ test.describe('no teen', () => {
 
 // ----- the Agent: gone
 for (const age of ['teen', 'teen-parent-done']) {
-  test(`${age}: Browser, Notebook and Chat, and no Agent anywhere`, async ({ page, request }) => {
+  test(`${age}: Browser, Notebook and Courier, and no Agent anywhere`, async ({ page, request }) => {
     const errors = watchConsole(page);
     await arrive(page, request, age);
     expect(await appsOnDesk(page)).toEqual(TEEN_APPS);
@@ -162,12 +162,12 @@ for (const age of ['teen', 'teen-parent-done']) {
   });
 }
 
-test("a teen's Browser, Notebook and Chat all open", async ({ page, request }) => {
+test("a teen's Browser, Notebook and Courier all open", async ({ page, request }) => {
   await arrive(page, request, 'teen', '/?fixture=one');
   await deskGroup(page).getByRole('button', { name: /^Notebook/ }).evaluate((el) => (el as HTMLButtonElement).click());
   await expect(page.getByRole('dialog', { name: 'Notebook Personal' })).toBeVisible(); // the real Notebook, since sub/notebook-app
-  await deskGroup(page).getByRole('button', { name: /^Chat/ }).evaluate((el) => (el as HTMLButtonElement).click());
-  await expect(page.getByTestId('empty-chat')).toBeVisible();
+  await deskGroup(page).getByRole('button', { name: /^Courier/ }).evaluate((el) => (el as HTMLButtonElement).click());
+  await expect(page.getByTestId('empty-courier')).toBeVisible();
   await deskGroup(page).getByRole('button', { name: /^Browser/ }).evaluate((el) => (el as HTMLButtonElement).click());
   await expect(page.getByTestId('browser-video')).toBeVisible();
 });
@@ -186,21 +186,21 @@ test('the keyboard never lands on it: every arrow from every app, then Tab throu
     seen.add((await page.evaluate(() => document.activeElement?.getAttribute('aria-label') ?? document.activeElement?.textContent ?? '')) ?? '');
   }
   const words = [...seen].join('\n');
-  expect(words).toMatch(/Browser|Notebook|Chat/);
+  expect(words).toMatch(/Browser|Notebook|Courier/);
   expect(words).not.toMatch(/agent|claude/i);
   await expect(page.getByTestId('window-agent')).toHaveCount(0);
 });
 
 test("a saved layout with an Agent in it, stacked under the others: gone from the desk, its menu and the hidden count", async ({ page, request }) => {
   const item = (app: string, x: number, y: number, w = 76, h = 76) => ({ id: `${DESK}:${app}`, app, x, y, w, h });
-  const items = [item('chat', 100, 100), item('notebook', 300, 40), item('agent', 110, 110, 56, 56), item('browser', 80, 80, 240, 240)];
+  const items = [item('courier', 100, 100), item('notebook', 300, 40), item('agent', 110, 110, 56, 56), item('browser', 80, 80, 240, 240)];
   const layout = { schemaVersion: 2, desks: { [DESK]: { x: 0, y: 0, w: 800, h: 500, items } }, z: [DESK] };
   await harness(request, { age: 'teen', fleet, layoutDocs: { [ME]: { version: 3, updatedAt: '2026-11-06T00:00:00Z', layout } } });
   await signIn(page);
   await canvasPainted(page);
   await page.waitForTimeout(800);
   expect(await appsOnDesk(page)).toEqual(TEEN_APPS);
-  // Chat is under the Browser, so one is hidden. Were the Agent still there, it would be two.
+  // Courier is under the Browser, so one is hidden. Were the Agent still there, it would be two.
   await expect(page.getByRole('button', { name: '1 hidden app on the Personal desk' })).toHaveCount(1);
   await page.locator(`[id="proxy-${DESK}:notebook"]`).focus();
   await page.keyboard.press('.');

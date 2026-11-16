@@ -49,7 +49,7 @@ export function BellPanel({ list, setList, count, now }: { list: BellList; setLi
   const all = allNotificationsUrl(config ? accountUrl(config) : null);
 
   return (
-    <div className="menu bell-panel" id="bell-panel" role="dialog" aria-label="Notifications">
+    <div className="menu bell-panel ma-glass" id="bell-panel" role="dialog" aria-label="Notifications">
       {/* The header is there only while something is unread (SPEC.md). */}
       {(unreadHere > 0 || count > 0) && (
         <div className="bell-head">

@@ -203,3 +203,55 @@ describe('desksStopped (S-82)', () => {
     expect(desksOpacity(false)).toBe(1);
   });
 });
+
+describe('a closed account (ma-platform contract moderation.md section 8; S-152)', () => {
+  const NOW = Date.parse('2026-11-20T12:00:00Z');
+  const AHEAD = '2026-12-06T07:00:00Z';
+  const STOPPED = '2026-11-06T07:00:00Z';
+  const m = (membership: Me['membership']): Me => ({ userId: 'u', membership });
+  /** What identity sends a closed account: ended, stopped by other, no dates, `closed: true`. */
+  const CLOSED: Me['membership'] = { status: 'ended', tier: 'officer', stoppedBy: 'other', stoppedAt: null, dataDeleteAt: null, closed: true };
+  const notice = (me: Me | null, p: Partial<NoDeskInput> = {}) => noDeskNotice(input({ me, now: NOW, ...p }));
+
+  it('closed is its own card, never F: the route deskNotice.ts sent an ended member stopped by other', () => {
+    expect(notice(m(CLOSED))).toBe('accountClosed');
+    expect(notice(m({ ...CLOSED, closed: undefined }))).toBe('inactive');
+    expect(notice(m({ ...CLOSED, closed: false }))).toBe('inactive');
+  });
+
+  it('ended, suspended and other stay as they were when not closed', () => {
+    expect(notice(m({ status: 'ended', stoppedBy: 'other', stoppedAt: null, dataDeleteAt: null }))).toBe('inactive');
+    expect(notice(m({ status: 'suspended', stoppedBy: 'other', stoppedAt: null, dataDeleteAt: null }))).toBe('inactive');
+    expect(notice(m({ status: 'ended', stoppedBy: 'member', stoppedAt: STOPPED, dataDeleteAt: AHEAD }))).toBe('kept');
+    expect(notice(m({ status: 'suspended', stoppedBy: 'payment', stoppedAt: STOPPED, dataDeleteAt: AHEAD }))).toBe('paused');
+  });
+
+  it('closed wins over whatever else the fields say: never D’s Rejoin, C’s payment, E, a teen’s parent card or A', () => {
+    expect(notice(m({ status: 'ended', stoppedBy: 'member', stoppedAt: STOPPED, dataDeleteAt: AHEAD, closed: true }))).toBe('accountClosed');
+    expect(notice(m({ status: 'suspended', stoppedBy: 'payment', stoppedAt: STOPPED, dataDeleteAt: AHEAD, closed: true }))).toBe('accountClosed');
+    expect(notice(m({ status: 'ended', stoppedBy: 'member', stoppedAt: STOPPED, dataDeleteAt: '2026-11-01T00:00:00Z', closed: true }))).toBe('accountClosed');
+    expect(notice(m({ ...CLOSED, ageBand: 'teen', adultFrom: '2029-08-01', parent: 'pending' }))).toBe('accountClosed');
+    expect(notice(m({ ...CLOSED, status: 'unpaid' }))).toBe('accountClosed');
+    expect(notice(m({ ...CLOSED, tier: 'free' }))).toBe('accountClosed');
+  });
+
+  it('an API’s 403 account_closed is closed too, whatever /v1/me has said so far, the list included', () => {
+    expect(notice(m({ status: 'active', tier: 'officer' }), { closedHeard: true })).toBe('accountClosed');
+    expect(notice(null, { closedHeard: true, meFailed: true })).toBe('accountClosed');
+    expect(notice(m({ status: 'active' }), { closedHeard: true, list: 'loading' })).toBe('accountClosed');
+    expect(notice(m({ status: 'active' }), { closedHeard: true, list: 'error' })).toBe('accountClosed');
+    expect(notice(m({ status: 'active' }), { closedHeard: false })).toBe('empty');
+  });
+
+  it('over its desks, which are dimmed and carry no counts, as behind C and D', () => {
+    expect(notice(m(CLOSED), { hasDesks: true, list: 'ready' })).toBe('accountClosed');
+    expect(notice(m({ status: 'active' }), { hasDesks: true, list: 'ready', closedHeard: true })).toBe('accountClosed');
+    expect(desksStopped({ list: 'ready', me: m(CLOSED), meFailed: false, hasDesks: true, now: NOW })).toBe(true);
+    expect(desksStopped({ list: 'ready', me: m({ status: 'active' }), meFailed: false, hasDesks: true, now: NOW, closedHeard: true })).toBe(true);
+    expect(desksStopped({ list: 'ready', me: m({ ...CLOSED, closed: undefined }), meFailed: false, hasDesks: true, now: NOW })).toBe(false);
+  });
+
+  it('nothing before anything is known', () => {
+    expect(notice(null, { list: 'loading' })).toBeNull();
+  });
+});

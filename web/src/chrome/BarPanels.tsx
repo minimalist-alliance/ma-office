@@ -90,7 +90,7 @@ export function ScopeList({ options, value, btn, shut }: PanelProps & {
     }
   };
   return (
-    <div ref={ref} id="scope-list" className="menu desk-menu bar-list" role="menu" aria-label="Scope" tabIndex={-1} onKeyDown={onKey}>
+    <div ref={ref} id="scope-list" className="menu desk-menu bar-list ma-glass" role="menu" aria-label="Scope" tabIndex={-1} onKeyDown={onKey}>
       {options.map((o) => (
         <button
           key={o.value}
@@ -136,7 +136,7 @@ export function ZoomPanel({ btn, shut }: PanelProps) {
     act();
   };
   return (
-    <div ref={ref} id="zoom-pop" className="zoom-ctl zoom-pop" role="dialog" aria-label="Zoom" onKeyDown={onKey}>
+    <div ref={ref} id="zoom-pop" className="zoom-ctl zoom-pop ma-glass" role="dialog" aria-label="Zoom" onKeyDown={onKey}>
       <button type="button" className="icon-btn chrome" onClick={() => zoom(0.8)} aria-label="Zoom out" title="Zoom out ( − )"><Icon name="minus" /></button>
       <button type="button" className="icon-btn chrome" onClick={() => zoom(1.25)} aria-label="Zoom in" title="Zoom in ( + )"><Icon name="plus" /></button>
       <button type="button" className="icon-btn chrome" onClick={fitScope} aria-label="Fit the desk" title="Fit ( 0 )"><Icon name="fit" /></button>

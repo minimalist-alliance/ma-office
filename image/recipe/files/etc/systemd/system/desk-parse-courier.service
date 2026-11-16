@@ -1,0 +1,23 @@
+[Unit]
+Description=desk-parse-courier (Courier's mail reader for deskd: desk-agent's image as uid 1113, no network, no /data; ADR 0097)
+# desk-agent's own image, by the id its release names: an update's restart of desk-agent restarts this on the new one. deskd and
+# desk-agent both want it (deskd is its only client; desk-agent's start brings it back after a stop of desk-agent).
+ConditionPathExists=/opt/ma/desk-agent/current/image-id
+PartOf=desk-agent.service
+Requires=docker.service
+After=docker.service systemd-tmpfiles-setup.service
+StartLimitIntervalSec=0
+
+[Service]
+Environment=RELEASE_DIR=/opt/ma/desk-agent/current
+ExecStartPre=-/usr/bin/docker rm -f desk-parse-courier
+ExecStart=/usr/local/lib/ma/desk-parse-courier-run
+# desk-svc stops at SIGTERM (it ends a running worker's group first).
+ExecStop=/usr/bin/docker stop -t 5 desk-parse-courier
+TimeoutStopSec=15
+Restart=always
+RestartSec=3
+RestartSteps=8
+RestartMaxDelaySec=300
+# Under memory pressure a parse goes first (ADR 0097 section 2), as desk-parse's.
+OOMScoreAdjust=500

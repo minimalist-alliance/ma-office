@@ -30,6 +30,12 @@ describe('menu items', () => {
   it('a file has the bar in its order and words', () => {
     expect(ids(world, [file])).toEqual(['Download', 'Rename', 'Move to…', 'Delete']);
   });
+  it('a file Documents can show adds View, first; Download stays (the documents concept §8.1)', () => {
+    expect(ids(world, [{ type: 'file', viewable: true }])).toEqual(['View', 'Download', 'Rename', 'Move to…', 'Delete']);
+    expect(ids(world, [{ type: 'file', viewable: false }])).toEqual(['Download', 'Rename', 'Move to…', 'Delete']);
+    expect(ids(world, [{ type: 'file', viewable: true }, file])).toEqual(['Move to…', 'Delete']);
+    expect(ids({ ...world, mode: 'trash' }, [{ type: 'file', viewable: true }])).toEqual(['Restore', 'Delete forever']);
+  });
   it('a folder adds Open, first', () => {
     expect(ids(world, [dir])).toEqual(['Open', 'Download', 'Rename', 'Move to…', 'Delete']);
   });

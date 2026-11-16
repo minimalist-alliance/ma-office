@@ -1,0 +1,49 @@
+{
+  "id": "files-014",
+  "area": "files",
+  "title": "A folder name with a space",
+  "prompt": "Make a new folder called Harness/Taxes 2026 next to last year's.",
+  "setup": {
+    "files": {
+      "Harness/Taxes 2025/summary.txt": "Filed in April.\n"
+    }
+  },
+  "approve": "all",
+  "checks": [
+    {
+      "kind": "file",
+      "path": "Harness/Taxes 2026/"
+    },
+    {
+      "kind": "file",
+      "path": "Harness/Taxes 2025/summary.txt",
+      "equals": "Filed in April.\n"
+    },
+    {
+      "kind": "cards",
+      "tools": [
+        "files_mkdir"
+      ]
+    }
+  ],
+  "policy": {
+    "tools": [
+      "files_mkdir"
+    ]
+  },
+  "standIn": [
+    {
+      "calls": [
+        {
+          "name": "files_mkdir",
+          "input": {
+            "path": "Harness/Taxes 2026"
+          }
+        }
+      ]
+    },
+    {
+      "text": "Made the folder Harness/Taxes 2026."
+    }
+  ]
+}

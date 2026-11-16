@@ -9,7 +9,7 @@
 // cleared. The hostname never decides.
 //
 // Set (auth.ts, tokenStore.ts): a sign-in finishing at /auth/callback, every refresh, and the member's "Stay signed in" read from
-// GET /v1/me or changed. Cleared: Sign out and Sign out everywhere (`endSession`), and a refresh refused for good (`endHere`, and
+// GET /v1/me or changed. Cleared: Sign out (`endSession`), and a refresh refused for good (`endHere`, and
 // `invalid_grant`).
 import { loadedConfig, type ClientConfig } from './clientConfig';
 

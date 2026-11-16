@@ -3,6 +3,10 @@
 // live region; the line itself isn't live, so a screen reader doesn't say it twice.
 import { useEffect } from 'react';
 import { bootTime, dismissBoot, useBootNotices, type BootNotice } from '../platform/bootNotice';
+
+// This and the watch (`watchBoots`) are a chunk of their own, out of the first load since `sub/mm-js-budget`: `Shell.tsx`
+// fetches it once a desk in the list carries a boot (`hosting: "self"`), the only desks it can say anything about.
+export { watchBoots } from '../platform/bootNotice';
 import { announce } from '../shell/announce';
 import { Icon } from './icons';
 
@@ -23,7 +27,7 @@ export function BootNotices() {
   return (
     <>
       {notices.map((n) => (
-        <div key={`${n.kind}-${n.deskId}`} className="notice boot-notice" role="group" aria-label={n.kind === 'refused' ? `${n.name}: another copy` : `${n.name} started`} data-testid="boot-notice">
+        <div key={`${n.kind}-${n.deskId}`} className="notice boot-notice ma-glass" role="group" aria-label={n.kind === 'refused' ? `${n.name}: another copy` : `${n.name} started`} data-testid="boot-notice">
           <p className="boot-notice-text">
             {bootSaid(n)}
             <span className="boot-notice-tail">

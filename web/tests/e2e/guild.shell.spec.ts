@@ -165,7 +165,7 @@ test.describe('apps on a Guild Desk', () => {
     await openApp(page, 'Platform team', 'Notebook');
     await openApp(page, 'Platform team', 'Agent');
     await expect(page.getByTestId('notebook-here')).toContainText('Here now: Marcus Lee, Priya Raman');
-    await expect(page.getByTestId('guild-agent-line')).toHaveText(/Your conversations here are private to you\. The guild's limits apply\./);
+    await expect(page.getByTestId('guild-agent-line')).toHaveText(/Other members of the guild don't see your conversations here\. The guild's limits apply\./);
     await expect(page.getByTestId('guild-agent-line').getByRole('button', { name: 'Guild limits' })).toBeVisible();
     expect(errors).toEqual([]);
   });

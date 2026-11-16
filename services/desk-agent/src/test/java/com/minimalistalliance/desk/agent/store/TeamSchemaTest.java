@@ -86,7 +86,7 @@ class TeamSchemaTest {
                 .contains("agents", "messages", "keys", "settings", "links", "proposals", "a2a", "timers", "memories",
                         "thread_summaries");
         assertThat(names("SELECT name FROM pragma_table_info('agents')"))
-                .contains("purpose", "icon", "tone", "png_version", "solo", "workspace_mb", "shared_with");
+                .contains("purpose", "icon", "tone", "png_version", "solo", "workspace_mb", "shared_with", "color");
         assertThat(names("SELECT name FROM pragma_table_info('messages')")).contains("origin", "tools");
         assertThat(names("SELECT name FROM pragma_table_info('proposals')")).contains("run_id", "origin",
                 "before_json");
@@ -138,8 +138,9 @@ class TeamSchemaTest {
 
         assertThat(userVersion()).isEqualTo(1);
         assertThat(names("SELECT text FROM messages")).containsExactly("Hi");
-        assertThat(names("SELECT purpose || '|' || icon || '|' || tone || '|' || solo || '|' || shared_with"
-                + " FROM agents")).containsExactly("|nodes|graphite|1|[]");
+        assertThat(names("SELECT purpose || '|' || icon || '|' || tone || '|' || solo || '|' || shared_with || '|'"
+                + " || color FROM agents")).as("the column's default is still nodes; it's retired to the hat at once")
+                .containsExactly("|hat|graphite|1|[]|indigo");
         assertThat(names("SELECT unseen FROM agents")).containsExactly("2");
     }
 
@@ -202,14 +203,55 @@ class TeamSchemaTest {
                 "INSERT INTO agents (id, name, role, created_at, icon, tone) VALUES ('f', 'F', 'staff', 6, 'briefcase',"
                         + " 'graphite')",
                 "INSERT INTO agents (id, name, role, created_at, icon, tone) VALUES ('g', 'G', 'staff', 7, 'png', 'clay')",
-                "INSERT INTO agents (id, name, role, created_at, icon, tone) VALUES ('h', 'H', 'staff', 8, 'spark', 'blue')");
+                "INSERT INTO agents (id, name, role, created_at, icon, tone) VALUES ('h', 'H', 'staff', 8, 'spark', 'blue')",
+                "INSERT INTO agents (id, name, role, created_at, icon, tone) VALUES ('i', 'I', 'staff', 9, 'pen', 'amber')",
+                "INSERT INTO agents (id, name, role, created_at, icon, tone) VALUES ('j', 'J', 'staff', 10, 'pen', 'cyan')",
+                "INSERT INTO agents (id, name, role, created_at, icon, tone) VALUES ('k', 'K', 'staff', 11, 'pen', 'violet')",
+                "INSERT INTO agents (id, name, role, created_at, icon, tone) VALUES ('l', 'L', 'staff', 12, 'pen', 'olive')",
+                "INSERT INTO agents (id, name, role, created_at, icon, tone) VALUES ('m', 'M', 'staff', 13, 'pen', 'green')");
 
         open();
         open();
 
         assertThat(names("SELECT id || ':' || icon || ':' || tone FROM agents WHERE role = 'staff' ORDER BY id"))
-                .containsExactly("a:plane:green", "b:person:blue", "c:wallet:teal", "d:bulb:rose", "e:terminal:plum",
-                        "f:document:graphite", "g:png:clay", "h:nodes:blue");
-        assertThat(names("SELECT icon || ':' || tone FROM agents WHERE id = 'manager'")).containsExactly("nodes:graphite");
+                .as("the warm and green tones went on Nov 14: each is the nearest of the seven")
+                .containsExactly("a:plane:harbor", "b:person:blue", "c:wallet:harbor", "d:bulb:iris", "e:terminal:iris",
+                        "f:document:graphite", "g:png:navy", "h:hat:blue", "i:pen:steel", "j:pen:steel", "k:pen:iris",
+                        "l:pen:harbor", "m:pen:harbor");
+        assertThat(names("SELECT icon || ':' || tone FROM agents WHERE id = 'manager'"))
+                .containsExactly("hat:graphite");
+    }
+
+    /**
+     * Colours (the owner, Nov 15): at open the lead takes the Agent app's own and each staff agent with none, oldest
+     * first, the next free one against those already stored, so the owner's two helpers become sage then amber. A guild
+     * member's own agent and Desk Maia get none. Opening again changes nothing; a row a rolled-back desk-agent adds
+     * gets one next.
+     */
+    @Test
+    void eachAgentWithNoColourTakesTheNextFreeOneOldestFirstOnce() throws Exception {
+        aFileFromBefore();
+        exec("INSERT INTO agents (id, name, role, created_at) VALUES ('ag-second', 'Second', 'staff', 20)",
+                "INSERT INTO agents (id, name, role, created_at) VALUES ('ag-first', 'First', 'staff', 10)",
+                "INSERT INTO agents (id, name, role, created_at) VALUES ('gm-member01', 'Theirs', 'manager', 5)",
+                "INSERT INTO agents (id, name, role, created_at) VALUES ('maia', 'Maia', 'staff', 1)");
+
+        open();
+
+        String colors = "SELECT id || ':' || COALESCE(color, '-') FROM agents ORDER BY created_at, id";
+        assertThat(names(colors)).containsExactly("maia:-", "gm-member01:-", "manager:indigo", "ag-first:sage",
+                "ag-second:amber");
+
+        open();
+        assertThat(names(colors)).as("opening again changes nothing").containsExactly("maia:-", "gm-member01:-",
+                "manager:indigo", "ag-first:sage", "ag-second:amber");
+
+        exec("UPDATE agents SET color = 'amber' WHERE id = 'ag-first'",
+                "INSERT INTO agents (id, name, role, created_at) VALUES ('ag-old', 'Old', 'staff', 30)",
+                "INSERT INTO agents (id, name, role, created_at) VALUES ('ag-older', 'Older', 'staff', 25)");
+        open();
+        assertThat(names("SELECT id || ':' || color FROM agents WHERE role = 'staff' AND id <> 'maia'"
+                + " ORDER BY created_at")).as("the first free ones against what's stored, oldest first")
+                .containsExactly("ag-first:amber", "ag-second:amber", "ag-older:sage", "ag-old:rose");
     }
 }

@@ -29,10 +29,10 @@ function memoryStorage(): Storage {
 
 const REFRESH_KEY = 'ma-desk-web-refresh';
 /** Written out, so a key dropped from the list fails here rather than staying behind for the next person. */
-const EVERY_KEY = ['ma.layout.v2', 'ma.layout.v1', 'ma.layout.sync.v1', 'ma.free.prefs.v1', 'ma.setup.prefs.v1', 'ma.prefs.background', 'ma.layout.owner.v1'];
+const EVERY_KEY = ['ma.layout.v2', 'ma.layout.v1', 'ma.layout.sync.v1', 'ma.free.prefs.v1', 'ma.setup.prefs.v1', 'ma.tour.v1', 'ma.maiaMode.v1', 'ma.appearance.v1', 'ma.prefs.background', 'ma.layout.owner.v1', 'ma.welcome.v1'];
 
 const app = (id: string, kind: string) => ({ id: `${id}:${kind}`, app: kind, x: 24, y: 24, w: 76, h: 76 });
-const desk = (id: string, x: number) => ({ id, x, y: 36, w: 584, h: 236, items: [app(id, 'chat'), app(id, 'browser')] });
+const desk = (id: string, x: number) => ({ id, x, y: 36, w: 584, h: 236, items: [app(id, 'courier'), app(id, 'browser')] });
 /** One of every kind: a Personal desk, a Work desk and a guild's panel, all in the one document. */
 const DESKS = { 'd-personal': desk('d-personal', 0), 'd-work': desk('d-work', 700), 'guild-g1': desk('guild-g1', 1400) };
 
@@ -41,12 +41,17 @@ let store: Store;
 
 function seed(owner: string | null): void {
   local.setItem('ma.layout.v2', JSON.stringify({ desks: DESKS, z: Object.keys(DESKS) }));
-  local.setItem('ma.layout.v1', JSON.stringify({ desks: { 'd-personal': { x: 0, y: 0, cols: 6, rows: 1, items: [{ id: 'd-personal:chat', app: 'chat' }] } } }));
+  local.setItem('ma.layout.v1', JSON.stringify({ desks: { 'd-personal': { x: 0, y: 0, cols: 6, rows: 1, items: [{ id: 'd-personal:chat', app: 'chat' }] } } })); // as a version-1 build stored it
   local.setItem('ma.layout.sync.v1', JSON.stringify({ version: 3, etag: '"3"', dirty: ['d-work'], member: owner }));
   local.setItem('ma.free.prefs.v1', JSON.stringify({ who: 'u-a', prefs: { freeSaidOn: '2026-11-10' } }));
   local.setItem('ma.setup.prefs.v1', JSON.stringify({ who: 'u-a', prefs: { circleHidden: true } }));
+  local.setItem('ma.tour.v1', JSON.stringify({ who: 'u-a', off: true }));
+  local.setItem('ma.maiaMode.v1', JSON.stringify({ who: 'u-a', prefs: { on: true, trackerCollapsed: true } }));
+  local.setItem('ma.appearance.v1', JSON.stringify({ who: 'u-a', blue: 40, contrast: 60, flats: { light: { 'surface.worldBase': '#E9E9E9' } } }));
   local.setItem('ma.prefs.background', JSON.stringify({ id: 'misty-forest', theme: 'light' }));
   if (owner) local.setItem('ma.layout.owner.v1', owner);
+  // Maia's welcome: setup waiting for a desk that wasn't up (to-dos and names only ever here and on the desk).
+  local.setItem('ma.welcome.v1', JSON.stringify({ who: 'u-a', at: 0, items: [] }));
   // This device's own: the view and the theme aren't the account's layout (ADR 0005), and stay.
   local.setItem('ma.view.v1', JSON.stringify({ scope: 'work', activeDesk: 'd-work', mode: 'desk' }));
   local.setItem('ma.prefs.theme', 'dark');
@@ -95,8 +100,11 @@ describe('its keys', () => {
     const { MIRROR_KEY: background } = await import('../theme/backdropMirror');
     const { MIRROR: free } = await import('../free/prefs');
     const { MIRROR: setup } = await import('../setup/prefs');
+    const { TOUR_MIRROR: tour } = await import('../tour/door');
+    const { MIRROR: maiaMode } = await import('../maiamode/prefs');
+    const { MIRROR_KEY: appearance } = await import('../theme/tune/mirror');
     expect([...store.LAYOUT_MIRROR_KEYS].sort()).toEqual([...EVERY_KEY].sort());
-    for (const key of [LAYOUT_KEY, LAYOUT_KEY_V1, store.LAYOUT_SYNC_KEY, free, setup, background, store.LAYOUT_OWNER_KEY]) expect(store.LAYOUT_MIRROR_KEYS).toContain(key);
+    for (const key of [LAYOUT_KEY, LAYOUT_KEY_V1, store.LAYOUT_SYNC_KEY, free, setup, tour, maiaMode, appearance, background, store.LAYOUT_OWNER_KEY]) expect(store.LAYOUT_MIRROR_KEYS).toContain(key);
   });
 });
 

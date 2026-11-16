@@ -40,7 +40,7 @@ async function shot(page: Page, name: string): Promise<void> {
   await page.screenshot({ path: `test-results/shots/t49-${name}.png` });
 }
 
-test('a new agent opens its settings, and the desk\'s cap stops the next, saying so', async ({ page }) => {
+test('a new agent opens its setup screen, then its settings, and the desk\'s cap stops the next, saying so', async ({ page }) => {
   await open(page, 'ready', { agentCap: '3' });
   await expect(page.getByTestId('agent-cap-note')).toHaveCount(0);
   await page.getByTestId('new-agent').click();
@@ -48,6 +48,18 @@ test('a new agent opens its settings, and the desk\'s cap stops the next, saying
   await page.getByTestId('new-agent-submit').click();
   await expect(page.locator('.ag-head-name')).toHaveText('Scout');
   await expect(page.locator('.ag-head p')).toContainText('Solo');
+  // A key picked goes with a model, the first `agent.key.models` lists, as desk-agent needs both or neither (release 3's
+  // proof: the form sent the key alone, and the desk refused it).
+  const made = await page.evaluate(() => (window as unknown as { __maAgentMock: { calls: { method: string; params: Record<string, unknown> }[] } }).__maAgentMock.calls.filter((c) => c.method === 'agent.create').map((c) => c.params));
+  expect(made).toHaveLength(1);
+  expect(made[0]?.['keyId']).toEqual(expect.any(String));
+  expect(made[0]?.['model']).toEqual(expect.any(String));
+  // With a key, what it can use comes next (draft ADR section 16), and it runs only once that's saved.
+  await expect(page.getByRole('heading', { name: 'What can Scout use?' })).toBeVisible();
+  await expect(page.locator('.ag-head p')).toContainText('set up first');
+  await page.getByTestId('access-save').click();
+  await expect(page.getByTestId('composer-input')).toBeVisible();
+  await page.getByTestId('tab-settings').click();
   await expect(settings(page)).toBeVisible();
   await expect(page.getByRole('heading', { name: 'Scout’s settings' })).toBeVisible();
   await expect(page.getByRole('tab', { name: /Scout/ })).toBeVisible();
@@ -71,7 +83,7 @@ test('a name the desk already has is refused in words, at create and at rename',
   await page.getByTestId('new-agent-name').fill('Scout');
   await page.getByTestId('new-agent-submit').click();
   await expect(page.locator('.ag-head-name')).toHaveText('Scout');
-  await page.getByRole('button', { name: 'Close panel' }).click();
+  await expect(page.getByTestId('setup-screen')).toBeVisible();
   await page.getByTestId('new-agent').click();
   await page.getByTestId('new-agent-name').fill('scout');
   await page.getByTestId('new-agent-submit').click();
@@ -79,6 +91,7 @@ test('a name the desk already has is refused in words, at create and at rename',
   await page.getByTestId('new-agent-name').fill('Writer');
   await page.getByTestId('new-agent-submit').click();
   await expect(page.locator('.ag-head-name')).toHaveText('Writer');
+  await page.getByTestId('tab-settings').click();
   await settings(page).getByTestId('settings-name').fill('SCOUT');
   await settings(page).getByTestId('settings-save').click();
   await expect(settings(page).getByTestId('settings-about').getByRole('alert')).toHaveText('Another agent on this desk has that name.');
@@ -93,11 +106,11 @@ test('the lead proposes two agents: one confirmed and applied exactly as shown, 
   // Exactly what will change: every field, the timer, and nothing applies yet.
   await expect(scout.getByRole('heading', { level: 4 })).toHaveText('Add the agent “Scout”');
   await expect(scout).toContainText('Compass');
-  await expect(scout).toContainText('Teal');
+  await expect(scout).toContainText('Harbor');
   await expect(scout).toContainText('No, solo');
   await expect(scout).toContainText('50 MB');
   await expect(scout.getByTestId('proposal-timer')).toContainText('Morning brief · Weekdays at 8:00 AM');
-  await expect(writer).toContainText('Plum');
+  await expect(writer).toContainText('Iris');
   await expect(page.getByRole('tab', { name: /Scout/ })).toHaveCount(0);
   // What it costs, and how to undo it, above the buttons.
   await expect(scout.getByTestId('proposal-note')).toContainText('counts toward its limits');
@@ -126,7 +139,7 @@ test('the lead proposes two agents: one confirmed and applied exactly as shown, 
   await page.getByTestId('tab-settings').click();
   await expect(settings(page).getByTestId('settings-name')).toHaveValue('Scout');
   await expect(settings(page).getByRole('radio', { name: 'Compass' })).toHaveAttribute('aria-checked', 'true');
-  await expect(settings(page).getByRole('radio', { name: 'Teal' })).toHaveAttribute('aria-checked', 'true');
+  await expect(settings(page).getByRole('radio', { name: 'Harbor' })).toHaveAttribute('aria-checked', 'true');
   await expect(settings(page).getByTestId('timer-row')).toContainText('Morning brief');
   await shot(page, 'proposal-applied-settings');
 });
@@ -332,10 +345,10 @@ test('the look: an icon and a tone from the keyboard, a PNG upload, and refusals
   await page.keyboard.press('ArrowRight');
   await expect(look.getByRole('radio', { name: 'Book' })).toBeFocused();
   await expect(look.getByRole('radio', { name: 'Book' })).toHaveAttribute('aria-checked', 'true');
-  await look.getByRole('radio', { name: 'Plum' }).click();
+  await look.getByRole('radio', { name: 'Iris' }).click();
   await expect
     .poll(() => page.evaluate(() => (JSON.parse((window as unknown as { __maAgentMock: { dump(): string } }).__maAgentMock.dump()) as { agents: { id: string; look: unknown }[] }).agents.find((a) => a.id === 'researcher')?.look))
-    .toEqual({ icon: 'book', tone: 'plum', png: null });
+    .toEqual({ icon: 'book', tone: 'iris', png: null });
   const updates = await page.evaluate(() => (window as unknown as { __maAgentMock: { calls: { method: string }[] } }).__maAgentMock.calls.filter((c) => c.method === 'agent.update').length);
   expect(updates).toBe(1);
 

@@ -1,10 +1,10 @@
 // The brain of one Browser window, outside React: which stream state to ask for, what the `<video>` plays,
 // and what the window should show. Nothing here runs per frame. The element plays by itself and the browser
 // composites it, so a live picture costs no React and no DOM write.
-import type { BrowserInput, BrowserMedia, BrowserTab, BrowserViewMessage, DeskLink, DeskRpc, PhoneDevice, StreamState } from '../desk/deskLink';
+import { DeskNotConnected, type BrowserInput, type BrowserMedia, type BrowserTab, type BrowserViewMessage, type DeskLink, type DeskRpc, type PhoneDevice, type StreamState } from '../desk/deskLink';
 import { LastSound } from '../desk/sound';
 import { pasteKeys } from '../desk/rtc/input';
-import { addressToUrl } from './address';
+import { addressToUrl } from './typedAddress';
 import { loadLastScreen, saveLastScreen } from './lastScreen';
 import { CANT_CONTROL, NOTHING_TO_PASTE, PASTE_FAILED, PASTE_REFUSED, PASTE_TOO_BIG, StreamClipboard } from './clipboard';
 import { certainlyNotDone, mayHaveGoneOut, mutate } from './mutate';
@@ -62,9 +62,14 @@ export interface BrowserView {
   desktopSite: boolean;
   /** The phone's keyboard (`softKeyboard.ts`): up, and Ctrl and Alt. */
   soft: SoftState;
+  /**
+   * The desk Browser's own zoom (ADR 0055; deskd's `browser.zoom.*`): its level, Chromium's page zoom for every member tab,
+   * once the desk has answered `browser.zoom.get` on this window's session; null before that, and on a deskd before it.
+   */
+  deskZoom: number | null;
 }
 
-const INITIAL: BrowserView = { refused: null, trying: false, bandwidthPaused: false, bandwidthResumesAt: null, canPlayVideo: true, hasFrame: false, hadFrame: false, muted: false, tabs: [], pendingAddress: null, notice: null, heldText: null, keptAddress: null, streamFocused: false, lastScreen: false, touchHint: false, zoom: { zoomed: false, canIn: true, canOut: false }, phone: NO_PHONE_VIEW, desktopSite: false, soft: NOT_TYPING };
+const INITIAL: BrowserView = { refused: null, trying: false, bandwidthPaused: false, bandwidthResumesAt: null, canPlayVideo: true, hasFrame: false, hadFrame: false, muted: false, tabs: [], pendingAddress: null, notice: null, heldText: null, keptAddress: null, streamFocused: false, lastScreen: false, touchHint: false, zoom: { zoomed: false, canIn: true, canOut: false }, phone: NO_PHONE_VIEW, desktopSite: false, soft: NOT_TYPING , deskZoom: null };
 /** A phone's box settles this long before the desk hears it, so a turn of the phone reflows the page once. */
 const DEVICE_SETTLE_MS = 300;
 /** Another session's phone has the tabs: what a desktop watching sees in its picture's corner, and how to have them back. */
@@ -77,6 +82,21 @@ const ROW_PX = 52;
 /** How often the last screen is kept while it shows (`lastScreen.ts`): a JPEG of one frame, about 10 ms of work. */
 export const LAST_SCREEN_EVERY_MS = 30_000;
 const PICK_A_TAB = "This page can't take that from here. Pick a tab.";
+/** The desk's zoom goes at most this often while the slider or the wheel moves (the Desk Engineer's interface): the newest wins. */
+export const ZOOM_EVERY_MS = 100;
+/**
+ * A `browser.zoom.get` that got no answer (`unavailable`, a deadline) is asked once more this long after, once a session: a
+ * steady stream has no new status to ask on, so without it the window would have no zoom until the next session.
+ */
+export const ZOOM_RETRY_MS = 5_000;
+/**
+ * The Browser's zoom as the window offers it (ADR 0055): the desk's level, or null for no zoom control. Null too while the
+ * desk's phone view is in play, this session's or another's: Chromium's mobile emulation suspends its page zoom (the Desk
+ * Engineer's spike, `docs/sub-status/browser-zoom.md` on `sub/browser-zoom`), so a slider there would do nothing.
+ */
+export const zoomOffered = (v: Pick<BrowserView, 'deskZoom' | 'phone'>): number | null => (v.phone.mine || v.phone.other ? null : v.deskZoom);
+/** A level as deskd says it: a whole percent from 50 to 200 (`zoom/level.ts` has the office's own rules). */
+const deskLevel = (n: unknown): number | null => (typeof n === 'number' && Number.isFinite(n) ? Math.min(200, Math.max(50, Math.round(n))) : null);
 /** It may have gone out. Nothing goes again by itself, even what would be harmless to repeat: the member looks first. */
 const DIDNT_ANSWER = "The page didn't answer. Check it before trying again.";
 /** The bar's line while the desk won't start an older Chromium on the member's profile (ADR 0035). */
@@ -172,6 +192,18 @@ export class BrowserDriver {
   private stopUnmuting: (() => void) | null = null;
   /** Cancels waiting for the first packet or frame of a session that has since gone. */
   private cancelWatch: (() => void) | null = null;
+  /** The session `browser.zoom.get` was asked on, so each new one asks once. */
+  private zoomAskedOn: BrowserMedia | null = null;
+  /** What the desk last said its zoom is. */
+  private zoomSaid: number | null = null;
+  /** The member's newest level, not sent yet. */
+  private zoomWanted: number | null = null;
+  private zoomInFlight = false;
+  private zoomSentAt = -Infinity;
+  private zoomTimer = 0;
+  /** The session whose `browser.zoom.get` has had its one more try (`ZOOM_RETRY_MS`). */
+  private zoomRetriedOn: BrowserMedia | null = null;
+  private zoomRetryTimer = 0;
 
   constructor() {
     this.control = new StreamControl(
@@ -217,6 +249,14 @@ export class BrowserDriver {
     window.clearTimeout(this.holdTimer);
     window.clearTimeout(this.deviceTimer);
     if (this.lastScreenTimer) window.clearInterval(this.lastScreenTimer);
+    window.clearTimeout(this.zoomRetryTimer);
+    this.zoomRetryTimer = 0;
+    // A level the member chose just before closing still goes.
+    if (this.zoomTimer) {
+      window.clearTimeout(this.zoomTimer);
+      this.zoomTimer = 0;
+      this.sendZoom();
+    }
     this.phoneBox = null;
     this.sendDevice(null);
     window.visualViewport?.removeEventListener('resize', this.onViewport);
@@ -622,6 +662,7 @@ export class BrowserDriver {
   }
 
   private onView(m: BrowserViewMessage): void {
+    this.onZoomSaid(m.zoom);
     const was = this.view.phone;
     const phone = readView(m, this.link?.currentSessionId?.() ?? null, this.sentDevice !== null);
     this.patch({ phone });
@@ -869,6 +910,8 @@ export class BrowserDriver {
       }
       this.watchForNoPicture();
     }
+    // After the stream, which starts the browser, and the tabs: the desk's zoom, once per session (ADR 0055).
+    if (status.live || status.ready) this.askZoom();
     this.releaseIfDone();
   }
 
@@ -906,6 +949,104 @@ export class BrowserDriver {
     this.control.up();
     this.showMedia();
   };
+
+  // ----- the desk's own zoom (ADR 0055; deskd API.md sections 4 and 10, the Desk Engineer's interface)
+
+  /**
+   * Once per session, as the stream comes up: whether this desk zooms its Browser, and at what level. Until it answers, the
+   * window has no zoom.
+   */
+  private askZoom(): void {
+    const link = this.link;
+    const media = this.media;
+    if (!this.mounted || !link || !media || this.zoomAskedOn === media) return;
+    this.zoomAskedOn = media;
+    link.call('browser.zoom.get').then(
+      (r) => {
+        if (this.link !== link) return;
+        const level = deskLevel(r?.level);
+        if (level === null) return;
+        this.zoomSaid = level;
+        if (this.zoomWanted === null && !this.zoomInFlight) this.patch({ deskZoom: level });
+      },
+      (err: unknown) => {
+        if (this.link !== link) return;
+        // A deskd before it (`not_found`), or one that won't (`forbidden`, a guild member's): no zoom, nothing else changes.
+        if (certainlyNotDone(err) && !(err instanceof DeskNotConnected) && (err as { code?: string }).code !== 'unavailable') {
+          this.zoomSaid = null;
+          this.patch({ deskZoom: null });
+        } else if (this.media === media) {
+          // Asked again on the next session or the next change of the stream, and once more by itself after a while: a
+          // steady stream has no next change. One try a session, never a loop.
+          this.zoomAskedOn = null;
+          if (this.zoomRetriedOn !== media) {
+            this.zoomRetriedOn = media;
+            window.clearTimeout(this.zoomRetryTimer);
+            this.zoomRetryTimer = window.setTimeout(() => {
+              this.zoomRetryTimer = 0;
+              if (this.media === media) this.askZoom();
+            }, ZOOM_RETRY_MS);
+          }
+        }
+      },
+    );
+  }
+
+  /** `browser.view`'s `zoom`: the desk's level changed, whoever changed it (a key chord in the page, another office). */
+  private onZoomSaid(zoom: unknown): void {
+    const level = deskLevel(zoom);
+    if (level === null || this.zoomSaid === null) return; // not before `browser.zoom.get` says it zooms
+    this.zoomSaid = level;
+    if (this.zoomWanted === null && !this.zoomInFlight) this.patch({ deskZoom: level });
+  }
+
+  /** The member's level (the slider, a wheel or a pinch over the window): shown at once, sent at most every 100 ms. */
+  readonly setDeskZoom = (level: number): void => {
+    const next = deskLevel(level);
+    if (next === null || this.view.deskZoom === null) return;
+    this.zoomWanted = next;
+    this.patch({ deskZoom: next });
+    if (this.zoomInFlight || this.zoomTimer) return;
+    const wait = Math.max(0, ZOOM_EVERY_MS - (performance.now() - this.zoomSentAt));
+    this.zoomTimer = window.setTimeout(() => {
+      this.zoomTimer = 0;
+      this.sendZoom();
+    }, wait);
+  };
+
+  private sendZoom(): void {
+    const link = this.link;
+    const level = this.zoomWanted;
+    if (level === null) return;
+    this.zoomWanted = null;
+    if (!link) {
+      this.patch({ deskZoom: this.zoomSaid });
+      return;
+    }
+    this.zoomInFlight = true;
+    this.zoomSentAt = performance.now();
+    mutate((idem) => link.call('browser.zoom.set', { level }, { idem })).then(
+      (r) => {
+        this.zoomSaid = deskLevel(r?.level) ?? level;
+      },
+      () => {
+        // Not done, or not known: the desk is asked what it has, and what it last said shows meanwhile.
+        if (this.media) {
+          this.zoomAskedOn = null;
+          this.askZoom();
+        }
+      },
+    ).finally(() => {
+      this.zoomInFlight = false;
+      if (this.zoomWanted !== null) {
+        const wait = Math.max(0, ZOOM_EVERY_MS - (performance.now() - this.zoomSentAt));
+        this.zoomTimer = window.setTimeout(() => {
+          this.zoomTimer = 0;
+          this.sendZoom();
+        }, wait);
+      } else this.patch({ deskZoom: this.zoomSaid });
+    });
+  }
 
   /** The element holds its last frame, so a new session's stream goes on only once it has something to show. Never under a still. */
   private showMedia(): void {

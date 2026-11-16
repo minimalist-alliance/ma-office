@@ -21,9 +21,19 @@ import java.util.regex.Pattern;
  * @param before what the change replaces, read now, not hashed; null for nothing
  * @param refusal a reason the policy refuses this call before asking ({@code sensitive}, …), so no card is made and
  *     the gate answers {@code Refused(refusal)}; null for none. The tool's own refusal at run time stays as a backstop
+ * @param group the auto-approve group deskd's look put this one call in, for a tool whose class is decided per call
+ *     (To-do's {@code todos}: deskd's rule over the item's maker and run, the run's taint and who started it); null
+ *     otherwise. It only ever narrows: {@code LowRisk} lets a call through unasked only when the member's switch is on
+ *     too, and deskd checks again as it runs
  */
 public record Classified(ToolCall call, ToolDecl decl, Risk risk, String context, Map<String, Object> target,
-        Map<String, Object> payload, Map<String, Object> before, String refusal) {
+        Map<String, Object> payload, Map<String, Object> before, String refusal, String group) {
+
+    /** A call with no per-call group. */
+    public Classified(ToolCall call, ToolDecl decl, Risk risk, String context, Map<String, Object> target,
+            Map<String, Object> payload, Map<String, Object> before, String refusal) {
+        this(call, decl, risk, context, target, payload, before, refusal, null);
+    }
 
     /** A call the policy doesn't refuse. */
     public Classified(ToolCall call, ToolDecl decl, Risk risk, String context, Map<String, Object> target,
@@ -33,7 +43,7 @@ public record Classified(ToolCall call, ToolDecl decl, Risk risk, String context
 
     /** The same call at {@code floor} or its own class, whichever is higher. */
     public Classified atLeast(Risk floor) {
-        return new Classified(call, decl, risk.atLeast(floor), context, target, payload, before, refusal);
+        return new Classified(call, decl, risk.atLeast(floor), context, target, payload, before, refusal, group);
     }
 
     /** The member's signed-in session for one site: never asked for from a run the member didn't start (Security, S-14). */
@@ -74,7 +84,7 @@ public record Classified(ToolCall call, ToolDecl decl, Risk risk, String context
 
     /** The same call, refused before asking with {@code reason}. */
     public Classified refused(String reason) {
-        return new Classified(call, decl, risk, context, target, payload, before, Objects.requireNonNull(reason));
+        return new Classified(call, decl, risk, context, target, payload, before, Objects.requireNonNull(reason), group);
     }
 
     private static final Pattern HOLE = Pattern.compile("\\{([A-Za-z0-9_]+)}");

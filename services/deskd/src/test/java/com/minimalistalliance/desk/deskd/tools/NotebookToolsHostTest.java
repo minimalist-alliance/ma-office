@@ -37,7 +37,8 @@ class NotebookToolsHostTest {
     void setUp() throws Exception {
         service = new FakeNotebookSocket(dir.resolve("n.sock"));
         answer("notebook.page.agentEdit", p -> Boolean.TRUE.equals(p.get("dryRun"))
-                ? NotebookToolsTest.args("pageId", p.get("pageId"), "title", "Plan", "op", p.get("op"), "dryRun", true)
+                ? NotebookToolsTest.args("pageId", p.get("pageId"), "title", "Plan", "op", p.get("op"), "dryRun", true,
+                        "tabId", "tab-1")
                 : NotebookToolsTest.args("pageId", "p-1", "title", "Plan", "op", p.get("op"), "versionId", "v-1"));
         answer("notebook.page.markdown", p -> NotebookToolsTest.args("pageId", p.get("pageId"), "title", "Plan", "markdown", "# Plan\n", "from", 0, "next", null, "length", 7, "trashed", false));
         answer("notebook.page.trash", p -> Map.of());
@@ -102,6 +103,180 @@ class NotebookToolsHostTest {
         return asked.stream().filter(a -> "notebook.page.agentEdit".equals(a.get("_method")) && !Boolean.TRUE.equals(a.get("dryRun"))).count();
     }
 
+    /**
+     * The seam between the core's auto-approve and the Notebook's edit key (`sub/lsub-agent-tools-notebook`'s note: "core's
+     * auto-approve must pass the approval id"): a write desk-agent did without asking, under a switch deskd's own record
+     * holds, reaches desk-notebook keyed by that call's own approval id in a space of its own ({@code auto:<id>}, Security's
+     * AAW-L2), with the switch's tab for desk-notebook to hold it to where it writes, so it's made once and the draft
+     * ADR's undo finds it. Without that id deskd runs nothing.
+     */
+    @Test
+    void aWriteDoneWithoutAskingIsKeyedByItsOwnApprovalIdAndRunsNothingWithoutOne() throws Exception {
+        ToolHost host = host(false);
+        host.access(new ToolHost.AccessRecord() {
+            @Override
+            public boolean autoOn(com.minimalistalliance.desk.deskd.rpc.Caller caller, String agentId, String group) {
+                return "ag-1".equals(agentId) && "notebook".equals(group);
+            }
+
+            @Override
+            public String place(String agentId, String group) {
+                return "notebook".equals(group) ? "tab-1" : null;
+            }
+        });
+        Map<String, Object> unkeyed = message("ag-1", "notebook_write",
+                NotebookToolsTest.args("pageId", "p-1", "op", "append", "markdown", "A line."), false);
+        unkeyed.put("auto", "notebook");
+        Map<String, Object> refused = host.handle(unkeyed);
+        assertThat(refused).containsEntry("t", "terr").containsEntry("code", "bad_request");
+        assertThat(map(refused.get("details"))).containsEntry("reason", "autoApprovalId");
+        assertThat(edits()).isZero();
+
+        Map<String, Object> keyed = new LinkedHashMap<>(unkeyed);
+        keyed.put("autoApprovalId", "ap-abcdefghijklmnopqrst");
+        assertThat(host.handle(keyed)).containsEntry("t", "tres");
+        assertThat(edits()).isEqualTo(1);
+        Map<String, Object> edit = asked.stream()
+                .filter(a -> "notebook.page.agentEdit".equals(a.get("_method")) && !Boolean.TRUE.equals(a.get("dryRun")))
+                .findFirst().orElseThrow();
+        assertThat(edit).containsEntry("key", "auto:ap-abcdefghijklmnopqrst").containsEntry("op", "append")
+                .containsEntry("pageId", "p-1").containsEntry("untrusted", false).containsEntry("tab", "tab-1");
+        // No ticket was asked for: deskd's own record of the switch let it through.
+        assertThat(redeemed.get()).isNull();
+
+        // A member's yes still keys by its own id, and an unasked call for an agent with no switch runs nothing.
+        Map<String, Object> other = new LinkedHashMap<>(keyed);
+        other.put("agentId", "ag-2");
+        other.put("runId", "run-2");
+        assertThat(map(host.handle(other).get("details"))).containsEntry("reason", "approval_unknown");
+        assertThat(edits()).isEqualTo(1);
+        Map<String, Object> yes = approved(message("ag-1", "notebook_write",
+                NotebookToolsTest.args("pageId", "p-1", "op", "append", "markdown", "B line."), false), "ap-ok-1");
+        assertThat(host.handle(yes)).containsEntry("t", "tres");
+        assertThat(asked.stream().filter(a -> "notebook.page.agentEdit".equals(a.get("_method"))
+                && !Boolean.TRUE.equals(a.get("dryRun"))).map(a -> a.get("key")).toList())
+                .containsExactly("auto:ap-abcdefghijklmnopqrst", "ap-ok-1");
+        host.close();
+    }
+
+    /** deskd's record of a Notebook switch on for ag-1 in tab-1, or on a guild desk for the owner's agents. */
+    private static ToolHost.AccessRecord notebookSwitch() {
+        return new ToolHost.AccessRecord() {
+            @Override
+            public boolean autoOn(Caller caller, String agentId, String group) {
+                return "notebook".equals(group);
+            }
+
+            @Override
+            public String place(String agentId, String group) {
+                return "notebook".equals(group) ? "tab-1" : null;
+            }
+        };
+    }
+
+    private static Map<String, Object> unasked(String agentId, Map<String, Object> args, String id) {
+        Map<String, Object> m = message(agentId, "notebook_write", args, false);
+        m.put("auto", "notebook");
+        m.put("autoApprovalId", id);
+        return m;
+    }
+
+    /**
+     * The draft ADR's §15 for the Notebook (W3): a new page only in the switch's tab, checked here; an append carries the
+     * tab for desk-notebook to check where it writes, and its refusal ({@code place}) is {@code approval_unknown}; a key
+     * desk-notebook has seen is {@code approval_used}, never "saved"; nothing unasked on a guild desk; and the undo, by
+     * deskd's own ledger, names the edit's key and agent.
+     */
+    @Test
+    void anUnaskedWriteStaysInTheSwitchsTabIsDoneOnceAndUndoneByItsOwnKeyAndAgent() throws Exception {
+        ToolHost host = host(false);
+        host.access(notebookSwitch());
+        // A new page in another tab: refused before desk-notebook hears of it.
+        Map<String, Object> elsewhere = host.handle(unasked("ag-1", NotebookToolsTest.args("new",
+                Map.of("tabId", "tab-2", "title", "Trip"), "op", "create", "markdown", "x"), "ap-aaaaaaaaaaaaaaaaaaab"));
+        assertThat(map(elsewhere.get("details"))).containsEntry("reason", "approval_unknown");
+        assertThat(edits()).isZero();
+        // In the tab: made, with the tab sent along.
+        assertThat(host.handle(unasked("ag-1", NotebookToolsTest.args("new", Map.of("tabId", "tab-1", "title", "Trip"),
+                "op", "create", "markdown", "x"), "ap-aaaaaaaaaaaaaaaaaaac"))).containsEntry("t", "tres");
+        assertThat(asked.get(asked.size() - 1)).containsEntry("tab", "tab-1").containsEntry("key",
+                "auto:ap-aaaaaaaaaaaaaaaaaaac");
+        // deskd's own look finds the page in another tab (or an older desk-notebook says no tab): refused, no edit.
+        long before = edits();
+        answer("notebook.page.agentEdit", p -> Boolean.TRUE.equals(p.get("dryRun"))
+                ? NotebookToolsTest.args("pageId", "p-8", "title", "Plan", "op", "append", "dryRun", true, "tabId", "tab-2")
+                : NotebookToolsTest.args("pageId", "p-8", "title", "Plan", "op", "append"));
+        assertThat(map(host.handle(unasked("ag-1", NotebookToolsTest.args("pageId", "p-8", "op", "append", "markdown",
+                "y"), "ap-aaaaaaaaaaaaaaaaaaah")).get("details"))).containsEntry("reason", "approval_unknown");
+        answer("notebook.page.agentEdit", p -> NotebookToolsTest.args("pageId", "p-8", "title", "Plan", "op", "append",
+                "dryRun", true));
+        assertThat(map(host.handle(unasked("ag-1", NotebookToolsTest.args("pageId", "p-8", "op", "append", "markdown",
+                "y"), "ap-aaaaaaaaaaaaaaaaaaai")).get("details"))).containsEntry("reason", "approval_unknown");
+        assertThat(edits()).isEqualTo(before);
+        // desk-notebook finds the page moved out of the tab as it writes: approval_unknown, and the model asks.
+        answer("notebook.page.agentEdit", p -> new FakeNotebookSocket.Refusal("forbidden", Map.of("reason", "place")));
+        assertThat(map(host.handle(unasked("ag-1", NotebookToolsTest.args("pageId", "p-9", "op", "append", "markdown",
+                "y"), "ap-aaaaaaaaaaaaaaaaaaad")).get("details"))).containsEntry("reason", "approval_unknown");
+        // A key desk-notebook has seen before (a reused id): approval_used, never saved.
+        answer("notebook.page.agentEdit", p -> Boolean.TRUE.equals(p.get("dryRun"))
+                ? NotebookToolsTest.args("pageId", "p-1", "title", "Plan", "op", "append", "dryRun", true, "tabId", "tab-1")
+                : NotebookToolsTest.args("pageId", "p-1", "title", "Plan", "op", "append", "repeated", true));
+        assertThat(map(host.handle(unasked("ag-1", NotebookToolsTest.args("pageId", "p-1", "op", "append", "markdown",
+                "z"), "ap-aaaaaaaaaaaaaaaaaaae")).get("details"))).containsEntry("reason", "approval_used");
+        // The undo of the page it made: desk-notebook's undo by its key, naming the agent.
+        answer("notebook.page.agentUndo", p -> NotebookToolsTest.args("editId", "ae-1", "pageId", "p-1", "op", "create",
+                "undone", true));
+        Map<String, Object> undone = host.undoAuto("ap-aaaaaaaaaaaaaaaaaaac", Caller.THE_OWNER, (c, a) -> true, () -> {});
+        assertThat(undone).containsEntry("outcome", "ok");
+        assertThat(asked.get(asked.size() - 1)).containsEntry("_method", "notebook.page.agentUndo")
+                .containsEntry("key", "auto:ap-aaaaaaaaaaaaaaaaaaac").containsEntry("agent", "ag-1");
+        host.close();
+
+        // A guild desk: nothing is done unasked, whatever the record says.
+        ToolHost guild = host(true);
+        guild.access(notebookSwitch());
+        assertThat(map(guild.handle(unasked("gm-ana1", NotebookToolsTest.args("pageId", "p-1", "op", "append",
+                "markdown", "w"), "ap-aaaaaaaaaaaaaaaaaaaf")).get("details"))).containsEntry("reason", "approval_unknown");
+        guild.close();
+    }
+
+    @Test
+    void anUnaskedEditsUndoThatChangedSinceOffersTheVersionFromBefore() throws Exception {
+        ToolHost host = host(false);
+        host.access(notebookSwitch());
+        assertThat(host.handle(unasked("ag-1", NotebookToolsTest.args("pageId", "p-1", "op", "append", "markdown", "x"),
+                "ap-aaaaaaaaaaaaaaaaaaag"))).containsEntry("t", "tres");
+        answer("notebook.page.agentUndo", p -> new FakeNotebookSocket.Refusal("conflict",
+                Map.of("reason", "changed", "versionId", "v-7")));
+        try {
+            host.undoAuto("ap-aaaaaaaaaaaaaaaaaaag", Caller.THE_OWNER, (c, a) -> true, () -> {});
+            throw new AssertionError("undone");
+        } catch (ToolFailure e) {
+            assertThat(e.code()).isEqualTo("conflict");
+            assertThat(e.details()).containsEntry("reason", "changed").containsEntry("versionId", "v-7");
+        }
+        host.close();
+    }
+
+    /** A newer agent edit of the page stands: {@code newer}, the word only (desk-notebook's edit id isn't the member's). */
+    @Test
+    void anUnaskedEditsUndoUnderANewerAgentEditSaysNewerAndNothingElse() throws Exception {
+        ToolHost host = host(false);
+        host.access(notebookSwitch());
+        assertThat(host.handle(unasked("ag-1", NotebookToolsTest.args("pageId", "p-1", "op", "append", "markdown", "x"),
+                "ap-aaaaaaaaaaaaaaaaaaah"))).containsEntry("t", "tres");
+        answer("notebook.page.agentUndo", p -> new FakeNotebookSocket.Refusal("conflict",
+                Map.of("reason", "newer", "editId", "ae-newer")));
+        try {
+            host.undoAuto("ap-aaaaaaaaaaaaaaaaaaah", Caller.THE_OWNER, (c, a) -> true, () -> {});
+            throw new AssertionError("undone");
+        } catch (ToolFailure e) {
+            assertThat(e.code()).isEqualTo("conflict");
+            assertThat(e.details()).isEqualTo(Map.of("reason", "newer"));
+        }
+        host.close();
+    }
+
     @Test
     void aWriteOrATrashWithoutAnApprovalIsForbiddenAndReachesNothing() throws Exception {
         ToolHost host = host(false);
@@ -161,7 +336,7 @@ class NotebookToolsHostTest {
     @Test
     void aGuildMembersAgentRunsAsThatMemberAndWhatItReadsIsUntrusted() throws Exception {
         ToolHost host = host(true);
-        assertThat(host.offered()).containsExactly("notebook_search", "notebook_read", "notebook_write", "notebook_trash");
+        assertThat(host.offered()).containsExactly("notebook_search", "notebook_list", "notebook_read", "notebook_write", "notebook_trash");
         Map<String, Object> read = host.handle(message("gm-ana1", "notebook_read", NotebookToolsTest.args("pageId", "p-1"), false));
         assertThat(read).containsEntry("t", "tres");
         assertThat((List<Object>) map(read.get("r")).get("taints")).containsExactlyInAnyOrder("S", "U");

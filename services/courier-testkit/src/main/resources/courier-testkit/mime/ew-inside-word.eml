@@ -1,0 +1,10 @@
+From: Billing <billing@example.com>
+To: me@desk.example
+Date: Fri, 13 Nov 2026 10:00:00 +0000
+Subject: Pay=?utf-8?Q?ment?= due =?utf-8?Q?now?=!
+Message-ID: <ew-inside-word@corpus.example>
+MIME-Version: 1.0
+X-Corpus-Note: encoded words glued to other text, which RFC 2047 says are not encoded words
+Content-Type: text/plain; charset=utf-8
+
+Payment reminder.

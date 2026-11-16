@@ -1,0 +1,20 @@
+From: Scanner <scanner@example.com>
+To: me@desk.example
+Date: Fri, 13 Nov 2026 10:00:00 +0000
+Subject: Scan
+Message-ID: <attachment-name-in-content-type@corpus.example>
+MIME-Version: 1.0
+X-Corpus-Note: an attachment named only by Content-Type name=, with no Content-Disposition
+Content-Type: multipart/mixed; boundary="sc-1"
+
+--sc-1
+Content-Type: text/plain
+
+Scanned page attached.
+--sc-1
+Content-Type: application/pdf; name="scan-0042.pdf"
+Content-Transfer-Encoding: base64
+
+JVBERi0xLjQKMSAwIG9iaiA8PCAvVHlwZSAvQ2F0YWxvZyA+PiBlbmRvYmoKdHJhaWxlciA8PCAv
+Um9vdCAxIDAgUiA+PgolJUVPRgo=
+--sc-1--

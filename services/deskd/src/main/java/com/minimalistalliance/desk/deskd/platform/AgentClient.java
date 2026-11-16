@@ -84,6 +84,45 @@ public final class AgentClient {
         return call("GET", "/v1/agent/guild/roster", null, CALL_TIMEOUT);
     }
 
+    /**
+     * Publishes the desk's Courier keys to the key directory (ma-platform contract 0.4.0, relay.md §3.1): the same keys
+     * again are {@code changed: false}.
+     */
+    public Map<String, Object> putKeys(Map<String, Object> body) throws IOException, InterruptedException {
+        return call("PUT", "/v1/agent/keys", Json.bytes(body), CALL_TIMEOUT);
+    }
+
+    /**
+     * A route of Courier's relay and its sending (ma-platform contract 0.4.0, relay.md §3, and the proposed 0.4.1
+     * {@code courier-send}), which answer 200, 201 or 202. {@code headers} are added and signed (an {@code Idempotency-Key}).
+     * An empty answer is an empty map.
+     */
+    public Map<String, Object> courier(String method, String path, Map<String, Object> body, Map<String, String> headers)
+            throws IOException, InterruptedException {
+        String base = apiBase.get();
+        if (base == null) {
+            throw new IOException("no API base: the Env tag isn't prod or staging");
+        }
+        URI uri = URI.create(base + path);
+        byte[] bytes = body == null ? null : Json.bytes(body);
+        HttpResponse<byte[]> response = send(method, uri, bytes, headers, CALL_TIMEOUT);
+        if (response.statusCode() == 403 && envelopeCode(response.body()) == null) {
+            credentials.invalidate();
+            response = send(method, uri, bytes, headers, CALL_TIMEOUT);
+        }
+        if (response.statusCode() / 100 != 2) {
+            throw new ApiException(response.statusCode(), envelopeCode(response.body()), retryAfter(response));
+        }
+        if (response.body().length == 0) {
+            return Map.of();
+        }
+        try {
+            return Json.parseObject(response.body());
+        } catch (JsonFormatException e) {
+            throw new IOException(path + " answered with something other than JSON");
+        }
+    }
+
     private Map<String, Object> call(String method, String path, byte[] body, Duration timeout)
             throws IOException, InterruptedException {
         String base = apiBase.get();
@@ -110,8 +149,19 @@ public final class AgentClient {
 
     private HttpResponse<byte[]> send(String method, URI uri, byte[] body, Duration timeout)
             throws IOException, InterruptedException {
+        return send(method, uri, body, Map.of(), timeout);
+    }
+
+    private HttpResponse<byte[]> send(String method, URI uri, byte[] body, Map<String, String> headers, Duration timeout)
+            throws IOException, InterruptedException {
         AwsCredentials current = credentials.current();
-        Map<String, String> toSign = body == null ? Map.of() : Map.of("content-type", "application/json");
+        Map<String, String> toSign = new java.util.TreeMap<>();
+        if (body != null) {
+            toSign.put("content-type", "application/json");
+        }
+        if (headers != null) {
+            headers.forEach((k, v) -> toSign.put(k.toLowerCase(java.util.Locale.ROOT), v));
+        }
         Map<String, String> signed = SigV4.sign(
                 method, uri, toSign, body == null ? new byte[0] : body, SERVICE, SigV4.REGION, current, clock.instant());
         HttpRequest.Builder request = HttpRequest.newBuilder(uri)

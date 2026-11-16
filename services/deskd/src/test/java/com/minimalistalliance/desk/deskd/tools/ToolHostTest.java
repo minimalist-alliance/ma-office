@@ -99,7 +99,13 @@ class ToolHostTest {
     void onlyDeclaredToolsRunAndTheHelloListsThem() {
         assertThat(refusal(host.handle(tcall("files_delete_forever", Map.of())))).isEqualTo("tool");
         assertThat(refusal(host.handle(tcall("shell", Map.of())))).isEqualTo("tool");
-        assertThat(host.offered()).containsAll(HostedDecls.ALL.keySet());
+        // Every declared tool whose area this host has: messages between desks have an area of their own (§14), and
+        // To-do's, Courier's and Documents' have their own tests (TodoToolsHostTest, CourierToolsTest, MaiaDocsToolsTest).
+        assertThat(host.offered()).containsAll(HostedDecls.ALL.values().stream()
+                .filter(d -> !HostedDecls.DESKS.equals(d.area()) && !HostedDecls.TODO.equals(d.area())
+                        && !HostedDecls.COURIER.equals(d.area()) && !HostedDecls.DOCS.equals(d.area()))
+                .map(HostedDecls.Decl::name).toList());
+        assertThat(host.offered()).doesNotContain("desk_message", "desk_answer");
         assertThat(host.hello()).containsEntry("v", 1);
         assertThat(refusal(host.handle(tcall("files_list", Map.of(), "runId", "bad id with spaces")))).isEqualTo("runId");
     }
@@ -157,6 +163,28 @@ class ToolHostTest {
         // And without an approval, the browse action doesn't run.
         assertThat(refusal(host.handle(tcall("browser_open", Map.of(), "runId", "run-2")))).isEqualTo("approval_required");
         assertThat(browser.ran).isEmpty();
+    }
+
+    /**
+     * Security's BB-L2: an approval desk-agent attaches to a call whose class doesn't ask is never redeemed, so the area
+     * never sees it: an area takes an approval as the member's redeemed yes (the Browser's spend and submit bindings, an
+     * approved payload's words), never as desk-agent's word.
+     */
+    @Test
+    void anApprovalOnACallThatDoesntAskIsNeverRedeemedAndTheAreaNeverSeesIt() {
+        browser.risk = null;
+        Map<String, Object> approval = Map.of("approvalId", "ap-bbbbbbbbbbbbbbbbbbbb", "sha256", "0".repeat(64));
+        r(host.handle(tcall("browser_click", Map.of("tabId", "t1", "ref", "n1", "spend", true), "approval", approval)));
+        assertThat(browser.ran).hasSize(1);
+        assertThat(browser.ran.get(0).approval()).isNull();
+        assertThat(redeemed).isEmpty();
+        // One whose class asks keeps it, redeemed.
+        browser.risk = ToolRisk.SEND;
+        Map<String, Object> args = Map.of("tabId", "t1", "ref", "n1");
+        String sha = ToolHost.hash("ag-1", "run-1", "browser_click", "agent", args);
+        r(host.handle(tcall("browser_click", args, "approval", Map.of("approvalId", "ap-cccccccccccccccccccc", "sha256", sha))));
+        assertThat(browser.ran.get(1).approval()).isNotNull();
+        assertThat(redeemed).hasSize(1);
     }
 
     @Test

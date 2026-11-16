@@ -115,6 +115,46 @@ The IMDS rules in `nftables.conf` now refuse only a new TCP connection, like por
 - **The first release** is `desk-agent` `2026.11.06-60828be` (2026-11-06, task 37), on the test desk and the owner's desk, both on 0.2.6. Pinned and baked from 0.2.7 (task 42), so a desk born on 0.2.7 or swapped to it has it with no rollout. On 0.2.6 or older a root swap takes it off again, so roll it on after one.
 - **An image without this** can't take a `desk-agent` rollout: `ma-update` finds no unit, the smoke test fails on `desk-agent`'s `health`, and it rolls back. A release left installed there would fail every later component's smoke test.
 
+## desk-parse, the Agent's attachment reader (ADR 0097, from the next bake)
+desk-agent reads the PDF, Office and text files a member attaches in a worker JVM. Before ADR 0097 that worker was a child in
+desk-agent's own container, as uid 1103 with `/data/agent` (the keys) and the host network, behind a Java security manager only
+(Security's ISS20-P1). Now it runs in `desk-parse`, a container of its own on desk-agent's image (`desk-parse.service`,
+`/usr/local/lib/ma/desk-parse-run`): user `parse` (1113), `--network none --ipc none`, no `/data`, no capabilities, a read-only
+root, 128 MiB and 64 tasks, `oom_score_adj` +500. Its process 1 is `desk-svc -accept` (built by `bake.sh` from `host/desk-svc`, the
+shared host's supervisor), which forks one worker per connection on `/run/desk-parse/sock/parse.sock`, serves uid 1103 alone, one
+at a time, kills a worker at 35 s, and after each worker kills everything else in the container and empties the socket's folder
+(`-clean`). The marker `/run/desk-parse/required` (root's, `tmpfiles.d/desk-parse.conf`) tells desk-agent never to use its child.
+- **Updates:** the unit is `PartOf=desk-agent.service` and reads desk-agent's `current/image-id` at each start, so `ma-update`'s
+  restart of desk-agent restarts the reader on the new release. desk-agent `Wants=` it: with the reader down desk-agent runs, and
+  only a file waits (`unavailable`).
+- **The smoke test** parses one line as uid 1103 when desk-agent's health names the sidecar; one from before ADR 0097 passes, and
+  keeps its child.
+- **Checks:** `verify-parse.sh` (`verify.sh` section 3p's parts, each with a mutation), `tests/test_desk_parse.py`,
+  `host/desk-svc`'s Go tests. Lab: `lab/desk-parse/lab.sh`. Runtime contract: `docs/interfaces/desk-runtime.md` sections 1, 2, 5, 6.
+
+## desk-parse-courier, Courier's mail reader for deskd (from 0.3.9)
+Courier's linked mailboxes and the desk's address bring mail that `deskd` must never parse itself. `desk-parse-courier` is a second
+instance of desk-parse's sandbox (`desk-parse-courier.service`, `/usr/local/lib/ma/desk-parse-courier-run`; the plan is
+`docs/sub-status/mm-courier-parse.md`, "The image change"): the same container on desk-agent's image with every limit the same (uid
+1113, no network or IPC, no `/data`, no capabilities, a read-only root, 160 MiB, 64 tasks, +500, `desk-svc -clean`), but serving uid
+1100 (`deskd`) alone on `/run/desk-parse-courier/sock/parse.sock` (`tmpfiles.d/desk-parse-courier.conf`: `root:desk 0750`, `sock`
+`parse:desk 2750`), killing a worker at 15 s, the worker being desk-agent's Courier mode (`java @/app/courier-parse.options`). No
+marker: without the socket `deskd` keeps mail `pending` with its raw bytes. `deskd` and desk-agent both `Wants=` it; it's
+`PartOf=desk-agent.service`, so desk-agent's update restarts it on the new image.
+- **The tracker list:** `build.sh` fetches the uBlock Origin Lite release `adblock/blocker.pin` names once, checks its sha256, builds
+  the Browser's blocker from it and runs `adblock/courier-trackers.py` (courier-parse's `services/courier-parse/scripts`, copied
+  into the recipe by `bake.sh`, which refuses a copy that differs) on the same file: `/usr/share/ma/adblock/courier-trackers.txt`,
+  EasyPrivacy's whole-host and host-and-path rules (51,355 on the pinned release), its first line naming the release's version and
+  sha256. Never committed (GPLv3 or CC BY-SA 3.0). The runner binds it read-only over the release's empty placeholder.
+- **Courier's directories:** `desk-datadirs` makes `/data/courier` and `/data/keys` (`desk:desk 0700`); `deskd`'s `run` mounts both
+  where they exist. `desk-data` (`tools/desk-data`, copied here) leaves `courier/keys` out of every download, and `keys` is a machine
+  part.
+- **`deskd`'s way out:** linked mailboxes need TCP 993, 465 and 587 and MX lookups as uid 1100: open on a desk (its output policy is
+  accept for 1100; ADR 0014 closes 25 outside it) and in a slot (§15 of the runtime spec).
+- **Checks:** `verify-courier.sh` (`verify.sh` section 3c: static, wall, socket, parse, list, follow, dirs, egress, and a mutation for
+  each but static and follow), `tests/test_desk_parse.py`'s Courier cases. Self-hosted: `selfhost/install.sh` installs the unit,
+  the runner, the tmpfiles line and the list. Runtime contract: `docs/interfaces/desk-runtime.md` sections 1, 2, 5, 11 and 15.
+
 ## desk-agent-filter (from 0.2.9, ADR 0070)
 
 `desk-agent` (uid 1103) reaches only the providers' names, not their addresses: OpenAI and xAI share Cloudflare addresses, so an address list let other sites through. `recipe/desk-agent-filter/` is a small Go program with no dependencies, run as its own uid 1106 (`agent-filter`) with no capabilities, by `desk-agent-filter.service`, before `desk-agent`. It never sees inside TLS and holds no keys. Decision, threat and numbers: ADR 0070.
@@ -124,11 +164,12 @@ The IMDS rules in `nftables.conf` now refuse only a new TCP connection, like por
 - **DNS.** A listed name's A is the placeholder `192.0.2.1`, which never reaches the wire because the redirect takes it first, and AAAA is empty. Every other name, type or class is NXDOMAIN, malformed is FORMERR or dropped. It never forwards, so nothing can tunnel through it.
 - **It fails closed.** With the filter down, the redirect lands on nothing and uid 1103 gets connection refused. `Restart=always`, 1 s. `desk-agent` only `Want`s it. Its `health` fails while it's down, so `/opt/ma/smoke-test` does, and an `ma-update` of any component rolls back until it's back.
 - **OpenRouter (from 0.3.5).** desk-agent's fourth provider calls `https://openrouter.ai/api/v1/...` (the key check `/api/v1/key`, the free models' catalog and chat), so `openrouter.ai` is the fourth line; nothing under it is listed. It's on Cloudflare like OpenAI and xAI, so the fronting limit below applies the same way (the Security Analyst cleared the name, Nov 11). A shared host's slots run the desk image's own filter and file from their template, so they take it with the next host bake; there's no host-side copy. Lab proof and the mutations: `docs/sub-status/image-035-asks.md`.
+- **Google and Moonshot AI (from the next bake, 2026-11-15).** desk-agent's `google` and `moonshot` call `https://generativelanguage.googleapis.com/v1beta/openai/...` and `https://api.moonshot.ai/v1/...` with a member's own key, so those two hosts are the fifth and sixth lines; nothing else under `googleapis.com` or `moonshot.ai` is listed. Google's host is on Google's shared front end, so `F-CF` also checks that `www.google.com` and `storage.googleapis.com` are refused on its address, with a control (ADR 0070's addendum of Nov 15). A shared host's slots take it with the next host bake, as for OpenRouter.
 - **To add a provider's name:** put the exact host on its own line in `/etc/ma/agent-egress.conf` (`recipe/files/etc/ma/agent-egress.conf`, no wildcards) and `systemctl restart desk-agent-filter`, which drops any call in flight. The file also has to match the base URLs in `services/desk-agent/docker/desk-agent.env`. A release doesn't touch it, so a name for every desk is a change to the recipe and a bake.
 - **Reading why something was refused:** `journalctl -u desk-agent-filter`. It names refused names, 10 lines a minute at most, then a count, and never contents. It stays on the desk.
 - **How it's built.** `package-desk-agent-filter.sh <version>` builds from the recipe with the Go it names, after the tests, and the same source and Go give the same bytes. `releases.pin` holds that hash, and `bake.sh` builds it and refuses any other, so a bake publishes nothing. `build.sh` installs it with `ma-update` like the others, and the AMI gets the tag `DeskAgentFilterVersion`. A source change needs a new version and a new hash in the pin. A fix can also reach a running desk without a bake: `desk-service-release.sh publish desk-agent-filter ...` and a rollout, as for any component.
 - **Self-hosted.** The same source and rules: `selfhost/build-bundle.sh` builds it for amd64, and `install.sh` installs it. Nothing depends on the shaper.
-- **`verify.sh` section 3e1** is `verify-agent-filter.sh`, which also runs alone on a lab box. With 0.2.8's sections, `verify.sh` makes 42 checks with it, and 43 with section 3f ("A stop ends inactive"): 0.2.9 passed 43 of 43. Its checks are named `F-*`. Each was seen to fail with the thing it guards broken: `evidence/agent-filter-2026-11-07/mutations.txt`. It needs `www.cloudflare.com` to answer on the addresses of `api.openai.com`, `api.x.ai` and `openrouter.ai`, because without that control its refusal proves nothing, so if a provider leaves Cloudflare the check fails and needs a new site. `F-UNIT` holds `agent-egress.conf` to exactly the four names, so a name added or lost fails there too.
+- **`verify.sh` section 3e1** is `verify-agent-filter.sh`, which also runs alone on a lab box. With 0.2.8's sections, `verify.sh` makes 42 checks with it, and 43 with section 3f ("A stop ends inactive"): 0.2.9 passed 43 of 43. Its checks are named `F-*`. Each was seen to fail with the thing it guards broken: `evidence/agent-filter-2026-11-07/mutations.txt`. It needs `www.cloudflare.com` to answer on the addresses of `api.openai.com`, `api.x.ai` and `openrouter.ai`, because without that control its refusal proves nothing, so if a provider leaves Cloudflare the check fails and needs a new site. `F-UNIT` holds `agent-egress.conf` to exactly the six names (four until Nov 15), so a name added or lost fails there too, and `recipe/desk-agent-filter/conf_test.go` holds the recipe's file to the same six. Google's `F-CF` lines need `www.google.com` to answer on `generativelanguage.googleapis.com`'s address from uid 1100.
 - **What it can't stop:** a client that names a listed host and asks that host's server for another site (domain fronting), and data sent to a provider under a different key. On the host, resolved's Varlink socket also gives uid 1103 real DNS, but `desk-agent`'s container doesn't have that socket. ADR 0070 has the measurements.
 - **Memory, bounded (0.1.1).** The kernel charges each connection's socket buffers to the unit, and TCP grows them to megabytes when one side sends faster than the other reads: in 0.1.0, 30 fast downloads at once filled `MemoryMax=32M` and the kernel killed the filter. 0.1.1 sets every connection's buffers, from the provider 256 KiB and to it 64 KiB, from `desk-agent` 16 KiB and to it 256 KiB, 16 KiB each way on DNS over TCP, each doubled by the kernel within `net.core.[rw]mem_max` (4 MiB here, from `90-ma.conf`). It holds 64 connections at most, and `MemoryMax=96M` fits all 64 with every buffer full (74 MiB). Idle, it uses about 4 MiB. Section 3e1's `F-BUF` reads the buffers on a live provider connection. Numbers: ADR 0070.
 - **The measuring tools** are `lab/agent-filter/` (`lab.sh`, `measure.sh`, `mutate.sh`), outside any bake. Keep a stand-in on a private address: Platform's cost guard stops a box that sends 30 GB in 15 minutes (`lab/agent-filter/README.md`). 0.1.1's test bake on 0.2.8, `ma-desk-test-filter-3`, passed `verify.sh` 42 of 42 and `count-address.sh` 0 (`RELEASES.md`).

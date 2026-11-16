@@ -26,6 +26,13 @@ const PATHS = {
       <path d="M5.5 7.5h.01M5.5 12h.01M5.5 16.5h.01" />
     </>
   ),
+  // Maia Mode's room: a wide frame with her place in the middle (CONCEPT.md §2).
+  room: (
+    <>
+      <rect x="3.5" y="5" width="17" height="14" rx="3" />
+      <circle cx="12" cy="11" r="2.6" />
+    </>
+  ),
   info: (
     <>
       <circle cx="12" cy="12" r="8.5" />

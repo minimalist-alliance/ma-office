@@ -1,0 +1,73 @@
+<?xml version="1.0" encoding="UTF-8"?>
+<project xmlns="http://maven.apache.org/POM/4.0.0"
+         xmlns:xsi="http://www.w3.org/2001/XMLSchema-instance"
+         xsi:schemaLocation="http://maven.apache.org/POM/4.0.0 https://maven.apache.org/xsd/maven-4.0.0.xsd">
+  <modelVersion>4.0.0</modelVersion>
+
+  <!--
+    desk-parse's Courier mode (ADR 0097, draft ADR "Courier's store" section 4; the Courier launch plan's Wave 1.2): MIME to
+    parts, the two-pass HTML sanitizer, links and tracking pixels, image re-encoding and archive listings. It runs only in
+    the desk-parse sandbox (uid 1113, no network, no /data, -Xmx72m), started as java @/app/courier-parse.options from
+    desk-agent's image, which is why desk-agent depends on it. deskd never runs it: it talks to the sandbox's socket, and
+    has this module in its tests only. No Spring, nothing that opens a file or a socket.
+  -->
+  <parent>
+    <groupId>com.minimalistalliance.desk</groupId>
+    <artifactId>desk-services</artifactId>
+    <version>0.1.0-SNAPSHOT</version>
+  </parent>
+
+  <artifactId>courier-parse</artifactId>
+  <name>courier-parse</name>
+  <description>desk-parse's Courier mode: untrusted mail to safe, structured parts, in the parse sandbox only.</description>
+
+  <dependencies>
+    <!-- The streaming MIME parser and its field parsers (addresses, dates, RFC 2231 parameters). Apache-2.0. -->
+    <dependency>
+      <groupId>org.apache.james</groupId>
+      <artifactId>apache-mime4j-core</artifactId>
+      <version>${mime4j.version}</version>
+    </dependency>
+    <dependency>
+      <groupId>org.apache.james</groupId>
+      <artifactId>apache-mime4j-dom</artifactId>
+      <version>${mime4j.version}</version>
+      <exclusions>
+        <!-- Only for the DOM's storage providers, which this module doesn't use. -->
+        <exclusion>
+          <groupId>commons-io</groupId>
+          <artifactId>commons-io</artifactId>
+        </exclusion>
+      </exclusions>
+    </dependency>
+
+    <!-- The HTML5 parser the sanitizer reads with; its Cleaner isn't used (the allow-list is ours). MIT. -->
+    <dependency>
+      <groupId>org.jsoup</groupId>
+      <artifactId>jsoup</artifactId>
+      <version>${jsoup.version}</version>
+    </dependency>
+
+    <!-- Tests read the answers back as deskd does. -->
+    <dependency>
+      <groupId>tools.jackson.jr</groupId>
+      <artifactId>jackson-jr-objects</artifactId>
+      <scope>test</scope>
+    </dependency>
+    <dependency>
+      <groupId>com.minimalistalliance.desk</groupId>
+      <artifactId>courier-testkit</artifactId>
+      <version>${project.version}</version>
+      <scope>test</scope>
+    </dependency>
+    <dependency>
+      <groupId>org.springframework.boot</groupId>
+      <artifactId>spring-boot-starter-test</artifactId>
+      <scope>test</scope>
+    </dependency>
+  </dependencies>
+
+  <build>
+    <finalName>courier-parse</finalName>
+  </build>
+</project>

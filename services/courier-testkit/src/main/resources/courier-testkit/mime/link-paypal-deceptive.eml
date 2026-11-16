@@ -1,0 +1,10 @@
+From: Service <service@account-review.example>
+To: me@desk.example
+Date: Fri, 13 Nov 2026 10:00:00 +0000
+Subject: Your account access is limited
+Message-ID: <link-paypal-deceptive@corpus.example>
+MIME-Version: 1.0
+X-Corpus-Note: link text that names paypal.com while the href goes elsewhere
+Content-Type: text/html; charset=utf-8
+
+<html><body><p>Your account access is limited until you confirm your details.</p><p><a href="http://paypal.com.account-review.example/signin?case=8812">https://www.paypal.com/signin</a></p><p><a href="https://login.secure-check.example/">www.paypal.com</a></p></body></html>

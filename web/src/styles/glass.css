@@ -1,0 +1,102 @@
+/* Glass for the office's DOM: the app tiles' face (the owner's pick C, Nov 16: "I want C restrained for the app tiles"; then the
+   mode chooser's highlight and Maia's bubble, "Probably all of the UI elements in office actually"). One recipe, the same dials as
+   the canvas's tiles (`GLASS_FACE`), as static CSS from `--ma-glass-*` (theme/glassCss.ts, in themes.css). No backdrop-filter and
+   no live blur: the body a little see-through (the office blue's egg), a thin light that hugs the rim (brightest at the top left,
+   fading round the edge to a faint glint at the bottom right) with a soft light just inside it, a sheen and a little depth, and a
+   contact shadow under a soft one. Nothing moves, so reduced motion has nothing to stop.
+
+   To wear it, an element:
+   - takes the class `ma-glass`, or, where its markup isn't the office's to change (a package's, another chunk's), its selector
+     goes in the lists below;
+   - is positioned (relative, absolute or fixed) and has its own border-radius: the light follows it;
+   - sets no background or box-shadow of its own: it sets `--ma-glass-solid-bg` and `--ma-glass-solid-shadow` to the look it
+     falls back to under reduced transparency or more contrast (left unset: none);
+   - leaves ::before and ::after to the light (an element that needs one restates it inside its own fallback block, as the
+     chooser's card does);
+   - doesn't scroll: the light is positioned inside it, so it would scroll with the content. A list that scrolls does it in a
+     child (the bell's panel, the hidden list).
+   Its content paints over the light, as a tile's glyph does: the element is its own stacking context (isolation), and the light
+   sits under its children (z-index -1).
+
+   The class `ma-glass` is the office's chrome (its bars, notices, menus and popovers, the open tile's frame;
+   `docs/sub-status/office-glass.md`), which can sit over anything: an open tile's app, a window, the Browser's picture, a photo.
+   So it wears the dense body (`--ma-glass-body-dense`), where every ink keeps its floor over any ground, black to white; the
+   chooser's card and Maia's bubble, listed by selector, wear C's own (`--ma-glass-body`). With no frost, what's behind shows
+   sharp: a desk's edge through a bar's pill reads as glass, words under a menu as a ghost of them, so a menu, a popover or a
+   notice sets `--ma-glass-fill: var(--ma-glass-body-full)`, the same egg opaque, its glass the light on it. An element can bring its own body as
+   `--ma-glass-fill` (an agent's mark: its own colour's egg). A border it has is drawn in `var(--ma-glass-line, <its colour>)`,
+   which glass makes clear, so the light is its edge, and the fallback brings back; it says how wide it is in `--ma-glass-edge`,
+   so the light sits on the outer edge. It can set its own height (`--ma-glass-lift`: a menu's elevation), and a state over the
+   body (`--ma-glass-state`: `--ma-glass-hover` or `--ma-glass-press` as a gradient).
+   This file comes after app.css (`main.tsx`), so the recipe wins over a base rule of the same weight there (`.icon-btn`,
+   `.menu`, `.notice`); a wearer's own rules set the custom properties above, never the properties the recipe owns. */
+/* Its own, never a child's: a glass control's state and its clear border stop at it. */
+@property --ma-glass-state {
+  syntax: '*';
+  inherits: false;
+}
+@property --ma-glass-line {
+  syntax: '*';
+  inherits: false;
+}
+.ma-glass,
+.mm-ch-card,
+.maia-bubble {
+  isolation: isolate;
+  background: var(--ma-glass-sheen), var(--ma-glass-state, none), var(--ma-glass-fill, var(--ma-glass-body));
+  box-shadow: var(--ma-glass-depth), var(--ma-glass-lift);
+}
+.ma-glass {
+  --ma-glass-fill: var(--ma-glass-body-dense);
+  --ma-glass-line: transparent;
+}
+/* The light: the soft one inside the rim (::before), then the rim's own (::after), each a ring cut out by a mask (alpha only). */
+.ma-glass::before,
+.mm-ch-card::before,
+.maia-bubble::before,
+.ma-glass::after,
+.mm-ch-card::after,
+.maia-bubble::after {
+  content: '';
+  position: absolute;
+  inset: calc(-1 * var(--ma-glass-edge, 0px));
+  z-index: -1;
+  box-sizing: border-box;
+  border-radius: inherit;
+  pointer-events: none;
+  -webkit-mask: linear-gradient(white 0 0) content-box, linear-gradient(white 0 0);
+  -webkit-mask-composite: xor;
+  mask: linear-gradient(white 0 0) content-box exclude, linear-gradient(white 0 0);
+}
+.ma-glass::before,
+.mm-ch-card::before,
+.maia-bubble::before {
+  padding: var(--ma-glass-glow-width);
+  background: var(--ma-glass-glow);
+}
+.ma-glass::after,
+.mm-ch-card::after,
+.maia-bubble::after {
+  padding: var(--ma-glass-spec-width);
+  background: var(--ma-glass-spec);
+}
+/* Reduced transparency or more contrast: the element's own solid look, as it was before the glass. */
+@media (prefers-reduced-transparency: reduce), (prefers-contrast: more) {
+  .ma-glass,
+  .mm-ch-card,
+  .maia-bubble {
+    background: var(--ma-glass-solid-bg, none);
+    box-shadow: var(--ma-glass-solid-shadow, none);
+  }
+  .ma-glass {
+    --ma-glass-line: initial;
+  }
+  .ma-glass::before,
+  .mm-ch-card::before,
+  .maia-bubble::before,
+  .ma-glass::after,
+  .mm-ch-card::after,
+  .maia-bubble::after {
+    content: none;
+  }
+}

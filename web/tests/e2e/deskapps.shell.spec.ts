@@ -1,7 +1,8 @@
 // Desk apps (ADR 0054, S-97's Desk app half): the Apps row and sheet, Add to desk and the tile, the window with its checks, its
-// sandboxed frame and its bridge, Remove keeping data, a Guild Desk member, a tampered view, the kill switches, the frame
-// budget, a phone, the carousel, and axe in three themes. The mock desk serves the sample app, Tally, as a catalog app signed
-// with a test review key (`src/desk/mockDeskApps.ts`), and the Bible's row as a bundled first-party app.
+// sandboxed frame and its bridge, Remove keeping data, a Guild Desk member, a tampered view, the kill switches, a phone, the
+// carousel, and axe in three themes (the frame budget has its own file, `deskapps.budget.shell.spec.ts`). The mock desk serves
+// the sample app, Tally, as a catalog app signed with a test review key (`src/desk/mockDeskApps.ts`), and the Bible's row as a
+// bundled first-party app.
 import { readFileSync } from 'node:fs';
 import { createRequire } from 'node:module';
 import { expect, test, type APIRequestContext, type FrameLocator, type Locator, type Page } from '@playwright/test';
@@ -277,31 +278,6 @@ test("deskd's switch (available: false) hides the Apps row too, and no window op
   expect(errors).toEqual([]);
 });
 
-test('the frame budget: three long frames in 10 s while a view shows and the office is idle pause it; Resume brings it back', async ({ page, request }) => {
-  const errors = await office(page, request);
-  await addTally(page);
-  await openTally(page);
-  await view(page).getByRole('button', { name: 'Count one more' }).click();
-  await expect(view(page).locator('#count')).toHaveText('1');
-  await page.waitForTimeout(1300); // the office idle: no input for a second
-  for (let i = 0; i < 3; i += 1) {
-    // A long animation frame, as a view holding the office's main thread makes one.
-    await page.evaluate(() => new Promise<void>((done) => requestAnimationFrame(() => {
-      document.body.dataset['frame'] = String(Math.random());
-      const end = performance.now() + 90;
-      while (performance.now() < end) { /* the frame runs long */ }
-      done();
-    })));
-    await page.waitForTimeout(150);
-  }
-  await expect(page.locator('[data-testid="deskapp-panel"][data-panel="paused"]')).toContainText('Paused to keep your desk smooth');
-  await expect(page.locator('[data-testid="deskapp-frame"]')).toHaveCount(0);
-  await page.getByTestId('deskapp-resume').click();
-  await expect(page.locator('[data-testid="deskapp-frame"][data-state="ready"]')).toBeVisible();
-  await expect(view(page).locator('#count')).toHaveText('1');
-  expect(errors).toEqual([]);
-});
-
 test('a theme switch reaches the view as tokens, and the UI font is loaded in its frame', async ({ page, request }) => {
   const errors = await office(page, request, { mock: { preinstalled: { [PERSONAL]: [TALLY] } } });
   await openTile(page, TALLY_ITEM);
@@ -341,6 +317,103 @@ test("a 390 px phone: the thumb row's Apps button opens the sheet over the whole
   await expect(page.frameLocator(bible).locator('#t')).toHaveText('The reading view comes with the app.');
   expect(errors).toEqual([]);
 });
+
+// The thumb row at 360 px (the UI/UX Engineer's call, Nov 14: staging had To-do scrolled out of reach behind the "+"): a
+// tab for every app that fits at a finger's 44 px; what doesn't goes under the "+", an app coming later first (Courier), then
+// the last in the desk's order; the shown app always keeps its tab. The "+" is then "More apps", a menu of those apps and
+// Browse apps (the Apps sheet). With To-do and Files on, as in prod.
+async function dockAt360(page: Page, request: APIRequestContext, theme?: ThemeId): Promise<string[]> {
+  await page.setViewportSize({ width: 360, height: 780 });
+  const errors = await office(page, request, { theme, harness: { todo: null, files: { enabled: true } } });
+  await openTile(page, `${PERSONAL}:notebook`);
+  await expect(page.getByTestId('carousel-stage')).toBeVisible();
+  return errors;
+}
+const tabNames = (page: Page): Promise<string[]> =>
+  page.getByTestId('carousel-stage').getByRole('tablist', { name: 'Apps' }).getByRole('tab').evaluateAll((els) => els.map((el) => el.getAttribute('aria-label') ?? ''));
+const more = (page: Page): Locator => page.getByTestId('thumb-more');
+const moreMenu = (page: Page): Locator => page.getByRole('menu', { name: 'More apps' });
+
+test('a 360 px phone: To-do has its tab, Courier (coming later) is under the "+", and the "+" is a menu of the rest and Browse apps', async ({ page, request }) => {
+  const errors = await dockAt360(page, request);
+  const names = await tabNames(page);
+  expect(names).toHaveLength(5);
+  expect(names).toContain('To-do');
+  expect(names).toContain('Files');
+  expect(names).not.toContain('Courier');
+  const order = await page.locator('[data-testid="carousel-thumbs"] > *').evaluateAll((els) => els.map((el) => el.getAttribute('data-testid') ?? el.className));
+  expect(order).toEqual(['thumb-tabs', 'thumb-more', 'thumb-sep', 'thumb-desk']);
+  // Every tab whole, a finger's size, left of the "+": nothing scrolled out of reach.
+  const plus = (await more(page).boundingBox())!;
+  for (const t of await page.getByTestId('carousel-stage').getByRole('tab').all()) {
+    const b = (await t.boundingBox())!;
+    expect(b.width).toBeGreaterThanOrEqual(44);
+    expect(b.x).toBeGreaterThanOrEqual(0);
+    expect(b.x + b.width).toBeLessThanOrEqual(plus.x + 0.5);
+  }
+  expect(await page.locator('.thumb-tabs').evaluate((el) => el.scrollWidth <= el.clientWidth + 1)).toBe(true);
+  await expect(more(page)).toHaveAttribute('aria-label', 'More apps');
+  await expect(more(page)).toHaveAttribute('aria-haspopup', 'menu');
+  await expect(more(page)).toHaveAttribute('aria-expanded', 'false');
+
+  // Open: the apps with no tab, then Browse apps; the focus on the first; Up, Down, Esc.
+  await more(page).click();
+  await expect(moreMenu(page)).toBeVisible();
+  await expect(more(page)).toHaveAttribute('aria-expanded', 'true');
+  const items = moreMenu(page).getByRole('menuitem');
+  await expect(items).toHaveText(['CourierComing later', 'Browse apps']);
+  await expect(items.first()).toBeFocused();
+  await page.keyboard.press('ArrowDown');
+  await expect(items.nth(1)).toBeFocused();
+  await page.keyboard.press('ArrowDown');
+  await expect(items.first()).toBeFocused();
+  const box = (await moreMenu(page).boundingBox())!;
+  expect(box.x).toBeGreaterThanOrEqual(0);
+  expect(box.x + box.width).toBeLessThanOrEqual(360);
+  expect(box.y + box.height).toBeLessThanOrEqual(plus.y);
+  await page.keyboard.press('Escape');
+  await expect(moreMenu(page)).toHaveCount(0);
+  await expect(more(page)).toBeFocused();
+  // Esc closed the menu only: the app is still on show.
+  await expect(page.getByTestId('carousel-stage')).toHaveAttribute('data-app', 'notebook');
+
+  // An app from the menu shows, with its own tab, selected and focused; the last in the order goes under in its place.
+  await more(page).click();
+  await items.first().click();
+  await expect(page.getByTestId('carousel-stage')).toHaveAttribute('data-app', 'courier');
+  const courierTab = page.getByTestId('carousel-stage').getByRole('tab', { name: 'Courier', exact: true });
+  await expect(courierTab).toHaveAttribute('aria-selected', 'true');
+  await expect(courierTab).toBeFocused();
+  expect(await tabNames(page)).not.toContain('To-do');
+  await more(page).click();
+  await expect(moreMenu(page).getByRole('menuitem')).toHaveText(['To-do', 'Browse apps']);
+  // A tap outside closes it.
+  await page.mouse.click(180, 200);
+  await expect(moreMenu(page)).toHaveCount(0);
+
+  // Browse apps is the Apps sheet, full screen.
+  await more(page).click();
+  await moreMenu(page).getByRole('menuitem', { name: 'Browse apps' }).click();
+  await expect.poll(async () => (await page.getByTestId('apps-sheet').boundingBox())?.width).toBe(360);
+  expect(errors).toEqual([]);
+});
+
+for (const theme of ['light', 'dusk', 'dark'] as const) {
+  test(`the 360 px row and its "+" menu: axe and a shot, ${theme}`, async ({ page, request }) => {
+    await dockAt360(page, request, theme);
+    await more(page).click();
+    await expect(moreMenu(page)).toBeVisible();
+    await page.evaluate(AXE);
+    const bad = await page.evaluate(async () => {
+      const w = window as unknown as { axe: { run: (ctx: unknown, opts: unknown) => Promise<{ violations: { id: string; nodes: { target: string[] }[] }[] }> } };
+      const r = await w.axe.run({ include: ['.carousel-thumbs'] }, { runOnly: { type: 'tag', values: ['wcag2a', 'wcag2aa', 'wcag21a', 'wcag21aa', 'wcag22aa', 'best-practice'] }, resultTypes: ['violations'] });
+      return r.violations.map((v) => `${v.id}: ${v.nodes.map((n) => n.target.join(' ')).join(', ')}`);
+    });
+    expect(bad).toEqual([]);
+    await page.waitForTimeout(300);
+    await page.screenshot({ path: `test-results/shots/dock-360-${theme === 'dusk' ? 'zen' : theme}.png`, clip: { x: 0, y: 780 - 320, width: 360, height: 320 } });
+  });
+}
 
 test("with apps switched off, a phone's thumb row has no Apps button", async ({ page, request }) => {
   await page.setViewportSize({ width: 390, height: 844 });
@@ -429,7 +502,9 @@ test('the shortcuts list has a Bible group where the Bible is installed, and non
     return page.getByTestId('shortcuts-app-Bible');
   };
   expect(await (await list()).count()).toBe(0);
-  await page.keyboard.press('Escape');
+  await page.keyboard.press('Escape'); // the shortcuts' modal (the owner's Nov 16 tidy)
+  await page.keyboard.press('Escape'); // then the menu
+  await expect(page.locator('#account-panel')).toHaveCount(0);
   await openSheet(page);
   await page.getByTestId(`dapp-add-${BIBLE}`).click();
   await expect(page.getByTestId(`dapp-open-${BIBLE}`)).toBeVisible();

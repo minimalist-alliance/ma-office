@@ -32,7 +32,7 @@ const personal = (): Desk => ({
   items: [
     item('notebook', 24, 24, LARGE),
     item('browser', 24 + OPEN.w + 16, 24, LARGE),
-    item('chat', 24, 24 + OPEN.h + 16),
+    item('courier', 24, 24 + OPEN.h + 16),
     item('files', 116, 24 + OPEN.h + 16),
     item('agent', 208, 24 + OPEN.h + 16),
   ],

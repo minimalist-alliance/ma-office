@@ -1,0 +1,13 @@
+From: Office <office@example.com>
+To: me@desk.example
+Date: Fri, 13 Nov 2026 10:00:00 +0000
+Subject: Bad base64
+Message-ID: <base64-invalid-chars@corpus.example>
+MIME-Version: 1.0
+X-Corpus-Note: a base64 body with characters outside the alphabet and broken padding
+Content-Type: text/plain; charset=utf-8
+Content-Transfer-Encoding: base64
+
+VGhpcyBpcyBi@@YWQgYmFz##ZTY0Lg=x=
+!!!!
+TW9yZQ

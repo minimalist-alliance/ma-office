@@ -44,6 +44,15 @@ describe('mock: the key flow', () => {
     expect(bad).toMatchObject({ code: 'bad_request', reason: 'key_malformed', detail: 'provider_mismatch' });
     const anthropicUnderOpenAi = await c.addKey({ provider: 'openai', label: '', secret: KeySecret.fromText('sk-ant-TEST-0000000000') }, m()).catch((e: unknown) => e);
     expect(anthropicUnderOpenAi).toMatchObject({ code: 'bad_request', reason: 'key_malformed', detail: 'provider_mismatch' });
+    // Moonshot AI's `sk-` is OpenAI's too: such a key is either's, but OpenRouter's `sk-or-` and Google's `AIza` are theirs.
+    const openRouterUnderMoonshot = await c.addKey({ provider: 'moonshot', label: '', secret: KeySecret.fromText('sk-or-v1-0000000000') }, m()).catch((e: unknown) => e);
+    expect(openRouterUnderMoonshot).toMatchObject({ code: 'bad_request', reason: 'key_malformed', detail: 'provider_mismatch' });
+    const geminiUnderOpenAi = await c.addKey({ provider: 'openai', label: '', secret: KeySecret.fromText('AIzaSy0000000000') }, m()).catch((e: unknown) => e);
+    expect(geminiUnderOpenAi).toMatchObject({ code: 'bad_request', reason: 'key_malformed', detail: 'provider_mismatch' });
+    const kimi = await c.addKey({ provider: 'moonshot', label: '', secret: KeySecret.fromText('sk-TEST-kimi-0000000000') }, m());
+    expect(kimi.provider).toBe('moonshot');
+    expect((await c.listModels(kimi.keyId))[0]?.id).toBe('kimi-k3.1-pro');
+    await c.deleteKey(kimi.keyId, m());
     const nobodys = await c.addKey({ provider: 'anthropic', label: '', secret: KeySecret.fromText('gsk_0000000000') }, m()).catch((e: unknown) => e);
     expect(nobodys).toMatchObject({ code: 'bad_request', reason: 'key_malformed', detail: 'prefix' });
     const revoked = 'sk-ant-TEST-revoked-0000';
@@ -330,11 +339,31 @@ describe('mock: many agents (task 49)', () => {
 
   it('creates agents up to the cap, counting the lead, and refuses the next with agent_cap', async () => {
     const c = capped({ agentCap: 3 });
-    const a = await c.createAgent({ name: 'Scout', icon: 'compass', tone: 'teal', purpose: 'Brief me.', workspaceMb: 10 }, m());
-    expect(a).toMatchObject({ name: 'Scout', role: 'staff', lead: false, solo: true, links: [], look: { icon: 'compass', tone: 'teal', png: null }, workspace: { quotaBytes: 10 * 1024 * 1024, usedBytes: 0 } });
+    const a = await c.createAgent({ name: 'Scout', icon: 'compass', tone: 'harbor', purpose: 'Brief me.', workspaceMb: 10 }, m());
+    expect(a).toMatchObject({ name: 'Scout', role: 'staff', lead: false, solo: true, links: [], look: { icon: 'compass', tone: 'harbor', png: null }, workspace: { quotaBytes: 10 * 1024 * 1024, usedBytes: 0 } });
     expect(a.id).toMatch(/^ag-[a-z2-7]{12}$/);
     await expect(c.createAgent({ name: 'Fourth' }, m())).rejects.toMatchObject({ code: 'precondition_failed', reason: 'agent_cap' });
     expect((await c.caps()).agents).toBe(3);
+  });
+
+  it('takes a retired tone as the one that took its place, as desk-agent does (Nov 14: the warm and green ones went)', async () => {
+    const c = capped({ agentCap: 10 });
+    const old = await c.createAgent({ name: 'Old', tone: 'plum' }, m());
+    expect(old.look).toMatchObject({ tone: 'iris' });
+    expect((await c.updateAgent(old.id, { tone: 'teal' }, m())).look).toMatchObject({ tone: 'harbor' });
+    await expect(c.createAgent({ name: 'Nope', tone: 'nope' }, m())).rejects.toMatchObject({ code: 'bad_request', detail: 'tone' });
+  });
+
+  it('takes a key and a model together or neither, as desk-agent does (release 3: a key alone was made here, refused there)', async () => {
+    const c = fast('ready');
+    const key = (await c.listKeys())[0]!;
+    const model = (await c.listModels(key.keyId))[0]!.id;
+    await expect(c.createAgent({ name: 'Keyed', keyId: key.keyId }, m())).rejects.toMatchObject({ code: 'bad_request', detail: 'model' });
+    await expect(c.createAgent({ name: 'Keyed', model }, m())).rejects.toMatchObject({ code: 'bad_request', detail: 'keyId' });
+    await expect(c.createAgent({ name: 'Keyed', keyId: 'k-gone', model }, m())).rejects.toMatchObject({ code: 'not_found', detail: 'key' });
+    const made = await c.createAgent({ name: 'Keyed', keyId: key.keyId, model }, m());
+    expect(made.binding).toMatchObject({ keyId: key.keyId, model });
+    expect((await c.createAgent({ name: 'Unkeyed' }, m())).binding).toBeNull();
   });
 
   it('names are unique per desk, compared as the desk does, at create and at rename', async () => {
@@ -453,7 +482,7 @@ describe('mock: the lead\'s proposals', () => {
     const yes = await c.answerProposal(scout!.id, true, scout!.sha256, m());
     expect(yes).toMatchObject({ state: 'applied', detail: null });
     const made = await c.getAgent(yes.result!.agentId!);
-    expect(made).toMatchObject({ name: 'Scout', solo: true, look: { icon: 'compass', tone: 'teal' }, timers: 1 });
+    expect(made).toMatchObject({ name: 'Scout', solo: true, look: { icon: 'compass', tone: 'harbor' }, timers: 1 });
     expect((await c.listTimers(made.id)).timers[0]).toMatchObject({ label: 'Morning brief', days: [1, 2, 3, 4, 5], time: '08:00' });
     expect(await c.answerProposal(writer!.id, false, writer!.sha256, m())).toMatchObject({ state: 'declined' });
     await expect(c.answerProposal(writer!.id, true, writer!.sha256, m())).rejects.toMatchObject({ code: 'conflict', reason: 'answered' });

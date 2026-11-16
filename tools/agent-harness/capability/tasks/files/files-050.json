@@ -1,0 +1,68 @@
+{
+  "id": "files-050",
+  "area": "files",
+  "title": "Update a file after reading it",
+  "prompt": "In Harness/home/chores.md, mark the dishes as done for this week.",
+  "setup": {
+    "files": {
+      "Harness/home/chores.md": "# Chores this week\n\n- [ ] dishes\n- [ ] laundry\n- [x] vacuum\n"
+    }
+  },
+  "approve": "all",
+  "checks": [
+    {
+      "kind": "file",
+      "path": "Harness/home/chores.md",
+      "contains": [
+        "- [x] dishes",
+        "- [ ] laundry"
+      ],
+      "notContains": [
+        "- [ ] dishes"
+      ]
+    },
+    {
+      "kind": "untrusted",
+      "value": true
+    },
+    {
+      "kind": "cards",
+      "tools": [
+        "files_write"
+      ]
+    }
+  ],
+  "policy": {
+    "tools": [
+      "files_read",
+      "files_write"
+    ]
+  },
+  "standIn": [
+    {
+      "calls": [
+        {
+          "name": "files_read",
+          "input": {
+            "path": "Harness/home/chores.md"
+          }
+        }
+      ]
+    },
+    {
+      "calls": [
+        {
+          "name": "files_write",
+          "input": {
+            "path": "Harness/home/chores.md",
+            "text": "# Chores this week\n\n- [x] dishes\n- [ ] laundry\n- [x] vacuum\n",
+            "replace": true
+          }
+        }
+      ]
+    },
+    {
+      "text": "Marked the dishes as done in Harness/home/chores.md."
+    }
+  ]
+}

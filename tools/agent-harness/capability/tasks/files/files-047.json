@@ -1,0 +1,81 @@
+{
+  "id": "files-047",
+  "area": "files",
+  "title": "Make a folder and three inside it",
+  "prompt": "Set up folders for my course: Harness/course with week-1, week-2 and week-3 inside it.",
+  "setup": {
+    "files": {
+      "Harness/school/readme.txt": "School stuff.\n"
+    }
+  },
+  "approve": "all",
+  "checks": [
+    {
+      "kind": "file",
+      "path": "Harness/course/"
+    },
+    {
+      "kind": "file",
+      "path": "Harness/course/week-1/"
+    },
+    {
+      "kind": "file",
+      "path": "Harness/course/week-2/"
+    },
+    {
+      "kind": "file",
+      "path": "Harness/course/week-3/"
+    },
+    {
+      "kind": "cards",
+      "tools": [
+        "files_mkdir",
+        "files_mkdir",
+        "files_mkdir",
+        "files_mkdir"
+      ]
+    }
+  ],
+  "policy": {
+    "tools": [
+      "files_mkdir"
+    ]
+  },
+  "standIn": [
+    {
+      "calls": [
+        {
+          "name": "files_mkdir",
+          "input": {
+            "path": "Harness/course"
+          }
+        }
+      ]
+    },
+    {
+      "calls": [
+        {
+          "name": "files_mkdir",
+          "input": {
+            "path": "Harness/course/week-1"
+          }
+        },
+        {
+          "name": "files_mkdir",
+          "input": {
+            "path": "Harness/course/week-2"
+          }
+        },
+        {
+          "name": "files_mkdir",
+          "input": {
+            "path": "Harness/course/week-3"
+          }
+        }
+      ]
+    },
+    {
+      "text": "Made Harness/course with week-1, week-2 and week-3 inside it."
+    }
+  ]
+}

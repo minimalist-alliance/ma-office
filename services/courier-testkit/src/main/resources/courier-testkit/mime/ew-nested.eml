@@ -1,0 +1,10 @@
+From: Office <office@example.com>
+To: me@desk.example
+Date: Fri, 13 Nov 2026 10:00:00 +0000
+Subject: =?utf-8?B?PT91dGYtOD9RP2lubmVyX3RleHQ/PQ==?=
+Message-ID: <ew-nested@corpus.example>
+MIME-Version: 1.0
+X-Corpus-Note: an encoded word whose decoded text is itself an encoded word; decode once only
+Content-Type: text/plain; charset=utf-8
+
+Nested encoded words in the subject.

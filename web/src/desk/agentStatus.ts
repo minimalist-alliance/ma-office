@@ -65,9 +65,10 @@ export function deskSummary(s: Pick<DeskStatus, 'instanceType' | 'uptimeSec'>): 
  * The panel's word for a desk's agents, from `agent.state`, whose spellings differ (`no_key`, `limit_reached`). What the member
  * should hear about comes first, whichever agent says it.
  */
-export function activityOfAgents(agents: Pick<AgentStateMessage['agents'][number], 'status' | 'approvalsPending'>[]): AgentActivity {
+export function activityOfAgents(agents: Pick<AgentStateMessage['agents'][number], 'status' | 'approvalsPending' | 'statusDetail'>[]): AgentActivity {
   if (!agents.length) return { state: 'none' };
-  const has = (status: string): boolean => agents.some((a) => a.status === status);
+  // A run waiting for its answer from another desk (W6, `waiting_desk`) is calm, not work: it reads as online.
+  const has = (status: string): boolean => agents.some((a) => (a.status === 'working' && a.statusDetail === 'waiting_desk' ? 'online' : a.status) === status);
   // A desk says a waiting run as `working` with `approvalsPending` (API.md section 18): the member is waited on.
   if (has('needs_you') || agents.some((a) => (a.approvalsPending ?? 0) > 0)) return { state: 'needs-you' };
   if (has('limit_reached')) return { state: 'paused-limit' };

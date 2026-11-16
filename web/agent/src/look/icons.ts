@@ -23,8 +23,10 @@ export const STROKE = 2.0;
 export const GRID = 24;
 
 export const AGENT_ICONS: readonly AgentIcon[] = [
-  // The office's own Agent glyph (`web/src/canvas/glyphs.ts` `agent()`): a ring, six spokes, six nodes. The default (S-14 spec).
-  { id: 'nodes', label: 'Team', paths: ['M14.2 12a2.2 2.2 0 1 1-4.4 0a2.2 2.2 0 0 1 4.4 0z', 'M12 7.6V6.6M15.81 9.8l.87-.5M15.81 14.2l.87.5M12 16.4v1M8.19 14.2l-.87.5M8.19 9.8l-.87-.5', 'M12.8 4.4a.8 .8 0 1 1-1.6 0a.8 .8 0 0 1 1.6 0zM19.38 8.2a.8 .8 0 1 1-1.6 0a.8 .8 0 0 1 1.6 0zM19.38 15.8a.8 .8 0 1 1-1.6 0a.8 .8 0 0 1 1.6 0zM12.8 19.6a.8 .8 0 1 1-1.6 0a.8 .8 0 0 1 1.6 0zM6.22 15.8a.8 .8 0 1 1-1.6 0a.8 .8 0 0 1 1.6 0zM6.22 8.2a.8 .8 0 1 1-1.6 0a.8 .8 0 0 1 1.6 0z'] },
+  // The Agent app's own icon, the guy with the hat (the owner, Nov 15): every agent wears it unless the member picks another here.
+  // Its real drawing is the 3D one (`web/src/canvas/draw3d.ts`, `agent`), in the agent's colour (`colors.ts`); these strokes are
+  // its line cut, for the picker. The default. It replaced `nodes` (the old "Team" mark, which read as a snowflake).
+  { id: 'hat', label: 'Agent', paths: ['M8.5 10.5l1-5.5h5l1 5.5', 'M5 10.5h14', 'M9.2 12.5a2.8 2.8 0 0 0 5.6 0', 'M5.5 20.5c.6-3.6 3-5.5 6.5-5.5s5.9 1.9 6.5 5.5'] },
   { id: 'compass', label: 'Compass', paths: ['M21 12a9 9 0 1 1-18 0a9 9 0 0 1 18 0z', 'M15.5 8.5l-2 5-5 2 2-5z'] },
   { id: 'book', label: 'Book', paths: ['M12 6.5C10.5 5.2 8 4.5 4.5 4.5v13c3.5 0 6 .7 7.5 2 1.5-1.3 4-2 7.5-2v-13c-3.5 0-6 .7-7.5 2z', 'M12 6.5v13'] },
   { id: 'pen', label: 'Pen', paths: ['M4.5 19.5l1-4L16 5a2.1 2.1 0 0 1 3 3L8.5 18.5z', 'M14 7l3 3'] },
@@ -51,11 +53,17 @@ export const AGENT_ICONS: readonly AgentIcon[] = [
 ];
 
 /** What an agent wears before anyone picks. */
-export const DEFAULT_ICON = 'nodes';
+export const DEFAULT_ICON = 'hat';
 
 /** Icons that were retired, and the kept one each now shows as. A saved agent keeps its stored id; it renders as the replacement. */
-// `spark` was a four-point sparkle, which the owner ruled out for anything AI (the S-14 spec): saved agents keep the id and show `nodes`.
-export const RETIRED_ICONS: Readonly<Record<string, string>> = { globe: 'plane', chat: 'person', heart: 'wallet', star: 'bulb', puzzle: 'terminal', briefcase: 'document', spark: 'nodes' };
+// `spark` was a four-point sparkle, which the owner ruled out for anything AI (the S-14 spec). `nodes`, the old "Team" mark, read
+// as a snowflake on the owner's desk (Nov 15): agents that had either wear the hat.
+export const RETIRED_ICONS: Readonly<Record<string, string>> = { globe: 'plane', chat: 'person', heart: 'wallet', star: 'bulb', puzzle: 'terminal', briefcase: 'document', spark: 'hat', nodes: 'hat' };
+
+/** The id of the Agent app's own icon, drawn in 3D in the agent's colour. */
+export const HAT_ICON = 'hat';
+/** Whether an agent with this stored icon wears the hat: the hat itself, a retired or unknown id, or none; never an upload (`png`). */
+export const wearsHat = (id: string | null | undefined): boolean => id !== 'png' && iconById(id ?? '').id === HAT_ICON;
 
 /** The icon id to use for a stored one: a retired id becomes its replacement, anything else stays. */
 export function currentIcon(id: string): string {

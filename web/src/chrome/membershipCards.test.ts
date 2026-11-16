@@ -3,6 +3,7 @@ import { TILE_G, TILE_G_QUIET_MS, tileGShows } from './membershipCards.draft';
 import {
   allianceLine,
   calendarDate,
+  closedCard,
   EXPORT_TARGET,
   inactiveCard,
   keptCard,
@@ -249,5 +250,52 @@ describe('drafts: tile G', () => {
     expect(tileGShows(NOW - TILE_G_QUIET_MS + 1, NOW)).toBe(false);
     expect(tileGShows(NOW - TILE_G_QUIET_MS, NOW)).toBe(true);
     expect(tileGShows(NOW + 60_000, NOW)).toBe(true); // a time from the future can't be trusted
+  });
+});
+
+describe('X, a closed account (ma-platform contract moderation.md section 8), in Sales’ words', () => {
+  const UNTIL = '2026-12-12T18:04:00Z';
+  const text = (c: NoticeCard): string => words(c);
+
+  it('inside its window: the date, Download your data to the export page, and Write to us; no Rejoin, Start or offer', () => {
+    const x = closedCard(UNTIL, LINKS, NOW, 'America/Denver');
+    expect(x.letter).toBe('X');
+    expect(x.title).toBe('This account is closed');
+    expect(x.say).toBe('You can download your data until December 12. After that we delete it, as our Terms say.');
+    expect(x.action).toEqual({ label: 'Download your data', href: '/export' });
+    expect(x.link).toEqual({ label: 'Write to us', href: `mailto:${SUPPORT}` });
+    expect(x.picture).toBe(false);
+    expect(x.soon).toBe(false);
+    expect(x.alliance).toBeNull();
+    expect(text(x)).not.toMatch(/Rejoin|Start|See membership|Update payment|join|\$|days/i);
+  });
+
+  it('the date is the member’s own calendar date, from the API, with the year when it isn’t this one', () => {
+    // 03:00 UTC on December 6 is still December 5 in Denver.
+    expect(closedCard('2026-12-06T03:00:00Z', LINKS, NOW, 'America/Denver').say).toContain('until December 5.');
+    expect(closedCard('2026-12-06T03:00:00Z', LINKS, NOW, 'UTC').say).toContain('until December 6.');
+    expect(closedCard('2027-01-04T18:00:00Z', LINKS, NOW, 'America/Denver').say).toContain('until January 4, 2027.');
+  });
+
+  it('where the export page is off, the download goes by email, as D’s export does', () => {
+    expect(closedCard(UNTIL, NO_EXPORT, NOW).action).toEqual({ label: 'Download your data', href: EXPORT_TARGET(NO_EXPORT) });
+  });
+
+  it('no date sent yet: the download with no line, never a guessed date', () => {
+    const x = closedCard(undefined, LINKS, NOW);
+    expect(x.body).toBeNull();
+    expect(x.say).toBe('');
+    expect(x.action?.label).toBe('Download your data');
+    expect(x.link?.label).toBe('Write to us');
+  });
+
+  it('once the window has passed, or with the data held, only the plain line: nothing of the data, nothing to press', () => {
+    for (const x of [closedCard('2026-11-20T11:59:59Z', LINKS, NOW), closedCard('2026-11-20T12:00:00Z', LINKS, NOW), closedCard(null, LINKS, NOW)]) {
+      expect(x.title).toBe('This account is closed');
+      expect(x.say).toBe(`If you have questions, write to ${SUPPORT}.`);
+      expect(x.action).toBeNull();
+      expect(x.link).toBeNull();
+      expect(text(x)).not.toMatch(/download|data|delete|Rejoin/i);
+    }
   });
 });

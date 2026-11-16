@@ -1,0 +1,21 @@
+From: =?utf-8?Q?B=C3=BCro?= <buero@example.com>
+To: me@desk.example
+Date: Fri, 13 Nov 2026 10:00:00 +0000
+Subject: Rechnung
+Message-ID: <attachment-encoded-word-name@corpus.example>
+MIME-Version: 1.0
+X-Corpus-Note: an attachment name as an RFC 2047 encoded word inside the quoted parameter (not standard, very common)
+Content-Type: multipart/mixed; boundary="ew-1"
+
+--ew-1
+Content-Type: text/plain; charset=utf-8
+
+Die Rechnung liegt bei.
+--ew-1
+Content-Type: application/pdf; name="=?utf-8?B?UmVjaG51bmcgTsO8cm5iZXJnLnBkZg==?="
+Content-Disposition: attachment; filename="=?utf-8?B?UmVjaG51bmcgTsO8cm5iZXJnLnBkZg==?="
+Content-Transfer-Encoding: base64
+
+JVBERi0xLjQKMSAwIG9iaiA8PCAvVHlwZSAvQ2F0YWxvZyA+PiBlbmRvYmoKdHJhaWxlciA8PCAv
+Um9vdCAxIDAgUiA+PgolJUVPRgo=
+--ew-1--

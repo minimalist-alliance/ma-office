@@ -1,0 +1,49 @@
+From: Harbour Office <harbour@example.net>
+To: me@desk.example
+Date: Fri, 13 Nov 2026 10:00:00 +0000
+Subject: Photos from the harbour
+Message-ID: <related-alt-gif-jpeg@corpus.example>
+MIME-Version: 1.0
+X-Corpus-Note: multipart/alternative whose HTML side is multipart/related with an inline GIF and JPEG
+Content-Type: multipart/alternative; boundary="alt-2"
+
+--alt-2
+Content-Type: text/plain; charset=utf-8
+
+Two pictures from the harbour walk this morning.
+--alt-2
+Content-Type: multipart/related; boundary="rel-2"
+
+--rel-2
+Content-Type: text/html; charset=utf-8
+
+<p>Two pictures from the harbour walk this morning.</p><img src="cid:map@example.net"><img src="cid:boat@example.net">
+--rel-2
+Content-Type: image/gif
+Content-ID: <map@example.net>
+Content-Disposition: inline; filename="map.gif"
+Content-Transfer-Encoding: base64
+
+R0lGODdhCAAIAIEAABQ8oPDw8AAAAAAAACwAAAAACAAIAAAIGAABCBxIsODAAAgDEEyo8GDChQ8N
+SiQYEAA7
+--rel-2
+Content-Type: image/jpeg
+Content-ID: <boat@example.net>
+Content-Disposition: inline; filename="boat.jpg"
+Content-Transfer-Encoding: base64
+
+/9j/4AAQSkZJRgABAQAAAQABAAD/2wBDAAoHBwgHBgoICAgLCgoLDhgQDg0NDh0VFhEYIx8lJCIf
+IiEmKzcvJik0KSEiMEExNDk7Pj4+JS5ESUM8SDc9Pjv/2wBDAQoLCw4NDhwQEBw7KCIoOzs7Ozs7
+Ozs7Ozs7Ozs7Ozs7Ozs7Ozs7Ozs7Ozs7Ozs7Ozs7Ozs7Ozs7Ozs7Ozs7Ozv/wAARCAAQABADASIA
+AhEBAxEB/8QAHwAAAQUBAQEBAQEAAAAAAAAAAAECAwQFBgcICQoL/8QAtRAAAgEDAwIEAwUFBAQA
+AAF9AQIDAAQRBRIhMUEGE1FhByJxFDKBkaEII0KxwRVS0fAkM2JyggkKFhcYGRolJicoKSo0NTY3
+ODk6Q0RFRkdISUpTVFVWV1hZWmNkZWZnaGlqc3R1dnd4eXqDhIWGh4iJipKTlJWWl5iZmqKjpKWm
+p6ipqrKztLW2t7i5usLDxMXGx8jJytLT1NXW19jZ2uHi4+Tl5ufo6erx8vP09fb3+Pn6/8QAHwEA
+AwEBAQEBAQEBAQAAAAAAAAECAwQFBgcICQoL/8QAtREAAgECBAQDBAcFBAQAAQJ3AAECAxEEBSEx
+BhJBUQdhcRMiMoEIFEKRobHBCSMzUvAVYnLRChYkNOEl8RcYGRomJygpKjU2Nzg5OkNERUZHSElK
+U1RVVldYWVpjZGVmZ2hpanN0dXZ3eHl6goOEhYaHiImKkpOUlZaXmJmaoqOkpaanqKmqsrO0tba3
+uLm6wsPExcbHyMnK0tPU1dbX2Nna4uPk5ebn6Onq8vP09fb3+Pn6/9oADAMBAAIRAxEAPwDE8j2o
+8j2rR8j2o8j2r0P7U8zp/snyP//Z
+--rel-2--
+
+--alt-2--

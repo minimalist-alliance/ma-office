@@ -1,5 +1,6 @@
 // One app on a desk. Below 168 x 168 it's an icon; from there it's a widget, with more detail as it
-// grows (ADR 0062). Chrome and glyph come from a shared sprite. Pressing brings it to the front of its
+// grows (ADR 0062), and a widget with nothing to read at this zoom wears the icon's look, its glyph centred
+// (`tileFace` in layout.ts: never a blank card). Chrome and glyph come from a shared sprite. Pressing brings it to the front of its
 // desk's stack (ADR 0064): DeskPanel draws in the stack's order, so React puts the node there, once, and
 // the drag that follows never touches the order. Moving and resizing write to Konva only: geometry comes
 // from layout.ts, React hears about it at the drop, and the only renders during a drag are the one as
@@ -12,6 +13,7 @@ import type { Text as KonvaText } from 'konva/lib/shapes/Text.js';
 import { Circle, Group, Rect as KRect, Shape, Text } from 'react-konva/lib/ReactKonvaCore.js';
 import { getTheme } from '../theme/themeStore';
 import { deskLook } from '../theme/deskStyles';
+import { glassFace, glassOn } from '../theme/tileGlass';
 import type { ThemeId, Tokens } from '../theme/tokens';
 import { moreContrast, reducedMotion } from '../lib/util';
 import { placeItem, useLayoutStore } from '../state/layoutStore';
@@ -19,15 +21,19 @@ import { useViewStore } from '../state/viewStore';
 import { easeCamera } from './camera';
 import { camera } from './controller';
 import { drawGrip, drawMark, drawSizeToggle } from './glyphs';
-import { clampMove, clampResize, detailLevel, G, iconGlyphSize, workArea, type DetailLevel, type LayoutItem, type Point, type Rect, type Slot } from './layout';
-import { blit, blitTileLive, glyphSprite, tileSprite } from './sprites';
+import { clampMove, clampResize, comingLater, detailLevel, faceGlyphSize, G, LATER, laterShows, readableWidget, tileFace, workArea, type DetailLevel, type LayoutItem, type Point, type Rect, type Slot } from './layout';
+import { drawFrostUnder, frostUnder, type FrostUnder } from './frost';
+import { blit, blitBackdrop, blitTileLive, glassBackdropSprite, glyphSprite, tileSprite, whenIdle } from './sprites';
 import { CANVAS_FONT } from './font';
 import type { AppSummary } from '../desk/deskLink';
 import { appLabel } from '../shell/actions';
 import { useGlyph, useRosterAgent, useTeamWaiting } from '../agent/roster';
 import { CLEANUP_MS, isTidying, restack } from '../shell/cleanup';
+import { badgeLook, countFree, useTileCalm } from '../state/tileCalm';
 
 const T = { fontFamily: CANVAS_FONT, listening: false, perfectDrawEnabled: false } as const;
+/** An open tile whose app is open in its window says so in its foot (ADR 0053). */
+const IN_WINDOW_NOTE = 'Open in its window';
 
 interface Props {
   deskId: string;
@@ -67,6 +73,26 @@ function onTexture(deskId: string, theme: ThemeId): boolean {
   return !!deskLook(useLayoutStore.getState().desks[deskId]?.style, theme, moreContrast()).texture;
 }
 
+/**
+ * The "Coming later" chip centred at (x, y): the landing's pill, neutral (the accent means counts), in the canvas's chip colours
+ * with the size toggle's edge, since Light's chip is the tile's own white.
+ */
+function drawLater(ctx: CanvasRenderingContext2D, x: number, y: number, t: Tokens): void {
+  ctx.font = `600 11px ${CANVAS_FONT}`;
+  const w = Math.ceil(ctx.measureText(LATER).width) + 20;
+  ctx.beginPath();
+  ctx.roundRect(x - w / 2, y - 10, w, 20, 10);
+  ctx.fillStyle = t.surface.chip;
+  ctx.fill();
+  ctx.lineWidth = 1;
+  ctx.strokeStyle = t.border.default;
+  ctx.stroke();
+  ctx.fillStyle = t.text.secondary;
+  ctx.textAlign = 'center';
+  ctx.textBaseline = 'middle';
+  ctx.fillText(LATER, x, y + 0.5);
+}
+
 function setCursor(e: Konva.KonvaEventObject<MouseEvent>, cursor: string): void {
   const stage = e.target.getStage();
   if (stage) stage.container().style.cursor = cursor;
@@ -83,6 +109,14 @@ export const ItemTile = memo(function ItemTile({
   const footRef = useRef<KonvaText>(null);
   const dragging = useRef(false);
   const drag = useRef<Drag | null>(null);
+  // In hand, its glass shows its desk frosted (`frost.ts`): made in idle time from the press, dropped at the drop.
+  const frost = useRef<FrostUnder | null>(null);
+  const frostCancel = useRef<(() => void) | null>(null);
+  const dropFrost = (): void => {
+    frostCancel.current?.();
+    frostCancel.current = null;
+    frost.current = null;
+  };
   // The size while the corner is dragged. It goes straight to Konva: no render, and no new bitmap.
   const liveSize = useRef<{ w: number; h: number } | null>(null);
   const liveLevelNow = useRef<DetailLevel>(slot.level);
@@ -107,6 +141,13 @@ export const ItemTile = memo(function ItemTile({
   // The lead's tile counts the team's requests waiting for the member, where the desk's own word says fewer (S-14).
   const teamWaiting = useTeamWaiting(deskId);
   const badge = own ? own.unseen : item.app === 'agent' && teamWaiting > appBadge ? teamWaiting : appBadge;
+  // Under the focus shield the badge is still and neutral (Courier's a dot, no count); the accent stays only where something
+  // may break through (`state/tileCalm.ts`).
+  const tone = useTileCalm((s) => badgeLook(s, deskId, item.app));
+  // Courier comes later (`comingLater`): no words to show, so its glyph and, where it can be read, a "Coming later" chip under it.
+  const later = comingLater(item.app);
+  // Words the widget can show: a title or text, and never under the privacy shield. Without them, it's the icon's look.
+  const readable = !shield && !later && readableWidget(summary?.widget);
 
   // Glide to the slot whenever the layout moves it (others reflow in 120 ms, design 3.7).
   useLayoutEffect(() => {
@@ -140,9 +181,11 @@ export const ItemTile = memo(function ItemTile({
   // move or a theme change needs no React work per tile.
   const scene = useCallback((context: Konva.Context, shape: Konva.Shape) => {
     const ctx = context._context;
-    const { t: tokens, rev, resolved } = getTheme();
+    const { t: tokens, resolved } = getTheme();
     const lod = camera.lod;
-    const app = lod === 'card' || isWidget ? null : glyph;
+    // Read at draw time, as the text's visibility is (`controller.applyLod`), so a zoom past a threshold swaps the two at once.
+    const face = tileFace(level, lod, readable);
+    const app = face === 'glyph' ? glyph : null;
     const size = liveSize.current;
     const dw = size?.w ?? w;
     const dh = size?.h ?? h;
@@ -150,20 +193,71 @@ export const ItemTile = memo(function ItemTile({
     const look = stacked || dragging.current || !!size;
     // A bitmap holds no look for a test to read.
     shape.attrs.stacked = look;
-    if (size) blitTileLive(ctx, dw, dh, app, tokens, rev, radius);
-    else blit(ctx, tileSprite({ w, h, app, glyphSize: iconGlyphSize(w, h), radius, stacked: look, textured: onTexture(deskId, resolved) }, tokens, rev));
-    if (isWidget && lod !== 'card') {
+    shape.attrs.face = face;
+    shape.attrs.glyphSize = app ? faceGlyphSize(dw, dh) : 0;
+    if (size) blitTileLive(ctx, dw, dh, app, tokens, radius);
+    else {
+      // An icon's glyph is part of its bitmap. A larger tile's chrome is the plain card every app of its size shares, as its
+      // widget is, and its glyph a small sprite of its own over it: a bitmap per app and size would raster far more at a zoom's
+      // settle, most at the farthest zoom where many show (docs/sub-status/tile-icon-fallback.md has the numbers).
+      // An icon's tile wears its app's accent (APP-TILES) at every face; a widget's card is the plain tile, and under glass the
+      // office blue's (`words`), keeping its words at 4.5:1.
+      // A tile under glass tells it where it sits on its desk and the desk's look, so it can keep its inks on the desk's colour
+      // and show and bend its texture.
+      const at = glassOn() ? { x: slotRef.current.x, y: slotRef.current.y, look: deskLook(useLayoutStore.getState().desks[deskId]?.style, resolved, moreContrast()) } : undefined;
+      const spec = { w, h, app: isWidget ? null : app, glyphSize: faceGlyphSize(w, h), radius, stacked: look, textured: onTexture(deskId, resolved), tint: isWidget ? undefined : glyph, words: isWidget || undefined, at };
+      const under = at ? glassBackdropSprite(spec, tokens) : null;
+      if (under) blitBackdrop(ctx, under);
+      // In hand, the desk under it frosted, from the copy made after the press: one blit a frame.
+      else if (dragging.current && frost.current) drawFrostUnder(ctx, frost.current, shape.getAbsoluteTransform().getMatrix(), w, h, radius);
+      blit(ctx, tileSprite(spec, tokens));
+      if (isWidget && app) {
+        const g = faceGlyphSize(w, h);
+        blit(ctx, glyphSprite(app, tokens, g), (w - g) / 2, (h - g) / 2);
+      }
+    }
+    if (face === 'widget') {
       // The widget's head glyph, from its own small sprite so it stays crisp and cheap.
       ctx.save();
       ctx.translate(16, 15);
-      blit(ctx, glyphSprite(glyph, tokens, rev));
+      blit(ctx, glyphSprite(glyph, tokens));
       ctx.restore();
     }
-    if (badge > 0 && lod !== 'card') {
+    // Under the glyph, by the widget words' rule (`laterShows`); above "Open in its window" when that's said there too.
+    const chip = later && laterShows(level, lod);
+    shape.attrs.later = chip;
+    if (chip) drawLater(ctx, dw / 2, level === 'open' && windowOpen && !shield ? dh - 46 : dh - 20, tokens);
+    // How its badge shows, for a test to read (a bitmap holds no look): `plain`, `calm` or `accent`, null with no badge.
+    shape.attrs.badgeTone = badge > 0 && lod !== 'card' ? tone : null;
+    if (badge > 0 && lod !== 'card' && tone === 'calm') {
+      // The focus shield's still count: the neutral chip's colours, never the accent; Courier's a dot with no number.
+      const x = dw - 12;
+      const y = 10;
+      if (lod === 'glyph' || shield || countFree(item.app)) {
+        // The count's own ink, so the dot reads at 3:1 or better on every theme (the brand review's note).
+        ctx.fillStyle = tokens.text.secondary;
+        ctx.beginPath();
+        ctx.arc(x, y, 5, 0, Math.PI * 2);
+        ctx.fill();
+      } else {
+        ctx.fillStyle = tokens.surface.chip;
+        ctx.strokeStyle = tokens.border.default;
+        ctx.lineWidth = 1;
+        ctx.beginPath();
+        ctx.arc(x, y, 11.5, 0, Math.PI * 2);
+        ctx.fill();
+        ctx.stroke();
+        ctx.fillStyle = tokens.text.secondary;
+        ctx.font = `600 12px ${CANVAS_FONT}`;
+        ctx.textAlign = 'center';
+        ctx.textBaseline = 'middle';
+        ctx.fillText(badge > 99 ? '99+' : String(badge), x, y + 0.5);
+      }
+    } else if (badge > 0 && lod !== 'card') {
       const x = dw - 12;
       const y = 10;
       ctx.fillStyle = tokens.badge.bg;
-      if (lod === 'glyph' || shield) {
+      if (lod === 'glyph' || shield || (tone === 'accent' && countFree(item.app))) {
         ctx.beginPath();
         ctx.arc(x, y, 6, 0, Math.PI * 2);
         ctx.fill();
@@ -187,7 +281,7 @@ export const ItemTile = memo(function ItemTile({
       ctx.arc(dw / 2, dh + 6, 2, 0, Math.PI * 2);
       ctx.fill();
     }
-  }, [w, h, isWidget, radius, glyph, stacked, badge, shield, summary?.marks, windowOpen, free, hover, deskId]);
+  }, [w, h, level, readable, later, isWidget, radius, glyph, stacked, badge, tone, shield, summary?.marks, windowOpen, free, hover, deskId, item.app]);
 
   const hit = useCallback((context: Konva.Context, shape: Konva.Shape) => {
     const size = liveSize.current;
@@ -252,6 +346,7 @@ export const ItemTile = memo(function ItemTile({
   const finish = (d: Drag): void => {
     drag.current = null;
     dragging.current = false;
+    dropFrost();
     const kept = placeItem(deskId, item.id, d.rect);
     if (!kept) ref.current?.position({ x: slotRef.current.x, y: slotRef.current.y });
     if (d.kind === 'resize') {
@@ -272,8 +367,23 @@ export const ItemTile = memo(function ItemTile({
     const pinch = 'touches' in e.evt && e.evt.touches.length > 1;
     if (free && !menu && !pinch) restack(deskId, item.id, 'front');
     // The look a drag will want, made now if it isn't cached, so the drag's first frame has no bitmap to make.
-    const { t: tokens, rev } = getTheme();
-    tileSprite({ w, h, app: camera.lod === 'card' || isWidget ? null : glyph, glyphSize: iconGlyphSize(w, h), radius, stacked: true }, tokens, rev);
+    // The same spec the scene will draw in hand (its key has the desk's look and texture), so the bitmap made here is the one used.
+    const { t: tokens, resolved } = getTheme();
+    const at = glassOn() ? { x: slotRef.current.x, y: slotRef.current.y, look: deskLook(useLayoutStore.getState().desks[deskId]?.style, resolved, moreContrast()) } : undefined;
+    tileSprite({ w, h, app: !isWidget && tileFace(level, camera.lod, readable) === 'glyph' ? glyph : null, glyphSize: faceGlyphSize(w, h), radius, stacked: true, textured: onTexture(deskId, resolved), tint: isWidget ? undefined : glyph, words: isWidget || undefined, at }, tokens);
+    // And what its glass will show in hand: the desk without it, frosted, made when the page is next idle (a click wastes only
+    // idle time). Only where a tile moves freely, since nothing else on the desk moves then; a phone's grid reflows.
+    dropFrost();
+    const g = glassFace(resolved);
+    if (free && !menu && !pinch && g) {
+      frostCancel.current = whenIdle(() => {
+        frostCancel.current = null;
+        const node = ref.current;
+        const desk = node?.getStage()?.findOne(`#desk-${deskId}`);
+        const size = useLayoutStore.getState().desks[deskId];
+        if (node && desk && size) frost.current = frostUnder(desk, node, size, g.frost);
+      });
+    }
   };
 
   // The corner must outlive the hover from the press on. A quick first move leaves the app before the
@@ -294,12 +404,13 @@ export const ItemTile = memo(function ItemTile({
   const showChip = !free && (hover || showControls);
   const showGrip = free && !shield && (hover || resizing || showControls);
   const inner = w - 32;
-  const showText = isWidget && !shield;
+  // The widget's words, shown at the zoom that shows text. With none to show, the icon's look and no label row.
+  const showText = isWidget && readable;
   const textVisible = camera.lod === 'full';
   const widget = summary?.widget;
-  // An open tile whose window is open says so in its foot (ADR 0053): one place per app.
-  const note = level === 'open' && windowOpen;
-  const foot = note ? 'Open in its window' : widget?.foot;
+  // An open tile whose window is open says so in its foot (ADR 0053): one place per app. It's said under the centred glyph too.
+  const note = level === 'open' && windowOpen && !shield;
+  const foot = note ? IN_WINDOW_NOTE : showText ? widget?.foot : undefined;
 
   return (
     <Group
@@ -344,6 +455,7 @@ export const ItemTile = memo(function ItemTile({
           return;
         }
         dragging.current = false;
+        dropFrost();
         onDragEnd(item.id);
         const s = slotRef.current;
         ref.current?.to({ x: s.x, y: s.y, duration: reducedMotion() ? 0.01 : 0.2, easing: Konva.Easings.EaseOut });
@@ -359,10 +471,10 @@ export const ItemTile = memo(function ItemTile({
           {widget?.text && (
             <Text {...T} ref={bodyRef} name="lod-text" visible={textVisible} x={16} y={76} width={inner} height={h - 76 - 34} text={widget.text} fontSize={13} lineHeight={1.38} fill={t.text.secondary} wrap="word" ellipsis />
           )}
-          {foot && (
-            <Text {...T} ref={footRef} name={note ? 'lod-text open-tile-note' : 'lod-text'} visible={textVisible} x={16} y={h - 28} width={inner} text={foot} fontSize={13} fill={note ? t.text.secondary : t.text.tertiary} wrap="none" ellipsis />
-          )}
         </>
+      )}
+      {foot && (
+        <Text {...T} ref={footRef} name={note ? 'lod-text open-tile-note' : 'lod-text'} visible={textVisible} x={16} y={h - 28} width={inner} text={foot} fontSize={13} fill={note ? t.text.secondary : t.text.tertiary} wrap="none" ellipsis align={note && !showText ? 'center' : 'left'} />
       )}
       {!isWidget && hover && !resizing && !menuOpen && (
         // Close to the app: one right above the strip has the etched name 17 units below it.

@@ -1,0 +1,100 @@
+{
+  "id": "notebook-025",
+  "area": "notebook",
+  "title": "Read a page, then make a page of its actions",
+  "prompt": "Read my Meeting 12 Nov page and create a page Meeting 12 Nov actions in my Harness tab with just the action items.",
+  "setup": {
+    "notebook": [
+      {
+        "tab": "Harness",
+        "title": "Meeting 12 Nov",
+        "markdown": "# Meeting 12 Nov\n\nNotes from the planning call.\n\n- Action: Ravi sends the budget\n- Action: Mei books the room\n- Decision: launch moves to March\n"
+      }
+    ]
+  },
+  "approve": "all",
+  "checks": [
+    {
+      "kind": "page",
+      "tab": "Harness",
+      "title": "Meeting 12 Nov actions",
+      "contains": [
+        "Ravi sends the budget",
+        "Mei books the room"
+      ],
+      "notContains": [
+        "launch moves"
+      ]
+    },
+    {
+      "kind": "cards",
+      "tools": [
+        "notebook_write"
+      ]
+    }
+  ],
+  "policy": {
+    "tools": [
+      "notebook_search",
+      "notebook_list",
+      "notebook_read",
+      "notebook_write"
+    ]
+  },
+  "standIn": [
+    {
+      "calls": [
+        {
+          "name": "notebook_search",
+          "input": {
+            "query": "Meeting 12 Nov"
+          }
+        },
+        {
+          "name": "notebook_list",
+          "input": {}
+        }
+      ]
+    },
+    {
+      "calls": [
+        {
+          "name": "notebook_read",
+          "input": {
+            "pageId": {
+              "$re": {
+                "step": 0,
+                "call": 0,
+                "pattern": "\"pageId\":\"([^\"]+)\",\"title\":\"Meeting 12 Nov\""
+              }
+            }
+          }
+        }
+      ]
+    },
+    {
+      "calls": [
+        {
+          "name": "notebook_write",
+          "input": {
+            "op": "create",
+            "new": {
+              "tabId": {
+                "$re": {
+                  "step": 0,
+                  "call": 1,
+                  "pattern": "\"tabId\":\"([^\"]+)\",\"title\":\"Harness\""
+                }
+              },
+              "title": "Meeting 12 Nov actions"
+            },
+            "markdown": "- Ravi sends the budget\n- Mei books the room"
+          }
+        }
+      ]
+    },
+    {
+      "text": "Made Meeting 12 Nov actions with the two action items."
+    }
+  ]
+}

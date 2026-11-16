@@ -5,19 +5,11 @@ import type { ComponentType } from 'react';
 import type { AppWindowProps } from '../apps/registry';
 import type { AppId } from '../canvas/layout';
 import { useDeskStore } from '../state/deskStore';
-import { requestClose, useWindowStore } from '../state/windowStore';
-import { askGuildLimits, dismissRemoved, useGuildStore } from './guildStore';
+import { askGuildLimits, putAway, useGuildStore } from './guildStore';
 import { guildIdOfPanel, mayManageAgents } from './panel';
 import { AGENT_PRIVATE_LINE, OnGuildDesk, REMOVED_LINE, REMOVED_TITLE } from './words';
 
 /** Put the panel away: its windows close, and its layout goes with the next list. */
-export function putAway(deskId: string): void {
-  const guildId = guildIdOfPanel(deskId);
-  if (!guildId) return;
-  for (const w of Object.values(useWindowStore.getState().windows)) if (w.deskId === deskId) requestClose(w.key);
-  dismissRemoved(guildId);
-}
-
 export function GuildRemoved({ deskId }: { deskId: string }) {
   return (
     <div className="br-panel" role="status" data-testid="guild-removed">

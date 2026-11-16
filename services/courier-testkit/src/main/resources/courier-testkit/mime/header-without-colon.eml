@@ -1,0 +1,11 @@
+From: Office <office@example.com>
+To: me@desk.example
+Date: Fri, 13 Nov 2026 10:00:00 +0000
+Subject: Header without a colon
+Message-ID: <header-without-colon@corpus.example>
+MIME-Version: 1.0
+X-Corpus-Note: a header line with no colon, last before the blank line
+Content-Type: text/plain; charset=utf-8
+X-Broken header line here
+
+The body still reads fine.

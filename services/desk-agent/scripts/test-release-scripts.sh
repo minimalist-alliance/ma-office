@@ -6,13 +6,14 @@
 #   services/desk-agent/scripts/test-release-scripts.sh
 #
 # - The shared build-image.sh and package-release.sh, unchanged, for service desk-agent, against a stub docker.
-# - run, against the flags ADR 0040 and design 9.8 require; health, against a fake admin socket.
+# - run, against the flags ADR 0040 and design 9.8 require, and the parse sidecar's mount (ADR 0097) only where the
+#   image made /run/desk-parse; health, against a fake admin socket.
 # - desk-agent.env, against the settings the Java code reads.
 # - The Dockerfile: pinned bases, no BuildKit-only syntax, the training property nowhere a desk runs.
 # - No HTTP client or TLS logging anywhere a desk runs, as it would log a provider key (ISS-20).
 # - If desk-agent/target/desk-agent.jar exists: the Dockerfile's unpacking, SQLite's library step, the AppCDS
-#   training and the entrypoint, with this machine's JDK and /app moved to a temporary directory, up to the real
-#   /health. Run ../mvnw -f desk-agent/pom.xml verify first to include this.
+#   training, the parse sidecar's java @/app/parse.options and the entrypoint, with this machine's JDK and /app moved
+#   to a temporary directory, up to the real /health. Run ../mvnw -f desk-agent/pom.xml verify first to include this.
 #
 # Needs curl, jq, python3, tar, unzip and, for the last part, JAVA_HOME or the toolchain's JDK.
 set -euo pipefail
@@ -104,8 +105,9 @@ release=$work/unpacked
 image_id=sha256:0123456789abcdef
 echo "$image_id" >"$release/image-id"
 : >"$STUB_LOG"
-expect "run: starts docker" env RELEASE_DIR="$release" "$release/run"
+expect "run: starts docker" env MA_PARSE_DIR="$work/none" RELEASE_DIR="$release" "$release/run"
 expect "run: the image comes last" test "$(tail -n 1 "$STUB_LOG" | awk '{print $NF}')" = "$image_id"
+expect "run: no parse sidecar directory, no mount" test "$(grep -c -e '--mount' -e 'desk-parse' "$STUB_LOG")" = 0
 for flag in "--rm" "--network host" "--user 1103:1103" "--read-only" "--tmpfs /tmp" "--cap-drop=ALL" \
   "--security-opt=no-new-privileges" "--log-driver=journald" "--log-opt tag=desk-agent" "--ulimit core=0" \
   "--pids-limit=128" "--stop-timeout=30" "-v /run/desk-agent:/run/desk-agent" "-v /data/agent:/data/agent" \
@@ -117,6 +119,16 @@ expect "run: a memory limit" test -n "$memory"
 expect "run: and no swap beyond it" logged "--memory-swap=$memory"
 refuses "run: never mounts deskd's data" grep -q '/data/desk' "$docker_dir/run"
 refuses "run: never mounts docker.sock" grep -q 'docker.sock' "$docker_dir/run"
+# ADR 0097: the image's /run/desk-parse (its marker and socket) is mounted read-only at its own path only where it exists,
+# as docker would otherwise make a missing source as root.
+mkdir -p "$work/desk-parse/sock"
+: >"$work/desk-parse/required"
+: >"$STUB_LOG"
+expect "run: with the parse sidecar's directory" env MA_PARSE_DIR="$work/desk-parse" RELEASE_DIR="$release" "$release/run"
+expect "run: mounts it read-only at its own path" logged "--mount type=bind,src=$work/desk-parse,dst=/run/desk-parse,readonly"
+expect "run: and the image still comes last with it" test "$(tail -n 1 "$STUB_LOG" | awk '{print $NF}')" = "$image_id"
+expect "run: and nothing else of it" test "$(grep -o 'desk-parse' "$STUB_LOG" | wc -l)" = 2
+expect "run: the default is the image's path" grep -q 'MA_PARSE_DIR:-/run/desk-parse}' "$docker_dir/run"
 refuses "run: passes on docker's exit status" env STUB_RUN_EXIT=3 RELEASE_DIR="$release" "$release/run"
 refuses "run: no RELEASE_DIR" env -u RELEASE_DIR "$release/run"
 rm "$release/image-id"
@@ -169,10 +181,15 @@ expect "Dockerfile: the bases are deskd's, so a desk shares their layers" test \
   "$(grep -E '^FROM ' "$dockerfile" | grep -v ' AS bundled$' | awk '{print $2}')" = "$(grep -E '^FROM ' "$services_dir/deskd/Dockerfile" | grep -v ' AS bundled$' | awk '{print $2}')"
 refuses "Dockerfile: no BuildKit-only syntax" grep -qE '^# *syntax=|--mount=|--chmod=|--link|<<|--chown=[^ ]*\$' "$dockerfile"
 refuses "training: nothing a desk runs names its property" grep -q 'ma\.cds\.train' \
-  "$docker_dir/jvm.options" "$docker_dir/desk-agent.env" "$docker_dir/run" "$docker_dir/health"
+  "$docker_dir/jvm.options" "$docker_dir/parse.options" "$docker_dir/desk-agent.env" "$docker_dir/run" "$docker_dir/health"
 refuses "training: nor does the entrypoint" grep -q '^ENTRYPOINT.*ma\.cds\.train' "$dockerfile"
 refuses "training: and no setting is read for it" grep -rq 'getProperty("ma\.cds\.train' "$agent_dir/src/main/java"
 expect "Dockerfile: the image runs as agent, uid 1103" grep -qx 'USER 1103:1103' "$dockerfile"
+# ADR 0097: the sidecar runs java @/app/parse.options on this image. ParseOptionsTest checks its words against the child's.
+expect "Dockerfile: copies parse.options to /app" grep -qx 'COPY desk-agent/docker/parse.options /app/parse.options' "$dockerfile"
+expect "parse.options: the worker from the stream, last" test "$(grep -vE '^(#|$)' "$docker_dir/parse.options" | tail -n 1)" = --from-stream
+expect "parse.options: the security manager stays allowed (JDK 21)" grep -qx -- '-Djava.security.manager=allow' "$docker_dir/parse.options"
+refuses "parse.options: no debug" grep -qx -- '-Dma.attach.debug=true' "$docker_dir/parse.options"
 
 # --- nothing a desk runs logs what the HTTP client sends (ISS-20)
 # jdk.httpclient.HttpClient.log=headers (or all) logs every request header, a provider key's included;
@@ -186,7 +203,8 @@ no_http_logging() { # no_http_logging <file...>: each file is there, and names n
   done
 }
 expect "http logging: nothing a desk runs turns it on" no_http_logging \
-  "$docker_dir/jvm.options" "$docker_dir/desk-agent.env" "$docker_dir/run" "$docker_dir/health" "$dockerfile"
+  "$docker_dir/jvm.options" "$docker_dir/parse.options" "$docker_dir/desk-agent.env" "$docker_dir/run" \
+  "$docker_dir/health" "$dockerfile"
 expect "http logging: and no code sets it" test -z "$(grep -rlE "$http_logging" "$agent_dir/src/main/java" || true)"
 cp "$docker_dir/jvm.options" "$work/jvm.options.logging"
 echo '-Djdk.httpclient.HttpClient.log=headers' >>"$work/jvm.options.logging"
@@ -209,6 +227,8 @@ else
   expect "image steps: just the one library" test "$(ls "$app/native")" = libsqlitejdbc.so
   sed "s#/app/#$app/#g; s#/tmp/desk-agent-hs_err#$work/hs_err#" "$docker_dir/jvm.options" >"$app/jvm.options"
   expect "jvm.options: the JVM accepts it" java "@$app/jvm.options" -version >/dev/null 2>&1
+  # The COPY of parse.options, with /app moved. The Dockerfile's RUN below reads a line through it.
+  sed "s#/app/#$app/#g" "$docker_dir/parse.options" >"$app/parse.options"
 
   version=9.8.7-test
   # The last stage's RUN with its continuation lines, with the paths moved. The training's temporary files go
@@ -222,10 +242,17 @@ else
     env VERSION="$version" sh -c 'sh -c "$1" >"$2" 2>&1' _ "$steps" "$work/training.log"
   expect "image steps: the archive exists" test -s "$app/desk-agent.jsa"
   expect "training: went through to the end" grep -q 'desk-agent CDS training finished' "$work/training.log"
-  expect "training: the socket, a key, an answer, a limit and the chain" grep -q 'socket, key, answer, limit and 6 audit rows' "$work/training.log"
+  expect "training: the socket, a key, an answer, a limit and the chain" grep -q 'socket, key, answer, limit and 7 audit rows' "$work/training.log"
   expect "training: a restart, and the key back from the vault" grep -q 'a restart, and the key back from the vault' "$work/training.log"
   expect "training: left nothing in its temporary directory (it checks SQLite's library itself)" test -z "$(ls -A "$train_tmp")"
   refuses "image steps: no VERSION" env -u VERSION sh -c "$steps"
+
+  # The parse sidecar's worker as its sandbox starts it: java @/app/parse.options, an empty environment, the connection
+  # as stdin and stdout (ADR 0097).
+  parse_with() { printf "$1" | env -i "$(command -v java)" "@$app/parse.options" 2>/dev/null; }
+  expect "parse.options: a text file comes back OK" test "$(parse_with 'parse1 text 1000 1\nsome words\n')" = "$(printf 'OK \nsome words')"
+  expect "parse.options: a malformed line is ERR bad_request" test "$(parse_with 'parse1 text 1000\nsome words\n')" = "ERR bad_request"
+  expect "parse.options: a kind outside the five is too" test "$(parse_with 'parse1 exe 1000 1\nMZ\n')" = "ERR bad_request"
 
   entrypoint=()
   while IFS= read -r word; do

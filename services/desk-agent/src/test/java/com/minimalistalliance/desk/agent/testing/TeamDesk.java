@@ -101,6 +101,10 @@ public final class TeamDesk implements AutoCloseable {
         staging = new Staging(clock, AgentService.STAGING_BYTES);
         service = new AgentService(store, manager, keys, vault, providers, prices, limits, ledger, audit,
                 topics, clock, team, staging, new Preparer(parsers));
+        // Durable runs: a run a restart left waits for resume() (the test scripts the provider first), and the kill
+        // switch is the data directory's own, as on a desk.
+        service.holdResumes();
+        service.resumeRuns(!AgentService.switchedOff(data.resolve("resume-switch")));
         // Without the thread it is never started: start-then-close raced, and the thread could fire a due timer
         // (one missed while "down") before the test said so.
         service.restore(timerThread);
@@ -166,8 +170,15 @@ public final class TeamDesk implements AutoCloseable {
         return (String) map(added.get("key")).get("keyId");
     }
 
+    /** Binds the agent to the desk's key, and saves its setup screen with the defaults, as the New agent flow does. */
     public void bind(String agentId) throws Exception {
         call("agent.bind", "agentId", agentId, "keyId", key(), "model", Rig.MODEL);
+        setUp(agentId);
+    }
+
+    /** The member saves the agent's setup screen with its defaults (draft ADR section 16): every run needs it first. */
+    public void setUp(String agentId) throws Exception {
+        Setups.setUp(service, agentId);
     }
 
     /** The lead, on the desk's key. */
@@ -180,7 +191,9 @@ public final class TeamDesk implements AutoCloseable {
         Map<String, Object> p = m("name", name, "keyId", key(), "model", Rig.MODEL);
         Map<String, Object> extra = m(more);
         p.putAll(extra);
-        return (String) map(service.call("agent.create", p).get("agent")).get("id");
+        String id = (String) map(service.call("agent.create", p).get("agent")).get("id");
+        setUp(id);
+        return id;
     }
 
     /** Lets {@code from} message these agents ({@code to} then {@code rules}, ...), and opens both ends. */
@@ -282,6 +295,31 @@ public final class TeamDesk implements AutoCloseable {
     }
 
     // ---------------------------------------------------------------- restart
+
+    /** Lets the runs a restart left pick up (durable runs), and waits until each has, or has ended. */
+    public void resume() throws InterruptedException {
+        service.releaseResumes();
+        service.awaitResumes(Duration.ofSeconds(15));
+    }
+
+    /** Durable runs' kill switch in this desk's data directory: the next start ends runs a restart left, as before. */
+    public static void resumesOff(Path data) throws java.io.IOException {
+        java.nio.file.Files.writeString(data.resolve("resume-switch"), "off\n");
+    }
+
+    /**
+     * A kill, as {@code docker kill} or a crash: the files close under whatever runs, with no run stopped, so nothing a
+     * run would write on its way out is written. Open another on the same {@code data} and clock to restart. A run's
+     * thread left waiting must be let go by the test; whatever it writes after this fails on the closed files.
+     */
+    public void kill() {
+        staging.close();
+        parsers.close();
+        keys.dropAll();
+        store.close();
+        ledger.close();
+        audit.close();
+    }
 
     @Override
     public void close() {

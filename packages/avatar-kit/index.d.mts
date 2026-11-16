@@ -1,4 +1,4 @@
-// Types for the vendored kit (added by the vendoring repo; the kit itself is plain JS, version 1.0.0).
+// Types for the kit (plain JS); the vendoring repos import them with index.mjs.
 export type Recipe = {
   kind: 'built';
   kit: 1;

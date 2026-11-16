@@ -136,7 +136,7 @@ test('an app: Move right and Move left by a grid cell, Restore, and the keyboard
   await deskTile(page).focus();
   await page.keyboard.press('ArrowRight');
   const app = page.locator('.proxy-layer :focus');
-  await expect(app).toHaveAttribute('aria-label', /^(Notebook|Browser|Chat|Agent)/);
+  await expect(app).toHaveAttribute('aria-label', /^(Notebook|Browser|Courier|Agent)/);
   const id = (await app.getAttribute('id'))!;
   const tile = page.locator(`[id="${id}"]`);
   const start = await placed(tile);

@@ -1,6 +1,6 @@
 // Desks never overlap (ADR 0064), by real mouse and keyboard. A moved or growing desk pushes its neighbours aside.
 import { expect, test, type Page } from '@playwright/test';
-import { canvasPainted, focusCanvas, harness, signIn, watchConsole } from './helpers';
+import { canvasPainted, focusCanvas, harness, signIn, tapHome, watchConsole } from './helpers';
 
 const A = 'd-personal00001';
 const B = 'd-work000000001';
@@ -529,7 +529,7 @@ test.describe('the keyboard follows the same rule', () => {
 
 test.describe('cleanup growing a desk', () => {
   const ITEMS = (id: string): Item[] => [
-    { id: `${id}:chat`, app: 'chat', x: 8, y: 8, w: 180, h: 130 },
+    { id: `${id}:courier`, app: 'courier', x: 8, y: 8, w: 180, h: 130 },
     { id: `${id}:notebook`, app: 'notebook', x: 200, y: 8, w: 180, h: 130 },
     { id: `${id}:browser`, app: 'browser', x: 8, y: 146, w: 372, h: 110 },
   ];
@@ -733,7 +733,7 @@ test.describe('a saved layout', () => {
 
   test('a stored size that grows on the way in is counted', async ({ page, request }) => {
     // B is stored too small for what it holds, so it grows into A's place when read.
-    const items: Item[] = [{ id: `${B}:chat`, app: 'chat', x: 24, y: 24, w: 400, h: 300 }];
+    const items: Item[] = [{ id: `${B}:courier`, app: 'courier', x: 24, y: 24, w: 400, h: 300 }];
     await open(page, request, { [A]: { x: 300, y: 200, w: 400, h: 200 }, [B]: { x: 0, y: 0, w: 280, h: 180, items } });
     await expectAllClear(page, [A, B]);
   });
@@ -789,7 +789,7 @@ test.describe('phones', () => {
     const page = await ctx.newPage();
     await open(page, request, { [A]: { x: 0, y: 0, w: 584, h: 236 }, [B]: { x: 656, y: 0, w: 584, h: 236 } });
     // A phone arrives at its desk; the drag is about both desks, so start from the overview.
-    await page.getByRole('button', { name: 'Your office, show all desks' }).tap();
+    await tapHome(page);
     await page.waitForTimeout(800);
     const hand = await grab(page, 200, 100);
     await walk(hand, [0, 0], [300, 0], 14);

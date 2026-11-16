@@ -1,6 +1,5 @@
 package com.minimalistalliance.desk.agent.attach.worker;
 
-import java.io.ByteArrayInputStream;
 import java.io.FilterInputStream;
 import java.io.IOException;
 import java.io.InputStream;
@@ -37,12 +36,12 @@ final class OfficeText {
 
     private OfficeText() {}
 
-    static ParseWorker.Result read(String kind, byte[] bytes, int maxChars) {
+    static ParseWorker.Result read(String kind, Input input, int maxChars) {
         try {
             return switch (kind) {
-                case "docx" -> docx(bytes, maxChars);
-                case "xlsx" -> xlsx(bytes, maxChars);
-                default -> pptx(bytes, maxChars);
+                case "docx" -> docx(input, maxChars);
+                case "xlsx" -> xlsx(input, maxChars);
+                default -> pptx(input, maxChars);
             };
         } catch (XMLStreamException | IOException e) {
             if (Boolean.getBoolean("ma.attach.debug")) {
@@ -105,9 +104,10 @@ final class OfficeText {
         void part(String name, InputStream in) throws IOException, XMLStreamException;
     }
 
-    private static void walk(byte[] bytes, Take take) throws IOException, XMLStreamException {
+    /** One pass over the zip, read as a stream from the file held in {@code input}: each pass starts from its start. */
+    private static void walk(Input input, Take take) throws IOException, XMLStreamException {
         Budget budget = new Budget();
-        try (ZipInputStream zip = new ZipInputStream(new ByteArrayInputStream(bytes))) {
+        try (ZipInputStream zip = new ZipInputStream(input.stream())) {
             ZipEntry entry;
             while ((entry = zip.getNextEntry()) != null) {
                 if (++budget.entries > MAX_ENTRIES) {
@@ -139,10 +139,10 @@ final class OfficeText {
 
     // ----------------------------------------------------------------- docx
 
-    private static ParseWorker.Result docx(byte[] bytes, int maxChars) throws IOException, XMLStreamException {
+    private static ParseWorker.Result docx(Input input, int maxChars) throws IOException, XMLStreamException {
         ParseWorker.Capped out = new ParseWorker.Capped(maxChars);
         boolean[] found = new boolean[1];
-        walk(bytes, new Take() {
+        walk(input, new Take() {
             @Override
             public boolean wants(String name) {
                 return name.equals("word/document.xml") && !found[0];
@@ -180,11 +180,11 @@ final class OfficeText {
 
     // ----------------------------------------------------------------- pptx
 
-    private static ParseWorker.Result pptx(byte[] bytes, int maxChars) throws IOException, XMLStreamException {
+    private static ParseWorker.Result pptx(Input input, int maxChars) throws IOException, XMLStreamException {
         Map<Integer, String> slides = new TreeMap<>();
         Map<Integer, String> notes = new HashMap<>();
         int[] chars = new int[1];
-        walk(bytes, new Take() {
+        walk(input, new Take() {
             @Override
             public boolean wants(String name) {
                 return SLIDE.matcher(name).matches() || NOTES.matcher(name).matches();
@@ -243,14 +243,14 @@ final class OfficeText {
 
     // ----------------------------------------------------------------- xlsx
 
-    private static ParseWorker.Result xlsx(byte[] bytes, int maxChars) throws IOException, XMLStreamException {
+    private static ParseWorker.Result xlsx(Input input, int maxChars) throws IOException, XMLStreamException {
         // Pass 1: the sheets' names and where they are, and the shared strings the cells point to.
         List<String[]> sheets = new ArrayList<>();
         Map<String, String> targets = new HashMap<>();
         List<String> shared = new ArrayList<>();
         long[] sharedChars = new long[1];
         boolean[] workbook = new boolean[1];
-        walk(bytes, new Take() {
+        walk(input, new Take() {
             @Override
             public boolean wants(String name) {
                 return name.equals("xl/workbook.xml") || name.equals("xl/_rels/workbook.xml.rels")
@@ -318,7 +318,7 @@ final class OfficeText {
         }
         // Pass 2: each wanted sheet's cells, in the workbook's order.
         Map<String, String> byPath = new HashMap<>();
-        walk(bytes, new Take() {
+        walk(input, new Take() {
             @Override
             public boolean wants(String name) {
                 return targets.containsValue(name) && !byPath.containsKey(name);

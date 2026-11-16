@@ -5,7 +5,8 @@ import { setMaxListeners } from 'node:events';
 import { afterEach, beforeEach, describe, expect, it, vi } from 'vitest';
 import * as Y from 'yjs';
 import { DeskNotConnected, MAX_COLLAB_MESSAGE, type CollabChannel, type CollabEnd, type DeskLink, type LinkState, type LinkTopics, type RpcOptions } from '../desk/deskLink';
-import { backendFor, DeskBackend, type DeskBackendOptions } from './deskBackend';
+import { buildTree } from '../../notebook/src/model/tree.ts';
+import { backendFor, DeskBackend, forgetNotebooks, type DeskBackendOptions } from './deskBackend';
 
 const windowEvents = new EventTarget();
 setMaxListeners(0, windowEvents); // one `pagehide` per provider, as in a browser
@@ -586,6 +587,37 @@ describe('structure', () => {
     expect(b.status().problem).toBe(false);
   });
 
+  it("the foot's look at a page's agent edits is quiet: a change the desk didn't confirm stays said, and its own failure says nothing", async () => {
+    const link = new FakeLink('d-1');
+    link.answer = (m) => (m === 'notebook.tree' ? emptyTree() : refused('unavailable', { reason: 'notebook', mayHaveApplied: true }));
+    const b = backend(link, { giveUpMs: 10_000 });
+    await expect(b.createPage('t')).rejects.toMatchObject({ code: 'unavailable' });
+    expect(b.status().problem).toBe(true);
+    link.answer = (m) => (m === 'notebook.tree' ? emptyTree() : m === 'notebook.page.agentEdits' ? { edits: [] } : ok(m));
+    await expect(b.agentEdits('p')).resolves.toEqual([]);
+    expect(b.status().problem).toBe(true);
+    expect(link.of('notebook.page.agentEdits')).toHaveLength(1);
+
+    const other = new FakeLink('d-2');
+    other.answer = (m) => (m === 'notebook.tree' ? emptyTree() : refused('internal'));
+    const c = backend(other);
+    await c.ready();
+    expect(c.status().problem).toBe(false);
+    await expect(c.agentEdits('p')).rejects.toMatchObject({ code: 'internal' });
+    expect(c.status().problem).toBe(false);
+  });
+
+  it("an agent edit's Undo refused says so in its own words, not as the window's line, and is never sent twice", async () => {
+    const link = new FakeLink('d-1');
+    link.answer = (m) => (m === 'notebook.tree' ? emptyTree() : refused('conflict', { reason: 'changed', versionId: 'v-1' }));
+    const b = backend(link);
+    await b.ready();
+    await expect(b.undoAgentEdit('ae-1')).rejects.toMatchObject({ code: 'conflict', details: { reason: 'changed', versionId: 'v-1' } });
+    expect(b.status().problem).toBe(false);
+    expect(link.of('notebook.page.agentUndo')).toHaveLength(1);
+    expect(link.of('notebook.page.agentUndo')[0]?.options?.idem).toBeTruthy();
+  });
+
   it("a refusal isn't retried", async () => {
     const link = new FakeLink('d-1');
     link.answer = (m) => (m === 'notebook.tree' ? emptyTree() : refused('not_found'));
@@ -731,6 +763,57 @@ describe('the browser\'s prompt on leaving', () => {
     const server = await desk.page(pageId);
     await until(() => textOf(server.doc) === 'unsaved');
     await until(() => !leaving().prevented);
+  });
+
+  // ISS-89's follow-up: this tab's tokens became another account's. Here, beside the guard, while nothing else holds it.
+  it("a change of account ends every Notebook here: the last member's text not on its desk, the hold it had, the tree and its names", async () => {
+    const id = newDesk();
+    const { pageId, desk } = await deskWithPage(id);
+    const link = new FakeLink(id, true);
+    const b = backendFor(link as unknown as DeskLink);
+    b.setActive(true);
+    await b.ready();
+    expect(b.tree()).not.toEqual(buildTree([], [], []));
+    const session = b.openPage(pageId);
+    await session.ready;
+    link.drop();
+    session.doc.getText('typed').insert(0, 'the last words');
+    expect(leaving().prevented).toBe(true);
+    const heard: string[] = [];
+    b.onStatus(() => heard.push('status'));
+    b.subscribe(() => heard.push('tree'));
+
+    forgetNotebooks();
+    expect(leaving().prevented).toBe(false); // the new member is never asked to stay for them
+    expect(b.hasUnsavedText()).toBe(false);
+    expect(b.tree()).toEqual(buildTree([], [], []));
+    // Their link coming back sends nothing on, and asks nothing: the text never reaches anywhere from here.
+    const asked = link.calls.length;
+    link.back();
+    b.setActive(true);
+    await flushed();
+    await new Promise((done) => setTimeout(done, 60));
+    expect(link.calls.length).toBe(asked);
+    expect(textOf((await desk.page(pageId)).doc)).toBe('');
+    expect(b.tree()).toEqual(buildTree([], [], []));
+    expect(heard).toEqual([]);
+    // The link the new member's list opens gets one of its own.
+    expect(backendFor(link as unknown as DeskLink)).not.toBe(b);
+    session.close();
+  });
+
+  it('a read of the tree on its way as the account changes lands nowhere', async () => {
+    const link = new FakeLink('d-1');
+    let answer: (v: unknown) => void = () => {};
+    link.answer = () => new Promise((done) => (answer = done));
+    const b = backendFor(link as unknown as DeskLink);
+    b.setActive(true);
+    await flushed();
+    expect(link.methods()).toEqual(['notebook.tree']);
+    forgetNotebooks();
+    answer({ notebooks: [notebookRec('n-1')], tabs: [tabRec('t-1', 'n-1')], pages: [pageRec('p-1', 't-1')], rev: 2, next: null });
+    await flushed();
+    expect(b.tree()).toEqual(buildTree([], [], []));
   });
 });
 

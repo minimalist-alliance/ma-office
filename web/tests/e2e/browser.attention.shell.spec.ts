@@ -3,7 +3,7 @@
 // nobody looking for `attentionGraceMs` cuts the media, nobody viewing the Browser for `freezeAfterMs` freezes it, and a
 // look thaws it in `thawMs`, "Resuming…" meanwhile. The switch times are printed as `SWITCH` lines for the System Engineer.
 import { expect, test, type APIRequestContext, type Page } from '@playwright/test';
-import { canvasPainted, focusCanvas, harness, setTheme, signIn, watchConsole, type ThemeId } from './helpers';
+import { canvasPainted, focusCanvas, harness, markHome, setTheme, signIn, watchConsole, type ThemeId } from './helpers';
 
 interface MockControl {
   rpc: { m: string; p: Record<string, unknown> }[];
@@ -60,7 +60,7 @@ async function focusDesk(page: Page, name: string): Promise<void> {
 }
 
 async function overview(page: Page): Promise<void> {
-  await page.getByRole('button', { name: /show all desks/ }).evaluate((el) => (el as HTMLButtonElement).click());
+  await markHome(page);
 }
 
 async function openBrowser(page: Page): Promise<void> {

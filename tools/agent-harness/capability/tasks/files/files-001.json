@@ -1,0 +1,49 @@
+{
+  "id": "files-001",
+  "area": "files",
+  "title": "List a folder",
+  "prompt": "What recipes do I have in Harness/recipes? Just list the file names.",
+  "setup": {
+    "files": {
+      "Harness/recipes/banana-bread.md": "# Banana bread\n\n3 ripe bananas.\n",
+      "Harness/recipes/chili.md": "# Chili\n\nBeans and spice.\n",
+      "Harness/recipes/pancakes.md": "# Pancakes\n\nFlour, milk, eggs.\n"
+    }
+  },
+  "approve": "all",
+  "checks": [
+    {
+      "kind": "reply",
+      "contains": [
+        "banana-bread.md",
+        "chili.md",
+        "pancakes.md"
+      ],
+      "state": "done"
+    },
+    {
+      "kind": "cards",
+      "tools": []
+    }
+  ],
+  "policy": {
+    "tools": [
+      "files_list"
+    ]
+  },
+  "standIn": [
+    {
+      "calls": [
+        {
+          "name": "files_list",
+          "input": {
+            "path": "Harness/recipes"
+          }
+        }
+      ]
+    },
+    {
+      "text": "You have three recipes: banana-bread.md, chili.md and pancakes.md."
+    }
+  ]
+}

@@ -1,0 +1,10 @@
+From: Office <office@example.com>
+To: me@desk.example
+Date: Fri, 13 Nov 2026 10:00:00 +0000
+Subject: Bad quote
+Message-ID: <content-type-unbalanced-quote@corpus.example>
+MIME-Version: 1.0
+X-Corpus-Note: a Content-Type parameter with an unbalanced quote
+Content-Type: text/plain; charset="utf-8; format=flowed
+
+Quoted badly.

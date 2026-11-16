@@ -47,7 +47,7 @@ class CdsTrainingIT {
         assertThat(process.exitValue()).as(output).isZero();
         assertThat(output)
                 .contains("desk-agent ready in")
-                .contains("desk-agent CDS training: socket, key, answer, limit and 6 audit rows")
+                .contains("desk-agent CDS training: socket, key, answer, limit and 7 audit rows")
                 .contains("desk-agent CDS training: a restart, and the key back from the vault")
                 .contains("desk-agent CDS training finished");
         assertThat(work).isEmptyDirectory();

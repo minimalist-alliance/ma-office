@@ -1,0 +1,66 @@
+{
+  "id": "files-044",
+  "area": "files",
+  "title": "Copy a file",
+  "prompt": "Copy Harness/notes/lemon-cake.md to Harness/backup/lemon-cake.md.",
+  "setup": {
+    "files": {
+      "Harness/notes/lemon-cake.md": "Lemon cake\nBake for 40 minutes.\n",
+      "Harness/backup/": null
+    }
+  },
+  "approve": "all",
+  "checks": [
+    {
+      "kind": "file",
+      "path": "Harness/backup/lemon-cake.md",
+      "contains": [
+        "Lemon cake",
+        "Bake for 40 minutes"
+      ]
+    },
+    {
+      "kind": "file",
+      "path": "Harness/notes/lemon-cake.md",
+      "equals": "Lemon cake\nBake for 40 minutes.\n"
+    },
+    {
+      "kind": "cards",
+      "tools": [
+        "files_write"
+      ]
+    }
+  ],
+  "policy": {
+    "tools": [
+      "files_read",
+      "files_write"
+    ]
+  },
+  "standIn": [
+    {
+      "calls": [
+        {
+          "name": "files_read",
+          "input": {
+            "path": "Harness/notes/lemon-cake.md"
+          }
+        }
+      ]
+    },
+    {
+      "calls": [
+        {
+          "name": "files_write",
+          "input": {
+            "path": "Harness/backup/lemon-cake.md",
+            "text": "Lemon cake\nBake for 40 minutes.\n"
+          }
+        }
+      ]
+    },
+    {
+      "text": "Copied it to Harness/backup/lemon-cake.md."
+    }
+  ]
+}

@@ -3,6 +3,8 @@
 **Status:** Proposed (pending the owner's approval of design v1)
 **Date:** 2026-11-04
 
+> **Since then (2026-11-12):** the Chat app is **Courier**, in what members see (`sub/courier-name`) and in its id: `courier` in the office's code, test ids and fleet map, and `courier.` for its methods and topics (deskd keeps `chat.` reserved too). A member's saved layout still stores `chat` until the flip that `docs/sub-status/courier-id.md` describes. This ADR's channel model is Courier's; nothing of it is built yet.
+
 ## Context
 - The vision: one channel per person or persons carrying every medium (text, email, agentic), the sender choosing the medium per message, "the default being the last comm received". Integrations come once the foundation exists.
 - Credentials and plaintext must stay on the desk VM.

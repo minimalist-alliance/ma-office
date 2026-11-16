@@ -33,6 +33,12 @@ final class Deltas {
         this.flush = flush;
     }
 
+    /** A reply picked up after a restart (durable runs): its text so far is already the reply's, and isn't sent again. */
+    Deltas(Consumer<String> flush, String already) {
+        this.flush = flush;
+        all.append(already == null ? "" : already);
+    }
+
     void add(String text) {
         boolean due;
         lock.lock();

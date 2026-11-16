@@ -51,7 +51,7 @@ DOCKER = {
               "uidMappings": [], "gidMappings": [], "sysctl": {}},
 }
 USERS = {"desk": 1100, "rtc": 1101, "kiosk": 1102, "agent": 1103, "stream": 1104, "notebook": 1105, "agent-filter": 1106,
-         "desk-x": 1107, "desk-snd": 1108, "desk-dns": 1109, "desk-data": 1112}
+         "desk-x": 1107, "desk-snd": 1108, "desk-dns": 1109, "desk-data": 1112, "parse": 1113}
 GROUPS = dict(USERS, **{"desk-audio": 1111})
 
 
@@ -115,6 +115,9 @@ class LinksShare(unittest.TestCase):
         real_chown = os.chown
         os.chown = lambda p, u, g: made.__setitem__(os.path.basename(p), (u, g))
         self.addCleanup(setattr, os, "chown", real_chown)
+        real_fchown = os.fchown   # desk-parse's marker (ADR 0097), the slot root's: chowned by descriptor, which needs root here
+        os.fchown = lambda fd, u, g: made.__setitem__("required", (u, g))
+        self.addCleanup(setattr, os, "fchown", real_fchown)
         out = sys.stdout
         sys.stdout = open(os.devnull, "w")
         try:
@@ -344,6 +347,9 @@ class FromTheTemplate(unittest.TestCase):
     def test_the_agent_s_egress_names_openrouter(self):
         names = [l.strip() for l in (DESK / "etc/ma/agent-egress.conf").read_text().splitlines() if l.strip() and not l.startswith("#")]
         self.assertIn("openrouter.ai", names)
+        # Google's and Moonshot AI's own endpoints (2026-11-15): a slot takes the desk image's list from its template.
+        self.assertIn("generativelanguage.googleapis.com", names)
+        self.assertIn("api.moonshot.ai", names)
         build = (IMAGE / "host/recipe/build.sh").read_text()
         self.assertNotRegex(build, r"--exclude=\./etc/ma\b", "the template copy must keep /etc/ma")
 

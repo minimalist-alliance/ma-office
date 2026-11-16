@@ -1,0 +1,72 @@
+{
+  "id": "notebook-003",
+  "area": "notebook",
+  "title": "Search, then read a page",
+  "prompt": "What books are on my Reading list page?",
+  "setup": {
+    "notebook": [
+      {
+        "tab": "Harness",
+        "title": "Reading list",
+        "markdown": "# Reading list\n\n- The Left Hand of Darkness\n- Piranesi\n"
+      },
+      {
+        "tab": "Harness",
+        "title": "Gift ideas",
+        "markdown": "# Gift ideas\n\n- Mom: scarf\n- Dad: chess set\n"
+      }
+    ]
+  },
+  "approve": "all",
+  "checks": [
+    {
+      "kind": "reply",
+      "contains": [
+        "Piranesi",
+        "Left Hand of Darkness"
+      ],
+      "state": "done"
+    },
+    {
+      "kind": "cards",
+      "tools": []
+    }
+  ],
+  "policy": {
+    "tools": [
+      "notebook_search",
+      "notebook_read"
+    ]
+  },
+  "standIn": [
+    {
+      "calls": [
+        {
+          "name": "notebook_search",
+          "input": {
+            "query": "Reading list"
+          }
+        }
+      ]
+    },
+    {
+      "calls": [
+        {
+          "name": "notebook_read",
+          "input": {
+            "pageId": {
+              "$re": {
+                "step": 0,
+                "call": 0,
+                "pattern": "\"pageId\":\"([^\"]+)\",\"title\":\"Reading list\""
+              }
+            }
+          }
+        }
+      ]
+    },
+    {
+      "text": "Your reading list has The Left Hand of Darkness and Piranesi."
+    }
+  ]
+}

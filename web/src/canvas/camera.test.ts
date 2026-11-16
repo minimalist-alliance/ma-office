@@ -1,5 +1,6 @@
 import { describe, expect, it } from 'vitest';
-import { cameraDuration, cubicBezier, DESK_MAX_SCALE, easeCamera, edgePan, fitRect, FOCUS_ZOOM, interpolateCamera, isVisible, lodFor, MAX_SCALE, MIN_SCALE, SlowFrameWindow, snapToDevice, wheelZoomFactor, zoomAtPoint, zoomedInOn } from './camera';
+import { DEFAULT_DESK } from './layout';
+import { cameraDuration, cubicBezier, deskFramingScale, DESK_MAX_SCALE, framedDeskWidth, easeCamera, edgePan, fitRect, FOCUS_ZOOM, interpolateCamera, isVisible, lodFor, MAX_SCALE, MIN_SCALE, SlowFrameWindow, snapToDevice, wheelZoomFactor, zoomAtPoint, zoomedInOn } from './camera';
 
 const vp = { w: 1000, h: 800 };
 const ins = { top: 72, bottom: 64, side: 0 };
@@ -110,6 +111,52 @@ describe('fit', () => {
   });
   it('never goes below the minimum', () => {
     expect(fitRect({ x: 0, y: 0, w: 1e6, h: 1e6 }, vp, ins, 48, 1).s).toBe(MIN_SCALE);
+  });
+});
+
+// The owner's framing (ADR 0057): "only 50% of a browser's width in a 16:9 layout", the same share of the area elsewhere.
+describe('a desk\'s framing', () => {
+  const NEW = { x: 0, y: 0, w: DEFAULT_DESK.w, h: DEFAULT_DESK.h };
+  const screens = [[1920, 1080], [1440, 900], [1024, 768], [3440, 1440], [2880, 1800], [1280, 720]] as const;
+  const frame = (w: number, h: number, rect: { x: number; y: number; w: number; h: number } = NEW) => fitRect(rect, { w, h }, { top: 72, bottom: 64, side: 0 }, 48, deskFramingScale({ w, h }));
+
+  it('at 16:9 is half the width', () => {
+    for (const [w, h] of [[1920, 1080], [1280, 720], [3840, 2160]] as const) expect(framedDeskWidth({ w, h }) / w).toBeCloseTo(0.5, 6);
+  });
+
+  it('elsewhere takes the area share it has at 16:9, 4 / (9a) for a desk of aspect a', () => {
+    const a = DEFAULT_DESK.w / DEFAULT_DESK.h;
+    for (const [w, h] of screens) {
+      const s = deskFramingScale({ w, h });
+      expect((DEFAULT_DESK.w * s * DEFAULT_DESK.h * s) / (w * h)).toBeCloseTo(4 / (9 * a), 6);
+    }
+  });
+
+  it('frames a new desk exactly so, centred between the bars, near 100 % on laptop and desktop screens', () => {
+    for (const [w, h] of screens) {
+      const c = frame(w, h);
+      expect(c.s).toBeCloseTo(deskFramingScale({ w, h }), 9);
+      expect(c.x + (NEW.w / 2) * c.s).toBeCloseTo(w / 2);
+      expect(c.y + (NEW.h / 2) * c.s).toBeCloseTo(72 + (h - 72 - 64) / 2);
+    }
+    expect(frame(1440, 900).s).toBeCloseTo(0.882, 3);
+    expect(frame(1920, 1080).s).toBeCloseTo(1.116, 3);
+  });
+
+  it('the fit\'s margins win on a screen too short or narrow for the rule, and the desk fits inside them', () => {
+    // The margin is 48 desk units round the desk, so 48 px at 100 %.
+    for (const [w, h] of [[1280, 480], [844, 390], [640, 1200]] as const) {
+      const c = frame(w, h);
+      expect(c.s).toBeLessThan(deskFramingScale({ w, h }));
+      expect((NEW.w + 96) * c.s).toBeLessThanOrEqual(w + 1e-9);
+      expect((NEW.h + 96) * c.s).toBeLessThanOrEqual(h - 72 - 64 + 1e-9);
+    }
+  });
+
+  it('is only the cap for a desk as introduced: a resized desk keeps the 175 % fill it always had', () => {
+    const resized = { x: 0, y: 0, w: 900, h: 500 };
+    expect(fitRect(resized, { w: 1920, h: 1080 }, { top: 72, bottom: 64, side: 0 }, 48, DESK_MAX_SCALE).s).toBeCloseTo(Math.min(1824 / 996, 944 / 596), 9);
+    expect(fitRect({ x: 0, y: 0, w: 584, h: 236 }, { w: 1440, h: 900 }, { top: 72, bottom: 64, side: 0 }, 48, DESK_MAX_SCALE).s).toBe(1.75);
   });
 });
 

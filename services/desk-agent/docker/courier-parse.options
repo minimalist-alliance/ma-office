@@ -1,0 +1,33 @@
+# desk-parse's Courier mode (ADR 0097, amended by the draft ADR "Courier's store" section 4): the Courier sandbox runs
+# java @/app/courier-parse.options once per message, deskd's connection as the worker's stdin and stdout, with an empty
+# environment. The JVM flags are parse.options' own, line for line (courier-parse's OptionsTest compares them), so the two
+# workers in the sandbox have the same heap, the same security manager and the same silence; then the Courier mode's two
+# properties, the classpath (courier-parse and its jars are in /app/lib, as desk-agent's dependencies), the main class and
+# --from-stream.
+# - ma.courier.trackers: ADR 0076's tracker hosts, one a line, which the image's bake writes from the Browser blocker's
+#   pinned EasyPrivacy list and the sandbox mounts read-only over the empty placeholder this image ships. Read once, before
+#   the worker's security manager is installed.
+-Xmx72m
+-Xms8m
+-Xss512k
+-XX:+UseSerialGC
+-XX:TieredStopAtLevel=1
+-XX:MaxMetaspaceSize=96m
+-XX:+ExitOnOutOfMemoryError
+-XX:-HeapDumpOnOutOfMemoryError
+-XX:-CreateCoredumpOnCrash
+-XX:ErrorFile=/dev/null
+-XX:-UsePerfData
+-XX:+DisableAttachMechanism
+-XX:+DisplayVMOutputToStderr
+-Xlog:disable
+-Xlog:all=warning:stderr
+-Xshare:auto
+-Djava.awt.headless=true
+-Djava.security.manager=allow
+-Dma.courier.debug=false
+-Dma.courier.trackers=/app/courier/trackers.txt
+-cp
+/app/desk-agent.jar
+com.minimalistalliance.desk.courier.parse.CourierWorker
+--from-stream

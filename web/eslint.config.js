@@ -17,6 +17,9 @@ export default tseslint.config(
       'ma/no-color-literals': 'error',
     },
   },
-  // The one file allowed to hold colors, and the tests that check them.
-  { files: ['src/theme/tokens.ts', 'src/**/*.test.ts'], rules: { 'ma/no-color-literals': 'off' } },
+  // The one file allowed to hold colors, and the tests that check them. The app glyphs' tables are generated from the tokens
+  // (the fallback hexes and the fold shades, design-drafts/app-icons/final-3d/build/make_draw3d.py), and glyphs.test.ts fails
+  // when a token moves without them. To-do's draft glyph (`apps/todo/glyph3d.ts`) copies those rows, and its test checks them.
+  // The theme sliders' colour math (`theme/tune/xf.ts`) holds no colour, but writes the tokens' own forms back (`rgba(`).
+  { files: ['src/theme/tokens.ts', 'src/**/*.test.ts', 'src/canvas/draw3d.ts', 'src/deskapps/host/draw3d-bible.ts', 'src/apps/todo/glyph3d.ts', 'src/theme/tune/xf.ts'], rules: { 'ma/no-color-literals': 'off' } },
 );

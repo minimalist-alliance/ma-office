@@ -13,7 +13,7 @@ import * as Y from 'yjs';
 import type { NotebookBackend, PageSession } from '../model/backend.ts';
 import { isPaletteId, type PaletteId } from '../model/colors.ts';
 import { cleanDoc, type ImportedPage } from '../model/notebookFile.ts';
-import { copyState, docState } from '../model/ydoc.ts';
+import { copyState, docState, writeDoc } from '../model/ydoc.ts';
 import { dayKey, endOfDay } from '../model/days.ts';
 import { derive, type Derived } from '../model/derive.ts';
 import { SESSION_IDLE_MS, INTERVAL_MS, TRASH_KEEP_MS, versionAt, versionsToPrune } from '../model/history.ts';
@@ -23,6 +23,7 @@ import { buildTree, keyAt, labelOf, pagesFrom } from '../model/tree.ts';
 import {
   TAB_COLORS,
   type ActivityRow,
+  type AgentEdit,
   type NotebookRec,
   type PageRec,
   type SearchHit,
@@ -115,6 +116,8 @@ export class LocalBackend implements NotebookBackend {
   private indexLoading: Promise<SearchIndex> | null = null;
   private inflight = new Set<Promise<unknown>>();
   private lastVersionAt = new Map<string, number>();
+  /** Agents' edits, for the demo and tests only (`simulateAgentEdit`): a desk keeps the real ones. Oldest first. */
+  private agentEditList: (AgentEdit & { pageId: string })[] = [];
 
   constructor(options: LocalBackendOptions = {}) {
     this.opts = {
@@ -724,7 +727,56 @@ export class LocalBackend implements NotebookBackend {
 
   async versions(pageId: string): Promise<VersionMeta[]> {
     const metas = await getAllByIndex<VersionMeta>(this.mustDb(), STORES.versions, 'byPage', pageId);
-    return metas.sort((a, b) => b.createdAt - a.createdAt);
+    return metas.sort((a, b) => b.createdAt - a.createdAt).map((v) => this.withAgent(v));
+  }
+
+  /** A `pre_agent` version says whose edit came after it, as a desk's does. */
+  private withAgent<T extends VersionMeta>(v: T): T {
+    const e = v.reason === 'pre_agent' ? this.agentEditList.find((x) => x.versionId === v.id) : undefined;
+    return e ? { ...v, agent: e.agent, editId: e.editId, undone: e.undone } : v;
+  }
+
+  // ---------------------------------------------------------------- the Agent's edits, as a desk has them
+
+  async agentEdits(pageId: string): Promise<AgentEdit[]> {
+    return this.agentEditList
+      .filter((e) => e.pageId === pageId)
+      .reverse()
+      .map((e) => ({ editId: e.editId, op: e.op, agent: e.agent, at: e.at, versionId: e.versionId, undone: e.undone }));
+  }
+
+  /** Here an undo is the version before it, restored: what a desk does only when nothing changed since. */
+  async undoAgentEdit(editId: string): Promise<void> {
+    const e = this.agentEditList.find((x) => x.editId === editId);
+    if (!e) throw Object.assign(new Error('not_found'), { code: 'not_found' });
+    if (e.undone) throw Object.assign(new Error('conflict'), { code: 'conflict', details: { reason: 'undone' } });
+    // The newest first, as a desk does: each undo goes back to exactly the page before that edit.
+    const later = this.agentEditList.slice(this.agentEditList.indexOf(e) + 1).filter((x) => x.pageId === e.pageId && !x.undone);
+    const newer = later[later.length - 1];
+    if (newer) throw Object.assign(new Error('conflict'), { code: 'conflict', details: { reason: 'newer', editId: newer.editId } });
+    if (e.versionId) await this.restoreVersion(e.pageId, e.versionId);
+    e.undone = true;
+    this.emit();
+  }
+
+  /**
+   * The demo's and tests' stand-in for an agent's append on a desk: a `pre_agent` version first, then the paragraph at
+   * the page's end, and the edit kept for "Edited by {agent}". Never on a member's desk: the local backend never is.
+   */
+  async simulateAgentEdit(pageId: string, agent: string, text: string): Promise<AgentEdit> {
+    const before = await this.saveVersion(pageId, 'pre_agent');
+    const s = this.openPage(pageId);
+    try {
+      await s.ready;
+      writeDoc(s.doc, { type: 'doc', content: [{ type: 'paragraph', content: [{ type: 'text', text }] }] });
+      await this.flushOpen(this.open.get(pageId) as Open);
+    } finally {
+      s.close();
+    }
+    const edit = { pageId, editId: `ae-${Math.random().toString(36).slice(2, 12)}`, op: 'append' as const, agent, at: Date.now(), versionId: before?.id ?? null, undone: false };
+    this.agentEditList.push(edit);
+    this.emit();
+    return { editId: edit.editId, op: edit.op, agent: edit.agent, at: edit.at, versionId: edit.versionId, undone: edit.undone };
   }
 
   async version(versionId: string): Promise<Version | null> {
@@ -733,7 +785,7 @@ export class LocalBackend implements NotebookBackend {
       get<VersionMeta>(db, STORES.versions, versionId),
       get<{ id: string; doc: PMNode }>(db, STORES.versionDocs, versionId),
     ]);
-    return meta && body ? { ...meta, doc: body.doc } : null;
+    return meta && body ? this.withAgent({ ...meta, doc: body.doc }) : null;
   }
 
   async saveVersion(pageId: string, reason: 'manual' | 'pre_agent' = 'manual'): Promise<VersionMeta | null> {

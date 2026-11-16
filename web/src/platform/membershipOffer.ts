@@ -40,13 +40,24 @@ export function formatUsd(usd: number): string {
   return `$${(cents / 100).toLocaleString('en-US', opts)}`;
 }
 
+/** Each paid tier's monthly price today, for card D's Rejoin: null for one that isn't on sale, and no prices while Pay is off. */
+export type TierPrices = Readonly<Record<'alliance' | 'officer' | 'lead', number | null>>;
+
+/** `offerFrom`'s rules, with Founder's `leadMonthlyUsd` (contract tiers.md section 3) beside them. Null where Pay is off. */
+export function pricesFrom(cfg: unknown): TierPrices | null {
+  const offer = offerFrom(cfg);
+  if (!offer.open) return null;
+  const b = (cfg as { billing: { officerMonthlyUsd?: unknown; memberMonthlyUsd?: unknown; leadMonthlyUsd?: unknown } }).billing;
+  return { alliance: offer.allianceMonthlyUsd, officer: b.officerMonthlyUsd !== undefined ? price(b.officerMonthlyUsd) : price(b.memberMonthlyUsd), lead: price(b.leadMonthlyUsd) };
+}
+
 /** Null until Platform has answered. `failed`: it didn't, so the card offers nothing and promises nothing. */
-export const useOffer = create<{ offer: MembershipOffer | null; failed: boolean }>(() => ({ offer: null, failed: false }));
+export const useOffer = create<{ offer: MembershipOffer | null; failed: boolean; prices?: TierPrices | null; free?: unknown }>(() => ({ offer: null, failed: false }));
 
 const TIMEOUT_MS = 5000;
 let asking: Promise<void> | null = null;
 
-/** Asked once a page, and only by an account that sees card A. A failure is asked again on the next call. */
+/** Asked once a page, and only by an account that sees card A, D or E, or a free member (`free/freeNow.tsx`). A failure is asked again on the next call. */
 export function loadOffer(): Promise<void> {
   if (useOffer.getState().offer) return Promise.resolve();
   asking ??= (async () => {
@@ -55,7 +66,9 @@ export function loadOffer(): Promise<void> {
       if (!base) throw new Error('This host is not a Desk host');
       const res = await fetch(`${base}/v1/client-config?app=platform-web`, { cache: 'no-store', signal: AbortSignal.timeout(TIMEOUT_MS) });
       if (!res.ok) throw new Error(`client-config -> ${res.status}`);
-      useOffer.setState({ offer: offerFrom(await res.json()), failed: false });
+      const body: unknown = await res.json();
+      // `free`, as sent: the free tier's block, read only by the "You're on {Free} now" card (`free/freeNow.tsx`).
+      useOffer.setState({ offer: offerFrom(body), prices: pricesFrom(body), free: (body as { free?: unknown } | null)?.free, failed: false });
     } catch {
       useOffer.setState({ failed: true });
     } finally {

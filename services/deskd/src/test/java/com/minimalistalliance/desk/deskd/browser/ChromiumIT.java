@@ -74,8 +74,12 @@ class ChromiumIT {
     private FakeDoh doh;
     private PlatformHttp dohHttp;
 
+    /** Every CDP command of every path in each test, and the Browser's log lines: checked as each test ends. */
+    private CdpRecorder recorder;
+
     @BeforeEach
     void setUp() throws Exception {
+        recorder = CdpRecorder.start();
         port = freePort();
         startChromium();
         pages = HttpServer.create(new InetSocketAddress(InetAddress.getLoopbackAddress(), 0), 0);
@@ -137,19 +141,26 @@ class ChromiumIT {
 
     @AfterEach
     void tearDown() throws Exception {
-        if (rig != null) {
-            rig.close();
+        try {
+            if (rig != null) {
+                rig.close();
+            }
+            if (pages != null) {
+                pages.stop(0);
+            }
+            if (doh != null) {
+                doh.close();
+            }
+            if (dohHttp != null) {
+                dohHttp.close();
+            }
+            stopChromium();
+        } finally {
+            recorder.close();
         }
-        if (pages != null) {
-            pages.stop(0);
-        }
-        if (doh != null) {
-            doh.close();
-        }
-        if (dohHttp != null) {
-            dohHttp.close();
-        }
-        stopChromium();
+        // The CDP recording (CdpRecorder): nothing on the member's paths cleared or wrote storage, cookies or history,
+        // and no address in the Browser's log lines.
+        assertThat(recorder.broken()).as("what the CDP recording found").isEmpty();
     }
 
     private void startChromium() throws IOException {

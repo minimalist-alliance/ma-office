@@ -128,6 +128,7 @@ class GuildAgentServiceTest {
         guild(1, 10, 20, 50, 2);
         for (Caller member : List.of(MEMBER_A, MEMBER_B)) {
             service.call("agent.bind", Map.of("agentId", member.memberId(), "keyId", keyId, "model", Rig.MODEL), member);
+            com.minimalistalliance.desk.agent.testing.Setups.setUpMember(service, member);
         }
     }
 
@@ -323,6 +324,7 @@ class GuildAgentServiceTest {
     void anOwnersDeskIsUnchanged() throws Exception {
         assertThat(service.call("agent.list", Map.of()).get("agents")).asList().hasSize(1);
         service.call("agent.bind", Map.of("agentId", AgentStore.MANAGER, "keyId", keyId, "model", Rig.MODEL));
+        com.minimalistalliance.desk.agent.testing.Setups.setUp(service, AgentStore.MANAGER);
         assertThat(service.call("agent.message.send", Map.of("agentId", AgentStore.MANAGER, "text", "hi"))).containsKey("runId");
     }
 }

@@ -17,6 +17,7 @@ import { useWindowStore } from '../state/windowStore';
 import { getTheme, useTheme } from '../theme/themeStore';
 import { acceptAttr, splitAttached } from './attachments';
 import { Card } from './Card';
+import { Searched, Sources, WebCard } from './WebSearch';
 import { PendingChips, SentChips } from './Chips';
 import { kindLabel } from './cards';
 import { Chat, OPEN_KEY, writeSession, type Msg } from './chat';
@@ -34,6 +35,8 @@ import { keptParts } from './keptLine';
 import { CHATS_EMPTY, chatTitle, chatsLine } from './chats';
 import { useKeptInfo } from './KeptInfo';
 import './maia.css';
+import { enterMaiaMode } from '../maiamode/door';
+import { allowedFor } from '../maiamode/prefs';
 
 /** The launcher, as her spec has it: 64 px, which draws her at the `md` tier. */
 const BUBBLE = 64;
@@ -316,6 +319,7 @@ function Panel({ chat, view, setView, paused, togglePause, hide, focusOnOpen, re
   const trialRef = useRef<HTMLElement | null>(null);
   const chatsBtnRef = useRef<HTMLButtonElement>(null);
   const showMemory = memoryOn || remembered || view === 'memory';
+  const maiaMode = useSession((s) => allowedFor(s.me, s.config));
   const kept = keptParts(retentionDays, agents);
   const keptInfo = useKeptInfo(retentionDays);
 
@@ -391,6 +395,12 @@ function Panel({ chat, view, setView, paused, togglePause, hide, focusOnOpen, re
             {view === 'chat' && showMemory && (
               <button ref={memoryBtnRef} type="button" className="maia-tool" aria-label="What Maia remembers" title="What Maia remembers" onClick={toMemory}>
                 <MaiaIcon name="memory" />
+              </button>
+            )}
+            {maiaMode && (
+              // Maia Mode (CONCEPT.md §2): the room, from her own panel, for a member the gate allows.
+              <button type="button" className="maia-tool" aria-label="Switch to Maia" title="Switch to Maia (Alt+Shift+M)" data-testid="maia-open-room" onClick={(e) => enterMaiaMode(e.currentTarget)}>
+                <MaiaIcon name="room" />
               </button>
             )}
             <button type="button" className="maia-tool" aria-label="Pause Maia's motion" aria-pressed={paused} title={paused ? "Resume Maia's motion" : "Pause Maia's motion"} onClick={togglePause}>
@@ -772,11 +782,14 @@ const Message = memo(function Message({ msg, chat, onLeft, newChat }: { msg: Msg
   }
   return (
     <div className="maia-msg maia-her">
+      {msg.searched && <Searched chat={chat} queries={msg.searched} />}
       {msg.text && (
         <div className="maia-md">
           <Markdown text={msg.text} />
         </div>
       )}
+      {msg.sources && <Sources sources={msg.sources} />}
+      {msg.web && <WebCard chat={chat} msgKey={msg.key} ask={msg.web} />}
       {msg.stop !== null && <p className="maia-stop">{msg.stop}</p>}
       {msg.stopReason === 'too_long' && (
         <button type="button" className="maia-btn" onClick={newChat}>

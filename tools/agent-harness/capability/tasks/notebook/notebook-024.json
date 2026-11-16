@@ -1,0 +1,79 @@
+{
+  "id": "notebook-024",
+  "area": "notebook",
+  "title": "Trash one of two similar pages",
+  "prompt": "Trash the page Draft v1 but keep Draft v2.",
+  "setup": {
+    "notebook": [
+      {
+        "tab": "Harness",
+        "title": "Draft v1",
+        "markdown": "# Draft v1\n\nFirst try.\n"
+      },
+      {
+        "tab": "Harness",
+        "title": "Draft v2",
+        "markdown": "# Draft v2\n\nSecond try.\n"
+      }
+    ]
+  },
+  "approve": "all",
+  "checks": [
+    {
+      "kind": "noPage",
+      "tab": "Harness",
+      "title": "Draft v1"
+    },
+    {
+      "kind": "page",
+      "tab": "Harness",
+      "title": "Draft v2",
+      "contains": [
+        "Second try"
+      ]
+    },
+    {
+      "kind": "cards",
+      "tools": [
+        "notebook_trash"
+      ]
+    }
+  ],
+  "policy": {
+    "tools": [
+      "notebook_search",
+      "notebook_trash"
+    ]
+  },
+  "standIn": [
+    {
+      "calls": [
+        {
+          "name": "notebook_search",
+          "input": {
+            "query": "Draft"
+          }
+        }
+      ]
+    },
+    {
+      "calls": [
+        {
+          "name": "notebook_trash",
+          "input": {
+            "pageId": {
+              "$re": {
+                "step": 0,
+                "call": 0,
+                "pattern": "\"pageId\":\"([^\"]+)\",\"title\":\"Draft v1\""
+              }
+            }
+          }
+        }
+      ]
+    },
+    {
+      "text": "Trashed Draft v1. Draft v2 is still there."
+    }
+  ]
+}

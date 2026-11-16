@@ -107,7 +107,7 @@ function BellMenu() {
       <button
         ref={btnRef}
         type="button"
-        className={`icon-btn chrome bell-btn${open ? ' on' : ''}`}
+        className={`icon-btn chrome ma-glass bell-btn${open ? ' on' : ''}`}
         aria-expanded={open}
         aria-controls="bell-panel"
         aria-label={bellLabel(count)}

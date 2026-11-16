@@ -14,6 +14,8 @@ public final class Vision {
             "^(?!.*(?:audio|realtime|transcribe|tts|embedding|search-preview))(?:gpt-4o|gpt-4\\.1|gpt-4\\.5|gpt-5|gpt-6"
                     + "|chatgpt-4o|o[134](?!-mini)).*");
     private static final Pattern XAI = Pattern.compile("^grok-[4-9](?:[.-].*)?$");
+    /** Gemini's chat models all take pictures, from 2.0 on; the list already leaves out those that don't chat. */
+    private static final Pattern GOOGLE = Pattern.compile("^gemini-(?:[2-9]|\\d{2})(?:[.-].*)?$");
 
     private Vision() {}
 
@@ -30,6 +32,9 @@ public final class Vision {
         }
         if (provider.equals(ProviderId.XAI)) {
             return XAI.matcher(id).matches() && !id.contains("code");
+        }
+        if (provider.equals(ProviderId.GOOGLE)) {
+            return GOOGLE.matcher(id).matches() && !id.contains("embedding") && !id.contains("tts");
         }
         return false;
     }

@@ -5,6 +5,7 @@ import { createPortal } from 'react-dom';
 import type { NotebookBackend } from '../model/backend.ts';
 import { DEFAULT_HIGHLIGHT } from '../model/colors.ts';
 import type { PMNode } from '../model/schema.ts';
+import type { AgentNames } from './agentEdits.tsx';
 import { Segmented } from './controls.tsx';
 import { ReadOnlyDoc } from './Editor.tsx';
 import { Icon } from './icons.tsx';
@@ -37,6 +38,10 @@ export interface NotebookProps {
    * grant (pages stay theirs): those controls are left out. Default true, as on a member's own desk.
    */
   manageSpaces?: boolean;
+  /** The host's names for the desk's agents, by id: "Edited by {agent}" in a page's foot and History. */
+  agentNames?: AgentNames;
+  /** The page shown changed (ids only), or none is: the Desk app tells Desk Maia which page is in front (the focus shield). */
+  onPageShown?: (page: { pageId: string; notebookId: string } | null) => void;
 }
 
 const isMac = typeof navigator !== 'undefined' && /Mac|iPhone|iPad/.test(navigator.platform);
@@ -73,7 +78,7 @@ function PrintHost({ doc, onDone }: { doc: PMNode; onDone: () => void }) {
   );
 }
 
-export function Notebook({ backend, stateKey = 'ma.notebook.ui', initialView = 'tabs', onOpenLink, headerStart, headerEnd, lastColor, onLastColorChange, manageSpaces = true }: NotebookProps) {
+export function Notebook({ backend, stateKey = 'ma.notebook.ui', initialView = 'tabs', onOpenLink, headerStart, headerEnd, lastColor, onLastColorChange, manageSpaces = true, agentNames, onPageShown }: NotebookProps) {
   const tree = useTree(backend);
   const [ready, setReady] = useState(false);
   const [ui, setUi] = useUiState(stateKey, initialView);
@@ -110,6 +115,11 @@ export function Notebook({ backend, stateKey = 'ma.notebook.ui', initialView = '
 
   const resolved = resolve(tree, ui.sel);
   useEffect(() => setSideOpen(false), [ui.sel.pageId, ui.view]);
+  const shownPage = resolved.page?.id ?? null;
+  const shownNotebook = resolved.notebook?.id ?? null;
+  useEffect(() => {
+    onPageShown?.(shownPage && shownNotebook ? { pageId: shownPage, notebookId: shownNotebook } : null);
+  }, [onPageShown, shownPage, shownNotebook]);
   const select = useCallback((sel: Selection) => setUi({ sel }), [setUi]);
   const openPage = useCallback(
     (pageId: string) => {
@@ -185,6 +195,7 @@ export function Notebook({ backend, stateKey = 'ma.notebook.ui', initialView = '
             lastColor={last}
             onLastColor={remember}
             manageSpaces={manageSpaces}
+            agentNames={agentNames}
           />
         ) : (
           <TemporalView backend={backend} tree={tree} onOpen={openPage} />

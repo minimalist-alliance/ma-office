@@ -1,0 +1,74 @@
+{
+  "id": "notebook-012",
+  "area": "notebook",
+  "title": "A page with a highlight",
+  "prompt": "Create a page Priorities in my Harness tab with Pay rent highlighted in blue and Call the bank as a plain line.",
+  "setup": {
+    "notebook": [
+      {
+        "tab": "Harness",
+        "title": "Inbox",
+        "markdown": "# Inbox\n\nThings to sort later.\n"
+      }
+    ]
+  },
+  "approve": "all",
+  "checks": [
+    {
+      "kind": "page",
+      "tab": "Harness",
+      "title": "Priorities",
+      "contains": [
+        "Pay rent",
+        "data-color=\"blue\"",
+        "Call the bank"
+      ]
+    },
+    {
+      "kind": "cards",
+      "tools": [
+        "notebook_write"
+      ]
+    }
+  ],
+  "policy": {
+    "tools": [
+      "notebook_list",
+      "notebook_write"
+    ]
+  },
+  "standIn": [
+    {
+      "calls": [
+        {
+          "name": "notebook_list",
+          "input": {}
+        }
+      ]
+    },
+    {
+      "calls": [
+        {
+          "name": "notebook_write",
+          "input": {
+            "op": "create",
+            "new": {
+              "tabId": {
+                "$re": {
+                  "step": 0,
+                  "call": 0,
+                  "pattern": "\"tabId\":\"([^\"]+)\",\"title\":\"Harness\""
+                }
+              },
+              "title": "Priorities"
+            },
+            "markdown": "<mark data-color=\"blue\">Pay rent</mark>\n\nCall the bank"
+          }
+        }
+      ]
+    },
+    {
+      "text": "Made Priorities with Pay rent highlighted in blue."
+    }
+  ]
+}

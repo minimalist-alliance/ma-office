@@ -1,0 +1,72 @@
+{
+  "id": "notebook-005",
+  "area": "notebook",
+  "title": "Append to a page",
+  "prompt": "Add Dune by Frank Herbert to my Reading list page.",
+  "setup": {
+    "notebook": [
+      {
+        "tab": "Harness",
+        "title": "Reading list",
+        "markdown": "# Reading list\n\n- The Left Hand of Darkness\n- Piranesi\n"
+      }
+    ]
+  },
+  "approve": "all",
+  "checks": [
+    {
+      "kind": "page",
+      "tab": "Harness",
+      "title": "Reading list",
+      "contains": [
+        "Dune by Frank Herbert",
+        "Piranesi"
+      ]
+    },
+    {
+      "kind": "cards",
+      "tools": [
+        "notebook_write"
+      ]
+    }
+  ],
+  "policy": {
+    "tools": [
+      "notebook_search",
+      "notebook_write"
+    ]
+  },
+  "standIn": [
+    {
+      "calls": [
+        {
+          "name": "notebook_search",
+          "input": {
+            "query": "Reading list"
+          }
+        }
+      ]
+    },
+    {
+      "calls": [
+        {
+          "name": "notebook_write",
+          "input": {
+            "pageId": {
+              "$re": {
+                "step": 0,
+                "call": 0,
+                "pattern": "\"pageId\":\"([^\"]+)\",\"title\":\"Reading list\""
+              }
+            },
+            "op": "append",
+            "markdown": "- Dune by Frank Herbert"
+          }
+        }
+      ]
+    },
+    {
+      "text": "Added Dune by Frank Herbert to your Reading list."
+    }
+  ]
+}

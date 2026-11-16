@@ -138,6 +138,21 @@ class CompactionTest {
         assertThat(desk.ledger.runsToday(LEAD)).isEqualTo(2);
     }
 
+    /** Another desk's words folded into a summary mark it untrusted, though no run's reply read them (Security's DM-I2). */
+    @Test
+    void anAnswerFromAnotherDeskFoldedIntoASummaryMarksItUntrusted() throws Exception {
+        // In the part that's folded: older than what stays whole, newer than what the fold's budget leaves out.
+        history(40);
+        desk.store.addMessages(List.of(MessageRow.from("d-0", LEAD, "From Helper on your Work desk: "
+                + "c".repeat(3_000), clock.millis(), "{\"kind\":\"desk\",\"role\":\"answer\",\"deskId\":\"d-bbbb\"}")));
+        history(20);
+
+        ask("What's next?", Step.answer(USAGE, SUMMARY));
+
+        assertThat(compaction().messages().getFirst().text()).as("the desk row is folded").contains("From Helper on your");
+        assertThat(summaryView()).containsEntry("text", SUMMARY).containsEntry("untrusted", true);
+    }
+
     @Test
     void aShortThreadIsNeverCompacted() throws Exception {
         history(3);

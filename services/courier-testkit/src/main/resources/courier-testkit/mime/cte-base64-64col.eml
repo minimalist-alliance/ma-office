@@ -1,0 +1,14 @@
+From: Garden <garden@example.org>
+To: me@desk.example
+Date: Fri, 13 Nov 2026 10:00:00 +0000
+Subject: Base64 at 64 columns
+Message-ID: <cte-base64-64col@corpus.example>
+MIME-Version: 1.0
+X-Corpus-Note: base64 in 64-character lines with trailing spaces and a tab
+Content-Type: text/plain; charset=utf-8
+Content-Transfer-Encoding: base64
+
+SGFuZyB0aGUgbGFudGVybiBieSB0aGUgZ2F0ZSBiZWZvcmUgZHVzay4NCkhhbmcg	
+dGhlIGxhbnRlcm4gYnkgdGhlIGdhdGUgYmVmb3JlIGR1c2suDQpIYW5nIHRoZSBs  
+YW50ZXJuIGJ5IHRoZSBnYXRlIGJlZm9yZSBkdXNrLg0KSGFuZyB0aGUgbGFudGVy	
+biBieSB0aGUgZ2F0ZSBiZWZvcmUgZHVzay4NCg==  

@@ -1,0 +1,54 @@
+{
+  "id": "notebook-044",
+  "area": "notebook",
+  "title": "A page that is not there",
+  "prompt": "Read my page called Wedding speech and tell me how it opens.",
+  "setup": {
+    "notebook": [
+      {
+        "tab": "Harness",
+        "title": "Inbox",
+        "markdown": "# Inbox\n\nThings to sort later.\n"
+      }
+    ]
+  },
+  "approve": "all",
+  "checks": [
+    {
+      "kind": "reply",
+      "contains": [
+        "Wedding speech"
+      ],
+      "state": "done"
+    },
+    {
+      "kind": "noPage",
+      "tab": "Harness",
+      "title": "Wedding speech"
+    },
+    {
+      "kind": "cards",
+      "tools": []
+    }
+  ],
+  "policy": {
+    "tools": [
+      "notebook_search"
+    ]
+  },
+  "standIn": [
+    {
+      "calls": [
+        {
+          "name": "notebook_search",
+          "input": {
+            "query": "Wedding speech"
+          }
+        }
+      ]
+    },
+    {
+      "text": "I couldn't find a page called Wedding speech in your Notebook."
+    }
+  ]
+}

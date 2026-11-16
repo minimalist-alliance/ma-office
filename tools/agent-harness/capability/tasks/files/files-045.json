@@ -1,0 +1,52 @@
+{
+  "id": "files-045",
+  "area": "files",
+  "title": "Search inside one folder",
+  "prompt": "Look only inside Harness/archive for files with 'contract' in the name and give me their paths.",
+  "setup": {
+    "files": {
+      "Harness/archive/2024/contract-acme.txt": "Acme.\n",
+      "Harness/archive/2025/contract-globex.txt": "Globex.\n",
+      "Harness/current/contract-initech.txt": "Initech.\n"
+    }
+  },
+  "approve": "all",
+  "checks": [
+    {
+      "kind": "reply",
+      "contains": [
+        "Harness/archive/2024/contract-acme.txt",
+        "Harness/archive/2025/contract-globex.txt"
+      ],
+      "state": "done",
+      "notContains": [
+        "initech"
+      ]
+    },
+    {
+      "kind": "cards",
+      "tools": []
+    }
+  ],
+  "policy": {
+    "tools": [
+      "files_search"
+    ]
+  },
+  "standIn": [
+    {
+      "calls": [
+        {
+          "name": "files_search",
+          "input": {
+            "q": "contract",
+            "under": "Harness/archive"
+          }
+        }
+      ]
+    },
+    {
+      "text": "Harness/archive/2024/contract-acme.txt and Harness/archive/2025/contract-globex.txt."
+    }
+  ]
+}

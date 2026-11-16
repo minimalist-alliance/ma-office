@@ -2,6 +2,7 @@ package com.minimalistalliance.desk.deskd.tools;
 
 import static org.assertj.core.api.Assertions.assertThat;
 import static org.assertj.core.api.Assertions.assertThatThrownBy;
+import static org.assertj.core.api.Assertions.catchThrowable;
 
 import com.minimalistalliance.desk.deskd.notebook.NotebookCalls;
 import com.minimalistalliance.desk.deskd.rpc.Caller;
@@ -92,6 +93,7 @@ class NotebookToolsTest {
             }
             return Map.of("hits", hits);
         });
+        answer("notebook.page.marked", p -> Map.of("marked", List.of()));
         HostedTool.Result r = tools(false).run(call("notebook_search", args("query", "trip", "tabId", "t-1"), false, Caller.THE_OWNER), run(Caller.THE_OWNER));
         List<Object> hits = (List<Object>) ((Map<String, Object>) r.content()).get("hits");
         assertThat(hits).hasSize(20);
@@ -263,12 +265,110 @@ class NotebookToolsTest {
     }
 
     @Test
+    void listGivesTheNotebooksAndTabsOrOneTabsPagesAndSaysWhenThereIsMore() throws Exception {
+        answer("notebook.outline", p -> p.containsKey("tabId")
+                ? args("tabId", p.get("tabId"), "title", "Meetings", "notebookId", "n-1", "pages", List.of(args("pageId", "p-1", "title", "Mon", "updatedAt", 5)), "from", 0, "next", 100)
+                : args("notebooks", List.of(args("notebookId", "n-1", "title", "Work", "tabs", List.of(args("tabId", "t-1", "title", "Meetings", "pages", 3)))), "more", false));
+        HostedTool.Result all = tools(false).run(call("notebook_list", args(), false, Caller.THE_OWNER), run(Caller.THE_OWNER));
+        assertThat((Map<String, Object>) all.content()).containsOnlyKeys("notebooks");
+        HostedTool.Result tab = tools(false).run(call("notebook_list", args("tabId", "t-1"), false, Caller.THE_OWNER), run(Caller.THE_OWNER));
+        assertThat((Map<String, Object>) tab.content()).containsEntry("title", "Meetings").containsEntry("next", 100).containsKey("note");
+        assertThat(asked.get(1)).containsEntry("_method", "notebook.outline").containsEntry("tabId", "t-1");
+        // `from` only with a tab; a list never asks.
+        assertThatThrownBy(() -> tools(false).look(call("notebook_list", args("from", 5), true, Caller.THE_OWNER), run(Caller.THE_OWNER)))
+                .isInstanceOf(ToolFailure.class).hasMessageContaining("from");
+        assertThat(tools(false).look(call("notebook_list", args("tabId", "t-1", "from", 100), true, Caller.THE_OWNER), run(Caller.THE_OWNER)).risk()).isNull();
+    }
+
+    @Test
+    void anApprovedWriteRunsUnderItsApprovalsIdAsTheKeyAndSaysWhatWasConverted() throws Exception {
+        answer("notebook.page.agentEdit", p -> Boolean.TRUE.equals(p.get("dryRun"))
+                ? args("pageId", "p-1", "title", "Plan", "op", "append", "dryRun", true, "converted", List.of("table", "something_new"))
+                : args("pageId", "p-1", "title", "Plan", "op", "append", "versionId", "v-9", "editId", "ae-1", "converted", List.of("table")));
+        HostedCall approved = new HostedCall(7, "run-1", "ag-1", "notebook_write", args("pageId", "p-1", "op", "append", "markdown", "| a |\n|---|\n| 1 |"),
+                new HostedCall.Approval("ap-abc123", "0".repeat(64)), false, Caller.THE_OWNER, null);
+        HostedTool.Result r = tools(false).run(approved, run(Caller.THE_OWNER));
+        assertThat(asked.get(0)).containsEntry("key", "ap-abc123");
+        assertThat((Map<String, Object>) r.content()).containsEntry("converted", List.of("table"));
+        assertThat((String) ((Map<String, Object>) r.content()).get("note")).contains("no tables").contains("version");
+        // The card's look says it too, from the dry run: only the words deskd knows.
+        HostedTool.Look look = tools(false).look(call("notebook_write", args("pageId", "p-1", "op", "append", "markdown", "x"), true, Caller.THE_OWNER), run(Caller.THE_OWNER));
+        assertThat(look.target()).containsEntry("converted", List.of("table"));
+        assertThat(look.payload()).doesNotContainKey("converted");
+        // A call that didn't ask has no key.
+        tools(false).run(call("notebook_write", args("pageId", "p-1", "op", "append", "markdown", "y"), false, Caller.THE_OWNER), run(Caller.THE_OWNER));
+        assertThat(asked.get(asked.size() - 1)).doesNotContainKey("key");
+    }
+
+    @Test
+    void undoGoesByTheApprovalsIdAndAChangeSinceOffersTheVersionBefore() throws Exception {
+        answer("notebook.page.agentUndo", p -> "ap-gone".equals(p.get("key"))
+                ? new FakeNotebookSocket.Refusal("conflict", Map.of("reason", "changed", "versionId", "v-7", "text", "secret"))
+                : args("editId", "ae-1", "pageId", "p-1", "op", "append", "undone", true));
+        assertThat(tools(false).undo(Caller.THE_OWNER, "ap-ok")).isEqualTo(args("pageId", "p-1", "op", "append", "undone", true));
+        assertThat(asked.get(0)).containsEntry("_method", "notebook.page.agentUndo").containsEntry("key", "ap-ok");
+        ToolFailure f = (ToolFailure) catchThrowable(() -> tools(false).undo(Caller.THE_OWNER, "ap-gone"));
+        assertThat(f.code()).isEqualTo(RpcException.CONFLICT);
+        assertThat(f.details()).isEqualTo(Map.of("reason", "changed", "versionId", "v-7"));
+        assertThatThrownBy(() -> tools(false).undo(Caller.THE_OWNER, "not an id")).isInstanceOf(ToolFailure.class);
+    }
+
+    private static RunLedger.Run untrustedRun(Caller caller) throws ToolFailure {
+        return new RunLedger(Clock.systemUTC(), id -> { }).join("run-1", "ag-1", caller, List.of("U"));
+    }
+
+    @Test
+    void whatARunHoldingUWritesIsMarkedAndAPageHoldingItReadsBackUntrusted() throws Exception {
+        // ATN-M1: every write carries deskd's own copy of the run's taint.
+        answer("notebook.page.agentEdit", p -> args("pageId", "p-1", "title", "Plan", "op", "append", "versionId", "v-9",
+                "untrusted", p.get("untrusted")));
+        HostedTool.Result tainted = tools(false).run(call("notebook_write", args("pageId", "p-1", "op", "append", "markdown", "x"), false, Caller.THE_OWNER), untrustedRun(Caller.THE_OWNER));
+        assertThat(asked.get(asked.size() - 1)).containsEntry("untrusted", true);
+        // The page now holds marked text, and its title is the page's first line: the result is untrusted too.
+        assertThat(tainted.taints()).containsExactly("U");
+        HostedTool.Result clean = tools(false).run(call("notebook_write", args("pageId", "p-1", "op", "append", "markdown", "y"), false, Caller.THE_OWNER), run(Caller.THE_OWNER));
+        assertThat(asked.get(asked.size() - 1)).containsEntry("untrusted", false);
+        assertThat(clean.taints()).isEmpty();
+
+        // A read of a page holding marked text adds U; one with none adds nothing.
+        boolean[] marked = {true};
+        answer("notebook.page.markdown", p -> args("pageId", "p-1", "title", "Plan", "markdown", "# Plan\n", "from", 0, "next", null, "length", 7, "trashed", false, "untrusted", marked[0]));
+        assertThat(tools(false).run(call("notebook_read", args("pageId", "p-1"), false, Caller.THE_OWNER), run(Caller.THE_OWNER)).taints()).containsExactly("U");
+        marked[0] = false;
+        assertThat(tools(false).run(call("notebook_read", args("pageId", "p-1"), false, Caller.THE_OWNER), run(Caller.THE_OWNER)).taints()).isEmpty();
+
+        // So does a tab whose listed pages hold some.
+        answer("notebook.outline", p -> args("tabId", "t-1", "title", "Work", "notebookId", "n-1", "pages", List.of(args("pageId", "p-1", "title", "Plan", "updatedAt", 1)), "from", 0, "next", null, "untrusted", true));
+        HostedTool.Result listed = tools(false).run(call("notebook_list", args("tabId", "t-1"), false, Caller.THE_OWNER), run(Caller.THE_OWNER));
+        assertThat(listed.taints()).containsExactly("U");
+        assertThat((Map<String, Object>) listed.content()).doesNotContainKey("untrusted");
+
+        // A search with a marked hit adds U; with none, nothing; and when desk-notebook can't say, U (fail closed).
+        answer("notebook.search", p -> Map.of("hits", List.of(args("pageId", "p-1", "title", "Plan", "snippet", "s"), args("pageId", "p-2", "title", "Other", "snippet", "s"))));
+        answer("notebook.page.marked", p -> Map.of("marked", List.of("p-2")));
+        assertThat(tools(false).run(call("notebook_search", args("query", "plan"), false, Caller.THE_OWNER), run(Caller.THE_OWNER)).taints()).containsExactly("U");
+        assertThat(asked.get(asked.size() - 1)).containsEntry("_method", "notebook.page.marked").containsEntry("pageIds", List.of("p-1", "p-2"));
+        answer("notebook.page.marked", p -> Map.of("marked", List.of()));
+        assertThat(tools(false).run(call("notebook_search", args("query", "plan"), false, Caller.THE_OWNER), run(Caller.THE_OWNER)).taints()).isEmpty();
+        answer("notebook.page.marked", p -> new FakeNotebookSocket.Refusal("not_found", Map.of()));
+        assertThat(tools(false).run(call("notebook_search", args("query", "plan"), false, Caller.THE_OWNER), run(Caller.THE_OWNER)).taints()).containsExactly("U");
+        // A search with no hits asks nothing more.
+        int before = asked.size();
+        answer("notebook.search", p -> Map.of("hits", List.of()));
+        assertThat(tools(false).run(call("notebook_search", args("query", "none"), false, Caller.THE_OWNER), run(Caller.THE_OWNER)).taints()).isEmpty();
+        assertThat(asked).hasSize(before + 1);
+    }
+
+    @Test
     void deskdsOwnCallsAreOnlyTheToolsMethods() {
         assertThatThrownBy(() -> calls.call(Caller.THE_OWNER, "notebook.page.restore", Map.of("pageId", "p-1"), true))
                 .isInstanceOf(IllegalArgumentException.class);
         assertThatThrownBy(() -> calls.call(Caller.THE_OWNER, "notebook.version.restore", Map.of(), true))
                 .isInstanceOf(IllegalArgumentException.class);
         assertThat(NotebookCalls.METHODS).containsExactlyInAnyOrder(
-                "notebook.search", "notebook.page.markdown", "notebook.page.agentEdit", "notebook.page.trash");
+                "notebook.search", "notebook.page.marked", "notebook.outline", "notebook.page.markdown",
+                "notebook.page.agentEdit", "notebook.page.agentUndo", "notebook.page.trash");
+        // No client reaches the agent's own methods; the member's undo and the list of edits are theirs too.
+        assertThat(NotebookCalls.METHODS).doesNotContain("notebook.page.agentEdits");
     }
 }

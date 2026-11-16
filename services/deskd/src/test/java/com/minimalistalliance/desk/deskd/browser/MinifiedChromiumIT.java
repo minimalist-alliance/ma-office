@@ -74,8 +74,12 @@ class MinifiedChromiumIT {
     private BrowserRig rig;
     private TestClient client;
 
+    /** Every CDP command of every path in each test, and the Browser's log lines: checked as each test ends. */
+    private CdpRecorder recorder;
+
     @BeforeEach
     void setUp() throws Exception {
+        recorder = CdpRecorder.start();
         png = png();
         pages = HttpServer.create(new InetSocketAddress(InetAddress.getLoopbackAddress(), 0), 0);
         port = pages.getAddress().getPort();
@@ -110,20 +114,27 @@ class MinifiedChromiumIT {
 
     @AfterEach
     void tearDown() throws Exception {
-        if (rig != null) {
-            rig.close();
-        }
-        if (pages != null) {
-            pages.stop(0);
-        }
-        if (chromium != null) {
-            chromium.toHandle().descendants().forEach(ProcessHandle::destroy);
-            chromium.destroy();
-            if (!chromium.waitFor(10, TimeUnit.SECONDS)) {
-                chromium.toHandle().descendants().forEach(ProcessHandle::destroyForcibly);
-                chromium.destroyForcibly();
+        try {
+            if (rig != null) {
+                rig.close();
             }
+            if (pages != null) {
+                pages.stop(0);
+            }
+            if (chromium != null) {
+                chromium.toHandle().descendants().forEach(ProcessHandle::destroy);
+                chromium.destroy();
+                if (!chromium.waitFor(10, TimeUnit.SECONDS)) {
+                    chromium.toHandle().descendants().forEach(ProcessHandle::destroyForcibly);
+                    chromium.destroyForcibly();
+                }
+            }
+        } finally {
+            recorder.close();
         }
+        // The CDP recording (CdpRecorder): nothing on the member's paths cleared or wrote storage, cookies or history,
+        // and no address in the Browser's log lines.
+        assertThat(recorder.broken()).as("what the CDP recording found").isEmpty();
     }
 
     private String html(String path) {

@@ -59,7 +59,17 @@ final class AgentMethods {
             // What an agent remembers, and its thread's summary (S-14): the owner's agents', or a member's own.
             "agent.memory.list",
             // The Agent's approvals (API.md section 18): a guild member sees only their own agent's.
-            "agent.approvals.list", "agent.approval.get");
+            "agent.approvals.list", "agent.approval.get",
+            // An agent's access: what the member chose on its setup screen (draft ADR section 16).
+            "agent.access.get",
+            // Maia Mode (API.md §23): Desk Maia's setting, grants, choice counts and notes, the office's picture for her
+            // list (observe, typing, seen: no state of the member's changes), and the team view's numbers.
+            "agent.maia.get", "agent.maia.grants.list", "agent.maia.choices.get", "agent.maia.notes.list",
+            "agent.maia.observe", "agent.maia.typing", "agent.maia.seen", "agent.usage.summary",
+            // The focus shield (API.md §23 "What reaches the member"): its settings and the "All held" list.
+            "agent.maia.reach.get", "agent.maia.reach.held",
+            // The decision tray (API.md §23 "The tray"): one paper, or every open one and the answers waiting to go.
+            "agent.maia.tray.get");
     static final List<String> MUTATIONS = List.of(
             "agent.create", "agent.update", "agent.bind", "agent.message.send", "agent.run.stop", "agent.key.add",
             "agent.key.delete", "agent.limits.set",
@@ -72,7 +82,35 @@ final class AgentMethods {
             // Deleting what an agent remembers, one line or all (S-14). Their results carry no text.
             "agent.memory.delete", "agent.memory.clear",
             // The member's yes or no for one card (API.md section 18): a session that may act, and deskd's own ticket.
-            "agent.approval.decide");
+            "agent.approval.decide",
+            // The setup screen's save and the settings' changes, and stopping a grant to another desk (draft ADR
+            // section 16): only a session that may act, and deskd keeps its own record of the choice (AccessRecord).
+            "agent.access.set", "agent.desks.revoke",
+            // The member's undo of a call done without asking (draft ADR section 15): deskd does it from its own ledger,
+            // then tells desk-agent how it went. A session that may act.
+            "agent.approval.undo",
+            // Maia Mode (API.md §23). Those in MAIA_INPUT need a session that may act; deskd records set, grant.set and
+            // grant.revoke itself (MaiaRecord).
+            "agent.maia.set", "agent.maia.forget", "agent.maia.item.snooze", "agent.maia.item.dismiss",
+            "agent.maia.choose", "agent.maia.choices.reset", "agent.maia.grant.set", "agent.maia.grant.revoke",
+            "agent.maia.note.file", "agent.maia.todos.set",
+            // The focus shield: the member's settings and answers, a hold, Back, the stated task, learned rules.
+            "agent.maia.reach.set", "agent.maia.reach.answer", "agent.maia.reach.hold", "agent.maia.reach.back",
+            "agent.maia.reach.working.clear", "agent.maia.reach.learned.undo", "agent.maia.reach.learned.reset",
+            // The decision tray: the member's answer to a paper (and the office's word on carrying it), and Later.
+            "agent.maia.tray.answer", "agent.maia.tray.later");
+
+    /** Maia Mode's mutations that need a session that may act (an owner token with input), as a decision does. */
+    static final Set<String> MAIA_INPUT = Set.of("agent.maia.set", "agent.maia.forget", "agent.maia.choose",
+            "agent.maia.choices.reset", "agent.maia.grant.set", "agent.maia.grant.revoke", "agent.maia.note.file",
+            "agent.maia.todos.set", "agent.maia.reach.set", "agent.maia.reach.answer", "agent.maia.reach.hold",
+            "agent.maia.reach.working.clear", "agent.maia.reach.learned.undo", "agent.maia.reach.learned.reset",
+            "agent.maia.tray.answer", "agent.maia.tray.later");
+
+    /** Maia Mode and the team view are the desk owner's alone: a guild member gets {@code permission}. */
+    static boolean ownersOnly(String method) {
+        return method.startsWith("agent.maia.") || method.equals("agent.usage.summary");
+    }
 
     /**
      * desk-agent's team methods ({@code Team.handles}) but {@code agent.get}: the desk owner's, so a guild member gets
@@ -88,6 +126,10 @@ final class AgentMethods {
 
     static final String KEY_ADD = "agent.key.add";
     static final String DECIDE = "agent.approval.decide";
+    static final String ACCESS_SET = "agent.access.set";
+    static final String DESKS_REVOKE = "agent.desks.revoke";
+    static final String UNDO = "agent.approval.undo";
+    private static final String DELETE = "agent.delete";
     private static final String KEY_MODELS = "agent.key.models";
     /** What only the Founder or an Officer with manage_agents may do on a guild desk: the guild's keys, limits and audit. */
     static final Set<String> MANAGERS_ONLY = Set.of("agent.key.add", "agent.key.delete", "agent.limits.set", "agent.audit.list");
@@ -105,16 +147,35 @@ final class AgentMethods {
     private final Waits waits;
     private final Supplier<AgeBand.Band> band;
     private final ApprovalTickets tickets;
+    /** deskd's own record of each agent's access, which the tools deskd runs check (draft ADR section 16). */
+    private final AccessRecord access;
+    /** Messages between the member's desks (draft ADR §14): what deskd does around the member's grants; null for none. */
+    private volatile DeskMethods desks;
+    /** The runs the member started with their own message, as desk-agent answered them (To-do's attended runs). */
+    @FunctionalInterface
+    public interface MemberRuns {
+        void started(String runId, String agentId, String messageId);
+    }
+
+    private volatile MemberRuns memberRuns = (runId, agentId, messageId) -> {};
+    static final String MESSAGE_SEND = "agent.message.send";
+
     /** A member's current name for {@code guild.usage.get} rows: null when nothing knows it. */
     private volatile Function<String, String> memberNames = id -> null;
 
     AgentMethods(AgentLink link, Supplier<String> deskId, Waits waits, Supplier<AgeBand.Band> band,
             ApprovalTickets tickets) {
+        this(link, deskId, waits, band, tickets, new AccessRecord(java.time.Clock.systemUTC()));
+    }
+
+    AgentMethods(AgentLink link, Supplier<String> deskId, Waits waits, Supplier<AgeBand.Band> band,
+            ApprovalTickets tickets, AccessRecord access) {
         this.link = link;
         this.deskId = deskId;
         this.waits = waits;
         this.band = band;
         this.tickets = tickets;
+        this.access = access;
     }
 
     void register(RpcDispatcher dispatcher) {
@@ -134,10 +195,49 @@ final class AgentMethods {
                 dispatcher.registerMutation(method, SCOPES, this::decide);
                 continue;
             }
+            if (method.equals(ACCESS_SET) || method.equals(DESKS_REVOKE)) {
+                dispatcher.registerMutation(method, SCOPES, (context, params) -> accessChange(context, method, params));
+                continue;
+            }
+            if (method.equals(UNDO)) {
+                dispatcher.registerMutation(method, SCOPES, this::undo);
+                continue;
+            }
+            if (MAIA_INPUT.contains(method)) {
+                dispatcher.registerMutation(method, SCOPES, (context, params) -> maiaChange(context, method, params));
+                continue;
+            }
             dispatcher.registerMutation(method, SCOPES, (context, params) -> {
                 requireCaller(context, method);
                 requireAgent();
-                return link.call(method, params, waits.call(), session(context), effect(context, method), caller(context));
+                String deleted = method.equals(DELETE) && params.get("agentId") instanceof String id ? id : null;
+                if (deleted != null && AccessRecord.mayDecideFor(context.principal().caller(), deleted)) {
+                    // A deleted agent's choices go from deskd's own record before desk-agent hears, whatever it answers
+                    // or if the delete never reaches it (Security's AAB-L1, AAB-I5); a delete it refused leaves the agent
+                    // waiting for its setup.
+                    access.forget(deleted);
+                }
+                Object answer = link.call(method, params, waits.call(), session(context), effect(context, method),
+                        caller(context));
+                if (deleted != null) {
+                    // And whoever's it was, once desk-agent has deleted it, and its grants to other desks.
+                    access.forget(deleted);
+                    DeskMethods grants = desks;
+                    if (grants != null) {
+                        grants.afterDelete(deleted);
+                    }
+                }
+                if (method.equals(MESSAGE_SEND) && params.get("agentId") instanceof String agentId
+                        && answer instanceof Map<?, ?> sent && sent.get("runId") instanceof String runId
+                        && sent.get("messageId") instanceof String messageId) {
+                    // The member's own message started this run: deskd's record, never desk-agent's word in a tool call.
+                    try {
+                        memberRuns.started(runId, agentId, messageId);
+                    } catch (RuntimeException e) {
+                        // The record only grants the attended rules; without it the run is unattended, which asks more.
+                    }
+                }
+                return answer;
             });
         }
         dispatcher.register(GUILD_USAGE, Set.of(RpcPrincipal.GUILD_MEMBER), (context, params) -> {
@@ -147,6 +247,10 @@ final class AgentMethods {
             }
             return withNames(link.call(AGENT_GUILD_USAGE, Map.of(), waits.call(), session(context), null, caller.toJson()));
         });
+    }
+
+    void memberRuns(MemberRuns listener) {
+        this.memberRuns = listener == null ? (runId, agentId, messageId) -> {} : listener;
     }
 
     void memberNames(Function<String, String> names) {
@@ -197,7 +301,7 @@ final class AgentMethods {
         RpcPrincipal principal = context.principal();
         if (principal.isGuildMember()) {
             requireMemberAge(principal.caller());
-            if (TEAM_OWNER_ONLY.contains(method)) {
+            if (TEAM_OWNER_ONLY.contains(method) || ownersOnly(method)) {
                 throw new RpcException(RpcException.FORBIDDEN, "The desk's team belongs to its owner", Map.of("reason", "permission"));
             }
             if (MANAGERS_ONLY.contains(method) && !principal.caller().has(Caller.MANAGE_AGENTS)) {
@@ -270,6 +374,205 @@ final class AgentMethods {
             tickets.forget(approvalId);
         }
         return answer;
+    }
+
+    /**
+     * {@code agent.access.set} and {@code agent.desks.revoke} (draft ADR section 16): only a session that may act, as for
+     * a decision (an owner token with input, or a guild member's for their own agent), so a viewer, an export session, a
+     * proposal, a timer or the model never changes what an agent may use. A grant to this desk itself is refused here.
+     * Once desk-agent has answered, deskd records the choice in its own record, cut to what desk-agent says it holds; a
+     * refusal records nothing.
+     */
+    private Object accessChange(RpcContext context, String method, Map<String, Object> params) throws Exception {
+        requireCaller(context, method);
+        requireDecider(context);
+        requireAgent();
+        if (method.equals(ACCESS_SET) && params.get("desks") instanceof List<?> desks) {
+            String self = deskId.get();
+            for (Object item : desks) {
+                if (item instanceof Map<?, ?> desk && self != null && self.equals(desk.get("deskId"))) {
+                    Map<String, Object> details = new LinkedHashMap<>();
+                    details.put("detail", "desks");
+                    details.put("reason", "self");
+                    throw new RpcException(RpcException.BAD_REQUEST, "An agent messages other desks, not its own",
+                            details);
+                }
+            }
+        }
+        if (method.equals(ACCESS_SET)) {
+            // What the member takes away holds in deskd's record now, before desk-agent hears and whatever it answers
+            // (Security's AAB-L1), even if the save never reaches it (AAB-I5: a desk-agent that stops reading).
+            access.recordNarrowing(params.get("agentId") instanceof String id ? id : null, params,
+                    context.principal().caller());
+        }
+        AgentLink.Gate gate = () -> {
+            context.beginEffect();
+            requireCaller(context, method);
+            requireDecider(context);
+        };
+        Caller caller = context.principal().caller();
+        DeskMethods grants = desks;
+        String agentId = params.get("agentId") instanceof String id ? id : null;
+        if (grants != null) {
+            // What the member takes away, deskd takes away first: a refusal or a crash after leaves nothing wider.
+            if (method.equals(ACCESS_SET) && !caller.isGuildMember()) {
+                grants.beforeAccess(agentId, params);
+            } else if (!method.equals(ACCESS_SET)) {
+                grants.afterRevoke(params);
+            }
+        }
+        Object answer = link.call(method, params, waits.call(), session(context), gate, caller(context));
+        if (method.equals(ACCESS_SET)) {
+            access.recordSet(agentId, params, answer, caller);
+            if (grants != null && !caller.isGuildMember()) {
+                // A desk switched on: deskd records the send half and makes its offer; one switched off, its revoke.
+                grants.afterAccess(agentId, params, answer);
+            }
+        } else {
+            access.recordRevoke(answer);
+            if (grants != null) {
+                grants.afterRevoke(params);
+            }
+        }
+        return answer;
+    }
+
+    /**
+     * Maia Mode's mutations that need a session that may act (API.md §23): an owner token with input, refused
+     * {@code forbidden} {@code permission} before desk-agent hears (a guild member was refused by {@link #requireCaller}).
+     * What the member takes away holds in deskd's own record before desk-agent hears; what widens is recorded from its
+     * answer, cut to what the answer holds. A refusal records nothing more.
+     */
+    private Object maiaChange(RpcContext context, String method, Map<String, Object> params) throws Exception {
+        requireCaller(context, method);
+        requireDecider(context);
+        requireAgent();
+        if ("agent.maia.set".equals(method) && Boolean.TRUE.equals(params.get("on")) && freeDesk.getAsBoolean()) {
+            // Not offered on Free (the concept's §8.4): deskd knows a free desk by its own tier limits (Security's DMA-L3).
+            throw new RpcException(RpcException.FORBIDDEN, "Not on this tier", Map.of("reason", "tier"));
+        }
+        MaiaRecord record = maia;
+        long generation = record == null ? -1 : record.generation();
+        if (record != null) {
+            record.recordNarrowing(method, params);
+            generation = record.generation();
+        }
+        AgentLink.Gate gate = () -> {
+            context.beginEffect();
+            requireCaller(context, method);
+            requireDecider(context);
+        };
+        Object answer = link.call(method, params, waits.call(), session(context), gate, caller(context));
+        if (record != null) {
+            record.recordAnswer(method, params, answer, generation);
+        }
+        return answer;
+    }
+
+    private volatile MaiaRecord maia;
+
+    /** deskd's own record of Maia Mode and Desk Maia's grants. */
+    void maia(MaiaRecord record) {
+        this.maia = record;
+    }
+
+    /** Whether this is a free member's desk (the config's {@code tierLimits}): Maia Mode is never turned on there. */
+    private volatile java.util.function.BooleanSupplier freeDesk = () -> false;
+
+    void freeDesk(java.util.function.BooleanSupplier free) {
+        this.freeDesk = free == null ? () -> false : free;
+    }
+
+    /** Messages between the member's desks: deskd's part around the member's grants. */
+    void desks(DeskMethods methods) {
+        this.desks = methods;
+    }
+
+    /** deskd's own record of each agent's access. */
+    AccessRecord access() {
+        return access;
+    }
+
+    /**
+     * The tools deskd runs, whose own ledger of calls done without asking an undo goes by. Until it's set, an undo is
+     * {@code unavailable}.
+     */
+    interface Undoer {
+        /** {@link com.minimalistalliance.desk.deskd.tools.ToolHost#undoAuto}. */
+        Map<String, Object> undo(String approvalId, Caller caller, Runnable beginEffect) throws Exception;
+    }
+
+    private volatile Undoer undoer;
+
+    void undoer(Undoer tools) {
+        this.undoer = tools;
+    }
+
+    private static final java.util.regex.Pattern APPROVAL_ID = java.util.regex.Pattern.compile("ap-[a-z2-7]{20}");
+
+    /**
+     * {@code agent.approval.undo {approvalId}} (draft ADR section 15): a session that may act, as for a decision. deskd
+     * takes the call back itself, from its own ledger of what it ran unasked (the agent, and what the call made, never
+     * desk-agent's word), checking the caller may decide for that agent; then it relays the outcome to desk-agent, which
+     * stamps the approval's row and audits it, and answers with desk-agent's {@code {approval}}. A refusal (the file or
+     * blocks changed since, say) is relayed too, for the audit, and answered as deskd's own error. The params desk-agent
+     * gets are deskd's own: {@code {approvalId, outcome}}.
+     */
+    private Object undo(RpcContext context, Map<String, Object> params) throws Exception {
+        requireCaller(context, UNDO);
+        requireDecider(context);
+        requireAgent();
+        if (!(params.get("approvalId") instanceof String approvalId)) {
+            throw new RpcException(RpcException.BAD_REQUEST, "approvalId", Map.of("detail", "approvalId"));
+        }
+        if (!APPROVAL_ID.matcher(approvalId).matches()) {
+            throw new RpcException(RpcException.NOT_FOUND, "No such approval", Map.of("detail", "approval"));
+        }
+        Undoer tools = undoer;
+        if (tools == null) {
+            throw new RpcException(RpcException.UNAVAILABLE, "The agent's tools aren't here", Map.of("reason", "tools"));
+        }
+        Caller caller = context.principal().caller();
+        String outcome;
+        RpcException refusal = null;
+        try {
+            tools.undo(approvalId, caller, () -> {
+                try {
+                    context.beginEffect();
+                } catch (RpcException e) {
+                    throw new IllegalStateException(e);
+                }
+            });
+            outcome = "ok";
+        } catch (IllegalStateException e) {
+            // The call was stopped before its point of no return: nothing was taken back.
+            if (e.getCause() instanceof RpcException stopped) {
+                throw stopped;
+            }
+            throw e;
+        } catch (com.minimalistalliance.desk.deskd.tools.ToolFailure e) {
+            if (RpcException.NOT_FOUND.equals(e.code())) {
+                throw new RpcException(RpcException.NOT_FOUND, "No such approval", Map.of("detail", "approval"));
+            }
+            outcome = e.reason();
+            refusal = new RpcException(e.code(), "The undo didn't happen", e.details());
+        }
+        Map<String, Object> relayed = new LinkedHashMap<>();
+        relayed.put("approvalId", approvalId);
+        relayed.put("outcome", outcome);
+        AgentLink.Gate gate = () -> {
+            requireCaller(context, UNDO);
+            requireDecider(context);
+        };
+        if (refusal != null) {
+            try {
+                link.call(UNDO, relayed, waits.call(), session(context), gate, caller(context));
+            } catch (RpcException e) {
+                // The audit row is desk-agent's; the member's answer is the refusal either way.
+            }
+            throw refusal;
+        }
+        return link.call(UNDO, relayed, waits.call(), session(context), gate, caller(context));
     }
 
     /** desk-agent's refusals of a decision, which mean it approved nothing. */

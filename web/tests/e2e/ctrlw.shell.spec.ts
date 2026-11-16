@@ -295,8 +295,8 @@ test.describe('the installed office', () => {
     const install = page.getByTestId('install-office');
     await expect(install).toHaveText('Install the office as an app');
     await expect(page.getByTestId('shortcuts')).toContainText('In its own window, Ctrl+W and Ctrl+T go to your desk.');
-    // Its stills, in every theme, for the Product Designer: the panel's end, with the full-screen line above the offer.
-    const dialog = page.getByRole('dialog', { name: 'Account' });
+    // Its stills, in every theme, for the Product Designer: the modal's end, with the full-screen line above the offer.
+    const dialog = page.getByRole('dialog', { name: 'Keyboard shortcuts' });
     await install.scrollIntoViewIfNeeded();
     for (const theme of ['light', 'dusk', 'dark']) {
       await page.evaluate((t) => {

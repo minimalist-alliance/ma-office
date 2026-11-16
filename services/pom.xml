@@ -20,12 +20,21 @@
   <modules>
     <module>deskd</module>
     <module>desk-agent</module>
+    <module>courier-envelope</module>
+    <module>courier-parse</module>
+    <module>courier-testkit</module>
   </modules>
 
   <properties>
     <java.version>21</java.version>
     <nimbus-jose-jwt.version>10.10</nimbus-jose-jwt.version>
     <java-websocket.version>1.6.0</java-websocket.version>
+    <!-- Courier's parser (courier-parse, run only in desk-parse's sandbox) and its test kit. -->
+    <mime4j.version>0.8.15</mime4j.version>
+    <jsoup.version>1.23.2</jsoup.version>
+    <greenmail.version>2.1.15</greenmail.version>
+    <!-- Courier's envelopes (courier-envelope): HPKE (RFC 9180) and Ed25519 from Bouncy Castle's lightweight API. MIT. -->
+    <bouncycastle.version>1.86</bouncycastle.version>
     <!-- Test JVMs only. The build machine's 2 cores are shared by every session. -->
     <argLine>-XX:+UseSerialGC -XX:TieredStopAtLevel=1</argLine>
   </properties>

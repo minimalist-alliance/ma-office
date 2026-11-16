@@ -1,5 +1,5 @@
 // The regression set's cross-app sweep: every app a member has, opened and closed on one running desk, in each theme,
-// with no console error. On the Personal desk: Browser, Files (on through the harness's kill switch), Notebook, Chat
+// with no console error. On the Personal desk: Browser, Files (on through the harness's kill switch), Notebook, Courier
 // (its "on its way" card), Agent, and Maia (on in the harness). On a running Guild Desk (`harness/guilds.mjs`):
 // Commons. Each window closes by its Close button, then, opened again, by Esc: Shift+Esc in the Browser, whose plain
 // Esc is the web page's (the account menu's list of keys says so). What each app does once open is its own spec's.
@@ -26,8 +26,8 @@ async function ready(page: Page, win: Locator, app: string): Promise<void> {
     case 'Notebook':
       await expect(win.getByTestId('note-editor')).toBeVisible();
       break;
-    case 'Chat':
-      await expect(win.getByText('Chat is on its way')).toBeVisible();
+    case 'Courier':
+      await expect(win.getByText('Courier is on its way')).toBeVisible();
       break;
     case 'Agent':
       await expect(win.getByTestId('key-setup')).toBeVisible();
@@ -71,9 +71,9 @@ async function arrive(page: Page, request: APIRequestContext, theme: ThemeId, pa
 }
 
 for (const theme of THEMES) {
-  test(`${theme}: the Personal desk's Browser, Files, Notebook, Chat and Agent, and Maia, each opened and closed both ways`, async ({ page, request }) => {
+  test(`${theme}: the Personal desk's Browser, Files, Notebook, Courier and Agent, and Maia, each opened and closed both ways`, async ({ page, request }) => {
     const errors = await arrive(page, request, theme, { files: { enabled: true }, maia: { enabled: true } }, '/?fixture=one');
-    for (const app of ['Browser', 'Files', 'Notebook', 'Chat', 'Agent']) await openAndCloseBothWays(page, 'Personal', app);
+    for (const app of ['Browser', 'Files', 'Notebook', 'Courier', 'Agent']) await openAndCloseBothWays(page, 'Personal', app);
 
     // Maia is the office's, not a desk's: her bubble opens her panel, Hide Maia and Esc put it away, the bubble has focus again.
     const launcher = page.locator('.maia-launcher');

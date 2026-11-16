@@ -6,8 +6,8 @@ import java.util.concurrent.ConcurrentHashMap;
 import java.util.concurrent.CopyOnWriteArrayList;
 
 /**
- * The chat providers desk-agent can call, by id: Anthropic, OpenAI and xAI on a desk, and stand-ins in tests and the
- * AppCDS training. Kept in the order they were registered, which is the order {@code agent.providers} lists them.
+ * The chat providers desk-agent can call, by id: Anthropic, OpenAI, xAI, OpenRouter, Google and Moonshot AI on a desk,
+ * Minimalist Alliance's own service for Desk Maia, and stand-ins in tests and the AppCDS training. Kept in the order they were registered, which is the order {@code agent.providers} lists them.
  */
 public final class ProviderRegistry {
 

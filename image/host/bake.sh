@@ -135,6 +135,7 @@ STAGE=$WORKDIR/stage; mkdir -p "$STAGE"
 cp -r "$IMG/recipe" "$STAGE/ma-recipe"; cp -r "$HERE/recipe" "$STAGE/ma-host-recipe"
 cp "$IMG/recipe/releases.pin" "$STAGE/ma-host-recipe/releases.pin"
 (cd "$IMG/recipe/files" && find . -type f -o -type l) > "$STAGE/ma-host-recipe/desk-files.txt"
+install -d "$STAGE/ma-recipe/desk-svc"; cp "$DSVC/desk-svc" "$DSVC/desk-svc.sha256" "$STAGE/ma-recipe/desk-svc/"   # the desk recipe's desk-parse (ADR 0097)
 cp "$DSVC/desk-svc" "$DSVC/desk-svc.sha256" "$DSVC/desk-ice-demux" "$DSVC/desk-ice-demux.sha256" "$STAGE/ma-host-recipe/"; rm -rf "$DSVC"
 scp "${SSH_OPTS[@]}" -i "$KEY_FILE" -r "$STAGE/ma-recipe" "$STAGE/ma-host-recipe" "admin@$IP:/home/admin/" >/dev/null
 fetch='set -euo pipefail; mkdir -p /home/admin/ma-recipe/releases /home/admin/ma-host-recipe/releases; cd /home/admin/ma-recipe/releases'

@@ -27,8 +27,12 @@ import java.util.concurrent.ConcurrentHashMap;
  *
  * <p><b>The class only rises</b> ({@link #look}, {@code Look.risk}), decided before anything is done:
  * <ul>
- *   <li>In the Agent's own context: a click on a control that looks like a form's submit, or {@code Enter} in a field
- *       that sends (not a search box), is {@code send}; a click or {@code Enter} that looks like paying (a control
+ *   <li>In the Agent's own context: a click on a form's submit control, by deskd's half on the element itself whatever
+ *       its label ({@link AgentBrowser#actLook}; a GET form holding a search box excepted, as its {@code Enter} is), or
+ *       on a control whose words say it sends, or {@code Enter} in a field that sends (not a search box in a GET
+ *       form: what Enter submits is looked at too, by its form, Security's BB-L1), is {@code send}. A submit's payload says {@code submit: true}, so the member's approval binds it, and a click that
+ *       submits a form without such an approval is refused {@code changed}, here and again by the action proxy as it
+ *       clicks. A click or {@code Enter} that looks like paying (a control
  *       labelled buy, pay, place order, checkout, subscribe, donate, confirm purchase; a card field on the page; a
  *       payment provider's page; a payment provider's frame anywhere in the page, whatever its size and whatever the
  *       control says, by Chromium's frame tree and by deskd's half, Security's S-14 rule) is {@code spend}. A spend's
@@ -48,6 +52,10 @@ import java.util.concurrent.ConcurrentHashMap;
  * <p><b>Clicks and keys</b> are deskd's half's own untrusted {@code el.click()} and key events, from deskd's isolated
  * world (the action proxy's Agent mode): trusted input never reaches the Agent's hidden tabs on a desk's Chromium. Every
  * value of the model's (the ref, the text, the key) goes to the page as a JSON argument, never as script.
+ *
+ * <p><b>What the model says is never the class.</b> {@code spend} and {@code submit} in a call's arguments count only for a
+ * call the member approved, whose arguments are the payload their card showed; and a control is judged by what deskd's
+ * last read of the tab showed, never by a {@code label} or {@code role} the model sent, unless an approval bound them.
  *
  * <p><b>Taint.</b> A result with page text adds {@code U}; one from a member-session tab adds {@code S} as well.
  *
@@ -241,14 +249,28 @@ public final class BrowserTools implements HostedTool {
             Set<String> sites = browser.sites(call.runId());
             if (!sites.contains(site) && sites.size() >= AgentBrowser.SITES_A_RUN) {
                 refusal = "ask_cap";
+            } else if (!openFor(call.runId(), site) && browser.agentTabs() >= browser.tabCap()) {
+                // A new tab in the member's session is an Agent tab: under the desk's cap, refused before anyone is asked.
+                refusal = "tab_cap";
             }
         }
         return new Look(ToolRisk.EGRESS, "member:" + site, target, payload("site", site), null, refusal);
     }
 
+    /** Whether the run has its tab in the member's session for this site open already. */
+    private boolean openFor(String runId, String site) {
+        for (AgentBrowser.Tab tab : browser.tabs(runId)) {
+            if (site.equals(tab.site())) {
+                return true;
+            }
+        }
+        return false;
+    }
+
     /** What an action is, as the page showed it when the model read it, and what class it rises to. */
+    /** @param submitOk a click or a key may submit a form: approved as a submit, or a search in the Agent's own context */
     private record Action(AgentBrowser.Tab tab, BrowserText.Ref ref, String origin, Map<String, Object> payload, ToolRisk risk,
-            String refusal) {}
+            String refusal, boolean submitOk) {}
 
     private Look lookAct(HostedCall call) throws ToolFailure, InterruptedException {
         Action action = action(call);
@@ -264,7 +286,7 @@ public final class BrowserTools implements HostedTool {
     private Action action(HostedCall call) throws ToolFailure, InterruptedException {
         AgentBrowser.Tab tab = tab(call);
         RefBook book = books.get(key(call.runId(), tab.tabId()));
-        BrowserText.Ref ref = expand(book, call.args());
+        BrowserText.Ref ref = expand(book, call.args(), approved(call));
         String origin = AgentBrowser.originOf(tab.url());
         // An approved call names the origin the member saw: a tab that's elsewhere now isn't that page.
         if (call.args().get("origin") != null && !Objects.equals(call.args().get("origin"), origin)) {
@@ -285,20 +307,33 @@ public final class BrowserTools implements HostedTool {
         boolean payingPage = book != null && book.payment() || browser.paymentHost(AgentBrowser.hostOf(tab.url()));
         ToolRisk risk = member ? ToolRisk.WRITE : null;
         String refusal = null;
+        // A click that submits a form, by deskd's half on the element itself, whatever its label (gap 1: a submit is send).
+        boolean submits = false;
         switch (call.tool()) {
             case "browser_click" -> {
-                if (payingPage || BrowserText.looksLikePaying(ref) || paymentFrame(call, tab)) {
+                boolean sensitive = sensitiveControl(call.runId(), tab, ref);
+                Map<String, Object> does = sensitive ? Map.of() : actLook(call, tab, ref, null);
+                submits = "submit".equals(does.get("nav"));
+                boolean search = submits && Boolean.TRUE.equals(does.get("search"));
+                boolean domLink = "link".equals(does.get("nav"));
+                if (payingPage || BrowserText.looksLikePaying(ref) || Boolean.TRUE.equals(does.get("pay")) || paymentFrame(call, tab)) {
                     risk = ToolRisk.SPEND;
-                } else if (BrowserText.looksLikeSubmit(ref, book != null && book.fields())) {
+                } else if (submits && (member || !search) || BrowserText.looksLikeSubmit(ref, book != null && book.fields())) {
+                    // A GET form holding a search box sends a search's address, as Enter in that box does: in the Agent's own
+                    // context it stays a read. Every other submit, and every one in the member's session, is a send.
                     risk = ToolRisk.SEND;
-                } else if (member && "link".equals(ref.kind())) {
+                } else if (member && ("link".equals(ref.kind()) || domLink)) {
                     // A navigation the Agent starts in the member's session asks as egress (Security's priority finding).
                     risk = ToolRisk.EGRESS;
                 }
-                if (sensitiveControl(call.runId(), tab, ref)) {
+                if (sensitive) {
                     refusal = "sensitive";
                 } else {
                     refusal = linkRefusal(tab, ref);
+                    if (refusal == null && does.get("url") instanceof String url) {
+                        // Where the element itself says it goes, a form's address included.
+                        refusal = navRefusal(tab, url);
+                    }
                 }
             }
             case "browser_press" -> {
@@ -307,16 +342,30 @@ public final class BrowserTools implements HostedTool {
                     throw ToolFailure.badArgs("key");
                 }
                 payload.put("key", key);
-                if ("Enter".equals(key) && enterSends(ref)) {
-                    if (payingPage || BrowserText.looksLikePaying(ref) || paymentFrame(call, tab)) {
-                        risk = ToolRisk.SPEND;
-                    } else if (member || !"query".equals(ref.fieldKind())) {
-                        // A search box's Enter is a search, as an open of its results would be; any other field's sends a form.
-                        risk = ToolRisk.SEND;
+                boolean sensitive = sensitiveControl(call.runId(), tab, ref)
+                        || "Backspace".equals(key) && browser.paymentHost(AgentBrowser.hostOf(tab.url()));
+                if ("Enter".equals(key)) {
+                    // What Enter submits, by deskd's half on the field's form, whatever the field's kind (Security's BB-L1).
+                    Map<String, Object> does = sensitive ? Map.of() : actLook(call, tab, ref, key);
+                    submits = "submit".equals(does.get("nav"));
+                    boolean search = submits && Boolean.TRUE.equals(does.get("search"));
+                    boolean payingButton = does.get("button") instanceof String button && BrowserText.looksLikePaying(
+                            new BrowserText.Ref(null, ref.node(), ref.fp(), ref.block(), ref.rev(), "button", null, button, null, false, false));
+                    if (enterSends(ref) || submits) {
+                        if (payingPage || BrowserText.looksLikePaying(ref) || payingButton || Boolean.TRUE.equals(does.get("pay"))
+                                || paymentFrame(call, tab)) {
+                            risk = ToolRisk.SPEND;
+                        } else if (member || !"query".equals(ref.fieldKind()) || submits && !search) {
+                            // A search box's Enter in a GET form is a search, as an open of its results would be; any other
+                            // field's, and a search box's in a form that posts, sends a form.
+                            risk = ToolRisk.SEND;
+                        }
+                    }
+                    if (!sensitive && does.get("url") instanceof String url) {
+                        refusal = navRefusal(tab, url);
                     }
                 }
-                if (sensitiveControl(call.runId(), tab, ref)
-                        || "Backspace".equals(key) && browser.paymentHost(AgentBrowser.hostOf(tab.url()))) {
+                if (sensitive) {
                     // Backspace edits a field, as typing does.
                     refusal = "sensitive";
                 }
@@ -344,11 +393,57 @@ public final class BrowserTools implements HostedTool {
         if (risk == ToolRisk.SPEND) {
             payload.put("spend", true);
             // At run the call is what the member approved: a spend they weren't shown as one isn't done.
-            if (!call.look() && !Boolean.TRUE.equals(call.args().get("spend"))) {
+            if (!call.look() && !(approved(call) && Boolean.TRUE.equals(call.args().get("spend")))) {
                 throw ToolFailure.refused("changed");
             }
         }
-        return new Action(tab, ref, origin, payload, risk, refusal);
+        boolean submitOk = false;
+        if (submits) {
+            if (risk == null) {
+                // A search in the Agent's own context: a read, done without asking, as Enter in its box is.
+                submitOk = true;
+            } else {
+                payload.put("submit", true);
+                // At run the call is what the member approved: a submit they weren't shown as one isn't done.
+                if (!call.look() && !(approved(call) && Boolean.TRUE.equals(call.args().get("submit")))) {
+                    throw ToolFailure.refused("changed");
+                }
+                submitOk = true;
+            }
+        }
+        return new Action(tab, ref, origin, payload, risk, refusal, submitOk);
+    }
+
+    /** What deskd's half says a click on this element, or a key in it, would do ({@link AgentBrowser#actLook}). */
+    private Map<String, Object> actLook(HostedCall call, AgentBrowser.Tab tab, BrowserText.Ref ref, String key)
+            throws ToolFailure, InterruptedException {
+        try {
+            return browser.actLook(call.runId(), tab.tabId(), ref.node(), ref.fp(), key);
+        } catch (RpcException e) {
+            throw failure(e);
+        }
+    }
+
+    /** A call the member approved: its arguments are the payload their card showed, bound by its hash in deskd's ticket. */
+    private static boolean approved(HostedCall call) {
+        return call.approval() != null;
+    }
+
+    /** Where a click would navigate, by the element itself: a local host {@code blocked}, another site in a session tab. */
+    private static String navRefusal(AgentBrowser.Tab tab, String url) {
+        int colon = url.indexOf(':');
+        String scheme = colon > 0 ? url.substring(0, colon).toLowerCase(java.util.Locale.ROOT) : "";
+        if (!scheme.equals("http") && !scheme.equals("https")) {
+            // The page's own javascript: link, or anything else, is checked again as it's clicked and at the request.
+            return null;
+        }
+        String checked;
+        try {
+            checked = AgentBrowser.checkUrl(url);
+        } catch (RpcException e) {
+            return "blocked".equals(reason(e)) ? "blocked" : null;
+        }
+        return tab.member() && !tab.site().equals(AgentBrowser.siteOf(checked)) ? "off_site" : null;
     }
 
     /** A payment provider's frame anywhere in the tab now (Security, S-14). */
@@ -401,7 +496,7 @@ public final class BrowserTools implements HostedTool {
      * A ref as the model gives it ({@code n12}, from the tab's last read) or already expanded ({@code {node, fp, block,
      * rev}}, as an approved call's payload has it).
      */
-    private static BrowserText.Ref expand(RefBook book, Map<String, Object> args) throws ToolFailure {
+    private static BrowserText.Ref expand(RefBook book, Map<String, Object> args, boolean approved) throws ToolFailure {
         Object raw = args.get("ref");
         if (raw instanceof String short_) {
             BrowserText.Ref ref = book == null ? null : book.byRef(short_);
@@ -420,7 +515,13 @@ public final class BrowserTools implements HostedTool {
             return new BrowserText.Ref(known.ref(), node, fp, block, rev.longValue(), known.kind(), known.fieldKind(), known.label(),
                     known.name(), known.enter(), known.primary(), known.url());
         }
-        // Not as the last read had it: the payload's own words, and the action proxy decides whether the page still shows it.
+        if (!approved) {
+            // Not as the last read had it, and no card bound it: the model's own words for a control are never what its
+            // class is judged by (gap 3). It reads the page again and names the control by its ref.
+            throw ToolFailure.notFound("not_found");
+        }
+        // An approved payload not as the last read had it: the words the member's card showed, bound by the hash, and the
+        // action proxy decides whether the page still shows it.
         String label = args.get("label") instanceof String l ? l : "";
         String role = args.get("role") instanceof String r ? r : null;
         return new BrowserText.Ref(null, node, fp, block, rev.longValue(), role, null, label, null, false, false);
@@ -506,10 +607,11 @@ public final class BrowserTools implements HostedTool {
                 value = action.payload().get("key");
             }
         }
-        // A spend the member approved as one: a payment provider's frame on the page is what they saw.
-        boolean spend = Boolean.TRUE.equals(call.args().get("spend"));
+        // A spend the member approved as one: a payment provider's frame on the page is what they saw. Only an approved
+        // call's: the model's own arguments never say so (gap 2).
+        boolean spend = approved(call) && Boolean.TRUE.equals(call.args().get("spend"));
         Map<String, Object> done = browser.act(call.runId(), action.tab().tabId(), ref.node(), verb, value, ref.fp(), ref.block(), ref.rev(),
-                spend);
+                spend, action.submitOk());
         Map<String, Object> outcome = new LinkedHashMap<>();
         outcome.put("done", Boolean.TRUE.equals(done.get("done")));
         if (done.get("reason") instanceof String reason) {
@@ -521,7 +623,39 @@ public final class BrowserTools implements HostedTool {
         if (Boolean.TRUE.equals(done.get("submitted"))) {
             outcome.put("submitted", true);
         }
-        return page(call.runId(), action.tab().tabId(), 0, null, outcome);
+        // What followed an act that was done is part of its answer, never a failure: an approved send or spend that ran
+        // must never read as not done (Security's BB-L5). A navigation it led to that was stopped at the request:
+        if ("off_site".equals(done.get("stopped")) || "blocked".equals(done.get("stopped"))) {
+            outcome.put("stopped", done.get("stopped"));
+        }
+        if ("memory".equals(done.get("closed"))) {
+            // The page past an Agent tab's memory after the act: closed, so there's no page to read.
+            outcome.put("closed", "memory");
+            return afterAct(action.tab(), outcome);
+        }
+        try {
+            return page(call.runId(), action.tab().tabId(), 0, null, outcome);
+        } catch (RpcException | ToolFailure e) {
+            // The act was done; the page after it can't be read now (it went, or the browser didn't answer).
+            outcome.put("view", "unknown");
+            return afterAct(action.tab(), outcome);
+        }
+    }
+
+    /** An act's answer with no page to show after it. */
+    private Result afterAct(AgentBrowser.Tab tab, Map<String, Object> outcome) {
+        Map<String, Object> content = new LinkedHashMap<>();
+        content.put("tabId", tab.tabId());
+        content.putAll(outcome);
+        content.put("session", tab.member() ? "member" : "agent");
+        content.put("note", outcome.containsKey("closed") ? "The action was done. The page then held more memory than an agent tab may, "
+                + "so the tab was closed." : "The action was done; the page after it couldn't be read.");
+        Set<String> taints = new LinkedHashSet<>();
+        taints.add("U");
+        if (tab.member()) {
+            taints.add("S");
+        }
+        return new Result(content, taints, chip(tab, siteTarget(tab)));
     }
 
     /**
@@ -705,7 +839,8 @@ public final class BrowserTools implements HostedTool {
             case RpcException.FORBIDDEN -> new ToolFailure(RpcException.FORBIDDEN, reason != null && FORBIDDEN.contains(reason) ? reason : "blocked",
                     extra);
             case RpcException.BAD_REQUEST -> ToolFailure.badArgs(reason == null ? "args" : reason);
-            case RpcException.TOO_LARGE -> new ToolFailure(RpcException.TOO_LARGE, "too_large", extra);
+            // A page past an Agent tab's memory was closed: "memory", with the limit in MB (the Browser bar's gap 7).
+            case RpcException.TOO_LARGE -> new ToolFailure(RpcException.TOO_LARGE, "memory".equals(reason) ? "memory" : "too_large", extra);
             case RpcException.RATE_LIMITED -> new ToolFailure(RpcException.RATE_LIMITED, "rate_limited");
             case RpcException.UNAVAILABLE -> ToolFailure.unavailable("disabled".equals(reason) ? "disabled" : "unavailable");
             case RpcException.DEADLINE_EXCEEDED -> ToolFailure.unavailable("timeout");

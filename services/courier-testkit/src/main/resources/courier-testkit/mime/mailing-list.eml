@@ -1,0 +1,20 @@
+From: Announce <announce@lists.example.org>
+To: me@desk.example
+Date: Fri, 13 Nov 2026 10:00:00 +0000
+Subject: [announce] Version 4.2 released
+Message-ID: <mailing-list@corpus.example>
+MIME-Version: 1.0
+X-Corpus-Note: a mailing-list post: List-Id, List-Unsubscribe with one-click, List-Post, Precedence: bulk
+List-Id: Release announcements <announce.lists.example.org>
+List-Unsubscribe: <mailto:announce-leave@lists.example.org>, <https://lists.example.org/unsubscribe?u=abc>
+List-Unsubscribe-Post: List-Unsubscribe=One-Click
+List-Post: <mailto:announce@lists.example.org>
+List-Archive: <https://lists.example.org/archive/announce>
+Precedence: bulk
+Sender: announce-bounces@lists.example.org
+Content-Type: text/plain; charset=utf-8
+
+Version 4.2 is out. The changelog is on the website.
+
+--
+To unsubscribe, visit https://lists.example.org/unsubscribe

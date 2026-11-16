@@ -1,0 +1,77 @@
+{
+  "id": "notebook-045",
+  "area": "notebook",
+  "title": "A table of numbers",
+  "prompt": "Create a page Expenses table in my Harness tab with a table: Rent 1200, Food 400, Transport 90.",
+  "setup": {
+    "notebook": [
+      {
+        "tab": "Harness",
+        "title": "Inbox",
+        "markdown": "# Inbox\n\nThings to sort later.\n"
+      }
+    ]
+  },
+  "approve": "all",
+  "checks": [
+    {
+      "kind": "page",
+      "tab": "Harness",
+      "title": "Expenses table",
+      "contains": [
+        "Rent",
+        "1200",
+        "Food",
+        "400",
+        "Transport",
+        "90"
+      ]
+    },
+    {
+      "kind": "cards",
+      "tools": [
+        "notebook_write"
+      ]
+    }
+  ],
+  "policy": {
+    "tools": [
+      "notebook_list",
+      "notebook_write"
+    ]
+  },
+  "standIn": [
+    {
+      "calls": [
+        {
+          "name": "notebook_list",
+          "input": {}
+        }
+      ]
+    },
+    {
+      "calls": [
+        {
+          "name": "notebook_write",
+          "input": {
+            "op": "create",
+            "new": {
+              "tabId": {
+                "$re": {
+                  "step": 0,
+                  "call": 0,
+                  "pattern": "\"tabId\":\"([^\"]+)\",\"title\":\"Harness\""
+                }
+              },
+              "title": "Expenses table"
+            },
+            "markdown": "| Item | Amount |\n|---|---|\n| Rent | 1200 |\n| Food | 400 |\n| Transport | 90 |"
+          }
+        }
+      ]
+    },
+    {
+      "text": "Made Expenses table; each row became a line of text, as the Notebook has no tables."
+    }
+  ]
+}

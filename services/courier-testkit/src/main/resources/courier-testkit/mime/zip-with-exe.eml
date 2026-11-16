@@ -1,0 +1,25 @@
+From: Downloads <downloads@example.net>
+To: me@desk.example
+Date: Fri, 13 Nov 2026 10:00:00 +0000
+Subject: Installer
+Message-ID: <zip-with-exe@corpus.example>
+MIME-Version: 1.0
+X-Corpus-Note: a zip whose entries include a Windows program
+Content-Type: multipart/mixed; boundary="att-1"
+
+--att-1
+Content-Type: text/plain; charset=utf-8
+
+The installer is in the zip.
+--att-1
+Content-Type: application/zip; name="installer.zip"
+Content-Disposition: attachment; filename="installer.zip"
+Content-Transfer-Encoding: base64
+
+UEsDBBQAAAAIAABQbV15KfBIQQAAAHsAAAAJAAAAc2V0dXAuZXhl842awMDMwMDAAsT//zOQBByA
+OCQjs1ihoCg/vSgxVyE5MS8vv0QhKVWhqDRPITNPwcU/WCE3PyVVj5eXSwVdOwBQSwMEFAAAAAgA
+AFBtXfmFMAUdAAAAGwAAAAoAAAByZWFkbWUudHh0CyrNUyhOLSkt0EutSFUoyVfIzCsuSczJ0ePl
+AgBQSwECFAAUAAAACAAAUG1deSnwSEEAAAB7AAAACQAAAAAAAAAAAAAAAAAAAAAAc2V0dXAuZXhl
+UEsBAhQAFAAAAAgAAFBtXfmFMAUdAAAAGwAAAAoAAAAAAAAAAAAAAAAAaAAAAHJlYWRtZS50eHRQ
+SwUGAAAAAAIAAgBvAAAArQAAAAAA
+--att-1--

@@ -36,9 +36,13 @@ import java.util.function.Supplier;
  */
 public final class NotebookCalls {
 
-    /** What deskd's own calls may ask desk-notebook: a search, a page as Markdown, an agent's edit, a page to the Trash. */
+    /**
+     * What deskd's own calls may ask desk-notebook: a search and which of its hits hold marked text, the outline of
+     * notebooks and tabs, a page as Markdown, an agent's edit and its undo, a page to the Trash.
+     */
     public static final Set<String> METHODS = Set.of(
-            "notebook.search", "notebook.page.markdown", "notebook.page.agentEdit", "notebook.page.trash");
+            "notebook.search", "notebook.page.marked", "notebook.outline", "notebook.page.markdown",
+            "notebook.page.agentEdit", "notebook.page.agentUndo", "notebook.page.trash");
 
     private final Path socket;
     private final Supplier<Map<String, Object>> settings;

@@ -21,7 +21,7 @@ import { useCallback, useEffect, useId, useLayoutEffect, useRef, useState, type 
 import type Konva from 'konva/lib/Core.js';
 import { camera } from '../canvas/controller';
 import { useCameraRest, type RestCam } from '../canvas/useCameraRest';
-import type { AppId, LayoutDesk } from '../canvas/layout';
+import { comingLater, LATER, type AppId, type LayoutDesk } from '../canvas/layout';
 import { useIsPhone } from '../canvas/phone';
 import { AppGlyph, Icon } from '../chrome/icons';
 import { useDoor } from '../deskapps/door';
@@ -31,11 +31,15 @@ import { reducedMotion } from '../lib/util';
 import { appLabel, inScopeDesks } from '../shell/actions';
 import { useDeskStore } from '../state/deskStore';
 import { LiveWindow } from '../windows/LiveWindow';
+import { ZoomButton } from '../zoom/ZoomButton';
+import { useAppLevel } from '../zoom/store';
 import { useLayoutStore } from '../state/layoutStore';
 import { useViewStore } from '../state/viewStore';
 import { backToDesk, showInCarousel, stepCarousel, takeFocusOnShow } from './actions';
 import { asPhoneSees, setPhoneShown, usePhoneCarousel } from './phone';
-import { carouselApps, carouselOn, fromScreenEdge, keepsArrows, positionOf, positionWords, shownApp, SLIDE_MS, stageIsLive, stageOnScreen, touchSwipe, WheelSwipe } from './model';
+import { carouselApps, carouselOn, positionOf, positionWords, shownApp } from './model';
+import { fromScreenEdge, keepsArrows, SLIDE_MS, stageIsLive, stageOnScreen, touchSwipe, WheelSwipe } from './stage';
+import { splitThumbs } from './thumbs';
 
 type Cam = RestCam;
 
@@ -77,6 +81,8 @@ function Slide({ deskId, deskName, app, index, count, leaving, phone, titleId, s
   const label = appLabel(app, deskId);
   // A free member's time ring, while the phone's carousel on the Browser covers the office's (walk L13).
   const FreeRing = useFree((s) => (phone && app === 'browser' ? s.WindowRing : undefined));
+  // On a phone each slide is its app's frame (ADR 0055): a pinch over it zooms its app. A larger screen's stage is the frame.
+  const zoomable = useAppLevel(app, deskId) !== null;
   return (
     <LiveWindow
       ref={slideRef}
@@ -88,6 +94,7 @@ function Slide({ deskId, deskName, app, index, count, leaving, phone, titleId, s
       aria-roledescription="slide"
       aria-label={`${label}, ${positionWords(index, count)}`}
       data-testid={`carousel-slide-${app.startsWith('agent:') ? 'agent' : app}`}
+      data-zoom-app={phone && zoomable ? app : undefined}
       inert={leaving}
     >
       {phone && (
@@ -103,6 +110,7 @@ function Slide({ deskId, deskName, app, index, count, leaving, phone, titleId, s
             <span className="window-desk">{deskName}</span>
           </h2>
           {FreeRing && <FreeRing cover={phoneCover(deskId)} />}
+          <ZoomButton app={app} deskId={deskId} label={label} />
         </div>
       )}
     </LiveWindow>
@@ -121,29 +129,181 @@ function DeskGlyph() {
   );
 }
 
+/** The "+" in a rounded square, outlined in the glyph tones like its neighbours, never accent-filled (the Designer, Nov 11). */
+function PlusGlyph({ size = 28 }: { size?: number }) {
+  return (
+    <svg width={size} height={size} viewBox="0 0 48 48" aria-hidden="true" className="app-glyph" data-glyph="add">
+      <rect x="8" y="8" width="32" height="32" rx="9" fill="var(--ma-glyph-page)" stroke="var(--ma-glyph-soft)" strokeWidth="2.2" />
+      <path d="M24 16.5v15M16.5 24h15" stroke="var(--ma-glyph)" strokeWidth="2.6" strokeLinecap="round" />
+    </svg>
+  );
+}
+
+const MORE_APPS = 'More apps';
+const BROWSE_APPS = 'Browse apps';
+
+/**
+ * The "+" when the row can't hold every app (`thumbs.ts`): a menu of the apps that have no tab, in the desk's order, then the
+ * Apps sheet's row where the desk shows one. The office's menu (`.menu`, `role="menu"`): it opens above the row with the
+ * focus on its first item; Up, Down, Home and End move; Esc and Tab close it and give the focus back to the "+"; a tap
+ * outside closes it. An app chosen shows in the carousel with the focus on its tab.
+ */
+function ThumbMore({ deskId, under, onShow, browse }: { deskId: string; under: AppId[]; onShow: (app: AppId) => void; browse: (() => void) | null }) {
+  const [open, setOpen] = useState(false);
+  const btnRef = useRef<HTMLButtonElement>(null);
+  const menuRef = useRef<HTMLDivElement>(null);
+  const menuId = useId();
+
+  useEffect(() => {
+    if (!open) return undefined;
+    menuRef.current?.querySelector<HTMLElement>('[role="menuitem"]')?.focus();
+    const away = (e: PointerEvent): void => {
+      const t = e.target as Node;
+      if (!menuRef.current?.contains(t) && !btnRef.current?.contains(t)) setOpen(false);
+    };
+    document.addEventListener('pointerdown', away, true);
+    return () => document.removeEventListener('pointerdown', away, true);
+  }, [open]);
+  // Nothing left under it (the screen turned, say): it closes.
+  useEffect(() => {
+    if (!under.length && !browse) setOpen(false);
+  }, [under.length, browse]);
+
+  const close = (): void => {
+    setOpen(false);
+    btnRef.current?.focus();
+  };
+  const onKeyDown = (e: ReactKeyboardEvent<HTMLDivElement>): void => {
+    const items = [...(menuRef.current?.querySelectorAll<HTMLElement>('[role="menuitem"]') ?? [])];
+    const at = items.indexOf(document.activeElement as HTMLElement);
+    const to = e.key === 'ArrowDown' ? (at + 1) % items.length
+      : e.key === 'ArrowUp' ? (at - 1 + items.length) % items.length
+        : e.key === 'Home' ? 0
+          : e.key === 'End' ? items.length - 1
+            : null;
+    if (e.key === 'Escape' || e.key === 'Tab') {
+      e.preventDefault(); // the office's Esc (back to the desk) and the stage's Tab leave it be
+      e.stopPropagation();
+      close();
+    } else if (to !== null) {
+      e.preventDefault();
+      e.stopPropagation();
+      items[to]?.focus();
+    } else if (e.key === 'ArrowLeft' || e.key === 'ArrowRight') {
+      e.preventDefault(); // a menu's own keys: the carousel stays where it is
+      e.stopPropagation();
+    }
+  };
+
+  return (
+    <div className="thumb-more">
+      <button
+        ref={btnRef}
+        type="button"
+        className="thumb thumb-apps"
+        aria-label={MORE_APPS}
+        aria-haspopup="menu"
+        aria-expanded={open}
+        aria-controls={open ? menuId : undefined}
+        data-testid="thumb-more"
+        onClick={() => setOpen((o) => !o)}
+      >
+        <PlusGlyph />
+      </button>
+      {open && (
+        <div ref={menuRef} id={menuId} className="menu thumb-menu" role="menu" aria-label={MORE_APPS} data-testid="thumb-menu" onKeyDown={onKeyDown}>
+          {under.map((a) => (
+            <button
+              key={a}
+              type="button"
+              role="menuitem"
+              tabIndex={-1}
+              className="menu-item thumb-menu-item"
+              onClick={() => {
+                setOpen(false);
+                onShow(a);
+              }}
+            >
+              <AppGlyph app={a} deskId={deskId} size={24} />
+              <span className="thumb-menu-name">{appLabel(a, deskId)}</span>
+              {comingLater(a) && <span className="thumb-menu-later">{LATER}</span>}
+            </button>
+          ))}
+          {browse && (
+            <>
+              {under.length > 0 && <div className="menu-sep" role="separator" />}
+              <button
+                type="button"
+                role="menuitem"
+                tabIndex={-1}
+                className="menu-item thumb-menu-item"
+                data-testid="thumb-menu-apps"
+                onClick={() => {
+                  setOpen(false);
+                  browse();
+                }}
+              >
+                <PlusGlyph size={24} />
+                <span className="thumb-menu-name">{BROWSE_APPS}</span>
+              </button>
+            </>
+          )}
+        </div>
+      )}
+    </div>
+  );
+}
+
+/** The row's width, followed as the screen turns or its insets change. */
+function useRowWidth(ref: RefObject<HTMLElement | null>): number {
+  const [w, setW] = useState(() => (typeof window === 'undefined' ? 0 : window.innerWidth));
+  useLayoutEffect(() => {
+    const el = ref.current;
+    if (!el) return undefined;
+    setW(el.clientWidth);
+    if (typeof ResizeObserver === 'undefined') return undefined;
+    const ro = new ResizeObserver(() => setW(el.clientWidth));
+    ro.observe(el);
+    return () => ro.disconnect();
+  }, [ref]);
+  return w;
+}
+
 /**
  * A phone's thumb row: the desk's apps as a tablist, the one shown `aria-selected` with the marker (a tint and an accent
  * bar) sliding under it over the slide's 220 ms, then "Back to the desk" at the right end. Arrow keys, Home and End move
- * the carousel and the focus with it; a tap on a glyph goes straight there.
+ * the carousel and the focus with it; a tap on a glyph goes straight there. Where every app doesn't fit at a finger's size,
+ * the "+" holds the rest (`thumbs.ts`, `ThumbMore`); where they do, the "+" is the Apps sheet's, as before.
  */
 function ThumbRow({ deskId, apps, index, panelId, tabId }: { deskId: string; apps: AppId[]; index: number; panelId: string; tabId: (n: number) => string }) {
+  const rowRef = useRef<HTMLDivElement>(null);
   const listRef = useRef<HTMLDivElement>(null);
   const count = apps.length;
   const appsHost = useDoor((s) => s.host);
+  // Whether the desk shows its Apps row (`appsRowShows`); the door's count moves whenever the host learns something.
+  const appsShow = useDoor((s) => !!s.host?.appsRowShows(deskId));
+  const width = useRowWidth(rowRef);
+  const shown = apps[index] ?? null;
+  const { row, under } = splitThumbs(apps, shown, width, appsShow, comingLater);
+  const at = shown ? row.indexOf(shown) : -1;
+  const focusTab = useRef<AppId | null>(null);
 
-  // The focus follows the shown app while it's in the row, as a tablist's does; the one shown stays in view.
+  // The focus follows the shown app while it's in the row, as a tablist's does; the one shown stays in view. One chosen
+  // from the "+" takes it too.
   useEffect(() => {
     const list = listRef.current;
     const tab = list?.querySelector<HTMLElement>(`#${CSS.escape(tabId(index))}`);
     if (!list || !tab) return;
-    if (list.contains(document.activeElement) && document.activeElement !== tab) tab.focus({ preventScroll: true });
+    const asked = focusTab.current !== null && focusTab.current === shown;
+    focusTab.current = null;
+    if (asked || (list.contains(document.activeElement) && document.activeElement !== tab)) tab.focus({ preventScroll: true });
     if (list.scrollWidth > list.clientWidth + 1) {
       const left = tab.offsetLeft;
       const right = left + tab.offsetWidth;
       if (left < list.scrollLeft) list.scrollLeft = left;
       else if (right > list.scrollLeft + list.clientWidth) list.scrollLeft = right - list.clientWidth;
     }
-  }, [index, tabId]);
+  }, [index, tabId, shown]);
 
   const onKeyDown = (e: ReactKeyboardEvent<HTMLDivElement>): void => {
     if (e.altKey || e.ctrlKey || e.metaKey || e.shiftKey) return;
@@ -154,36 +314,47 @@ function ThumbRow({ deskId, apps, index, panelId, tabId }: { deskId: string; app
     if (app && to !== index) showInCarousel(deskId, app);
   };
 
+  const fromMenu = (app: AppId): void => {
+    focusTab.current = app;
+    showInCarousel(deskId, app);
+  };
+
   return (
-    <div className="carousel-thumbs" data-testid="carousel-thumbs">
+    <div ref={rowRef} className="carousel-thumbs" data-testid="carousel-thumbs">
       <div
         ref={listRef}
         className="thumb-tabs"
         role="tablist"
         aria-label="Apps"
-        style={{ '--i': index, '--n': count, '--slide-ms': `${slideMs()}ms` } as CSSProperties}
+        style={{ '--i': Math.max(0, at), '--n': row.length, '--slide-ms': `${slideMs()}ms` } as CSSProperties}
         onKeyDown={onKeyDown}
       >
         <span className="thumb-mark" aria-hidden="true" />
-        {apps.map((a, n) => (
-          <button
-            key={a}
-            type="button"
-            role="tab"
-            id={tabId(n)}
-            className="thumb"
-            aria-label={appLabel(a, deskId)}
-            aria-selected={n === index}
-            aria-controls={n === index ? panelId : undefined}
-            tabIndex={n === index ? 0 : -1}
-            onClick={() => showInCarousel(deskId, a)}
-          >
-            <AppGlyph app={a} deskId={deskId} size={28} />
-          </button>
-        ))}
+        {row.map((a) => {
+          const n = apps.indexOf(a);
+          return (
+            <button
+              key={a}
+              type="button"
+              role="tab"
+              id={tabId(n)}
+              className="thumb"
+              aria-label={appLabel(a, deskId)}
+              aria-selected={n === index}
+              aria-controls={n === index ? panelId : undefined}
+              tabIndex={n === index ? 0 : -1}
+              onClick={() => showInCarousel(deskId, a)}
+            >
+              <AppGlyph app={a} deskId={deskId} size={28} />
+            </button>
+          );
+        })}
       </div>
-      {/* Phones have no desk menu: the Apps sheet's way in is here (ADR 0054), wherever the menu's Apps row would show. */}
-      {appsHost && <appsHost.AppsThumb deskId={deskId} />}
+      {/* Phones have no desk menu: the Apps sheet's way in is here (ADR 0054), wherever the menu's Apps row would show; when
+          the row is short, inside the "+" with the apps that have no tab. */}
+      {under.length > 0
+        ? <ThumbMore deskId={deskId} under={under} onShow={fromMenu} browse={appsShow && appsHost ? () => appsHost.openAppsSheet(deskId) : null} />
+        : appsHost && <appsHost.AppsThumb deskId={deskId} />}
       <span className="thumb-sep" aria-hidden="true" />
       <button type="button" className="thumb-desk" aria-label="Back to the desk" onClick={() => backToDesk(deskId)}>
         <DeskGlyph />
@@ -261,6 +432,8 @@ function CarouselStage({ deskId, deskName, desk, rest, phone }: { deskId: string
   const panelId = `${ids}-panel`;
   const tabId = useCallback((n: number): string => `${ids}-tab-${n}`, [ids]);
   const keyboardUp = useKeyboardUp(frameRef, phone);
+  // The shown app's own zoom (ADR 0055): null for a Browser whose desk has none.
+  const zoomable = useAppLevel(cur ?? '', deskId) !== null && !!cur;
   // A new app to show: the one before slides out as it slides in, unless motion is reduced, when it simply changes.
   if (app !== cur) {
     const from = cur && apps.includes(cur) ? apps.indexOf(cur) : -1;
@@ -462,6 +635,7 @@ function CarouselStage({ deskId, deskName, desk, rest, phone }: { deskId: string
       tabIndex={-1}
       data-testid="carousel-stage"
       data-desk={deskId}
+      data-zoom-app={zoomable ? cur : undefined}
       onKeyDown={onKeyDown}
     >
       <div className="carousel-head">
@@ -476,6 +650,7 @@ function CarouselStage({ deskId, deskName, desk, rest, phone }: { deskId: string
         <button type="button" className="icon-btn sm" aria-label="Next app" aria-disabled={atEnd} onClick={() => stepCarousel(deskId, 1)}>
           <Icon name="chevronRight" />
         </button>
+        <ZoomButton app={cur} deskId={deskId} label={label} />
       </div>
       <div className="carousel-track">{slides}</div>
     </section>

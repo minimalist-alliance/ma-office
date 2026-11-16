@@ -1,5 +1,6 @@
 import { lazy, Suspense } from 'react';
 import { RefusalScreen, SignInScreen } from './chrome/CalmScreen';
+import { LoadingDone } from './chrome/loadingOverlay';
 import { takeOpenFromLocation } from './open/intent';
 import { useSession } from './platform/session';
 import { Shell } from './shell/Shell';
@@ -19,6 +20,7 @@ export function App() {
     return (
       <Suspense fallback={null}>
         <ConnectCallback />
+        <LoadingDone reason="connect" />
       </Suspense>
     );
   }
@@ -30,13 +32,15 @@ function Office() {
   // Only where client-config says it's on: anywhere else, and with it off or unreadable, `/export` is the office.
   const exportPage = useSession((s) => (!ON_EXPORT ? false : s.config ? s.config.export?.enabled === true : s.configFailed ? false : null));
   if (status === 'booting') return null; // a few ms of IndexedDB; the ground color is already painted
-  if (status === 'signedOut') return <SignInScreen />;
-  if (status === 'refused') return <RefusalScreen />;
+  // The loading overlay (ADR 0058) ends on each page that isn't the office; the shell ends it itself (`useOfficeReady`).
+  if (status === 'signedOut') return <><SignInScreen /><LoadingDone reason="signIn" /></>;
+  if (status === 'refused') return <><RefusalScreen /><LoadingDone reason="refused" /></>;
   if (exportPage === null) return null; // client-config is on its way
   if (exportPage) {
     return (
       <Suspense fallback={null}>
         <ExportPage />
+        <LoadingDone reason="export" />
       </Suspense>
     );
   }

@@ -1,0 +1,11 @@
+From: =?windows-1253?B?y+/j6fP03vHp7w==?= <accounts@example.net>
+To: me@desk.example
+Date: Fri, 13 Nov 2026 10:00:00 +0000
+Subject: =?windows-1253?B?1Ons7+v84+nvIM3v5ezi8d/v9Q==?=
+Message-ID: <charset-windows-1253@corpus.example>
+MIME-Version: 1.0
+X-Corpus-Note: text/plain in windows-1253, 8bit, subject and sender name as encoded words in the same charset
+Content-Type: text/plain; charset="windows-1253"
+Content-Transfer-Encoding: 8bit
+
+Σας στέλνουμε το τιμολόγιο του μήνα. Ευχαριστούμε πολύ.

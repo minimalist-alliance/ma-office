@@ -76,7 +76,7 @@ class DoneMeansTest {
         desk.provider
                 .then(Step.calls(USAGE, List.of(call("a1", "desk_agents"), call("a2", "desk_choices"))))
                 .then(Step.calls(USAGE, List.of(call("a3", "propose_agent", "name", "Researcher", "purpose",
-                        "Find sources and summarise them.", "icon", "compass", "tone", "teal", "workspaceMb", 1))))
+                        "Find sources and summarise them.", "icon", "compass", "tone", "harbor", "workspaceMb", 1))))
                 .then(Step.answer(USAGE, "I proposed the Researcher; the Writer comes next."));
 
         Map<String, Object> reply = desk.ask(AgentStore.MANAGER, "Set up a Researcher and a Writer.");
@@ -84,7 +84,7 @@ class DoneMeansTest {
         assertThat(reply).containsEntry("state", "done");
         List<ToolResult> read = TeamDesk.toolResults(desk.lastRequest());
         assertThat(read).hasSize(3).noneMatch(ToolResult::error);
-        assertThat(read.get(1).content()).contains("compass").contains("teal");
+        assertThat(read.get(1).content()).contains("compass").contains("harbor");
         Map<String, Object> proposal = list(reply.get("proposals")).getFirst();
         assertThat(proposal).containsEntry("action", "agent.create").containsEntry("state", "pending");
         assertThat(list(desk.call("agent.list").get("agents"))).as("a proposal changes nothing").hasSize(1);
@@ -93,6 +93,9 @@ class DoneMeansTest {
 
         assertThat(applied).containsEntry("state", "applied");
         researcher = (String) map(applied.get("result")).get("agentId");
+        // A proposal can't choose what the agent uses: it waits for its setup screen, which the member saves.
+        assertThat(desk.agentView(researcher)).containsEntry("setup", "new");
+        desk.setUp(researcher);
     }
 
     private void theLeadProposesTheWriterWithALinkAndATimerAndTheMemberConfirms() throws Exception {
@@ -100,7 +103,7 @@ class DoneMeansTest {
         desk.provider
                 .then(Step.calls(USAGE, List.of(call("b1", "desk_agents"))))
                 .then(Step.calls(USAGE, List.of(call("b2", "propose_agent", "name", "Writer", "purpose",
-                        "Write the weekday brief from what the Researcher finds.", "icon", "pen", "tone", "plum",
+                        "Write the weekday brief from what the Researcher finds.", "icon", "pen", "tone", "iris",
                         "workspaceMb", 2, "links", List.of(m("to", researcher, "rules", RULES)), "timers",
                         List.of(m("label", "Brief", "kind", "repeat", "everyMinutes", 15, "prompt",
                                 "Ask the Researcher for sources, then write the brief."))))))
@@ -116,6 +119,8 @@ class DoneMeansTest {
 
         assertThat(applied).containsEntry("state", "applied");
         writer = (String) map(applied.get("result")).get("agentId");
+        assertThat(desk.agentView(writer)).containsEntry("setup", "new");
+        desk.setUp(writer);
         writerTimer = (String) list(desk.call("agent.timer.list", "agentId", writer).get("timers")).getFirst().get("id");
     }
 
@@ -130,9 +135,9 @@ class DoneMeansTest {
         Map<String, Object> r = byId(staff, researcher);
         Map<String, Object> w = byId(staff, writer);
         assertThat(r).containsEntry("name", "Researcher").containsEntry("solo", true);
-        assertThat(map(r.get("look"))).containsEntry("icon", "compass").containsEntry("tone", "teal");
+        assertThat(map(r.get("look"))).containsEntry("icon", "compass").containsEntry("tone", "harbor");
         assertThat(w).containsEntry("name", "Writer").containsEntry("solo", false);
-        assertThat(map(w.get("look"))).containsEntry("icon", "pen").containsEntry("tone", "plum");
+        assertThat(map(w.get("look"))).containsEntry("icon", "pen").containsEntry("tone", "iris");
 
         Map<String, Object> full = desk.agentView(writer);
         assertThat(list(full.get("links"))).containsExactly(m("to", researcher, "rules", RULES));

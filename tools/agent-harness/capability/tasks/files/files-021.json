@@ -1,0 +1,69 @@
+{
+  "id": "files-021",
+  "area": "files",
+  "title": "Read, then replace a file",
+  "prompt": "Replace my grocery list in Harness/lists/groceries.md with eggs, oat milk and rice.",
+  "setup": {
+    "files": {
+      "Harness/lists/groceries.md": "# Groceries\n\n- bread\n- apples\n"
+    }
+  },
+  "approve": "all",
+  "checks": [
+    {
+      "kind": "file",
+      "path": "Harness/lists/groceries.md",
+      "contains": [
+        "eggs",
+        "oat milk",
+        "rice"
+      ],
+      "notContains": [
+        "bread"
+      ]
+    },
+    {
+      "kind": "untrusted",
+      "value": true
+    },
+    {
+      "kind": "cards",
+      "tools": [
+        "files_write"
+      ]
+    }
+  ],
+  "policy": {
+    "tools": [
+      "files_read",
+      "files_write"
+    ]
+  },
+  "standIn": [
+    {
+      "calls": [
+        {
+          "name": "files_read",
+          "input": {
+            "path": "Harness/lists/groceries.md"
+          }
+        }
+      ]
+    },
+    {
+      "calls": [
+        {
+          "name": "files_write",
+          "input": {
+            "path": "Harness/lists/groceries.md",
+            "text": "# Groceries\n\n- eggs\n- oat milk\n- rice\n",
+            "replace": true
+          }
+        }
+      ]
+    },
+    {
+      "text": "Replaced your grocery list. The old one is in the trash."
+    }
+  ]
+}

@@ -45,9 +45,45 @@
       <version>${nimbus-jose-jwt.version}</version>
     </dependency>
 
+    <!--
+      Courier's envelopes (courier-envelope, the launch plan's Wave 1.4): the desk's identity and box keys, HPKE sealing and
+      Ed25519 signing through Bouncy Castle's lightweight API (bcprov), contract 0.4.0's wire format.
+    -->
+    <dependency>
+      <groupId>com.minimalistalliance.desk</groupId>
+      <artifactId>courier-envelope</artifactId>
+      <version>${project.version}</version>
+    </dependency>
+
+    <!--
+      Courier's store, courier.db (draft ADR "Courier's store"): SQLite with FTS5, as desk-agent's ledgers and
+      desk-notebook's pages use it. JNI, so it runs on platform threads of its own (sqlite/SqliteDatabase). The image
+      takes the native library out of the jar at build time, as desk-agent's does.
+    -->
+    <dependency>
+      <groupId>org.xerial</groupId>
+      <artifactId>sqlite-jdbc</artifactId>
+    </dependency>
+
     <dependency>
       <groupId>org.springframework.boot</groupId>
       <artifactId>spring-boot-starter-test</artifactId>
+      <scope>test</scope>
+    </dependency>
+    <!--
+      Courier's parser and test kit, in tests only: the real desk-parse Courier mode answers on a stand-in socket, and the
+      MIME corpus runs through the store. deskd never parses mail itself (ADR 0097), so neither is on its own classpath.
+    -->
+    <dependency>
+      <groupId>com.minimalistalliance.desk</groupId>
+      <artifactId>courier-parse</artifactId>
+      <version>${project.version}</version>
+      <scope>test</scope>
+    </dependency>
+    <dependency>
+      <groupId>com.minimalistalliance.desk</groupId>
+      <artifactId>courier-testkit</artifactId>
+      <version>${project.version}</version>
       <scope>test</scope>
     </dependency>
     <!-- The fake gateway in tests. Production uses the JDK's WebSocket client. -->

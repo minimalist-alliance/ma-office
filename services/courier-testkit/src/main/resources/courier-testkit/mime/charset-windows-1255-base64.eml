@@ -1,0 +1,12 @@
+From: =?windows-1255?B?7vn44w==?= <office@example.org>
+To: me@desk.example
+Date: Fri, 13 Nov 2026 10:00:00 +0000
+Subject: =?windows-1255?B?9OLp+eQg4enl7SD57On56Q==?=
+Message-ID: <charset-windows-1255-base64@corpus.example>
+MIME-Version: 1.0
+X-Corpus-Note: text/plain in windows-1255, base64, subject and sender name as encoded words in the same charset
+Content-Type: text/plain; charset="windows-1255"
+Content-Transfer-Encoding: base64
+
++ezl7SD44SwNCg0K5PTi6fnkIPDj5/rkIOzp5e0g+ezp+ekg4fny5CDy+fguDQr65ePkIPjh5C4N
+Cg==

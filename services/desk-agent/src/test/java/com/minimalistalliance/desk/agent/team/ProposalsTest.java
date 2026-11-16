@@ -49,7 +49,7 @@ class ProposalsTest {
     private void proposeScout() {
         desk.provider
                 .then(Step.calls(USAGE, List.of(call("t1", "propose_agent", "name", "Scout", "purpose",
-                        "Watch the news and keep a digest.", "icon", "compass", "tone", "teal", "links",
+                        "Watch the news and keep a digest.", "icon", "compass", "tone", "harbor", "links",
                         List.of(m("to", researcher, "rules", "Ask only for summaries."))))))
                 .then(Step.answer(USAGE, "I proposed Scout."));
     }
@@ -87,7 +87,7 @@ class ProposalsTest {
             Map<String, Object> payload = map(proposal.get("payload"));
             assertThat(proposal.get("sha256")).isEqualTo(Canonical.sha256(payload));
             assertThat(payload).containsEntry("name", "Scout").containsEntry("icon", "compass")
-                    .containsEntry("tone", "teal").containsEntry("keyId", keyId).containsEntry("model", Rig.MODEL)
+                    .containsEntry("tone", "harbor").containsEntry("keyId", keyId).containsEntry("model", Rig.MODEL)
                     .containsEntry("solo", false)
                     .containsEntry("links", List.of(m("to", researcher, "rules", "Ask only for summaries.")));
             assertThat((long) proposal.get("expiresAt")).isEqualTo(desk.clock.millis() + Duration.ofHours(24).toMillis());
@@ -117,7 +117,7 @@ class ProposalsTest {
         Map<String, Object> scout = desk.agentView(newId);
         assertThat(scout).containsEntry("name", "Scout").containsEntry("purpose", "Watch the news and keep a digest.")
                 .containsEntry("solo", false).containsEntry("role", "staff");
-        assertThat(map(scout.get("look"))).containsEntry("icon", "compass").containsEntry("tone", "teal");
+        assertThat(map(scout.get("look"))).containsEntry("icon", "compass").containsEntry("tone", "harbor");
         assertThat(map(scout.get("binding"))).containsEntry("keyId", desk.key()).containsEntry("model", Rig.MODEL);
         assertThat(list(scout.get("links"))).containsExactly(m("to", researcher, "rules", "Ask only for summaries."));
         assertThat(agentCount()).isEqualTo(3);
@@ -221,8 +221,9 @@ class ProposalsTest {
         desk.ask(AgentStore.MANAGER, "Hello");
 
         String system = desk.lastRequest().system();
-        assertThat(system).contains("Give each agent a name, and an icon and tone pair, that no other agent on this"
-                + " desk has.").contains("name agents by the ids desk_agents lists")
+        assertThat(system).contains("Give each agent a name no other agent here has. Leave the icon and the colour out"
+                + " unless the member asks: every agent wears the Agent's own icon, the guy with the hat, and a new one"
+                + " takes the next free colour.").contains("name agents by the ids desk_agents lists")
                 .contains("an AI agent on the member's desk at Minimalist Alliance.")
                 .contains("Spending limits, workspace sharing and uploaded icons are the member\u2019s to set in each"
                         + " agent\u2019s settings; tell them where.")
@@ -232,7 +233,7 @@ class ProposalsTest {
     @Test
     void aTakenNameIsRefusedWhenTheLeadProposesIt() throws Exception {
         desk.provider.then(Step.calls(USAGE, List.of(
-                call("t1", "propose_agent", "name", "researcher", "purpose", "x", "icon", "nodes", "tone", "teal"),
+                call("t1", "propose_agent", "name", "researcher", "purpose", "x", "icon", "nodes", "tone", "harbor"),
                 call("t2", "propose_agent_change", "agent", researcher, "name", "Lead"),
                 call("t3", "propose_agent_change", "agent", researcher, "name", "RESEARCHER")))).then(Step.answer(USAGE,
                 "Ok."));
@@ -252,7 +253,7 @@ class ProposalsTest {
     void aNameTwoOldAgentsShareIsRefusedAndTheirIdsWork() throws Exception {
         String twin = "ag-twin00000000";
         desk.team.teamStore().createAgent(twin, "researcher", desk.clock.millis(), new com.minimalistalliance.desk
-                .agent.store.TeamStore.Extras(twin, "", "nodes", "rose", null, true, null, List.of()));
+                .agent.store.TeamStore.Extras(twin, "", "nodes", "iris", null, null, true, null, List.of()));
         desk.provider.then(Step.calls(USAGE, List.of(call("t1", "propose_agent_removal", "agent", "Researcher"),
                 call("t2", "propose_agent_removal", "agent", twin)))).then(Step.answer(USAGE, "Ok."));
 
@@ -268,13 +269,13 @@ class ProposalsTest {
 
     @Test
     void aProposedAgentWithoutAToneGetsOneNoAgentHas() throws Exception {
-        desk.call("agent.update", "agentId", researcher, "tone", "rose");
+        desk.call("agent.update", "agentId", researcher, "tone", "steel");
         desk.provider.then(Step.calls(USAGE, List.of(call("t1", "propose_agent", "name", "Scout", "purpose", "x",
                 "icon", "compass")))).then(Step.answer(USAGE, "Ok."));
 
         Map<String, Object> reply = desk.ask(AgentStore.MANAGER, "A scout.");
 
-        assertThat(map(proposalsOf(reply).getFirst().get("payload"))).containsEntry("tone", "clay");
+        assertThat(map(proposalsOf(reply).getFirst().get("payload"))).containsEntry("tone", "blue");
     }
 
     @Test
@@ -322,7 +323,7 @@ class ProposalsTest {
     void aModelTheKeysProviderDoesntListIsRefusedWhenProposed() throws Exception {
         desk.provider.then(Step.calls(USAGE, List.of(
                 call("t1", "propose_agent_change", "agent", researcher, "model", "gpt-6-luna"),
-                call("t2", "propose_agent", "name", "Scout", "purpose", "x", "icon", "nodes", "tone", "teal", "model",
+                call("t2", "propose_agent", "name", "Scout", "purpose", "x", "icon", "nodes", "tone", "harbor", "model",
                         "fake-modle")))).then(Step.answer(USAGE, "None."));
 
         Map<String, Object> reply = desk.ask(AgentStore.MANAGER, "Switch models.");
@@ -339,7 +340,7 @@ class ProposalsTest {
     @Test
     void eachCardCarriesWhatItChangesAsItWasWhenMadeOutsideTheHash() throws Exception {
         String other = desk.agent("Other");
-        desk.call("agent.update", "agentId", researcher, "purpose", "Old purpose.", "tone", "teal", "workspaceMb", 5);
+        desk.call("agent.update", "agentId", researcher, "purpose", "Old purpose.", "tone", "harbor", "workspaceMb", 5);
         desk.team.workspaces().write(researcher, "notes.txt", "hello", false, 5L << 20);
         desk.link(researcher, other, "Ask Other.");
         desk.link(other, researcher, "Ask Researcher.");
@@ -354,7 +355,7 @@ class ProposalsTest {
                         "Morning brief", "kind", "repeat", "days", List.of(1, 2, 3, 4, 5), "time", "08:00", "prompt",
                         "Brief me.")),
                 call("c4", "propose_agent_removal", "agent", researcher),
-                call("c5", "propose_agent", "name", "Scout", "purpose", "x", "icon", "nodes", "tone", "rose"))))
+                call("c5", "propose_agent", "name", "Scout", "purpose", "x", "icon", "nodes", "tone", "navy"))))
                 .then(Step.answer(USAGE, "Five."));
 
         List<Map<String, Object>> cards = proposalsOf(desk.ask(AgentStore.MANAGER, "Rework Researcher."));
@@ -373,7 +374,7 @@ class ProposalsTest {
         Map<String, Object> removal = map(cards.get(3).get("before"));
         assertThat(((Number) removal.get("usedBytes")).longValue()).isPositive();
         assertThat(removal).containsEntry("name", "Researcher")
-                .containsEntry("look", m("icon", "nodes", "tone", "teal", "png", null))
+                .containsEntry("look", m("icon", "hat", "tone", "harbor", "color", "sage", "png", null))
                 .containsEntry("links", List.of(m("to", other, "rules", "Ask Other.")))
                 .containsEntry("incoming", List.of(m("from", other, "rules", "Ask Researcher.")));
         assertThat(list(removal.get("timers"))).singleElement().satisfies(t -> assertThat(t)
@@ -383,20 +384,52 @@ class ProposalsTest {
 
     @Test
     void theLeadIsToldWhenAnotherAgentAlreadyLooksLikeThat() throws Exception {
-        desk.call("agent.update", "agentId", researcher, "icon", "compass", "tone", "teal");
+        // Researcher wears the hat in sage, the first free colour; the lead wears it in indigo.
         desk.provider.then(Step.calls(USAGE, List.of(
-                call("t1", "propose_agent", "name", "Scout", "purpose", "x", "icon", "compass", "tone", "teal"),
-                call("t2", "propose_agent", "name", "Other", "purpose", "x", "icon", "compass", "tone", "plum"),
-                call("t3", "propose_agent_change", "agent", researcher, "tone", "teal"))))
+                call("t1", "propose_agent", "name", "Scout", "purpose", "x", "color", "sage"),
+                call("t2", "propose_agent", "name", "Other", "purpose", "x", "icon", "compass", "color", "sage"),
+                call("t3", "propose_agent_change", "agent", researcher, "color", "sage", "tone", "iris"),
+                call("t4", "propose_agent", "name", "Twin", "purpose", "x", "color", "indigo"))))
                 .then(Step.answer(USAGE, "Ok."));
 
         desk.ask(AgentStore.MANAGER, "Two agents.");
 
         List<ToolResult> results = TeamDesk.toolResults(desk.lastRequest());
         assertThat(results).noneMatch(ToolResult::error);
-        assertThat(results.get(0).content()).contains("already has that icon on that tone");
+        assertThat(results.get(0).content()).contains("already has that icon in that colour");
         assertThat(results.get(1).content()).doesNotContain("already has that icon");
         assertThat(results.get(2).content()).as("its own look").doesNotContain("already has that icon");
+        assertThat(results.get(3).content()).as("the lead's").contains("already has that icon in that colour");
+    }
+
+    @Test
+    void aProposedAgentNeedsOnlyANameAndAPurposeAndWearsTheHatInTheNextFreeColour() throws Exception {
+        desk.provider.then(Step.calls(USAGE, List.of(
+                call("t1", "propose_agent", "name", "Scout", "purpose", "x"),
+                call("t2", "propose_agent", "name", "Pal", "purpose", "x", "color", "rose"),
+                call("t3", "propose_agent", "name", "Bad", "purpose", "x", "color", "pink"),
+                call("t4", "propose_agent_change", "agent", researcher, "color", "clay"),
+                call("t5", "propose_agent_change", "agent", AgentStore.MANAGER, "color", "blue"))))
+                .then(Step.answer(USAGE, "Ok."));
+
+        List<Map<String, Object>> cards = proposalsOf(desk.ask(AgentStore.MANAGER, "Two helpers."));
+
+        List<ToolResult> results = TeamDesk.toolResults(desk.lastRequest());
+        assertThat(results.get(2).content()).contains("bad_request").contains("(color)");
+        assertThat(results.get(4).content()).as("the lead keeps the Agent's own colour").contains("bad_request")
+                .contains("(color)");
+        assertThat(cards).hasSize(3);
+        assertThat(map(cards.get(0).get("payload"))).containsEntry("icon", "hat").containsEntry("color", "amber");
+        assertThat(cards.get(0).get("summary").toString()).contains("hat in amber");
+        assertThat(map(cards.get(1).get("payload"))).containsEntry("icon", "hat").containsEntry("color", "rose");
+        assertThat(map(cards.get(2).get("before"))).isEqualTo(Map.of("color", "sage"));
+
+        Map<String, Object> made = answer(cards.get(0), true);
+        assertThat(made).containsEntry("state", "applied");
+        assertThat(map(desk.agentView((String) map(made.get("result")).get("agentId")).get("look")))
+                .containsEntry("icon", "hat").containsEntry("color", "amber");
+        assertThat(answer(cards.get(2), true)).containsEntry("state", "applied");
+        assertThat(map(desk.agentView(researcher).get("look"))).containsEntry("color", "clay");
     }
 
     // ---------------------------------------------------------------- who has the tools
@@ -419,7 +452,7 @@ class ProposalsTest {
     @Test
     void aStaffAgentThatCallsAProposeToolAnywayIsRefused() throws Exception {
         desk.provider.then(Step.calls(USAGE, List.of(call("t1", "propose_agent", "name", "Sneak", "purpose", "x",
-                "icon", "nodes", "tone", "teal"), call("t2", "desk_agents")))).then(Step.answer(USAGE, "Ok."));
+                "icon", "nodes", "tone", "harbor"), call("t2", "desk_agents")))).then(Step.answer(USAGE, "Ok."));
 
         Map<String, Object> reply = desk.ask(researcher, "Make a new agent.");
 
@@ -436,13 +469,13 @@ class ProposalsTest {
     @Test
     void badProposalsComeBackAsErrorResultsNotAsRpcErrors() throws Exception {
         desk.provider.then(Step.calls(USAGE, List.of(
-                call("t1", "propose_agent", "name", "A", "purpose", "x", "icon", "nope", "tone", "teal"),
+                call("t1", "propose_agent", "name", "A", "purpose", "x", "icon", "nope", "tone", "harbor"),
                 call("t2", "propose_agent", "name", "A", "purpose", "x", "icon", "nodes", "tone", "nope"),
-                call("t3", "propose_agent", "name", "A", "purpose", "x", "icon", "nodes", "tone", "teal", "links",
+                call("t3", "propose_agent", "name", "A", "purpose", "x", "icon", "nodes", "tone", "harbor", "links",
                         List.of(m("to", "Nobody", "rules", "Hi."))),
-                call("t4", "propose_agent", "name", "A", "purpose", "x", "icon", "nodes", "tone", "teal", "links",
+                call("t4", "propose_agent", "name", "A", "purpose", "x", "icon", "nodes", "tone", "harbor", "links",
                         List.of(m("to", researcher, "rules", "r".repeat(501)))),
-                call("t5", "propose_agent", "name", "", "purpose", "x", "icon", "nodes", "tone", "teal"),
+                call("t5", "propose_agent", "name", "", "purpose", "x", "icon", "nodes", "tone", "harbor"),
                 call("t6", "propose_agent_removal", "agent", "manager"),
                 call("t7", "propose_agent_change", "agent", researcher),
                 call("t8", "propose_nothing"),
@@ -475,7 +508,7 @@ class ProposalsTest {
     void aProposalToCreateOverTheCapIsAnErrorResult() throws Exception {
         desk.tier(m("agentCap", 2));
         desk.provider.then(Step.calls(USAGE, List.of(call("t1", "propose_agent", "name", "Third", "purpose", "x",
-                "icon", "nodes", "tone", "teal")))).then(Step.answer(USAGE, "Full."));
+                "icon", "nodes", "tone", "harbor")))).then(Step.answer(USAGE, "Full."));
 
         Map<String, Object> reply = desk.ask(AgentStore.MANAGER, "One more agent.");
 
@@ -492,7 +525,7 @@ class ProposalsTest {
         String other = desk.agent("Other");
         desk.provider.then(Step.calls(USAGE, List.of(
                 call("c1", "propose_agent_change", "agent", "Researcher", "name", "Reader", "purpose", "Read more.",
-                        "icon", "book", "tone", "plum", "workspaceMb", 7),
+                        "icon", "book", "tone", "iris", "workspaceMb", 7),
                 call("c2", "propose_links", "agent", researcher, "links",
                         List.of(m("to", "Other", "rules", "Ask Other for facts."))),
                 call("c3", "propose_timer", "agent", researcher, "timer", m("label", "Nudge", "kind", "once",
@@ -509,7 +542,7 @@ class ProposalsTest {
         assertThat(answer(cards.get(0), true)).containsEntry("state", "applied");
         Map<String, Object> changed = desk.agentView(researcher);
         assertThat(changed).containsEntry("name", "Reader").containsEntry("purpose", "Read more.");
-        assertThat(map(changed.get("look"))).containsEntry("icon", "book").containsEntry("tone", "plum");
+        assertThat(map(changed.get("look"))).containsEntry("icon", "book").containsEntry("tone", "iris");
         assertThat(map(changed.get("workspace"))).containsEntry("quotaBytes", 7L << 20);
 
         assertThat(answer(cards.get(1), true)).containsEntry("state", "applied");
@@ -549,7 +582,7 @@ class ProposalsTest {
         List<ToolResult> results = TeamDesk.toolResults(desk.lastRequest());
         assertThat(results).hasSize(2).noneMatch(ToolResult::error);
         assertThat(results.get(0).content()).contains("Researcher").contains(researcher).contains("\"lead\":true");
-        assertThat(results.get(1).content()).contains("compass").contains("teal").contains("agentCap")
+        assertThat(results.get(1).content()).contains("compass").contains("harbor").contains("agentCap")
                 .contains(desk.key());
         assertThat(results.get(0).content() + results.get(1).content()).doesNotContain(TeamDesk.KEY);
     }

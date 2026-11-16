@@ -1,6 +1,6 @@
 /* The Browser's simplified view (task 47), built to the Product Designer's spec (`design-drafts/simplified/spec.md`,
    `src/sv.css`): the content you came for in one calm column, in the office's own type and colors. Every color is a
-   token (`--ma-*`, the kit's semantic names; `--ma-view-*` are the spec's proposed additions). Type is Nunito (ADR
+   token (`--ma-*`, the kit's semantic names; `--ma-view-*` are the spec's proposed additions). Type is Inter (ADR
    0065). Scrolling is the browser's own, so nothing here runs per frame: no scroll listener, nothing sticky but a docs
    page's rail (R58), no blur over moving content. Blocks off screen skip layout (`content-visibility`). Phone rules follow the view's own width. */
 .sv {
@@ -10,7 +10,7 @@
   container: sv / inline-size;
   background: var(--ma-surface-window);
   color: var(--ma-text-primary);
-  font-family: 'Nunito Variable', var(--ma-font-ui);
+  font-family: var(--ma-font-ui);
 }
 .sv-scroll {
   position: absolute;

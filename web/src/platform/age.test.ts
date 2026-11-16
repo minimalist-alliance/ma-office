@@ -47,7 +47,7 @@ describe('awaitingParent', () => {
 describe('the apps a member can have', () => {
   it('the Agent and any Claude app are adults only, and nothing else', () => {
     expect(['agent', 'claude'].every(adultOnly)).toBe(true);
-    expect(['browser', 'notebook', 'chat'].some(adultOnly)).toBe(false);
+    expect(['browser', 'notebook', 'courier'].some(adultOnly)).toBe(false);
   });
 
   it('only a teen goes without', () => {
@@ -60,7 +60,7 @@ describe('the apps a member can have', () => {
     expect(mayHaveApp('claude')).toBe(false);
     expect(mayHaveApp('browser')).toBe(true);
     expect(mayHaveApp('notebook')).toBe(true);
-    expect(mayHaveApp('chat')).toBe(true);
+    expect(mayHaveApp('courier')).toBe(true);
   });
 });
 

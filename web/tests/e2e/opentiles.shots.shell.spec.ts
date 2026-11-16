@@ -36,14 +36,14 @@ const desks = (): Record<string, Desk> => ({
   [PERSONAL]: deskOf(0, [
     item(PERSONAL, 'notebook', 24, 24, OPEN),
     item(PERSONAL, 'browser', 24 + OPEN.w + 16, 24, BROWSER),
-    item(PERSONAL, 'chat', 24, 24 + OPEN.h + 16),
+    item(PERSONAL, 'courier', 24, 24 + OPEN.h + 16),
     item(PERSONAL, 'files', 116, 24 + OPEN.h + 16),
     item(PERSONAL, 'agent', 208, 24 + OPEN.h + 16),
   ]),
   [WORK]: deskOf(1400, [
     item(WORK, 'files', 24, 24, OPEN),
     item(WORK, 'agent', 24 + OPEN.w + 16, 24, OPEN),
-    item(WORK, 'chat', 24, 24 + OPEN.h + 16),
+    item(WORK, 'courier', 24, 24 + OPEN.h + 16),
     item(WORK, 'notebook', 116, 24 + OPEN.h + 16),
     item(WORK, 'browser', 208, 24 + OPEN.h + 16),
   ]),

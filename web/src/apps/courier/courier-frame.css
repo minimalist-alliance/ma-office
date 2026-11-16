@@ -1,0 +1,49 @@
+/* The message frame's one stylesheet (`frame.ts`), loaded inside the sandboxed frame from the office's own origin. A message is
+   shown as it was written for: on paper, in every theme, as mail clients do. Only system colours (`Canvas`, `CanvasText`,
+   `LinkText`, `GrayText`), so no colour literal lives here; the office's tokens can't reach an opaque frame. Links have no
+   address in the frame: they're listed under it, with where they go. */
+:root {
+  color-scheme: light;
+}
+html {
+  background: Canvas;
+  color: CanvasText;
+}
+/* The Designer's call 1 (Nov 14): in Dark and Zen the paper is the theme's soft white, `mark.disc`, not a bright white block.
+   An opaque frame can't read the office's tokens, so these two are the one place colours are written out; a test keeps them
+   equal to tokens.ts (`frame.test.ts`), and the literal check lets only lines marked `token: mark.disc` through. */
+html[data-paper='dusk'] {
+  background: #e9ecf1; /* token: mark.disc dusk */
+}
+html[data-paper='dark'] {
+  background: #dadde2; /* token: mark.disc dark */
+}
+body {
+  margin: 16px 20px;
+  font: 15px/1.5 system-ui, -apple-system, 'Segoe UI', Roboto, sans-serif;
+  overflow-wrap: anywhere;
+}
+img {
+  max-width: 100%;
+  height: auto;
+}
+/* A picture from the web has no address here (`data-ma-src` only): nothing to show until the desk fetches it. */
+img:not([src]) {
+  display: none;
+}
+a {
+  color: LinkText;
+  text-decoration: underline;
+  cursor: default;
+}
+table {
+  max-width: 100%;
+}
+pre {
+  white-space: pre-wrap;
+}
+blockquote {
+  margin: 0 0 0 4px;
+  padding-left: 12px;
+  border-left: 2px solid GrayText;
+}

@@ -24,7 +24,8 @@ ADR 0072 section 7 and Platform's side P5, IN-03). Root, as desk-host-link.servi
 - POST /v1/host/slot-session for each running slot at its start and every refreshAfterSeconds; the answer goes to that
   slot's metadata stand-in (standin.py) and nowhere else: never to a disk, never to another slot.
 - With no hello yet this boot, every slot with no root is prepared in turn once the first hello succeeds (a new host's
-  first prepare reads its template from a lazily loaded snapshot: 103 s on the test host, 16 to 30 s after).
+  first prepare reads its template from a lazily loaded snapshot: 76 to 297 s on fresh lab hosts, 10 to 30 s after; from 0.1.16
+  desk-host-warm.service reads the store in parallel at the first boot, beside this link, and the first took 35 to 37 s).
 - Signed SigV4 (service execute-api) with the instance role's credentials from IMDS (sigv4.py). The API's base URL is the
   env's: LINK_API_staging or LINK_API_prod in desk-host.conf, chosen by the instance's Env tag. LINK_API overrides it for a
   test host's fake Platform on the loopback only (http://127.0.0.1:<port>), never anywhere else.

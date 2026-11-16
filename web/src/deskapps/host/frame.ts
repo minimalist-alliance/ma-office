@@ -23,6 +23,12 @@ export interface FrameOptions {
   /** The UI font for the view, by family name and bytes (woff2): loaded with `FontFace`, so it needs no `data:` URL. */
   font?: { family: string; bytes: Uint8Array } | null;
   lang?: string;
+  /**
+   * A fresh random value per frame, which the boot script reads and removes before the view runs and puts in each message
+   * it sends the office (`ma.ports`, `ma.boot`), so the view can't pass for it. Left out if it isn't 16 to 64 URL-safe
+   * characters.
+   */
+  nonce?: string;
 }
 
 const B64 = /^[A-Za-z0-9+/]+={0,2}$/;
@@ -37,6 +43,12 @@ export function viewPolicy(bootUrl: string, scriptHash: string, styleHash: strin
 
 const block = (id: string, bytes: Uint8Array, attrs = ''): string => `<script type="text/plain" id="${id}"${attrs}>${base64(bytes)}</script>`;
 const FAMILY = /^[A-Za-z0-9 ]{1,40}$/;
+const NONCE = /^[A-Za-z0-9_-]{16,64}$/;
+
+/** A frame's nonce (`FrameOptions.nonce`): 128 random bits as hex. */
+export function frameNonce(): string {
+  return Array.from(crypto.getRandomValues(new Uint8Array(16)), (b) => b.toString(16).padStart(2, '0')).join('');
+}
 
 /**
  * The frame's whole document. The head holds the policy, the data blocks and the boot script (deferred, so it runs once the
@@ -47,6 +59,7 @@ export function viewSrcdoc(files: FrameFiles, opts: FrameOptions): string {
   const policy = viewPolicy(opts.bootUrl, files.scriptHash, files.styleHash);
   const lang = /^[a-zA-Z-]{2,16}$/.test(opts.lang ?? '') ? opts.lang : 'en';
   const font = opts.font && FAMILY.test(opts.font.family) ? block('ma-font', opts.font.bytes, ` data-family="${opts.font.family}"`) : '';
+  const nonce = opts.nonce && NONCE.test(opts.nonce) ? `<script type="text/plain" id="ma-nonce">${opts.nonce}</script>` : '';
   return (
     `<!doctype html><html lang="${lang}"><head><meta charset="utf-8">` +
     `<meta http-equiv="Content-Security-Policy" content="${policy}">` +
@@ -54,6 +67,7 @@ export function viewSrcdoc(files: FrameFiles, opts: FrameOptions): string {
     block('ma-style', enc.encode(files.style)) +
     font +
     block('ma-view', enc.encode(files.script), ` data-integrity="sha256-${files.scriptHash}"`) +
+    nonce +
     `<script src="${opts.bootUrl}" defer></script>` +
     `</head><body>${files.html}</body></html>`
   );

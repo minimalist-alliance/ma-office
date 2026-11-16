@@ -1,0 +1,81 @@
+{
+  "id": "notebook-007",
+  "area": "notebook",
+  "title": "A replace whose text is not on the page",
+  "prompt": "On my Gift ideas page, change bicycle to kayak.",
+  "setup": {
+    "notebook": [
+      {
+        "tab": "Harness",
+        "title": "Gift ideas",
+        "markdown": "# Gift ideas\n\n- Mom: scarf\n- Dad: chess set\n"
+      }
+    ]
+  },
+  "approve": "all",
+  "checks": [
+    {
+      "kind": "page",
+      "tab": "Harness",
+      "title": "Gift ideas",
+      "contains": [
+        "scarf",
+        "chess set"
+      ],
+      "notContains": [
+        "kayak"
+      ]
+    },
+    {
+      "kind": "reply",
+      "contains": [
+        "bicycle"
+      ],
+      "state": "done"
+    },
+    {
+      "kind": "cards",
+      "tools": []
+    }
+  ],
+  "policy": {
+    "tools": [
+      "notebook_search",
+      "notebook_write"
+    ]
+  },
+  "standIn": [
+    {
+      "calls": [
+        {
+          "name": "notebook_search",
+          "input": {
+            "query": "Gift ideas"
+          }
+        }
+      ]
+    },
+    {
+      "calls": [
+        {
+          "name": "notebook_write",
+          "input": {
+            "pageId": {
+              "$re": {
+                "step": 0,
+                "call": 0,
+                "pattern": "\"pageId\":\"([^\"]+)\",\"title\":\"Gift ideas\""
+              }
+            },
+            "op": "replace_text",
+            "find": "bicycle",
+            "markdown": "kayak"
+          }
+        }
+      ]
+    },
+    {
+      "text": "There's no bicycle on your Gift ideas page, so I didn't change anything."
+    }
+  ]
+}

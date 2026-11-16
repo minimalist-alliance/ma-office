@@ -10,7 +10,8 @@ import { useTierNames } from '../platform/useTiers';
 import { focusBack } from '../shell/actions';
 import { useDeskStore } from '../state/deskStore';
 import { setView, useViewStore } from '../state/viewStore';
-import { cleanName, kindLabel, MAX_DESK_NAME, nameProblem, renameFailure, withoutControls } from './rename';
+import { kindLabel } from './rename';
+import { cleanName, MAX_DESK_NAME, nameProblem, renameFailure, withoutControls } from './renameName';
 
 const FIELD_H = 30; // matches .rename-field input
 const MIN_W = 160;

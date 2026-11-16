@@ -1,0 +1,54 @@
+{
+  "id": "notebook-017",
+  "area": "notebook",
+  "title": "Search across tabs",
+  "prompt": "Which of my pages mentions the boiler service?",
+  "setup": {
+    "notebook": [
+      {
+        "tab": "Harness Home",
+        "title": "Home maintenance",
+        "markdown": "# Home maintenance\n\n- Boiler service due in January\n- Gutters cleaned in October\n"
+      },
+      {
+        "tab": "Harness",
+        "title": "Inbox",
+        "markdown": "# Inbox\n\nThings to sort later.\n"
+      }
+    ]
+  },
+  "approve": "all",
+  "checks": [
+    {
+      "kind": "reply",
+      "contains": [
+        "Home maintenance"
+      ],
+      "state": "done"
+    },
+    {
+      "kind": "cards",
+      "tools": []
+    }
+  ],
+  "policy": {
+    "tools": [
+      "notebook_search"
+    ]
+  },
+  "standIn": [
+    {
+      "calls": [
+        {
+          "name": "notebook_search",
+          "input": {
+            "query": "boiler"
+          }
+        }
+      ]
+    },
+    {
+      "text": "Your Home maintenance page does: the boiler service is due in January."
+    }
+  ]
+}

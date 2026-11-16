@@ -12,6 +12,9 @@ export const PROVIDERS: Provider[] = [
   { id: 'openai', name: 'OpenAI', console: 'platform.openai.com', keyPrefix: 'sk-' },
   // desk-agent's fourth (ma-desk `2b6b5534`): only its free models are listed. Connected by the free card, or pasted.
   { id: 'openrouter', name: 'OpenRouter', console: 'openrouter.ai', keyPrefix: 'sk-or-' },
+  // desk-agent's fifth and sixth (Nov 15): a member's own Gemini and Kimi keys, direct. Moonshot AI's `sk-` is OpenAI's too.
+  { id: 'google', name: 'Google', console: 'aistudio.google.com', keyPrefix: 'AIza' },
+  { id: 'moonshot', name: 'Moonshot AI', console: 'platform.kimi.ai', keyPrefix: 'sk-' },
 ];
 
 const M = 1_000_000;
@@ -30,6 +33,15 @@ export const MODELS: Record<string, ModelInfo[]> = {
   openrouter: [
     { id: 'nvidia/nemotron-3.5-super-vl:free', label: 'NVIDIA: Nemotron 3.5 Super VL (free)', inputMicroUsdPerMTok: 0, outputMicroUsdPerMTok: 0, free: true, tools: true },
     { id: 'example-labs/chat-8b:free', label: 'Example Labs: Chat 8B (free)', inputMicroUsdPerMTok: 0, outputMicroUsdPerMTok: 0, free: true, tools: false },
+  ],
+  // Not in the price table yet, as desk-agent lists them: newest family first, ids as labels, no listed price.
+  google: [
+    { id: 'gemini-4-argon', label: 'gemini-4-argon', inputMicroUsdPerMTok: null, outputMicroUsdPerMTok: null },
+    { id: 'gemini-3.8-flash', label: 'gemini-3.8-flash', inputMicroUsdPerMTok: null, outputMicroUsdPerMTok: null },
+  ],
+  moonshot: [
+    { id: 'kimi-k3.1-pro', label: 'kimi-k3.1-pro', inputMicroUsdPerMTok: null, outputMicroUsdPerMTok: null },
+    { id: 'kimi-k3', label: 'kimi-k3', inputMicroUsdPerMTok: null, outputMicroUsdPerMTok: null },
   ],
 };
 
@@ -137,7 +149,7 @@ function manager(over: Partial<Agent> = {}, now = Date.now()): Agent {
     badgeNotice: false,
     unseen: 0,
     purpose: '',
-    look: { icon: 'nodes', tone: 'graphite', png: null },
+    look: { icon: 'hat', color: 'indigo', tone: 'graphite', png: null },
     solo: true,
     links: [],
     workspace: { quotaBytes: DEFAULT_CAPS.workspaceMb * MB, usedBytes: 0, sharedWith: [] },
@@ -155,7 +167,7 @@ function toolsSeed(now: number, keys: KeyMeta[], sonnet: Binding, mini: Binding)
   const deskName = 'Personal';
   const badgeS = { provider: 'anthropic', providerName: 'Anthropic', model: sonnet.model };
   const badgeM = { provider: 'openai', providerName: 'OpenAI', model: mini.model };
-  const staff = (id: string, name: string, icon: string, tone: string, binding: Binding, purpose: string): Agent => ({
+  const staff = (id: string, name: string, color: string, tone: string, binding: Binding, purpose: string): Agent => ({
     id,
     name,
     role: 'staff',
@@ -166,7 +178,7 @@ function toolsSeed(now: number, keys: KeyMeta[], sonnet: Binding, mini: Binding)
     badgeNotice: false,
     unseen: 0,
     purpose,
-    look: { icon, tone, png: null },
+    look: { icon: 'hat', color, tone, png: null },
     solo: false,
     links: [],
     workspace: { quotaBytes: 50 * MB, usedBytes: 0, sharedWith: [] },
@@ -174,9 +186,9 @@ function toolsSeed(now: number, keys: KeyMeta[], sonnet: Binding, mini: Binding)
     createdAt: now - 72 * HOUR,
   });
   const agents: Agent[] = [
-    manager({ status: 'online', binding: sonnet, look: { icon: 'list', tone: 'graphite', png: null } }, now),
-    staff('scout', 'Scout', 'search', 'cyan', sonnet, 'Find things on the web for Alex and check prices.'),
-    staff('writer', 'Writer', 'pen', 'plum', mini, 'Keep Alex’s notes tidy.'),
+    manager({ status: 'online', binding: sonnet }, now),
+    staff('scout', 'Scout', 'blue', 'steel', sonnet, 'Find things on the web for Alex and check prices.'),
+    staff('writer', 'Writer', 'sage', 'iris', mini, 'Keep Alex’s notes tidy.'),
   ];
   const at = now - 4 * 60_000;
   const lead1 = 'What did the team do today?';
@@ -211,7 +223,23 @@ function toolsSeed(now: number, keys: KeyMeta[], sonnet: Binding, mini: Binding)
     ],
     writer: [
       { id: 'tw1', role: 'user', text: w1, at: now - 50 * 60_000 },
-      { id: 'tw2', role: 'assistant', text: w2, at: now - 50 * 60_000 + 4000, badge: badgeM, usage: usageOf(w2), costMicroUsd: 300, stopReason: 'end_turn', state: 'done', tools: [{ name: 'notebook_search', summary: 'Searched your Notebook', ok: true, risk: 'read', path: '“draft”', durationMs: 1000 }] },
+      // Its run picked up again after the desk restarted (`resumed`), and the restart cut off a save, which may have happened.
+      {
+        id: 'tw2',
+        role: 'assistant',
+        text: w2,
+        at: now - 50 * 60_000 + 4000,
+        badge: badgeM,
+        usage: usageOf(w2),
+        costMicroUsd: 300,
+        stopReason: 'end_turn',
+        state: 'done',
+        resumed: 1,
+        tools: [
+          { name: 'notebook_search', summary: 'Searched your Notebook', ok: true, risk: 'read', path: '“draft”', durationMs: 1000 },
+          { name: 'notebook_write', summary: 'Changed a note', ok: false, interrupted: true, risk: 'write', auto: 'notebook', target: { kind: 'page', pageId: 'pg-old-drafts-list', title: 'Drafts older than a year' } },
+        ],
+      },
     ],
   };
   const day = 86_400_000;
@@ -273,7 +301,7 @@ export function seed(name: FixtureName, now: number = Date.now()): Seed {
       badgeNotice: false,
       unseen: 1,
       purpose: 'Find sources for the member’s questions and keep notes in the workspace.',
-      look: { icon: 'compass', tone: 'teal', png: null },
+      look: { icon: 'hat', color: 'blue', tone: 'harbor', png: null },
       solo: true,
       links: [],
       workspace: { quotaBytes: 50 * MB, usedBytes: 0, sharedWith: [] },

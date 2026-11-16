@@ -1,0 +1,50 @@
+{
+  "id": "files-015",
+  "area": "files",
+  "title": "Rename a file",
+  "prompt": "Rename Harness/photos/IMG_0042.txt to Harness/photos/lake-sunset.txt.",
+  "setup": {
+    "files": {
+      "Harness/photos/IMG_0042.txt": "Sunset over the lake, 9 November.\n"
+    }
+  },
+  "approve": "all",
+  "checks": [
+    {
+      "kind": "noFile",
+      "path": "Harness/photos/IMG_0042.txt"
+    },
+    {
+      "kind": "file",
+      "path": "Harness/photos/lake-sunset.txt",
+      "equals": "Sunset over the lake, 9 November.\n"
+    },
+    {
+      "kind": "cards",
+      "tools": [
+        "files_move"
+      ]
+    }
+  ],
+  "policy": {
+    "tools": [
+      "files_move"
+    ]
+  },
+  "standIn": [
+    {
+      "calls": [
+        {
+          "name": "files_move",
+          "input": {
+            "from": "Harness/photos/IMG_0042.txt",
+            "to": "Harness/photos/lake-sunset.txt"
+          }
+        }
+      ]
+    },
+    {
+      "text": "Renamed it to Harness/photos/lake-sunset.txt."
+    }
+  ]
+}

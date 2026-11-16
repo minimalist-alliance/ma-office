@@ -46,6 +46,15 @@ public final class LlmGateway {
      * reserve this many times the cap: the cap and room for reasoning at the effort the adapter sends.
      */
     static final int XAI_RESERVE_FACTOR = 4;
+    /**
+     * Desk Maia's calls on Minimalist Alliance's service ({@code ma}) are the company's, never the member's money (the
+     * owner, Nov 15): they reserve and settle no dollars, so no dollar limit of the member's (the desk's day and month,
+     * a key's month, her agent's day, week and month, a run's) binds them or counts them, and the ledger keeps no dollar
+     * figure of hers (deskd {@code API.md} §23). Her allowance is metered in credits by her service; the member's own cap on
+     * her is in credits too ({@code MaiaMode}). A run's step count still binds her.
+     */
+    /** Desk Maia's agent id: the only agent whose calls go to Minimalist Alliance's service, and that only. */
+    static final String MAIA = "maia";
 
     /** Who's calling and on what. */
     public record Call(String agentId, String runId, String keyId, ProviderId provider) {}
@@ -58,6 +67,8 @@ public final class LlmGateway {
     private final PriceTable prices;
     private final UsageLedger ledger;
     private final AuditLog audit;
+    /** Told what each call on MA's credits drew, by agent, in hundredths of a credit (never money). */
+    private volatile java.util.function.BiConsumer<String, Long> creditsSpent = (agent, centi) -> {};
 
     /** With a table that never changes. */
     public LlmGateway(ProviderRegistry providers, KeyRing keys, Pricing pricing, UsageLedger ledger, AuditLog audit) {
@@ -113,6 +124,14 @@ public final class LlmGateway {
         }
     }
 
+    /**
+     * Told what each call on MA's credits drew (Desk Maia's, and any agent's on the member's credits), by agent id, in
+     * hundredths of a credit: the team view's usage per source. Never money.
+     */
+    public void creditsSpent(java.util.function.BiConsumer<String, Long> sink) {
+        this.creditsSpent = sink == null ? (agent, centi) -> {} : sink;
+    }
+
     /** {@link #reserve} then {@link #complete}, on the caller's thread. */
     public Outcome call(Call call, ChatRequest request, LimitPolicy policy, DeltaSink sink)
             throws GatewayException, LimitReachedException, ProviderException, SQLException {
@@ -142,11 +161,26 @@ public final class LlmGateway {
         if (!keyProvider.equals(call.provider())) {
             throw new GatewayException(GatewayException.Reason.KEY_PROVIDER_MISMATCH);
         }
+        // Minimalist Alliance's service is Desk Maia's alone, and she uses nothing else (the owner, Nov 14): any other
+        // pairing is a binding that should never exist, refused here too, before anything is reserved.
+        boolean company = ProviderId.MA.equals(call.provider());
+        if (company != MAIA.equals(call.agentId())) {
+            throw new GatewayException(GatewayException.Reason.KEY_PROVIDER_MISMATCH);
+        }
+        // The member's MA credits (ma-platform desk-helpers.md): any of the member's own agents, on the credits "key" only,
+        // and never Desk Maia (the line above already keeps her on her own service alone).
+        boolean credits = ProviderId.MA_CREDITS.equals(call.provider());
+        if (credits != KeyRing.CREDITS.equals(call.keyId())) {
+            throw new GatewayException(GatewayException.Reason.KEY_PROVIDER_MISMATCH);
+        }
 
         String actor = "agent:" + call.agentId();
         String target = "key:" + call.keyId() + " model:" + call.provider().id() + "/" + request.model();
-        // Taken once, here: what's settled later is at this price, whatever table is in use by then (ADR 0043).
-        Pricing.Price price = prices.current().chargedPrice(call.provider(), request.model());
+        // Taken once, here: what's settled later is at this price, whatever table is in use by then (ADR 0043). Her
+        // service's calls have none: they reserve and settle no dollars (the company's, never the member's money). A helper on
+        // the member's MA credits reserves none either: the Platform meters it in credits on the member's balance (the owner,
+        // Nov 15: credits, never dollars, for MA's provider), so only the desk's token limits bind it here.
+        Pricing.Price price = company || credits ? null : prices.current().chargedPrice(call.provider(), request.model());
         long inputTokens = Math.ceilDiv(request.inputBytes(), BYTES_PER_TOKEN) + request.extraInputTokens();
         long outputTokens = call.provider() == ProviderId.XAI
                 ? (long) request.maxOutputTokens() * XAI_RESERVE_FACTOR : request.maxOutputTokens();
@@ -211,11 +245,24 @@ public final class LlmGateway {
         Long cost = reserved.price == null ? null : Pricing.costMicroUsd(reserved.price, result.usage());
         // What the provider says it billed counts when it's more: a free model that cost something is charged it.
         Long billed = result.providerMicroUsd();
-        if (billed != null && (cost == null || billed > cost)) {
+        if (ProviderId.MA.equals(reserved.call.provider()) || ProviderId.MA_CREDITS.equals(reserved.call.provider())) {
+            // Her calls are the company's, and a helper's on credits are paid in credits on the Platform: no dollar figure
+            // on the member's ledger, whatever the answer said.
+            cost = null;
+        } else if (billed != null && (cost == null || billed > cost)) {
             cost = billed;
         }
         ledger.settle(reservation, result.usage(), cost);
         appendQuietly(new AuditLog.Entry(reserved.actor, "llm.call", reserved.target, payloadHash, "ok", cost));
+        Long drew = result.centiCredits();
+        if (drew != null && (ProviderId.MA.equals(reserved.call.provider())
+                || ProviderId.MA_CREDITS.equals(reserved.call.provider()))) {
+            try {
+                creditsSpent.accept(reserved.call.agentId(), drew);
+            } catch (RuntimeException e) {
+                log.warn("a call's credits weren't counted: {}", e.getClass().getSimpleName());
+            }
+        }
         return new Outcome(result, cost);
     }
 
@@ -244,6 +291,9 @@ public final class LlmGateway {
         payload.put("system", request.system());
         payload.put("messages", messages);
         payload.put("maxOutputTokens", request.maxOutputTokens());
+        if (!request.note().isEmpty()) {
+            payload.put("note", request.note());
+        }
         return payload;
     }
 }

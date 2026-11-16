@@ -13,9 +13,9 @@ import java.util.Map;
 /**
  * X-MA-Desk-Auth (gateway.md 3.1): a signed sts:GetCallerIdentity request that the gateway sends to
  * STS itself to learn which desk is calling. It's good for one use, so each connection attempt makes
- * a new one.
+ * a new one. Desk Maia's service takes the same proof with two more signed headers ({@link #forMaia}).
  */
-final class DeskAuth {
+public final class DeskAuth {
 
     private static final URI STS = URI.create("https://sts.us-east-1.amazonaws.com/");
     private static final String BODY = "Action=GetCallerIdentity&Version=2011-06-15";
@@ -25,10 +25,25 @@ final class DeskAuth {
 
     /** @param gatewayId config's endpoints.gatewayId: signed, so the blob works only there */
     static String header(AwsCredentials credentials, String gatewayId, Instant now) {
+        return proof(credentials, Map.of("content-type", CONTENT_TYPE, "x-ma-gateway-id", gatewayId), now);
+    }
+
+    /**
+     * The proof for one call to Desk Maia's service (ma-platform {@code docs/contracts/desk-maia.md}, "Auth"): the gateway's,
+     * signing {@code x-ma-maia-id} (the config's {@code endpoints.maiaId}, so a proof made for the gateway or another env is
+     * refused there, and one made there is refused here) and {@code x-ma-body-sha256} (the lowercase hex SHA-256 of the exact
+     * bytes of that call's body, so the proof can't carry another body). It holds the desk role's signature: never logged.
+     */
+    public static String forMaia(AwsCredentials credentials, String maiaId, String bodySha256, Instant now) {
+        return proof(credentials, Map.of("content-type", CONTENT_TYPE, "x-ma-maia-id", maiaId, "x-ma-body-sha256", bodySha256),
+                now);
+    }
+
+    private static String proof(AwsCredentials credentials, Map<String, String> signed, Instant now) {
         Map<String, String> headers = SigV4.sign(
                 "POST",
                 STS,
-                Map.of("content-type", CONTENT_TYPE, "x-ma-gateway-id", gatewayId),
+                signed,
                 BODY.getBytes(StandardCharsets.UTF_8),
                 "sts",
                 SigV4.REGION,

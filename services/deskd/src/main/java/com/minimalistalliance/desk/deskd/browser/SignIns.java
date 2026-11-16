@@ -50,7 +50,7 @@ public final class SignIns {
     private static final Logger log = LoggerFactory.getLogger(SignIns.class);
 
     /** What deskd needs of the tabs and the connection: {@link BrowserTabs#signInAccess}. */
-    interface Chromium {
+    interface Chromium extends ChromiumPages.Calls {
         /** @throws RpcException unavailable, {@code reason: chromium}, if Chromium can't be reached now */
         void requireReady() throws RpcException, InterruptedException;
 

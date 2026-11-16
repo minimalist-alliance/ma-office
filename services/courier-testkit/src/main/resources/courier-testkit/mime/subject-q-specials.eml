@@ -1,0 +1,10 @@
+From: Reports <reports@example.com>
+To: me@desk.example
+Date: Fri, 13 Nov 2026 10:00:00 +0000
+Subject: Totals: =?utf-8?Q?a=5Fb_c=3F_=3D_100=25?=
+Message-ID: <subject-q-specials@corpus.example>
+MIME-Version: 1.0
+X-Corpus-Note: Q encoding of underscore, question mark, equals and percent
+Content-Type: text/plain; charset=utf-8
+
+The totals are final.

@@ -217,8 +217,11 @@ describe('notebook.page.agentEdit on an owner desk', () => {
 
   it('dryRun changes nothing and says what the edit would meet', async () => {
     const { tabId, pageId } = await pageWith(s, doc(h1('Plan'), p('one two')));
-    expect(await edit(s, { op: 'append', pageId, markdown: 'more', dryRun: true })).toEqual({ pageId, title: 'Plan', op: 'append', dryRun: true });
-    expect(await edit(s, { op: 'create', new: { tabId, title: 'New' }, markdown: 'x', dryRun: true })).toEqual({ pageId: null, title: 'New', op: 'create', dryRun: true });
+    // It says the page's tab too, for desk-agent's check of a "without asking" switch's place (draft ADR §15).
+    expect(await edit(s, { op: 'append', pageId, markdown: 'more', dryRun: true })).toEqual({ pageId, title: 'Plan', op: 'append', dryRun: true, converted: [], tabId });
+    expect(await edit(s, { op: 'create', new: { tabId, title: 'New' }, markdown: 'x', dryRun: true })).toEqual({ pageId: null, title: 'New', op: 'create', dryRun: true, converted: [], tabId });
+    // What the Notebook has no node for is said before anyone is asked, so the card can say it too.
+    expect(await edit(s, { op: 'append', pageId, markdown: '| a | b |\n|---|---|\n| 1 | 2 |', dryRun: true })).toMatchObject({ dryRun: true, converted: ['table'] });
     await fails(edit(s, { op: 'replace_text', pageId, find: 'three', markdown: 'x', dryRun: true }), 'conflict', 'not_found');
     expect(await deskText(s, pageId)).toBe('Plan|one two');
     expect((await s.rpc('notebook.version.list', { pageId })).versions.filter((v: any) => v.reason === 'pre_agent')).toEqual([]);

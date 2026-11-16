@@ -1,0 +1,61 @@
+{
+  "id": "files-032",
+  "area": "files",
+  "title": "Fill in a template",
+  "prompt": "Use Harness/templates/invoice.md as a template and save a filled-in copy as Harness/invoices/2026-11-acme.md for Acme Corp: 12 hours at 80 an hour.",
+  "setup": {
+    "files": {
+      "Harness/templates/invoice.md": "# Invoice\n\nClient: {client}\nHours: {hours}\nRate: {rate}\nTotal: {total}\n",
+      "Harness/invoices/": null
+    }
+  },
+  "approve": "all",
+  "checks": [
+    {
+      "kind": "file",
+      "path": "Harness/invoices/2026-11-acme.md",
+      "contains": [
+        "Acme Corp",
+        "960"
+      ]
+    },
+    {
+      "kind": "cards",
+      "tools": [
+        "files_write"
+      ]
+    }
+  ],
+  "policy": {
+    "tools": [
+      "files_read",
+      "files_write"
+    ]
+  },
+  "standIn": [
+    {
+      "calls": [
+        {
+          "name": "files_read",
+          "input": {
+            "path": "Harness/templates/invoice.md"
+          }
+        }
+      ]
+    },
+    {
+      "calls": [
+        {
+          "name": "files_write",
+          "input": {
+            "path": "Harness/invoices/2026-11-acme.md",
+            "text": "# Invoice\n\nClient: Acme Corp\nHours: 12\nRate: 80\nTotal: 960\n"
+          }
+        }
+      ]
+    },
+    {
+      "text": "Saved the Acme invoice: 12 hours at 80 comes to 960."
+    }
+  ]
+}

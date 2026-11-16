@@ -5,7 +5,8 @@
 // app bundled in deskd's image (`signatures: null`, a stand-in view: the real one is a later brief). Tally runs here in
 // JavaScript, as the sample's Go service would: `tally.get`, `tally.add`, `tally.reset`, the `tally` topic and its widget. Its
 // count is kept per desk across a Remove, as deskd keeps an app's data. Steer it as `window.__maDeskMock.apps`, or before load
-// with `window.__maAppsMockInit`. By default apps aren't available, as on every real desk today.
+// with `window.__maAppsMockInit` (its `bible` swaps in the real Bible view with canned answers, for a test). By default apps
+// aren't available, as on every real desk today.
 import tallyHtml from '../../../spikes/app-contract-sample/app/view/index.html?raw';
 import tallyJs from '../../../spikes/app-contract-sample/app/view/view.js?raw';
 import tallyCss from '../../../spikes/app-contract-sample/app/view/view.css?raw';
@@ -37,7 +38,19 @@ export interface MockAppsControl {
   push(): void;
 }
 
-const init = (window as unknown as { __maAppsMockInit?: Partial<Pick<MockAppsControl, 'available' | 'reason' | 'noCatalog' | 'installMs' | 'tamper'>> & { preinstalled?: Record<string, string[]> } }).__maAppsMockInit ?? {};
+/**
+ * The real Bible view in place of the stand-in, for a test that needs its weight (`deskapps.shell.spec.ts`, the frame budget at
+ * 4x CPU): its files, its manifest's methods and window, and canned answers by method (anything else answers `{}`).
+ */
+interface RealBible {
+  files: Record<string, string>;
+  methods: { name: string; mutation: boolean }[];
+  window: { width: number; height: number; minWidth: number; minHeight: number };
+  answers: Record<string, unknown>;
+}
+
+const init = (window as unknown as { __maAppsMockInit?: Partial<Pick<MockAppsControl, 'available' | 'reason' | 'noCatalog' | 'installMs' | 'tamper'>> & { preinstalled?: Record<string, string[]>; bible?: RealBible } }).__maAppsMockInit ?? {};
+const realBible = init.bible ?? null;
 
 const refused = (code: string, reason?: string): Error => Object.assign(new Error(`mock apps: ${code}`), { code, details: reason ? { reason } : {} });
 const enc = new TextEncoder();
@@ -114,18 +127,21 @@ function tallyViewOf(): Promise<View> {
   return tallyView;
 }
 
+const BIBLE_METHODS = realBible?.methods ?? [{ name: 'bible.state.get', mutation: false }];
+const BIBLE_WINDOW = realBible?.window ?? { width: 720, height: 560, minWidth: 320, minHeight: 360 };
+
 let bibleView: Promise<View> | null = null;
 function bibleViewOf(): Promise<View> {
   bibleView ??= (async () => {
-    const view = { 'view/index.html': BIBLE_HTML, 'view/view.js': BIBLE_JS, 'view/view.css': BIBLE_CSS };
+    const view = realBible?.files ?? { 'view/index.html': BIBLE_HTML, 'view/view.js': BIBLE_JS, 'view/view.css': BIBLE_CSS };
     const files: Record<string, { sha256: string; size: number; mode: string }> = {};
     for (const [p, text] of Object.entries(view)) files[p] = { sha256: await sha(text), size: enc.encode(text).length, mode: '0644' };
     const manifest = JSON.stringify({
       manifest: 1, id: BIBLE, name: 'Bible', version: '1.0.0', publisher: 'Minimalist Alliance', description: 'Read, search and keep notes in four translations.',
       appApi: '>=1.0 <2', arch: 'arm64', run: { exec: ['bin/bible-app'], start: 'on-demand', startTimeoutSec: 5, stopTimeoutSec: 5 },
       resources: { memoryMaxMiB: 96, cpuMax: 0.5, tasksMax: 32, diskMaxMiB: 64 }, permissions: [],
-      views: { window: { html: 'view/index.html', script: 'view/view.js', style: 'view/view.css', width: 720, height: 560, minWidth: 320, minHeight: 360 }, widget: true },
-      methods: [{ name: 'bible.state.get', mutation: false }], topics: ['bible.marks'], files,
+      views: { window: { html: 'view/index.html', script: 'view/view.js', style: 'view/view.css', ...BIBLE_WINDOW }, widget: true },
+      methods: BIBLE_METHODS, topics: ['bible.marks'], files,
     }, null, 2);
     return { manifest, signatures: null, bundled: true, files: view };
   })();
@@ -153,9 +169,9 @@ const APPS: AppDef[] = [
     bundled: true,
     version: '1.0.0',
     bytes: 7_549_747,
-    methods: [{ name: 'bible.state.get', mutation: false }],
+    methods: BIBLE_METHODS,
     topics: ['bible.marks'],
-    window: { width: 720, height: 560, minWidth: 320, minHeight: 360 },
+    window: BIBLE_WINDOW,
     view: bibleViewOf,
   },
   {
@@ -200,7 +216,9 @@ const tallyOf = (deskId: string): { count: number; updatedAt: string } => tallie
 
 function record(deskId: string, def: AppDef, inst: Installed): Record<string, unknown> {
   const t = tallyOf(deskId);
-  const summary = def.id === TALLY ? { rows: [{ text: String(t.count), detail: 'Tally', time: t.updatedAt }] } : { rows: [{ text: 'John 1', detail: 'Berean Standard Bible' }] };
+  // `?widgets=none`, as on MockDeskLink: no rows, so the tile has no words.
+  const none = new URLSearchParams(window.location.search).get('widgets') === 'none';
+  const summary = none ? { rows: [] } : def.id === TALLY ? { rows: [{ text: String(t.count), detail: 'Tally', time: t.updatedAt }] } : { rows: [{ text: 'John 1', detail: 'Berean Standard Bible' }] };
   return {
     id: def.id, name: def.name, version: def.version, previous: null, publisher: def.publisher, description: def.description, appApi: '1.0', start: 'on-demand',
     resources: { memoryMaxMiB: 32, cpuMax: 0.25, tasksMax: 16, diskMaxMiB: 16 }, permissions: [], net: [], views: { window: def.window, widget: true },
@@ -334,6 +352,7 @@ export async function answerApps(deskId: string, method: string, params: Record<
       inst.state = 'running';
       push(deskId);
     }
+    if (def.id === BIBLE && realBible) return realBible.answers[m] ?? {};
     if (def.id !== TALLY) return {};
     if (m === 'tally.get') return tallyOf(deskId);
     if (!idem) throw refused('bad_request', 'idem');

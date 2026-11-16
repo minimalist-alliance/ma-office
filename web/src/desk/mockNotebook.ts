@@ -10,7 +10,7 @@ import { LocalBackend } from '../../notebook/src/local/localBackend.ts';
 import type { PageSession } from '../../notebook/src/model/backend.ts';
 import type { PaletteId } from '../../notebook/src/model/colors.ts';
 import type { ImportedPage } from '../../notebook/src/model/notebookFile.ts';
-import type { TabColor } from '../../notebook/src/model/types.ts';
+import type { AgentEdit, TabColor } from '../../notebook/src/model/types.ts';
 
 const MESSAGE = { Sync: 0, Awareness: 1, Auth: 2, Close: 7, SyncStatus: 8, Ping: 9, Pong: 10 } as const;
 const SYNC = { Step1: 0, Step2: 1, Update: 2 } as const;
@@ -48,6 +48,8 @@ export interface MockNotebookControl {
   flush(deskId: string): Promise<void>;
   /** What the desk holds of a page right now, as text. */
   pageText(deskId: string, pageId: string): Promise<string>;
+  /** An agent's append as the desk makes one (a `pre_agent` version first), so "Edited by {agent}" and its Undo show. */
+  agentEdit(deskId: string, pageId: string, agentId: string, text: string): Promise<AgentEdit>;
   /**
    * A Guild Desk's others on its pages (task 48), by desk: names sent as Hocuspocus awareness to whoever opens a page, again
    * every few seconds, as their browsers would. Members' own awareness passes between sessions on a page, as the real one's does.
@@ -70,6 +72,11 @@ export const mockNotebookControl: MockNotebookControl = {
   presence: {},
   flush: async (deskId) => desks.get(deskId)?.flush(),
   pageText: async (deskId, pageId) => (await mockDesk(deskId).page(pageId)).doc.getXmlFragment('default').toString().replace(/<[^>]*>/g, ''),
+  agentEdit: async (deskId, pageId, agentId, text) => {
+    const { local } = mockDesk(deskId);
+    await local.ready();
+    return local.simulateAgentEdit(pageId, agentId, text);
+  },
 };
 
 const refusal = (code: string, details: Record<string, unknown> = {}): Error => Object.assign(new Error(`mock notebook: ${code}`), { code, details });
@@ -233,6 +240,8 @@ export class MockNotebookDesk {
         return this.parts(JSON.stringify(await local.pageContent(p['pageId'] as string)), p['cursor']);
       case 'notebook.version.list':
         return { versions: await local.versions(p['pageId'] as string) };
+      case 'notebook.page.agentEdits':
+        return { edits: await local.agentEdits(p['pageId'] as string) };
       case 'notebook.version.get': {
         const v = await local.version(p['versionId'] as string);
         if (!v) return { meta: null, part: '', next: null };
@@ -301,6 +310,9 @@ export class MockNotebookDesk {
       case 'notebook.version.restore':
         await local.restoreVersion(pageId, p['versionId'] as string);
         return {};
+      case 'notebook.page.agentUndo':
+        await local.undoAgentEdit(p['editId'] as string).catch((e: { code?: string; details?: Record<string, unknown> }) => Promise.reject(refusal(e.code ?? 'not_found', e.details)));
+        return { editId: p['editId'], pageId, op: 'append', undone: true };
       case 'notebook.settings.set':
         if (typeof p['timeZone'] !== 'string' || !p['timeZone']) throw refusal('bad_request', { reason: 'time_zone' });
         mockNotebookControl.zones.push(p['timeZone']);
@@ -343,6 +355,7 @@ const MUTATIONS = new Set([
   'notebook.version.save',
   'notebook.version.restore',
   'notebook.settings.set',
+  'notebook.page.agentUndo',
 ]);
 
 const desks = new Map<string, MockNotebookDesk>();

@@ -631,6 +631,18 @@
   font-variant-numeric: tabular-nums;
   flex: none;
 }
+.nb-foot-agent {
+  display: inline-flex;
+  flex-wrap: wrap;
+  align-items: center;
+  gap: 2px 6px;
+  color: var(--ma-text-secondary);
+}
+.nb-foot-said,
+.nb-history-said {
+  color: var(--ma-text-secondary);
+  font-size: 12px;
+}
 .nb-foot-actions,
 .nb-confirm {
   display: inline-flex;

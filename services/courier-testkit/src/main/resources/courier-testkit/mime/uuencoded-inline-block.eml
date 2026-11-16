@@ -1,0 +1,15 @@
+From: Facilities <facilities@example.org>
+To: me@desk.example
+Date: Fri, 13 Nov 2026 10:00:00 +0000
+Subject: Old-style attachment
+Message-ID: <uuencoded-inline-block@corpus.example>
+MIME-Version: 1.0
+X-Corpus-Note: a uuencoded file inside a plain text body (no MIME), the pre-MIME way
+Content-Type: text/plain; charset=us-ascii
+
+The notes are attached below, the old way.
+
+begin 644 notes.txt
+C4&%R:VEN9R!P97)M:71S(')E;F5W(&EN($IA;G5A<GDN#0H 
+`
+end

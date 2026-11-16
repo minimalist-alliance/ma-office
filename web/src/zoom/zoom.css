@@ -1,0 +1,76 @@
+/* ------------------------------------------------------------ an app's own zoom (ADR 0055, `zoom/`)
+   The button sits beside the expand button in every app's head; its popout drops under it, right edges together, raised
+   as the office's menus are. The head's chrome is constant size (ADR 0064): the app's zoom never reaches it. */
+.app-zoom {
+  position: relative;
+  display: inline-flex;
+  flex: none;
+}
+.app-zoom-pop {
+  position: absolute;
+  top: calc(100% + 6px);
+  right: 0;
+  display: flex;
+  align-items: center;
+  gap: 10px;
+  padding: 8px 8px 8px 14px;
+  border: 1px solid var(--ma-glass-line, var(--ma-border));
+  border-radius: 14px;
+  /* In the office's glass (`styles/glass.css`) at a menu's height; this is its look under reduced transparency or more contrast. */
+  --ma-glass-fill: var(--ma-glass-body-full);
+  --ma-glass-edge: 1px;
+  --ma-glass-solid-bg: var(--ma-surface-overlay);
+  --ma-glass-solid-shadow: var(--ma-elevation-menu);
+  --ma-glass-lift: var(--ma-elevation-menu);
+  color: var(--ma-text-primary);
+  z-index: 40;
+  cursor: default;
+}
+/* Drawn by the office's shared range style (`.ma-range`, app.css), never the browser's own: Chromium's dark one is a
+   near-black stripe on Zen's and Dark's popout. */
+.app-zoom-slider {
+  width: 140px;
+  height: 30px;
+  margin: 0;
+  border-radius: 999px;
+}
+/* The office's ring, round the track's own shape, a little off it. */
+.app-zoom-slider:focus-visible {
+  outline-offset: 3px;
+}
+/* The level, which puts the app back to 100 %. A chip, so it reads as a button and not a label. */
+.app-zoom-reset {
+  min-width: 56px;
+  height: 30px;
+  padding: 0 10px;
+  border: 1px solid var(--ma-border);
+  border-radius: 999px;
+  background: var(--ma-surface-fill);
+  color: var(--ma-text-primary);
+  font: inherit;
+  font-size: 13px;
+  font-weight: 600;
+  line-height: 1;
+  font-variant-numeric: tabular-nums;
+  cursor: pointer;
+}
+/* An open tile's head: the button before "Open in its window", which is at its right end. */
+.app-zoom.open-tile-zoom {
+  position: absolute;
+  top: 2px;
+  right: 40px;
+  z-index: 2;
+  color: var(--ma-text-secondary);
+}
+/* A finger's targets are 44 px, as the window's own buttons are then. */
+@media (pointer: coarse) {
+  .window-head .app-zoom-btn,
+  .carousel-head .app-zoom-btn {
+    width: 44px;
+    height: 44px;
+  }
+  .app-zoom-slider,
+  .app-zoom-reset {
+    height: 44px;
+  }
+}

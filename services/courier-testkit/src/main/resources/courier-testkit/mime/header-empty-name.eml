@@ -1,0 +1,8 @@
+From: Office <office@example.com>
+To: me@desk.example
+: a field with no name
+Subject : space before the colon
+Date: Fri, 13 Nov 2026 10:00:00 +0000
+X-Corpus-Note: a field with an empty name and one with a space before the colon
+
+Body text.

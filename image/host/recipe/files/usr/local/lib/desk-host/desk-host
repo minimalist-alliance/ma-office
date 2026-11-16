@@ -59,7 +59,9 @@
 #   nft (entering only the network namespace, before any desk process has run), mounts.py's moves, then runc start. A stop is
 #   runc kill TERM. No exec, chroot or nsenter into a desk's user, mount or PID namespace.
 # - WALL-03, RC-01: the host writes nothing in a desk's root or volume after it has run (but the format record on a blank
-#   volume, through mounts.py). What it gives a desk goes in /run/desk-host/<k>, read-only in the desk. Every runc input is the
+#   volume, and an empty profile or BrowserMetrics directory made AS kiosk, by descriptor, where one is missing, both through
+#   mounts.py; mounts.py's step 1b puts a tmpfs over BrowserMetrics, ISS-96). What it gives a desk goes in /run/desk-host/<k>,
+#   read-only in the desk. Every runc input is the
 #   host's: roots from the template and the release store, namespace files bound at create, /run shares on a fresh tmpfs, /data
 #   clones resolved without links. The desk's firewall comes from the template, never the slot's copy.
 # - WALL-04, RC-03: a host-owned record binds a slot's root to one desk ("fresh" or "desk"); a start claims a fresh root or
@@ -84,7 +86,9 @@
 set -euo pipefail
 umask 022
 LIB=/usr/local/lib/desk-host
-SVCS="desk-rtc deskd desk-agent desk-notebook desk-stream desk-data"
+SVCS="desk-rtc deskd desk-agent desk-notebook desk-stream desk-data desk-parse desk-parse-courier"   # desk-parse (ADR 0097) and desk-parse-courier
+# (Courier's mail reader, deskd's): on desk-agent's release root, so they go down and come up with desk-agent (AGENT_ROOTED)
+AGENT_ROOTED="desk-parse desk-parse-courier"
 DH=/srv/desk-host; TPL=$DH/templates; S=$DH/slots; REC=/var/lib/desk-host/slots; CGR=/sys/fs/cgroup/desk-host; RUN=/run/desk-host
 log() { echo "[desk-host $(date -u +%T)] $*"; }
 mb() { awk -v b="$1" 'BEGIN {printf "%.1f", b / 1e6}'; }
@@ -880,13 +884,29 @@ for k in sys.argv[2].split("."): o = o[int(k)] if isinstance(o, list) else o.get
 print(" ".join(map(str, o)) if isinstance(o, list) else "" if o is None else json.dumps(o) if isinstance(o, dict) else o)' "$@"; }
 plan_names() { python3 -I -c 'import json,sys; print(" ".join(c["name"] for c in json.loads(sys.argv[1])["components"]))' "$1"; }
 plan_to() { python3 -I -c 'import json,sys; print({c["name"]: c["to"] for c in json.loads(sys.argv[1])["components"]}[sys.argv[2]])' "$1" "$2"; }
-svc_down() {   # svc_down <k> <svc>: its sandbox stopped as stop_one stops it (TERM, then KILL after its wait), deleted, its namespace bind gone
+# desk-parse (ADR 0097) and desk-parse-courier (Courier's mail reader) root in desk-agent's release copy (rel/desk-agent), so they go down
+# and come up with desk-agent: before its renames and after desk-agent's new sandbox, in a live switch, a switch back and a resandbox alike.
+svc_down() {   # svc_down <k> <svc>: svc_down_one, with desk-parse and desk-parse-courier first when svc is desk-agent
+  local r
+  if [ "$2" = desk-agent ]; then for r in $AGENT_ROOTED; do svc_down_one "$1" "$r"; done; fi
+  svc_down_one "$1" "$2"
+}
+svc_up() {   # svc_up <k> <svc>: svc_up_one, then for desk-agent its desk-parse and desk-parse-courier made again on the same release
+  local r
+  svc_up_one "$1" "$2" || return 1
+  [ "$2" = desk-agent ] || return 0
+  for r in $AGENT_ROOTED; do
+    svc_down_one "$1" "$r"   # nothing when it's down already (a cut-off resume)
+    svc_up_one "$1" "$r" || { echo "slot $1: $r's sandbox didn't start on desk-agent's release" >&2; return 1; }
+  done
+}
+svc_down_one() {   # svc_down_one <k> <svc>: its sandbox stopped as stop_one stops it (TERM, then KILL after its wait), deleted, its namespace bind gone
   local k=$1 svc=$2 t=40; [ "$svc" = deskd ] && t=70
   kill_wait dh-svc-$k-$svc $t
   runc delete -f dh-svc-$k-$svc >/dev/null 2>&1 || true
   if [ -e "$RUN/ns/$k/mnt-$svc" ]; then umount "$RUN/ns/$k/mnt-$svc" 2>/dev/null || umount -l "$RUN/ns/$k/mnt-$svc" 2>/dev/null || true; rm -f "$RUN/ns/$k/mnt-$svc"; fi
 }
-svc_up() {   # svc_up <k> <svc>: the sandbox made again exactly as up makes it (svc-spec.py, runc create, the namespace bind from the pid runc names),
+svc_up_one() {   # svc_up_one <k> <svc>: the sandbox made again exactly as up makes it (svc-spec.py, runc create, the namespace bind from the pid runc names),
   # its /data directory from a fresh mount of the slot's volume (mounts.py svc), then runc start. desk-host-check svc-spec proves the spec is up's.
   local k=$1 svc=$2 spid
   python3 -I $LIB/svc-spec.py "$k" "$svc" >/dev/null || return 1

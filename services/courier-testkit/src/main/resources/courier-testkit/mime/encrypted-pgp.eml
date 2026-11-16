@@ -1,0 +1,36 @@
+From: Legal Office <legal@example.org>
+To: me@desk.example
+Date: Fri, 13 Nov 2026 10:00:00 +0000
+Subject: Contract draft
+Message-ID: <encrypted-pgp@corpus.example>
+MIME-Version: 1.0
+X-Corpus-Note: multipart/encrypted (PGP/MIME): nothing readable without the key
+Content-Type: multipart/encrypted; protocol="application/pgp-encrypted"; boundary="enc-1"
+
+This is an OpenPGP/MIME encrypted message (RFC 4880 and 3156)
+--enc-1
+Content-Type: application/pgp-encrypted
+Content-Description: PGP/MIME version identification
+
+Version: 1
+
+--enc-1
+Content-Type: application/octet-stream; name="encrypted.asc"
+Content-Description: OpenPGP encrypted message
+Content-Disposition: inline; filename="encrypted.asc"
+
+-----BEGIN PGP MESSAGE-----
+
+MIIBkISUX3ZLc19CJG2WD9xAB41LK4bm30eDtnf527rcoDyxhuVF4eNalmdbtoG+
+64aPykL7eHhju0Ml3O3HAdkWc0j+44FR04CzZ79Gef5sFRO3rl2XYlQ5c1Uj2xPh
+ry8BQJ8+0JqJJ/C7EgKjq0/+8nJqlxDAUEqE2W6E2Xi2fZPbaLPZE6LL6ywjFwKc
+Yeb2x6oflN5GSxo5vFBvnZvGlBGxQTO4++LeFrOXQhmlVUACf0wt9b4ksIdtGHl6
+4WPJGxo7Rr3LmUyYhSy+Gg9VBzaKLqrZUpQUODCdz8bxx4lNTOaaAQ6Ejalzfr/V
+UPfRhU/s7WPA82EOEfZbQDQCRJ0p/hxt2w0LSZhOG9uDc/kLMHyhBOaucBraeAYz
+vEvutESwdJEvg0RAWzUcSA3stsP/0yLjj63CP2mnwCf01JkN5cfS9h8ogG4BSqaZ
+atyWBWgtOUEixWygUQhRXhkcdt9b0Sn5TzkbshpZLtqc15h9hpDVkI9sMStSGD2C
+THCcMzT84jUX10b0d/Spuj8B+i0=
+=Lm7Q
+-----END PGP MESSAGE-----
+
+--enc-1--

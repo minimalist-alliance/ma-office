@@ -1,0 +1,14 @@
+{
+  "name": "agent-harness",
+  "private": true,
+  "description": "The Agent's tools harness: the stand-in model, the capability suite and the soak (Maia Mode Phase 0, W7).",
+  "type": "module",
+  "engines": {
+    "node": ">=24"
+  },
+  "scripts": {
+    "test": "node --test test/",
+    "validate": "node capability/validate.mjs",
+    "standin": "node standin/standin.mjs --tasks capability/tasks --port 0"
+  }
+}

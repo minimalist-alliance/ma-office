@@ -577,7 +577,9 @@ test.describe('copy and cut', () => {
     await page.keyboard.press('Control+v');
     await page.waitForTimeout(100);
     expect(await count(page, WRITE)).toBe(0);
-    await expect.poll(() => vPresses(page), { timeout: 3_000 }).toBe(1);
+    // Looked for every 10 ms, so the time read is the paste key's, not the poll's next look: at the default intervals
+    // (100, 250, 500, then 1,000 ms) a paste just after the look at about 2 s was read a second later, 3,00x ms.
+    await expect.poll(() => vPresses(page), { timeout: 3_000, intervals: [10] }).toBe(1);
     expect(Date.now() - chord).toBeLessThan(2_000 + 1_000); // the chord's 2 s and the write, never a hang
     expect((await calls(page, WRITE))[0]?.p).toEqual({ text: MEMBER_HAD });
   });

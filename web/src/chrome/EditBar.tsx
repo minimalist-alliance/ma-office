@@ -44,14 +44,14 @@ export function EditBar({ kind }: { kind: EditKind }) {
   }, [tile]);
   return (
     <div ref={ref} className="edit-bar" role="group" aria-labelledby={labelId}>
-      <span id={labelId} className="edit-name">{`${kind === 'move' ? 'Moving' : 'Resizing'} ${nameOf(tile)}`}</span>
+      <span id={labelId} className="edit-name ma-glass">{`${kind === 'move' ? 'Moving' : 'Resizing'} ${nameOf(tile)}`}</span>
       {ARROWS[kind].map(([label, icon, dx, dy]) => (
-        <button key={label} type="button" className="icon-btn chrome" aria-label={label} title={label} onClick={() => step(dx, dy, G.pitch)}>
+        <button key={label} type="button" className="icon-btn chrome ma-glass" aria-label={label} title={label} onClick={() => step(dx, dy, G.pitch)}>
           <Icon name={icon} />
         </button>
       ))}
       <button type="button" className="chip-btn edit-keep" onClick={() => finishEdit(true)}>Keep</button>
-      <button type="button" className="chip-btn edit-restore" onClick={() => finishEdit(false)}>Restore</button>
+      <button type="button" className="chip-btn edit-restore ma-glass" onClick={() => finishEdit(false)}>Restore</button>
     </div>
   );
 }

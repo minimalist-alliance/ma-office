@@ -1,25 +1,21 @@
 // Window sets per desk (design 3.6): switching the active desk parks the old desk's windows and
 // restores the new desk's. Parked windows stay mounted. The overview parks everything.
 import { useEffect, useState } from 'react';
-import { prefetchBrowser } from '../apps/chunks';
+import { prefetchBrowser, withWindows } from '../apps/chunks';
 import { shownDesk } from '../desk/attention';
 import { onDemand, useOnDemand } from '../lib/onDemand';
 import { useDeskStore } from '../state/deskStore';
 import { useViewStore } from '../state/viewStore';
 import { useWindowStore } from '../state/windowStore';
-// Every app's window (`apps/registry.tsx`) stays in the first load, where `AppWindow` had it: a desk in carousel mode, or a
-// phone's carousel restored from this tab, renders its app from it as the office comes up (`carousel/CarouselLayer.tsx`), and
-// out of the first load the stage waited for two more chunks, one after the other. Here, where `./AppWindow` was, so the
-// stylesheet keeps its order.
-import '../apps/registry';
 
 const TABLET_MAX = '(max-width: 1023px)';
 
-// The window itself (its frame, drag and resize) is a chunk of its own. No window outlives a page load, so none is on the
-// first paint: `main.tsx` fetches the chunk once the page is idle, and a window
-// opened after that renders in the same commit as its store change, as it did from the first load. One opened sooner shows
-// as the chunk lands, and a chunk that didn't load is asked for again at the next change to the open windows.
-const windowsChunk = onDemand(() => import('./AppWindow'));
+// The window itself (its frame, drag and resize) is a chunk of its own, and every app's window (`apps/registry.tsx`) another,
+// fetched beside it (`withWindows`). No window outlives a page load, so none is on the first paint: `main.tsx` fetches both
+// once the page is idle, and a window opened after that renders in the same commit as its store change, as it did from the
+// first load. One opened sooner shows as the chunks land, and a chunk that didn't load is asked for again at the next change
+// to the open windows.
+const windowsChunk = onDemand(withWindows(() => import('./AppWindow')));
 
 /** At idle, from `main.tsx`: the windows, then the Browser's own code (`apps/chunks.ts`). */
 export function prefetchWindows(): void {

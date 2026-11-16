@@ -343,7 +343,8 @@ for (const theme of ['light', 'dusk', 'dark'] as ThemeId[]) {
     expect(c.x).toBeGreaterThanOrEqual(7);
     expect(c.x + c.width).toBeLessThanOrEqual(383);
     const go = (await card(page).getByRole('button', { name: 'Open on this device' }).boundingBox())!;
-    expect(go.height).toBeGreaterThanOrEqual(44);
+    // The card is still in its 160 ms arrival (a translateY), so the box is a float32 difference: 43.99997 for a 44 px target.
+    expect(go.height).toBeGreaterThanOrEqual(44 - 0.01);
     await page.waitForTimeout(300); // past the card's 160 ms arrival
     await page.screenshot({ path: `test-results/shots/links9-${theme}-phone-handoff.png` });
     await card(page).getByRole('button', { name: 'Open on this device' }).tap();

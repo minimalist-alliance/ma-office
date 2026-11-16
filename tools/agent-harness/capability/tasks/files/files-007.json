@@ -1,0 +1,46 @@
+{
+  "id": "files-007",
+  "area": "files",
+  "title": "A search with no hits",
+  "prompt": "Do I have any file with 'insurance' in its name?",
+  "setup": {
+    "files": {
+      "Harness/docs/car-loan.txt": "Loan ends 2028.\n",
+      "Harness/docs/phone-plan.txt": "Unlimited data.\n"
+    }
+  },
+  "approve": "all",
+  "checks": [
+    {
+      "kind": "reply",
+      "contains": [
+        "insurance"
+      ],
+      "state": "done"
+    },
+    {
+      "kind": "cards",
+      "tools": []
+    }
+  ],
+  "policy": {
+    "tools": [
+      "files_search"
+    ]
+  },
+  "standIn": [
+    {
+      "calls": [
+        {
+          "name": "files_search",
+          "input": {
+            "q": "insurance"
+          }
+        }
+      ]
+    },
+    {
+      "text": "No, none of your files has insurance in its name."
+    }
+  ]
+}

@@ -18,7 +18,7 @@ import { execFile } from 'node:child_process';
 import { randomBytes } from 'node:crypto';
 import { existsSync, mkdirSync, readFileSync, writeFileSync } from 'node:fs';
 import { promisify } from 'node:util';
-import { ALLOWED, getDesk, INSTANCE, log, openSession, S, shot, shutdown, wait, waitPanel } from './rt-lib.mjs';
+import { ALLOWED, closeTour, getDesk, INSTANCE, log, openSession, S, shot, shutdown, wait, waitPanel } from './rt-lib.mjs';
 
 const run = promisify(execFile);
 const DIST = new URL('../../dist/release/', import.meta.url).pathname;
@@ -181,6 +181,8 @@ if (desk.state !== 'running') {
 const onDesk = await deskRun(`for c in deskd desk-agent desk-rtc; do echo "$c=$(basename "$(readlink -f /opt/ma/$c/current 2>/dev/null)")"; done; echo "image=$(grep '^version=' /etc/ma-release | cut -d= -f2)"; systemctl is-active desk-agent 2>/dev/null; curl -s -m 3 --unix-socket /run/desk/deskd-admin.sock http://desk/health | python3 -I -c 'import json,sys; print("agent", json.load(sys.stdin).get("agent"))' 2>/dev/null`).catch((e) => `unread: ${e.message.slice(0, 100)}`);
 log('on the desk:', onDesk.trim().replace(/\n/g, ' '));
 
+// The office tour (ADR 0056) holds the keyboard while it shows: close it first, as rt-lib's closeTour does.
+await closeTour();
 await btn.focus();
 await p.keyboard.press('Enter');
 const connected = await waitPanel(/online/, 60_000);

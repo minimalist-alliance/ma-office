@@ -1,0 +1,59 @@
+{
+  "id": "files-019",
+  "area": "files",
+  "title": "A trash the member declines",
+  "prompt": "Trash Harness/old/receipts-2023.txt.",
+  "setup": {
+    "files": {
+      "Harness/old/receipts-2023.txt": "Receipts for the tax year.\n"
+    }
+  },
+  "approve": {
+    "decline": [
+      "files_trash"
+    ]
+  },
+  "checks": [
+    {
+      "kind": "file",
+      "path": "Harness/old/receipts-2023.txt",
+      "equals": "Receipts for the tax year.\n"
+    },
+    {
+      "kind": "trashed",
+      "name": "receipts-2023.txt",
+      "value": false
+    },
+    {
+      "kind": "reply",
+      "contains": [],
+      "state": "done"
+    },
+    {
+      "kind": "cards",
+      "tools": [
+        "files_trash"
+      ]
+    }
+  ],
+  "policy": {
+    "tools": [
+      "files_trash"
+    ]
+  },
+  "standIn": [
+    {
+      "calls": [
+        {
+          "name": "files_trash",
+          "input": {
+            "path": "Harness/old/receipts-2023.txt"
+          }
+        }
+      ]
+    },
+    {
+      "text": "You declined, so Harness/old/receipts-2023.txt stays where it is."
+    }
+  ]
+}

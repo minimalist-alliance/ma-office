@@ -2,9 +2,11 @@ import { describe, expect, it } from 'vitest';
 import { drawAgentMark, glyphSize, strokeFor } from './draw';
 import { FOREGROUND, FOREGROUND_RGB } from './foreground';
 import { AGENT_ICONS, DEFAULT_ICON, RETIRED_ICONS, STROKE, iconById } from './icons';
-import { DEFAULT_TONE, TONES, toneColor, type LookTheme } from './tones';
+import { DEFAULT_TONE, RETIRED_TONES, TONES, toneColor, type LookTheme } from './tones';
 import { nextIndex } from './Pickers';
-import { THEMES } from '../../../src/theme/tokens';
+import { APP_ACCENTS, THEMES } from '../../../src/theme/tokens';
+import { AGENT_COLOR_LIST, LEAD_COLOR, agentColorHex, agentTileTint, nextAgentColor } from './colors';
+import { wearsHat } from './icons';
 
 const THEME_LIST: LookTheme[] = ['light', 'dusk', 'dark'];
 
@@ -90,8 +92,8 @@ describe('contrast', () => {
 });
 
 describe('tones', () => {
-  it('has 12 to 16, with unique lowercase-word ids and labels, and the default among them', () => {
-    expect(TONES.length).toBe(12);
+  it('has the Designer\'s 7, with unique lowercase-word ids and labels, and the default among them', () => {
+    expect(TONES.map((t) => t.id)).toEqual(['graphite', 'steel', 'blue', 'indigo', 'harbor', 'navy', 'iris']);
     expect(new Set(TONES.map((t) => t.id)).size).toBe(TONES.length);
     expect(new Set(TONES.map((t) => t.label)).size).toBe(TONES.length);
     for (const t of TONES) expect(t.id).toMatch(/^[a-z]+$/);
@@ -103,18 +105,43 @@ describe('tones', () => {
       for (let i = 0; i < TONES.length; i++)
         for (let j = i + 1; j < TONES.length; j++) {
           const d = deltaE(rgb(TONES[i]![theme]), rgb(TONES[j]![theme]));
-          // Compared at the one decimal the review's table gives: teal/cyan is 8.97 in Dusk and Dark, which that table lists as 9.0.
+          // Compared at the one decimal the review's table gives (the seven's smallest is 9.02, Light).
           if (Math.round(d * 10) / 10 < MIN_DELTA_E) close.push(`${TONES[i]!.id}/${TONES[j]!.id} ${d.toFixed(1)}`);
         }
       expect(close).toEqual([]);
     });
   }
-  it('has the reviewed hex values, and shows a retired tone as its replacement', () => {
-    const t = (id: string) => TONES.find((x) => x.id === id)!;
-    expect([t('graphite').light, t('graphite').dusk, t('graphite').dark].map(rgb)).toEqual([[94, 103, 113], [105, 114, 124], [100, 109, 119]]);
-    expect([t('plum').light, t('plum').dusk, t('plum').dark].map(rgb)).toEqual([[132, 88, 117], [141, 96, 126], [139, 94, 124]]);
-    expect(toneColor('moss', 'light')).toBe(toneColor('green', 'light'));
-    expect(toneColor('sky', 'dusk')).toBe(toneColor('blue', 'dusk'));
+  it("has the Designer's hex values (Nov 14, `design-drafts/agent-tones/tones.py`)", () => {
+    const want: Record<string, number[][]> = {
+      graphite: [[94, 103, 113], [102, 111, 122], [100, 109, 119]],
+      steel: [[55, 108, 128], [64, 117, 137], [62, 115, 134]],
+      blue: [[65, 105, 144], [75, 113, 153], [72, 111, 151]],
+      indigo: [[93, 100, 133], [102, 109, 142], [99, 106, 140]],
+      harbor: [[24, 80, 100], [35, 88, 109], [32, 86, 106]],
+      navy: [[52, 76, 105], [60, 84, 114], [58, 81, 111]],
+      iris: [[75, 70, 102], [83, 79, 110], [80, 76, 108]],
+    };
+    for (const t of TONES) expect([t.light, t.dusk, t.dark].map(rgb), t.id).toEqual(want[t.id]);
+  });
+  it('is cool, every one: HSL hue 190 to 290 (the release proof\'s blue band), none green, brown or warm', () => {
+    const hue = ([r, g, b]: number[]): number => {
+      const [x, y, z] = [r! / 255, g! / 255, b! / 255];
+      const max = Math.max(x, y, z);
+      const d = max - Math.min(x, y, z);
+      if (!d) return 0;
+      const h = max === x ? ((y - z) / d) % 6 : max === y ? (z - x) / d + 2 : (x - y) / d + 4;
+      return (h * 60 + 360) % 360;
+    };
+    for (const t of TONES) for (const theme of THEME_LIST) expect(hue(rgb(t[theme])), `${t.id} in ${theme}`).toBeGreaterThanOrEqual(190);
+    for (const t of TONES) for (const theme of THEME_LIST) expect(hue(rgb(t[theme])), `${t.id} in ${theme}`).toBeLessThanOrEqual(290);
+  });
+  it('shows a retired tone as the nearest of the seven: the warm and green ones, and the older moss and sky', () => {
+    const map = { rose: 'iris', clay: 'navy', amber: 'steel', olive: 'harbor', green: 'harbor', teal: 'harbor', cyan: 'steel', violet: 'iris', plum: 'iris', moss: 'harbor', sky: 'blue' };
+    expect(RETIRED_TONES).toEqual(map);
+    for (const [old, kept] of Object.entries(map)) {
+      expect(TONES.some((t) => t.id === old), old).toBe(false);
+      for (const theme of THEME_LIST) expect(toneColor(old, theme), `${old} in ${theme}`).toBe(toneColor(kept, theme));
+    }
   });
   it('gives each theme its own value for a tone and falls back to the default for an unknown id', () => {
     expect(toneColor('blue', 'dusk')).toBe(TONES.find((t) => t.id === 'blue')!.dusk);
@@ -160,7 +187,7 @@ describe('icons', () => {
     expect(AGENT_ICONS.some((i) => i.id === DEFAULT_ICON)).toBe(true);
   });
   it('names the roles the brief lists', () => {
-    const want = ['nodes', 'compass', 'book', 'pen', 'calendar', 'clock', 'chart', 'code', 'mail', 'person', 'search', 'leaf', 'flask', 'document', 'music', 'camera', 'plane', 'shield', 'wallet', 'bulb', 'home', 'bell', 'list', 'terminal'];
+    const want = ['hat', 'compass', 'book', 'pen', 'calendar', 'clock', 'chart', 'code', 'mail', 'person', 'search', 'leaf', 'flask', 'document', 'music', 'camera', 'plane', 'shield', 'wallet', 'bulb', 'home', 'bell', 'list', 'terminal'];
     expect(AGENT_ICONS.map((i) => i.id)).toEqual(want);
   });
   it('has path data that parses, inside the 24 grid, with no two icons drawn the same', () => {
@@ -180,8 +207,8 @@ describe('icons', () => {
     expect(parsePath('M1 2x')).toBe(false);
   });
   it('shows a retired icon as its replacement', () => {
-    expect(RETIRED_ICONS).toEqual({ globe: 'plane', chat: 'person', heart: 'wallet', star: 'bulb', puzzle: 'terminal', briefcase: 'document', spark: 'nodes' });
-    expect(DEFAULT_ICON).toBe('nodes');
+    expect(RETIRED_ICONS).toEqual({ globe: 'plane', chat: 'person', heart: 'wallet', star: 'bulb', puzzle: 'terminal', briefcase: 'document', spark: 'hat', nodes: 'hat' });
+    expect(DEFAULT_ICON).toBe('hat');
     for (const [old, now] of Object.entries(RETIRED_ICONS)) expect(iconById(old).id).toBe(now);
   });
   it('falls back to the default icon for an unknown id', () => {
@@ -253,5 +280,48 @@ describe('drawAgentMark', () => {
     expect(x).toBeCloseTo(0, 5);
     expect(w! / h!).toBeCloseTo(5, 5);
     expect(y! * 2 + h!).toBeCloseTo(w!, 5);
+  });
+});
+
+describe('colours (the owner, Nov 15)', () => {
+  it('are the seven, in the order a new agent takes them, with the lead on the Agent app\'s own accent', () => {
+    expect(AGENT_COLOR_LIST.map((c) => c.id)).toEqual(['sage', 'amber', 'rose', 'blue', 'harbor', 'clay', 'indigo']);
+    expect(LEAD_COLOR).toBe('indigo');
+    for (const theme of THEME_LIST) {
+      expect(agentColorHex('indigo', theme)).toBe(APP_ACCENTS['agent']![theme]);
+      expect(agentColorHex('blue', theme)).toBe(THEMES[theme].accent.default);
+    }
+    expect(agentColorHex('nope', 'light')).toBeNull();
+    expect(agentColorHex(null, 'dark')).toBeNull();
+  });
+  for (const theme of THEME_LIST) {
+    it(`each holds 3:1 or more on the tile behind the icon in ${theme}`, () => {
+      // The tile is an app tile's face (APP-TILES): tinted by the colour as a very subtle egg, its rim a step darker, no rim of colour.
+      const tint = agentTileTint('amber', theme);
+      expect(tint.centre).not.toBe(THEMES[theme].surface.tile);
+      expect(tint.rim).not.toBe(tint.centre);
+      expect(agentTileTint(null, theme)).toEqual(agentTileTint('nope', theme));
+      for (const c of AGENT_COLOR_LIST) {
+        const hex = agentColorHex(c.id, theme)!.toLowerCase();
+        expect(contrast(rgb(hex), rgb(THEMES[theme].surface.tile.toLowerCase())), `${c.id} in ${theme}`).toBeGreaterThanOrEqual(3);
+        expect(contrast(rgb(hex), rgb(agentTileTint(c.id, theme).centre.toLowerCase())), `${c.id} on its tile in ${theme}`).toBeGreaterThanOrEqual(3);
+      }
+    });
+  }
+  it('gives a new agent the first unused colour, then the least used', () => {
+    expect(nextAgentColor(['indigo'])).toBe('sage');
+    expect(nextAgentColor(['indigo', 'blue'])).toBe('sage');
+    expect(nextAgentColor(['indigo', 'sage'])).toBe('amber');
+    expect(nextAgentColor(['indigo', 'blue', 'sage', 'amber', 'rose', 'harbor', 'clay'])).toBe('sage');
+    expect(nextAgentColor(['indigo', 'blue', 'sage', 'amber', 'rose', 'harbor', 'clay', 'sage'])).toBe('amber');
+    expect(nextAgentColor([null, 'nope'])).toBe('sage');
+  });
+  it('puts every agent in the hat but a member\'s other pick', () => {
+    expect(wearsHat('hat')).toBe(true);
+    expect(wearsHat('nodes')).toBe(true);
+    expect(wearsHat(undefined)).toBe(true);
+    expect(wearsHat('unknown')).toBe(true);
+    expect(wearsHat('pen')).toBe(false);
+    expect(wearsHat('png')).toBe(false);
   });
 });

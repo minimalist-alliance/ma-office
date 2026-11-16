@@ -311,11 +311,30 @@ public final class Timers implements AutoCloseable {
                 timer.createdAt(), now, team.zone());
     }
 
-    /** At start: one-shot timers missed by under a day stay due; older ones end missed; repeating ones skip ahead. */
+    /**
+     * At start: a timer whose run the last process left {@code running} ends {@code interrupted}, unless its run resumes
+     * ({@link #resuming}, durable runs); one-shot timers missed by under a day stay due; older ones end
+     * missed; repeating ones skip ahead.
+     */
+    /**
+     * The timers whose run picks up after this restart (durable runs): they stay {@code running}, and their run's end
+     * settles them as any run's does. Before {@link #restore}.
+     */
+    public void resuming(java.util.Set<String> timerIds) {
+        this.resuming = java.util.Set.copyOf(timerIds);
+    }
+
+    private volatile java.util.Set<String> resuming = java.util.Set.of();
+
     void restore() throws SQLException {
         knownZone = team.zone();
         long now = team.clock().millis();
         for (TimerRow timer : store().timers(null)) {
+            if ("running".equals(timer.lastState()) && !resuming.contains(timer.id())) {
+                store().timerFired(timer.id(), timer.lastMs() == null ? now : timer.lastMs(), "interrupted",
+                        timer.nextMs(), timer.enabled(), timer.retries());
+                team.audit("system", "timer.fire", "agent:" + timer.agentId() + " timer:" + timer.id(), "interrupted");
+            }
             if (!timer.enabled() || timer.nextMs() == null || timer.nextMs() > now) {
                 continue;
             }

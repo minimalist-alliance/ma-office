@@ -48,19 +48,24 @@
 }
 
 .su-btn {
+  position: relative;
   display: grid;
   place-items: center;
   width: 44px;
   height: 44px;
   padding: 0;
-  border: 1px solid var(--ma-border);
+  border: 1px solid var(--ma-glass-line, var(--ma-border));
   border-radius: 999px;
-  background: var(--ma-surface-chrome);
+  /* In the office's glass (`styles/glass.css`), as the bandwidth circle is; this is its look under reduced transparency or
+     more contrast. Its panel stays solid: under 360 px it's part of the account menu, and it joins the glass with that. */
+  --ma-glass-edge: 1px;
+  --ma-glass-solid-bg: var(--ma-surface-chrome);
   color: var(--ma-text-primary);
 }
 @media (hover: hover) {
   .su-btn:hover {
-    background: var(--ma-surface-fill);
+    --ma-glass-state: linear-gradient(var(--ma-glass-hover), var(--ma-glass-hover));
+    --ma-glass-solid-bg: var(--ma-surface-fill);
   }
 }
 .su-btn:focus-visible {

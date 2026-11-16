@@ -1,0 +1,77 @@
+{
+  "id": "files-042",
+  "area": "files",
+  "title": "Make nested folders, then move",
+  "prompt": "Move Harness/downloads/manual.txt into Harness/manuals/kitchen/, making the folders if they're missing.",
+  "setup": {
+    "files": {
+      "Harness/downloads/manual.txt": "Oven manual: preheat 10 minutes.\n"
+    }
+  },
+  "approve": "all",
+  "checks": [
+    {
+      "kind": "file",
+      "path": "Harness/manuals/kitchen/"
+    },
+    {
+      "kind": "noFile",
+      "path": "Harness/downloads/manual.txt"
+    },
+    {
+      "kind": "file",
+      "path": "Harness/manuals/kitchen/manual.txt",
+      "equals": "Oven manual: preheat 10 minutes.\n"
+    },
+    {
+      "kind": "cards",
+      "tools": [
+        "files_mkdir",
+        "files_mkdir",
+        "files_move"
+      ]
+    }
+  ],
+  "policy": {
+    "tools": [
+      "files_mkdir",
+      "files_move"
+    ]
+  },
+  "standIn": [
+    {
+      "calls": [
+        {
+          "name": "files_mkdir",
+          "input": {
+            "path": "Harness/manuals"
+          }
+        }
+      ]
+    },
+    {
+      "calls": [
+        {
+          "name": "files_mkdir",
+          "input": {
+            "path": "Harness/manuals/kitchen"
+          }
+        }
+      ]
+    },
+    {
+      "calls": [
+        {
+          "name": "files_move",
+          "input": {
+            "from": "Harness/downloads/manual.txt",
+            "to": "Harness/manuals/kitchen/manual.txt"
+          }
+        }
+      ]
+    },
+    {
+      "text": "Made Harness/manuals/kitchen and moved the manual there."
+    }
+  ]
+}

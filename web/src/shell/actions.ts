@@ -1,8 +1,8 @@
 // What the canvas, the proxy layer, the keyboard and the chrome all do. One implementation, so
 // they can't drift. Component code calls these; these call the camera and the stores.
-import { zoomedInOn } from '../canvas/camera';
+import { zoomedInOn, type Camera } from '../canvas/camera';
 import { camera } from '../canvas/controller';
-import { deskBounds, detailLevel, isAgentApp, isDeskApp, unionBounds, type AppId, type CoreAppId, type LayoutItem, type Rect } from '../canvas/layout';
+import { asIntroduced, deskBounds, detailLevel, isAgentApp, isDeskApp, unionBounds, type AppId, type CoreAppId, type LayoutDesk, type LayoutItem, type Rect } from '../canvas/layout';
 import { host } from '../deskapps/door';
 import { agentAppName } from '../agent/roster';
 import { isPhone } from '../canvas/phone';
@@ -11,7 +11,8 @@ import { loadedConfig, supportAddress } from '../platform/clientConfig';
 import { useFree } from '../free/door';
 import { useDeskStore, type DeskInfo } from '../state/deskStore';
 import { raiseDesk, useLayoutStore } from '../state/layoutStore';
-import { getView, setView, type Scope } from '../state/viewStore';
+import { forgetDeviceView, getView, setView, useViewStore, viewIsTheMembers, type Scope } from '../state/viewStore';
+import { deviceOwner } from '../state/deviceOwner';
 import { openWindow, requestClose, topWindow } from '../state/windowStore';
 import { announce } from './announce';
 import { restack } from './cleanup';
@@ -25,13 +26,30 @@ export function inScopeDesks(scope: Scope = getView().scope): DeskInfo[] {
   return scope === 'all' ? desks : desks.filter((d) => d.kind === scope);
 }
 
-function rects(list: readonly DeskInfo[]): { id: string; rect: Rect }[] {
+function rects(list: readonly DeskInfo[]): { id: string; rect: Rect; desk: LayoutDesk }[] {
   const layout = useLayoutStore.getState().desks;
   return list.flatMap((d) => {
     const l = layout[d.id];
-    return l ? [{ id: d.id, rect: deskBounds(l, isPhone()) }] : [];
+    return l ? [{ id: d.id, rect: deskBounds(l, isPhone()), desk: l }] : [];
   });
 }
+
+/**
+ * The camera that frames this one desk: a carousel's stage, a desk still as the office introduced it (the owner's rule,
+ * ADR 0057), or the member's own arrangement, which fills the screen as it always has. Every way the office frames one desk
+ * comes here (arriving, a focus, Fit, a refit), so a new desk's first look holds until the member resizes it.
+ */
+function deskFit(layout: LayoutDesk, phone = isPhone()): Camera {
+  return camera.fit(deskBounds(layout, phone), carouselOn(layout) && !phone ? 'stage' : asIntroduced(layout) ? 'framed' : 'desk');
+}
+
+/**
+ * The zoom the office frames a desk of this size at on this screen, filling it as `deskFit` does (as introduced, or the
+ * member's own arrangement), for a tile the office places itself (`canvas/agentTiles.ts` `withNewTile`): a full desk grows
+ * the way that keeps an open tile live. Null on a phone, whose desk is its cell grid and whose tiles are never live.
+ */
+export const deskScaleFor = (w: number, h: number): number | null =>
+  isPhone() ? null : camera.fit({ x: 0, y: 0, w, h }, asIntroduced({ w, h }) ? 'framed' : 'desk').s;
 
 export function orderedDeskIds(): string[] {
   return readingOrder(rects(inScopeDesks())).map((d) => d.id);
@@ -64,7 +82,7 @@ function fitDesk(id: string, animate: boolean, raise = true): boolean {
   const changed = getView().activeDesk !== id || getView().mode !== 'desk';
   setView({ activeDesk: id, mode: 'desk' });
   if (raise) raiseDesk(id);
-  camera.animateTo(camera.fit(deskBounds(layout, isPhone()), carouselOn(layout) && !isPhone() ? 'stage' : 'desk'), animate ? undefined : 0);
+  camera.animateTo(deskFit(layout), animate ? undefined : 0);
   if (changed) announce(`${nameOf(id)} desk${closedWords(id)}`);
   return true;
 }
@@ -100,8 +118,9 @@ export function goOverview(animate = true): void {
   const active = getView().activeDesk;
   setView({ mode: 'overview', activeDesk: active && ids.includes(active) ? active : ids[0]! });
   // The free tier's empty desk spot is in view too (`free/door.ts`; unset today).
-  const bounds = unionBounds([...rects(inScopeDesks()).map((r) => r.rect), ...(useFree.getState().frames?.() ?? [])]);
-  camera.animateTo(camera.fit(bounds, 'overview'), animate ? undefined : 0);
+  const desks = rects(inScopeDesks());
+  const bounds = unionBounds([...desks.map((r) => r.rect), ...(useFree.getState().frames?.() ?? [])]);
+  camera.animateTo(camera.fit(bounds, 'overview', desks.some((r) => asIntroduced(r.desk))), animate ? undefined : 0);
 }
 
 /** The Fit button and `0`: everything in scope, which with one desk means filling the screen with it. */
@@ -123,7 +142,7 @@ export function emptyCanvasClicked(): void {
   const layout = activeDesk ? useLayoutStore.getState().desks[activeDesk] : undefined;
   if (mode === 'overview' || topWindow(activeDesk) || (carouselOn(layout) && !isPhone())) return;
   const focused = (mode === 'desk' && activeDesk === chosen)
-    || rects(inScopeDesks()).some(({ rect }) => zoomedInOn(rect, camera.cam, camera.vp, camera.fit(rect, 'desk').s));
+    || rects(inScopeDesks()).some(({ rect, desk }) => zoomedInOn(rect, camera.cam, camera.vp, camera.fit(rect, asIntroduced(desk) ? 'framed' : 'desk').s));
   if (focused) goOverview();
 }
 
@@ -139,10 +158,14 @@ export function emptyCanvasClicked(): void {
 // screen that fits one desk well. So a phone with more than one desk arrives like a one-desk member, on the desk it
 // remembers if that's still in scope, else the first. Larger screens still arrive on the overview.
 let arrived = false;
+// Whose arrival it was. Another member's tokens in this tab (a sign-in elsewhere in this browser) make the next refit their
+// arrival, so their desks are framed as a first visit's (ADR 0057), not left where the last member's camera was.
+let arrivedFor: string | null = null;
 
 /** For tests: the next refit is an arrival again. */
 export function resetArrival(): void {
   arrived = false;
+  arrivedFor = null;
 }
 
 /** The desk this phone was put on asleep, with nothing chosen (the view saves it as `activeDesk` all the same). */
@@ -172,10 +195,14 @@ function phoneDesk(ids: string[]): { id: string; wake: boolean } {
 
 /** Re-fit whatever the current mode shows: on load, on a resize, or after the desk list changes. */
 export function refit(animate: boolean): void {
+  const who = deviceOwner();
+  const arriving = !arrived || (arrivedFor !== null && who !== null && who !== arrivedFor);
+  // The view this browser kept was another member's (their scope, their desk, their free camera): the next member starts
+  // where a first visit does, so their new desk is framed by the owner's rule (ADR 0057). The same member keeps theirs.
+  if (arriving && who !== null && !viewIsTheMembers()) forgetDeviceView();
   const v = getView();
   const ids = orderedDeskIds();
   if (!ids.length) return;
-  const arriving = !arrived;
   const { desks, status } = useDeskStore.getState();
   const inDeskMode = v.mode === 'desk' && !!v.activeDesk && ids.includes(v.activeDesk);
   const phone = isPhone();
@@ -183,11 +210,12 @@ export function refit(animate: boolean): void {
     // What's most likely to stay, with no change to the view or anything else: one desk filling the screen, or all of them.
     // A phone's is the desk it remembers, whatever else it saved, since that is where it will land.
     const layout = useLayoutStore.getState().desks[phone ? phoneDesk(ids).id : ids[0]!];
-    if (layout && (phone || desks.length === 1)) camera.animateTo(camera.fit(deskBounds(layout, phone), carouselOn(layout) && !phone ? 'stage' : 'desk'), 0);
+    if (layout && (phone || desks.length === 1)) camera.animateTo(deskFit(layout, phone), 0);
     else goOverview(animate);
     return;
   }
   arrived = true;
+  if (arriving) arrivedFor = who;
   if (arriving && phone && desks.length > 1) {
     // Whatever the phone saved (the overview, a free camera), it lands on its desk. Esc and the mark still go to the overview.
     // Without raising it: arriving mustn't rewrite the member's saved stacking, and a phone shows one desk anyway.
@@ -216,6 +244,58 @@ export function refit(animate: boolean): void {
   } else {
     goOverview(animate);
   }
+}
+
+// ----- an open tile on a new desk (ADR 0057, ADR 0053)
+//
+// An open tile goes live only at 480 x 320 CSS px or more on screen (`OPEN_LIVE_MIN_W`, `OPEN_LIVE_MIN_H` in
+// `opentile/model.ts`, the layer's own chunk). A new desk's framing can be under that for one: at 1440 x 900 the owner's
+// rule is 88 %, and a 536-wide tile is 473 px there. So when a tile on the desk in front newly reaches `open` and it would be
+// too small to go live at the camera's zoom, the office frames that desk again once the member has let go (the drop, or the
+// keyboard edit's end). By then the desk has grown past a new desk's size, so it's framed as any arranged desk, filling the
+// screen, and the tile goes live. Only in desk mode, where the office frames the desk: a free camera's zoom is the member's.
+export const OPEN_LIVE = { w: 480, h: 320 } as const;
+let opened: string | null = null;
+
+const openIds = (desk: LayoutDesk | undefined): Set<string> =>
+  new Set((desk?.items ?? []).filter((i) => detailLevel(i.w, i.h, i.app) === 'open').map((i) => i.id));
+
+function frameOpened(): void {
+  const id = opened;
+  if (!id) return;
+  const v = getView();
+  if (v.kbEdit || camera.isMoving()) return; // the edit's end, or the camera's rest, asks again
+  opened = null;
+  const desk = useLayoutStore.getState().desks[id];
+  if (!desk || v.mode !== 'desk' || v.activeDesk !== id || isPhone() || carouselOn(desk)) return;
+  const s = camera.cam.s;
+  const small = desk.items.some((i) => detailLevel(i.w, i.h, i.app) === 'open' && (i.w * s < OPEN_LIVE.w || i.h * s < OPEN_LIVE.h));
+  if (small && deskFit(desk).s > s + 1e-6) fitDesk(id, true, false);
+}
+
+/** From `Shell`: a tile made open on a new desk still goes live (above). */
+export function watchOpenTiles(): () => void {
+  const offLayout = useLayoutStore.subscribe((now, was) => {
+    const id = getView().activeDesk;
+    const desk = id ? now.desks[id] : undefined;
+    if (!id || !desk || desk === was.desks[id]) return;
+    const before = openIds(was.desks[id]);
+    if (![...openIds(desk)].some((item) => !before.has(item))) return;
+    opened = id;
+    window.setTimeout(frameOpened, 0); // after the drop that wrote it
+  });
+  const offView = useViewStore.subscribe((now, was) => {
+    if (opened && was.kbEdit && !now.kbEdit) window.setTimeout(frameOpened, 0);
+  });
+  const offSettle = camera.onSettle(() => {
+    if (opened) frameOpened();
+  });
+  return () => {
+    offLayout();
+    offView();
+    offSettle();
+    opened = null;
+  };
 }
 
 export function setScope(scope: Scope): void {
@@ -254,7 +334,7 @@ function launch(deskId: string, item: LayoutItem): void {
   } else announce(`${appLabel(item.app, deskId)} window opened`);
 }
 
-const LABELS: Record<CoreAppId, string> = { notebook: 'Notebook', browser: 'Browser', chat: 'Chat', agent: 'Agent', commons: 'Commons', files: 'Files' };
+const LABELS: Record<CoreAppId, string> = { notebook: 'Notebook', browser: 'Browser', courier: 'Courier', agent: 'Agent', commons: 'Commons', files: 'Files', todo: 'To-do', documents: 'Documents' };
 /** An app's name. An agent's own app (task 49) is its agent's name, on this desk where it's given; an installed app's is its own. */
 export const appLabel = (app: AppId, deskId?: string): string => (isAgentApp(app) ? agentAppName(app, deskId) : isDeskApp(app) ? (host?.name(app, deskId) ?? 'App') : LABELS[app]);
 

@@ -43,32 +43,34 @@ const rect = (app) => p.evaluate((id) => {
   const r = document.getElementById(id)?.getBoundingClientRect();
   return r ? { x: r.x, y: r.y, w: r.width, h: r.height } : null;
 }, `proxy-${ALLOWED}:${app}`);
-const chat = await rect('chat');
+const courier = await rect('courier');
 const notebook = await rect('notebook');
 await p.mouse.move(notebook.x + notebook.w / 2, notebook.y + notebook.h / 2);
 await p.mouse.down();
-await p.mouse.move(chat.x + chat.w / 2, chat.y + chat.h / 2, { steps: 24 });
+await p.mouse.move(courier.x + courier.w / 2, courier.y + courier.h / 2, { steps: 24 });
 await p.mouse.up();
 await wait(800);
 await p.mouse.move(5, 5);
 await wait(300);
 await shot(SHOTS, 'one-hidden');
 const name = (await count.count()) ? await count.first().getAttribute('aria-label') : null;
-step(3, /^1 hidden app on the .* desk$/.test(name ?? ''), `Notebook over Chat gives: ${JSON.stringify(name)}`);
+step(3, /^1 hidden app on the .* desk$/.test(name ?? ''), `Notebook over Courier gives: ${JSON.stringify(name)}`);
 
 await count.first().focus();
 await p.keyboard.press('Enter');
 const list = p.getByRole('menu', { name: /Hidden apps on/ });
 await list.waitFor({ state: 'visible', timeout: 4000 }).catch(() => {});
 await shot(SHOTS, 'list');
-const item = list.getByRole('menuitem', { name: /Chat/ });
+const item = list.getByRole('menuitem', { name: /Courier/ });
 const listed = await item.count();
 await item.first().click({ timeout: 4000 }).catch((e) => log('choose failed', e.message.slice(0, 100)));
 await wait(300);
 await shot(SHOTS, 'ring');
 await wait(1500);
-const saved = await p.evaluate((id) => JSON.parse(localStorage.getItem('ma.layout.v2') ?? '{}').desks?.[id]?.stack ?? null, ALLOWED);
-step(4, listed === 1 && saved?.[saved.length - 1] === `${ALLOWED}:chat`, `the list named Chat, and choosing it brought it to the front: ${JSON.stringify(saved)}`);
+// Courier's id in the stored layout: `chat` until the flip (src/canvas/storedIds.ts), read as `courier` here as the office does.
+const inMemory = (s) => (s == null ? s : s.replaceAll('"chat"', '"courier"').replaceAll(':chat"', ':courier"'));
+const saved = JSON.parse(inMemory(await p.evaluate(() => localStorage.getItem('ma.layout.v2'))) ?? '{}').desks?.[ALLOWED]?.stack ?? null;
+step(4, listed === 1 && saved?.[saved.length - 1] === `${ALLOWED}:courier`, `the list named Courier, and choosing it brought it to the front: ${JSON.stringify(saved)}`);
 
 const clean = p.getByRole('button', { name: /^Clean up .* desk$/ });
 await clean.focus();

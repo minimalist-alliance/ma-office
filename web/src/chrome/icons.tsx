@@ -1,6 +1,8 @@
-// Inline SVG icons for the DOM chrome. Stroke icons use currentColor. App glyphs match the canvas.
-import type { JSX } from 'react';
-import { lookChunk, maskKey, rosterAgent, useRosterStore } from '../agent/roster';
+// Inline SVG icons for the DOM chrome. Stroke icons use currentColor. App glyphs are the canvas's own drawing (`GlyphCanvas`).
+import { useLayoutEffect, useRef, useSyncExternalStore, type JSX } from 'react';
+import { glyphOf, lookChunk, maskKey, rosterAgent, useRosterStore, type GlyphId } from '../agent/roster';
+import { drawGlyph } from '../canvas/glyphs';
+import { deviceBox } from './glyphBox';
 import { isAgentApp, isDeskApp, type AppId } from '../canvas/layout';
 import { useDoor } from '../deskapps/door';
 import { useTheme } from '../theme/themeStore';
@@ -107,85 +109,90 @@ function AgentAppGlyph({ app, deskId, size }: { app: AppId; deskId?: string | un
   const Mark = lookChunk()?.AgentMark;
   return (
     <span className="app-glyph" aria-hidden="true" style={{ display: 'inline-flex', width: size, height: size }}>
-      {Mark && <Mark icon={agent?.icon ?? 'nodes'} tone={agent?.tone ?? 'graphite'} theme={theme} pngUrl={url} size={size} />}
+      {Mark && <Mark icon={agent?.icon ?? 'hat'} color={agent?.color ?? null} tone={agent?.tone ?? 'graphite'} theme={theme} pngUrl={url} size={size} />}
     </span>
   );
+}
+
+/** The device pixel ratio, kept current: a window moved to another screen, or the page zoomed, changes it (`resolution` stops matching). */
+function watchDpr(changed: () => void): () => void {
+  let mq: MediaQueryList;
+  const watch = (): void => {
+    mq = matchMedia(`(resolution: ${devicePixelRatio}dppx)`);
+    mq.addEventListener('change', on, { once: true });
+  };
+  const on = (): void => {
+    watch();
+    changed();
+  };
+  watch();
+  return () => mq.removeEventListener('change', on);
+}
+const dpr = (): number => devicePixelRatio || 1;
+
+/**
+ * The DOM glyphs' second look, a frame after something may have moved them by a fraction of a pixel: a resize (a density
+ * change fires one too, and the layout settles after it) or a CSS transition ending. One listener for them all.
+ */
+const looks = new Set<() => void>();
+let frame = 0;
+const moved = (): void => {
+  frame ||= requestAnimationFrame(() => {
+    frame = 0;
+    looks.forEach((look) => look());
+  });
+};
+function lookAgain(look: () => void): () => void {
+  if (!looks.size) {
+    addEventListener('resize', moved);
+    document.addEventListener('transitionend', moved, true);
+  }
+  looks.add(look);
+  return () => {
+    looks.delete(look);
+    if (looks.size) return;
+    removeEventListener('resize', moved);
+    document.removeEventListener('transitionend', moved, true);
+  };
+}
+
+/**
+ * An app's glyph in the DOM, drawn by the canvas's own `drawGlyph` (one copy of the shapes) at the screen's pixel density:
+ * drawn again on a theme change and when the density changes. Hidden from assistive tech, as the glyph's name is beside it.
+ * Its backing store is the element's own box in device pixels, each axis on its own (`deviceBox`, `glyphBox.ts`: its edges
+ * snapped where it sits), so the bitmap is never resampled to fit: at 1.25x or 1.5x a rounded `size x devicePixelRatio`
+ * could be a pixel off the box the browser paints, and blur. A resize or a transition's end looks again, and a box that
+ * now snaps differently draws again.
+ */
+export function GlyphCanvas({ glyph, size, className = 'app-glyph' }: { glyph: GlyphId; size: number; className?: string }) {
+  const t = useTheme((s) => s.t);
+  const d = useSyncExternalStore(watchDpr, dpr);
+  const ref = useRef<HTMLCanvasElement>(null);
+  useLayoutEffect(() => {
+    const c = ref.current;
+    const ctx = c?.getContext('2d');
+    if (!c || !ctx) return undefined;
+    const draw = (force: boolean): void => {
+      const r = c.getBoundingClientRect();
+      const { w, h } = deviceBox(r.left, r.top, size, size, d);
+      if (!force && w === c.width && h === c.height) return;
+      c.width = w;
+      c.height = h;
+      ctx.setTransform(w / size, 0, 0, h / size, 0, 0);
+      drawGlyph(ctx, glyph, t, size);
+    };
+    draw(true);
+    return lookAgain(() => draw(false));
+  }, [glyph, size, t, d]);
+  return <canvas ref={ref} className={className} aria-hidden="true" style={{ width: size, height: size }} />;
 }
 
 export function AppGlyph({ app, size = 18, deskId }: { app: AppId; size?: number; deskId?: string }) {
   // An installed app's (ADR 0054): the desk app host's drawing, a blank of its size until that chunk is here.
   const appsHost = useDoor((s) => s.host);
+  // A core app's glyph key: its id, or To-do's blank until its chunk is here.
+  const glyph = useRosterStore((s) => (isAgentApp(app) || isDeskApp(app) ? null : glyphOf('', app, s)));
   if (isAgentApp(app)) return <AgentAppGlyph app={app} deskId={deskId} size={size} />;
-  const common = { width: size, height: size, viewBox: '0 0 48 48', 'aria-hidden': true, className: 'app-glyph' } as const;
-  if (isDeskApp(app)) return appsHost ? <appsHost.DeskGlyph glyph={appsHost.glyphFor(app.slice(4))} size={size} /> : <svg {...common} />;
-  if (app === 'notebook') {
-    return (
-      <svg {...common}>
-        <path d="M14 5h15l8 8v27q0 3-3 3H14q-3 0-3-3V8q0-3 3-3Z" fill="var(--ma-glyph-page)" stroke="var(--ma-glyph-soft)" strokeOpacity=".5" />
-        <path d="M29 5v6q0 2 2 2h6Z" fill="var(--ma-glyph-soft)" opacity=".45" />
-        <rect x="16" y="12" width="8" height="8" rx="1.5" fill="var(--ma-glyph)" />
-        <path d="M16 27h16M16 32h16" stroke="var(--ma-glyph-soft)" strokeWidth="2.2" strokeLinecap="round" />
-        <path d="M16 37h10" stroke="var(--ma-accent)" strokeWidth="2.2" strokeLinecap="round" />
-      </svg>
-    );
-  }
-  if (app === 'files') {
-    return (
-      <svg {...common}>
-        <path d="M10 11h9q3 0 3 3v1h16q3 0 3 3v19q0 3-3 3H10q-3 0-3-3V14q0-3 3-3Z" fill="var(--ma-glyph-soft)" />
-        <rect x="7" y="20" width="34" height="20" rx="3" fill="var(--ma-glyph)" />
-        <path d="M14 33h12" stroke="var(--ma-accent)" strokeWidth="2.6" strokeLinecap="round" />
-      </svg>
-    );
-  }
-  if (app === 'chat') {
-    return (
-      <svg {...common}>
-        <ellipse cx="24" cy="22" rx="17" ry="15" fill="var(--ma-glyph)" />
-        <path d="M12.5 29 9 41l12-5.5Z" fill="var(--ma-glyph)" />
-        <circle cx="16.5" cy="22" r="2.7" fill="var(--ma-surface-window)" />
-        <circle cx="24" cy="22" r="2.7" fill="var(--ma-surface-window)" />
-        <circle cx="31.5" cy="22" r="2.7" fill="var(--ma-surface-window)" />
-      </svg>
-    );
-  }
-  if (app === 'commons') {
-    return (
-      <svg {...common}>
-        <rect x="7" y="7" width="34" height="24" rx="3.5" fill="var(--ma-glyph-page)" stroke="var(--ma-glyph-soft)" strokeOpacity=".5" />
-        <path d="M13 23q4-10 8-4t8-4" fill="none" stroke="var(--ma-accent)" strokeWidth="2.6" strokeLinecap="round" />
-        <rect x="30" y="12" width="7" height="7" rx="1.2" fill="var(--ma-glyph-soft)" />
-        <g fill="var(--ma-glyph-soft)">
-          <circle cx="14" cy="35.6" r="2.4" />
-          <circle cx="24" cy="35.6" r="2.4" />
-          <circle cx="34" cy="35.6" r="2.4" />
-          <path d="M10 44a4 4.4 0 0 1 8 0zM20 44a4 4.4 0 0 1 8 0zM30 44a4 4.4 0 0 1 8 0z" />
-        </g>
-      </svg>
-    );
-  }
-  if (app === 'browser') {
-    return (
-      <svg {...common} fill="none" stroke="var(--ma-glyph-globe)" strokeWidth="2.5" strokeLinecap="round">
-        <circle cx="24" cy="24" r="16" />
-        <ellipse cx="24" cy="24" rx="7" ry="16" />
-        <path d="M8.5 24h31M10.6 16h26.8M10.6 32h26.8" />
-      </svg>
-    );
-  }
-  const nodes = [-90, -30, 30, 90, 150, 210].map((deg) => {
-    const a = (deg * Math.PI) / 180;
-    return { x: 24 + Math.cos(a) * 15, y: 24 + Math.sin(a) * 15, a };
-  });
-  return (
-    <svg {...common}>
-      <g stroke="var(--ma-glyph)" strokeWidth="2" strokeLinecap="round">
-        {nodes.map(({ a }) => (
-          <line key={a} x1={24 + Math.cos(a) * 7} y1={24 + Math.sin(a) * 7} x2={24 + Math.cos(a) * 11.5} y2={24 + Math.sin(a) * 11.5} />
-        ))}
-      </g>
-      {nodes.map(({ x, y, a }, i) => <circle key={a} cx={x} cy={y} r={i % 2 ? 3 : 3.8} fill="var(--ma-glyph)" />)}
-      <circle cx="24" cy="24" r="5.2" fill="none" stroke="var(--ma-accent)" strokeWidth="2.6" />
-    </svg>
-  );
+  if (isDeskApp(app)) return appsHost ? <appsHost.DeskGlyph glyph={appsHost.glyphFor(app.slice(4))} size={size} /> : <svg width={size} height={size} viewBox="0 0 48 48" aria-hidden className="app-glyph" />;
+  return <GlyphCanvas glyph={glyph ?? app} size={size} />;
 }

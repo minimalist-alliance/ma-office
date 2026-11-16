@@ -4,7 +4,7 @@
 import { readFileSync } from 'node:fs';
 import { createRequire } from 'node:module';
 import { expect, test, type Page } from '@playwright/test';
-import { canvasPainted, focusCanvas, harness, setTheme, signIn, type ThemeId } from './helpers';
+import { canvasPainted, focusCanvas, harness, homeMark, setTheme, signIn, type ThemeId } from './helpers';
 
 const AXE = readFileSync(createRequire(import.meta.url).resolve('axe-core/axe.min.js'), 'utf8');
 const SHOTS = process.env['REFLOW_SHOTS'];
@@ -475,7 +475,7 @@ test('short-viewport mode: the scope menu opens, the arrows move, Enter picks, E
   // On a desk, so an Esc that reached the office would leave it for the overview.
   await focusCanvas(page);
   await page.keyboard.press('1');
-  const home = page.getByRole('button', { name: 'Your office, show all desks' });
+  const home = homeMark(page);
   await expect(home).toBeVisible();
 
   const btn = page.getByRole('button', { name: 'Scope: All' });
@@ -661,19 +661,20 @@ test('short-viewport mode: the canvas\'s keys still work, and only while it has 
   await expect(page.getByRole('button', { name: 'Privacy shield' })).toHaveAttribute('aria-pressed', 'true');
 });
 
+// 700 px wide, where the whole scope switch fits beside the buttons (narrower, it folds at any height: `bars.shell.spec.ts`).
 test('short-viewport mode starts under 400 px high and nowhere else, and follows the window as it changes', async ({ page }) => {
-  await arriveThree(page, { width: 360, height: 400 });
+  await arriveThree(page, { width: 700, height: 400 });
   await expect(page.getByRole('radiogroup', { name: 'Scope' })).toBeVisible();
   await expect(page.getByRole('group', { name: 'Zoom' })).toBeVisible();
   await expect(page.locator('.scope-menu, .zoom-menu')).toHaveCount(0);
-  await page.setViewportSize({ width: 360, height: 399 });
+  await page.setViewportSize({ width: 700, height: 399 });
   await expect(page.getByRole('button', { name: 'Scope: All' })).toBeVisible();
   await expect(page.getByRole('radiogroup', { name: 'Scope' })).toHaveCount(0);
   await expect(page.getByRole('group', { name: 'Zoom' })).toHaveCount(0);
   expect((await rect(page, '.topbar')).height).toBe(44);
   await expect.poll(async () => (await page.locator('.zoom-menu .zoom-label').textContent()) === (await cameraLevel(page))).toBe(true);
   // Back over 400: the zoom group's own level is written as it comes back, not left at its first "100%".
-  await page.setViewportSize({ width: 360, height: 400 });
+  await page.setViewportSize({ width: 700, height: 400 });
   await expect(page.getByRole('radiogroup', { name: 'Scope' })).toBeVisible();
   await expect.poll(async () => (await page.locator('.zoom-ctl .zoom-label').textContent()) === (await cameraLevel(page))).toBe(true);
 });

@@ -1,0 +1,45 @@
+{
+  "id": "files-043",
+  "area": "files",
+  "title": "Every card declined",
+  "prompt": "Write a file Harness/notes/todo.md that says 'call the plumber'.",
+  "setup": {
+    "files": {
+      "Harness/notes/readme.txt": "My notes.\n"
+    }
+  },
+  "approve": "none",
+  "checks": [
+    {
+      "kind": "noFile",
+      "path": "Harness/notes/todo.md"
+    },
+    {
+      "kind": "cards",
+      "tools": [
+        "files_write"
+      ]
+    }
+  ],
+  "policy": {
+    "tools": [
+      "files_write"
+    ]
+  },
+  "standIn": [
+    {
+      "calls": [
+        {
+          "name": "files_write",
+          "input": {
+            "path": "Harness/notes/todo.md",
+            "text": "call the plumber\n"
+          }
+        }
+      ]
+    },
+    {
+      "text": "Okay, I didn't save it."
+    }
+  ]
+}

@@ -11,6 +11,7 @@ const FAMILY = [
   [/^age\./, 'account'],
   [/^guild\./, 'account'],
   [/^maia\./, 'note'],
+  [/^courier\./, 'thread'],
 ];
 
 /** The icon family for a type: thread | card | desk | account | note. */
@@ -78,6 +79,12 @@ export function rowOf(item, now = Date.now()) {
   if (type === 'forums.notice') {
     title = title || `A notice from ${FORUMS}`;
     second = body;
+  }
+  // Courier's bell item says counts only (its plan §2.11, ADR 0125): "New messages on your Personal desk", collapsed per
+  // desk. Never a sender or a subject, whatever an item carries: no actor, no body.
+  if (type === 'courier.waiting') {
+    title = /^New messages on your [^\n]{1,40} desk$/.test(title) ? title : 'New messages on your desk';
+    second = '';
   }
   return {
     id: String(item?.id ?? ''),

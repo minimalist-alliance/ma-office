@@ -1,0 +1,59 @@
+From: Team <team@example.net>
+To: me@desk.example
+Date: Fri, 13 Nov 2026 10:00:00 +0000
+Subject: Invitation: Sprint retrospective @ Fri 20 Nov 2026 15:00 (UTC)
+Message-ID: <calendar-request@corpus.example>
+MIME-Version: 1.0
+X-Corpus-Note: calendar invite shaped like Google Calendar: text/calendar METHOD:REQUEST in the alternative plus invite.ics
+Content-Type: multipart/mixed; boundary="cal-0"
+
+--cal-0
+Content-Type: multipart/alternative; boundary="cal-1"
+
+--cal-1
+Content-Type: text/plain; charset="UTF-8"; format=flowed; delsp=yes
+
+You have been invited to the sprint retrospective.
+--cal-1
+Content-Type: text/html; charset="UTF-8"
+
+<p>You have been invited to the sprint retrospective.</p>
+--cal-1
+Content-Type: text/calendar; charset="UTF-8"; method=REQUEST
+Content-Transfer-Encoding: 7bit
+
+BEGIN:VCALENDAR
+PRODID:-//Example//Calendar 1.0//EN
+VERSION:2.0
+CALSCALE:GREGORIAN
+METHOD:REQUEST
+BEGIN:VEVENT
+DTSTART:20261120T150000Z
+DTEND:20261120T160000Z
+DTSTAMP:20261113T100000Z
+ORGANIZER;CN=Team:mailto:team@example.net
+UID:retro-2026-11-20@example.net
+ATTENDEE;CUTYPE=INDIVIDUAL;ROLE=REQ-PARTICIPANT;PARTSTAT=NEEDS-ACTION;RSVP=TRUE:mailto:me@desk.example
+SUMMARY:Sprint retrospective
+LOCATION:Room 4
+SEQUENCE:0
+STATUS:CONFIRMED
+END:VEVENT
+END:VCALENDAR
+--cal-1--
+
+--cal-0
+Content-Type: application/ics; name="invite.ics"
+Content-Disposition: attachment; filename="invite.ics"
+Content-Transfer-Encoding: base64
+
+QkVHSU46VkNBTEVOREFSDQpQUk9ESUQ6LS8vRXhhbXBsZS8vQ2FsZW5kYXIgMS4wLy9FTg0KVkVS
+U0lPTjoyLjANCkNBTFNDQUxFOkdSRUdPUklBTg0KTUVUSE9EOlJFUVVFU1QNCkJFR0lOOlZFVkVO
+VA0KRFRTVEFSVDoyMDI2MTEyMFQxNTAwMDBaDQpEVEVORDoyMDI2MTEyMFQxNjAwMDBaDQpEVFNU
+QU1QOjIwMjYxMTEzVDEwMDAwMFoNCk9SR0FOSVpFUjtDTj1UZWFtOm1haWx0bzp0ZWFtQGV4YW1w
+bGUubmV0DQpVSUQ6cmV0cm8tMjAyNi0xMS0yMEBleGFtcGxlLm5ldA0KQVRURU5ERUU7Q1VUWVBF
+PUlORElWSURVQUw7Uk9MRT1SRVEtUEFSVElDSVBBTlQ7UEFSVFNUQVQ9TkVFRFMtQUNUSU9OO1JT
+VlA9VFJVRTptYWlsdG86bWVAZGVzay5leGFtcGxlDQpTVU1NQVJZOlNwcmludCByZXRyb3NwZWN0
+aXZlDQpMT0NBVElPTjpSb29tIDQNClNFUVVFTkNFOjANClNUQVRVUzpDT05GSVJNRUQNCkVORDpW
+RVZFTlQNCkVORDpWQ0FMRU5EQVINCg==
+--cal-0--

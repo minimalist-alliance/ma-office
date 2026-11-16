@@ -54,7 +54,7 @@ export function OfficeNotice() {
   const membership = billing !== undefined;
   if (!membership && !anyHeld && !unavailable) return null;
   return (
-    <div className="office-notice" role="status" data-testid="office-notice">
+    <div className="office-notice ma-glass" role="status" data-testid="office-notice">
       {membership && (
         <p>
           {MEMBERSHIP_LINE}. <BillingLink billingUrl={billing ?? null} />

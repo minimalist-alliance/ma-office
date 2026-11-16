@@ -14,6 +14,8 @@ import java.sql.Statement;
  *       {@code before_json}, {@code origin} and {@code result} are JSON. {@code started_at} is set when an approved
  *       call's tool starts, so a restart can tell {@code interrupted} from never run. The row lives as long as its
  *       reply: it goes with the thread.
+ *   <li>{@code auto_group}, {@code auto_place}, {@code undone_at}, {@code undone_by} (W3): a call done without asking
+ *       under the member's switch has a row too, {@code decided_by} {@code auto}, its group and place, and its undo.
  *   <li>{@code run_marks}: what a reply's run held, by its message: {@code untrusted} (U), {@code private} (S) and how
  *       many {@code egress} calls ran. A later run whose context holds a marked reply starts with the same flags.
  * </ul>
@@ -64,6 +66,27 @@ final class ApprovalSchema {
                       egress INTEGER NOT NULL DEFAULT 0
                     ) STRICT""");
             statement.execute("CREATE INDEX IF NOT EXISTS run_marks_agent ON run_marks (agent_id)");
+        }
+        // A call done without asking (the draft ADR's §15, W3): its switch's group and place, and its undo. Additive.
+        addColumns(connection, "approvals", "auto_group TEXT", "auto_place TEXT", "undone_at INTEGER",
+                "undone_by TEXT", "auto_seen INTEGER NOT NULL DEFAULT 1");
+    }
+
+    private static void addColumns(Connection connection, String table, String... columns) throws SQLException {
+        java.util.Set<String> present = new java.util.HashSet<>();
+        try (Statement statement = connection.createStatement();
+                java.sql.ResultSet result = statement.executeQuery("PRAGMA table_info(" + table + ")")) {
+            while (result.next()) {
+                present.add(result.getString("name"));
+            }
+        }
+        for (String column : columns) {
+            String name = column.substring(0, column.indexOf(' '));
+            if (!present.contains(name)) {
+                try (Statement statement = connection.createStatement()) {
+                    statement.execute("ALTER TABLE " + table + " ADD COLUMN " + column);
+                }
+            }
         }
     }
 }

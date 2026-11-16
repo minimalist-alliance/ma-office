@@ -1,0 +1,39 @@
+#!/bin/sh
+# desk-parse-run: ExecStart of desk-parse.service (ADR 0097 section 1), the Agent's attachment reader in a sandbox of its own.
+# One long-lived container on desk-agent's own image, as uid 1113 (parse), with no network, no /data, no capabilities, a
+# read-only root and no writable scratch (--ipc none: no /dev/shm either). Its process 1 is desk-svc -accept, which forks one
+# worker JVM per connection on /run/desk-parse/sock/parse.sock, the connection as its stdin and stdout, serves uid 1103
+# (desk-agent) only, one at a time, kills the worker at 35 s, and after each worker kills everything else in the container,
+# empties the socket's directory but the socket, and checks the socket is its own (ADR 0097 section 1, -clean).
+# Every flag is here; the only input is the image id from desk-agent's release (RELEASE_DIR, the unit's), which ma-update's
+# load_image wrote, so the reader is always desk-agent's own code: an update of desk-agent restarts this unit (PartOf=).
+# Docker's journald driver takes only desk-svc's lines: a worker's stdout is the connection and its stderr /dev/null, so no
+# word of a file reaches the journal (verify.sh section 3p checks it).
+set -eu
+id=$(cat "${RELEASE_DIR:?RELEASE_DIR is not set}/image-id")
+case $id in
+  sha256:[0-9a-f]*) ;;
+  *) echo "desk-parse-run: desk-agent's image-id isn't sha256:<64 hex>" >&2; exit 1 ;;
+esac
+[ "${#id}" -eq 71 ] && ! printf '%s' "${id#sha256:}" | grep -q '[^0-9a-f]' \
+  || { echo "desk-parse-run: desk-agent's image-id isn't sha256:<64 hex>" >&2; exit 1; }
+exec /usr/bin/docker run --rm --name desk-parse \
+  --network none \
+  --ipc none \
+  --user 1113:1113 \
+  --read-only \
+  --cap-drop ALL \
+  --security-opt no-new-privileges \
+  --log-driver journald --log-opt tag=desk-parse \
+  --memory 160m --memory-swap 160m \
+  --pids-limit 64 \
+  --cpu-shares 256 \
+  --ulimit core=0 \
+  --oom-score-adj 500 \
+  -v /run/desk-parse/sock:/run/desk-parse/sock \
+  -v /usr/local/lib/ma/desk-svc:/desk-svc:ro \
+  --entrypoint /desk-svc \
+  "$id" \
+  -accept /run/desk-parse/sock/parse.sock -accept-mode 0660 -peer-uid 1103 -max-conn 1 \
+  -deadline-sec 35 -conn-stdio -clean \
+  -- /opt/java/openjdk/bin/java @/app/parse.options

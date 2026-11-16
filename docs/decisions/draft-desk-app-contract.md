@@ -66,7 +66,7 @@ deskd refuses a package with anything else: a symlink, hard link or device, an a
 | `net` | `[{host, port, why}]` | Only with `net`. Port 443 only, a host name (no IPs or wildcards), and a reason the member reads |
 | `views.window` | Its HTML, script and style files, and default and minimum sizes | Minimum at least 280 x 200 |
 | `views.widget` | Whether it publishes `app.summary` (3.1) | |
-| `methods` | `[{name, mutation}]` a view may call | Dotted names outside the reserved namespaces `app.`, `desk.`, `apps.`, `browser.`, `files.`, `notebook.`, `chat.`, `agent.` |
+| `methods` | `[{name, mutation}]` a view may call | Dotted names outside the reserved namespaces `app.`, `desk.`, `apps.`, `browser.`, `files.`, `notebook.`, `courier.`, `chat.`, `agent.` (`chat.` was Courier's until its id changed, Nov 12, and stays reserved) |
 | `topics` | Topics a view may subscribe to | Same namespaces reserved |
 | `files` | `{path: {sha256, size, mode}}` | Every file, and nothing else |
 
@@ -230,7 +230,7 @@ All three are inside the Desk app, on the desk's one WebRTC connection (ADR 0022
 - **Its own policy, on top of the Desk app's:** `default-src 'none'`, scripts and styles only by the hashes of its own files, `img-src data:`, `font-src data:`, `form-action 'none'`, `base-uri 'none'`. It reaches nothing on the network, not even the platform's API that the Desk app's own policy allows. No popups, forms, top navigation, camera, microphone, clipboard or other device features.
 - **One way out:** a `MessagePort` the Desk app hands it. Through it the view calls the app's declared methods and subscribes to its declared topics. The Desk app forwards those on `rpc` as `apps.call` and `apps.sub` (5.6), deskd forwards them to the app, and the replies come back the same way.
 - **Theme:** the Desk app passes the theme's tokens (ADR 0065), and again on a theme switch, so views match Light, Dusk and Dark. Nunito can be passed as a `data:` font.
-- **Frame budget:** a view must not hold the Desk app's main thread. Chrome may run a sandboxed frame in its own process, but no browser promises it, so the Desk app watches its own frames (Long Animation Frames, and rAF gaps where that API is missing). Three frames over 50 ms in 10 s while a view is showing and the Desk app's own work is idle, and the view is unloaded with "Paused to keep your desk smooth" and Resume.
+- **Frame budget:** a view must not hold the Desk app's main thread. Chrome may run a sandboxed frame in its own process, but no browser promises it, so the Desk app watches its own frames (Long Animation Frames, and rAF gaps where that API is missing). Three frames over 50 ms in 10 s while a view is showing and the Desk app's own work is idle, and the view is unloaded with "Paused to keep your desk smooth" and Resume. Only the view's own time counts (ADR 0054's addendum of Nov 12): a frame in a process of its own is never paused, and on the Desk app's thread only time no Desk app script explains is the view's; without Long Animation Frames, only hangs over 1 s, twice in 30 s.
 - **Phones and tablets** use the same view, full screen, as the built-in apps do (design §3.6).
 
 The sample's view, in its window, after three taps on +, in Light and Dusk:

@@ -6,6 +6,7 @@ import { AgentError, newIdem, type AgentClient } from '../client/agentClient';
 import type { Agent, KeyMeta, ModelInfo, Proposal } from '../client/types';
 import { AgentMark } from '../look/AgentMark';
 import { currentIcon, iconById } from '../look/icons';
+import { AGENT_COLOR_LIST } from '../look/colors';
 import { TONES, currentTone, type LookTheme } from '../look/tones';
 import { usd } from '../model/format';
 import { describeProposal, diffIsChoppy, diffText, failedText, proposalChecks, proposalOpen, STATE_TEXT, type AgentTag, type ChangeTimer } from '../model/proposals';
@@ -22,13 +23,14 @@ export interface ProposalContext {
 }
 
 const toneLabel = (id: string): string => TONES.find((t) => t.id === currentTone(id))?.label ?? `${id} (shown as Graphite)`;
-const iconLabel = (id: string): string => (id === 'png' ? 'Your picture' : iconById(id).id === currentIcon(id) ? iconById(id).label : `${id} (shown as Team)`);
+const iconLabel = (id: string): string => (id === 'png' ? 'Your picture' : iconById(id).id === currentIcon(id) ? iconById(id).label : `${id} (shown as Agent)`);
+const colorLabel = (id: string): string => AGENT_COLOR_LIST.find((c) => c.id === id)?.label ?? id;
 
 /** An agent on a card: its mark, its name, and the end of its id when another agent's name is close. */
 function AgentChip({ tag, theme }: { tag: AgentTag; theme: LookTheme }) {
   return (
     <span className="ag-chip" data-testid="proposal-agent">
-      {tag.look && <AgentMark icon={tag.look.icon} tone={tag.look.tone} theme={theme} size={20} />}
+      {tag.look && <AgentMark icon={tag.look.icon} color={tag.look.color ?? null} tone={tag.look.tone} theme={theme} size={20} />}
       <b>{tag.name}</b>
       {tag.hint && (
         <span className="ag-muted ag-small" title={tag.id}>
@@ -125,6 +127,7 @@ export function ProposalCard({ proposal, ctx }: { proposal: Proposal; ctx: Propo
     zone: ctx.zone,
     iconLabel,
     toneLabel,
+    colorLabel,
   });
   const open = proposalOpen(p, now);
   const state = p.state === 'pending' && !open ? 'expired' : p.state;
@@ -252,7 +255,7 @@ export function ProposalCard({ proposal, ctx }: { proposal: Proposal; ctx: Propo
   return (
     <section className={`ag-proposal${view.stamp ? ' foreign' : ''}`} aria-label={view.title} data-testid="proposal" data-state={state} data-action={p.action}>
       <header className="ag-proposal-head">
-        {mark && <AgentMark icon={mark.icon} tone={mark.tone} theme={ctx.theme} size={32} />}
+        {mark && <AgentMark icon={mark.icon} color={mark.color ?? null} tone={mark.tone} theme={ctx.theme} size={32} />}
         <div>
           <h4>{view.title}</h4>
           {view.stamp && (

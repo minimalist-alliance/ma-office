@@ -1307,6 +1307,8 @@
     if (isDisabled(el)) return { refused: 'disabled' };
     if (!visible(el)) return { refused: 'hidden' };
     let r = el.getBoundingClientRect();
+    // A look moves nothing, the page's scroll included (Security's BB-I2): the act scrolls and checks what's on top.
+    if (a.look) return { el, r };
     if (!inView(r)) {
       el.scrollIntoView({ block: 'center', inline: 'center', behavior: 'instant' });
       r = el.getBoundingClientRect();
@@ -1317,24 +1319,73 @@
     return { el, r };
   }
   const expected = (a) => (typeof a.url === 'string' ? a.url : null);
+  /** The element out of the composed tree's parent, across a shadow root's host. */
+  const composedParent = (n) => n.parentElement || (n.parentNode && n.parentNode.host) || null;
+  /**
+   * What a click on el activates, as the browser finds it (Security's BB-I1): the nearest element on the way up, across
+   * shadow roots, that has an activation of its own, a link, a button or a button-like input, and a label's control. A
+   * span inside a submit button submits its form; a submit button inside a link submits, and doesn't follow the link.
+   */
+  function activator(el) {
+    for (let n = el, depth = 0; n && n.nodeType === 1 && depth < 64; n = composedParent(n), depth++) {
+      const ln = n.localName;
+      if ((ln === 'a' || ln === 'area') && n.hasAttribute('href')) return n;
+      // A submit control with a form submits it; any other control on the way up doesn't stop the walk, so a link around
+      // it is still found (Security's BB-I3): the class only rises.
+      if (isSubmitter(n) && n.form) return n;
+      if (ln === 'label' && n.control && isSubmitter(n.control) && n.control.form) return n.control;
+    }
+    return el;
+  }
+  /**
+   * A submit control's words, as a member reads them (Security's BB-L3): a button's own text or its aria-label, never
+   * its value, which is what it sends; a submit input's value; an image input's alt.
+   */
+  function submitterWords(b) {
+    if (!b) return null;
+    const aria = b.getAttribute('aria-label') || '';
+    const words = b.localName === 'button' ? (b.textContent || '') + ' ' + aria
+      : /^image$/i.test(b.type || '') ? (b.getAttribute('alt') || '') + ' ' + aria
+        : (b.value || '') + ' ' + aria;
+    return String(words).replace(/\s+/g, ' ').trim().slice(0, 200);
+  }
+  /** Where a click on el goes: a link's address, or the form a submit control sends, and whether that form is a search. */
+  function clickGoes(el) {
+    const act = activator(el);
+    const link = act.localName === 'a' || act.localName === 'area' ? act : null;
+    const form = !link && isSubmitter(act) ? act.form : null;
+    return {
+      nav: link ? 'link' : form ? 'submit' : null,
+      url: link ? String(link.href) : form ? formTarget(form, act) : null,
+      // A submit of a GET form that holds a search box is a search, as Enter in that box is (deskd still decides).
+      search: form ? searchForm(form, act) : false,
+      button: form ? submitterWords(act) : null,
+    };
+  }
   /** A click: a link's or a submit control's own activation, or the page's click handlers, as an untrusted click. */
   function agentClick(a) {
     const t = agentTarget(a, false);
     if (!t.el) return t;
     const el = t.el, r = t.r;
+    const goes = clickGoes(el);
+    const pay = payFrame(a.payHosts);
+    if (a.look) return { ok: true, nav: goes.nav, url: goes.url, pay, search: goes.search };
     // Only what's on top there: what a member couldn't click (under a dialog, say) the Agent doesn't either.
     const x = clamp(r.left + Math.min(r.width / 2, 40), Math.max(r.left, 1), Math.min(r.right, innerWidth - 1));
     const y = clamp(r.top + r.height / 2, Math.max(r.top, 1), Math.min(r.bottom, innerHeight - 1));
     if (!owns(el, deepHit(x, y))) return { refused: 'covered' };
-    const link = el.closest ? el.closest('a[href],area[href]') : null;
-    const form = !link && isSubmitter(el) ? el.form : null;
-    const nav = link ? 'link' : form ? 'submit' : null;
-    const url = link ? String(link.href) : form ? formTarget(form, el) : null;
-    const pay = payFrame(a.payHosts);
-    if (a.look) return { ok: true, nav, url, pay };
-    if (expected(a) !== url || (pay && !a.spend)) return { refused: 'changed' };
+    if (expected(a) !== goes.url || (pay && !a.spend)) return { refused: 'changed' };
+    // A submit nobody approved as one is never done: deskd says false when the member's yes wasn't for a submit.
+    if (goes.nav === 'submit' && a.submit === false) return { refused: 'changed' };
     el.click();
-    return { ok: true, nav };
+    return { ok: true, nav: goes.nav };
+  }
+  /** A GET form that holds a search box, or is the page's search: what its submit sends is a search's address. */
+  function searchForm(form, submitter) {
+    const method = ((submitter && submitter.getAttribute('formmethod')) || form.getAttribute('method') || 'get').toLowerCase();
+    if (method !== 'get') return false;
+    if (form.matches('[role=search]') || (form.closest && form.closest('[role=search],search'))) return true;
+    return Array.from(form.elements).some((c) => c.localName === 'input' && (c.type || '').toLowerCase() === 'search');
   }
   /** HTML's implicit submission for Enter in el: the form's default button to click, or the form alone, or nothing. */
   function implicitSubmission(el) {
@@ -1383,6 +1434,16 @@
     const t = agentTarget(a, true);
     if (!t.el) return t;
     const el = t.el;
+    if (a.look) {
+      // What the key would submit, by the form's own default button, with nothing focused or pressed (Security's BB-L1):
+      // Enter is judged by what it sends, as a click on that button is, never by the field's kind alone.
+      const look = a.key === 'Enter' ? implicitSubmission(el) : null;
+      return {
+        ok: true, nav: look ? 'submit' : null, url: look ? look.url : null, pay: payFrame(a.payHosts),
+        search: look ? searchForm(look.form, look.button) : false,
+        button: look ? submitterWords(look.button) : null,
+      };
+    }
     if (!owns(el, deepActive())) el.focus({ preventScroll: true });
     const target = deepActive();
     if (!owns(el, target)) return { refused: 'focus' };
@@ -1394,8 +1455,9 @@
     const sub = a.key === 'Enter' ? implicitSubmission(el) : null;
     const url = sub ? sub.url : null;
     const pay = payFrame(a.payHosts);
-    if (a.look) return { ok: true, nav: sub ? 'submit' : null, url, pay };
     if (expected(a) !== url || (sub && pay && !a.spend)) return { refused: 'changed' };
+    // A submit nobody approved as one is never done (BB-L1), as a click's isn't.
+    if (sub && a.submit === false) return { refused: 'changed' };
     let submitted = false;
     if (target.dispatchEvent(keyEvent('keydown', spec))) {
       if (a.key === 'Enter') {

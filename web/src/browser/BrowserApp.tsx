@@ -13,7 +13,7 @@ import { useFree } from '../free/door';
 import { keyAction } from '../desk/rtc/input';
 import { BrowserBar } from './BrowserBar';
 import { CLOSED_PANELS, PanelBody } from './BrowserWindow';
-import { BrowserDriver } from './driver';
+import { BrowserDriver, zoomOffered } from './driver';
 import { DownloadNote } from './DownloadNote';
 import { useSignInsUi } from './extensions/ExtTools';
 import type { PasswordsPanelProps } from './extensions/PasswordsPanel';
@@ -31,6 +31,7 @@ import { useSession } from '../platform/session';
 import { simpleViewOn } from '../simple/flag';
 import { SimpleUi } from '../simple/ui';
 import type { SimpleLayerProps } from '../simple/SimpleLayer';
+import { browserGone, browserZoom } from '../zoom/store';
 
 /**
  * The simple view (task 47) is its own chunk, asked for as a window opens, unless client-config's kill switch is set. It
@@ -110,6 +111,7 @@ const StreamVideo = memo(function StreamVideo({ driver, deskId, keysRef, onAddre
       region: driver.region,
       onSoftKeyboard: driver.setSoftKeyboard,
       onSoftState: driver.setSoftState,
+      zoomsOwnPage: () => zoomOffered(driver.getView()) !== null,
     });
   }, [driver, deskId, keysRef, onAddress]);
   // On a phone, the box the picture fills is what the desk lays the page out for (`phoneView.ts`).
@@ -226,6 +228,11 @@ export default function BrowserApp({ deskId, parked = false }: AppWindowProps) {
     return () => driver.unmount();
   }, [driver]);
   useLayoutEffect(() => driver.setLink(link), [driver, link]);
+  // The window's zoom button and a pinch over it (ADR 0055) are the desk's zoom, once the desk says it has one.
+  // Not while the desk's phone view is in play, where Chromium's page zoom is suspended (`zoomOffered`).
+  const zoom = zoomOffered(view);
+  useEffect(() => browserZoom(deskId, zoom, driver.setDeskZoom), [deskId, zoom, driver]);
+  useEffect(() => () => browserGone(deskId, driver.setDeskZoom), [deskId, driver]);
   useLayoutEffect(() => driver.setParked(parked), [driver, parked]);
   useLayoutEffect(() => driver.setFrozen(frozen), [driver, frozen]);
   // The desk's own bandwidth pause: `bandwidth/StreamPause.tsx` shows it in this window's place, before a paint.

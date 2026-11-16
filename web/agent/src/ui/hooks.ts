@@ -28,16 +28,29 @@ export function useUnsaved(on: boolean): void {
  * The desk's agents: the topic for every change, and one read for the start. The read is what says desk-agent isn't running,
  * since a subscription made then stays quiet until it's back, and a second listener on a link gets no first event.
  */
-export function useAgents(client: AgentClient): { value: Agent[] | null; caps: AgentCaps | null; error: unknown; reload: () => void } {
+export function useAgents(client: AgentClient): {
+  value: Agent[] | null;
+  caps: AgentCaps | null;
+  error: unknown;
+  reload: () => void;
+  /** W6: offers from other desks waiting here, from `agent.state`; null from a desk before it. */
+  deskOffers: number | null;
+  /** Goes up with every `agent.state` event, for reads that follow what the desk says of its agents. */
+  events: number;
+} {
   const [value, setValue] = useState<Agent[] | null>(null);
   const [caps, setCaps] = useState<AgentCaps | null>(null);
   const [error, setError] = useState<unknown>(null);
   const [tick, setTick] = useState(0);
+  const [deskOffers, setDeskOffers] = useState<number | null>(null);
+  const [events, setEvents] = useState(0);
   useEffect(
     () =>
-      client.watchAgents((agents, nextCaps) => {
+      client.watchAgents((agents, nextCaps, desk) => {
         setValue(agents);
         if (nextCaps) setCaps(nextCaps);
+        setDeskOffers(desk?.deskOffers ?? null);
+        setEvents((n) => n + 1);
         setError(null);
       }),
     [client],
@@ -74,7 +87,7 @@ export function useAgents(client: AgentClient): { value: Agent[] | null; caps: A
     };
   }, [client, needCaps]);
   const reload = useCallback(() => setTick((t) => t + 1), []);
-  return { value, caps, error, reload };
+  return { value, caps, error, reload, deskOffers, events };
 }
 
 /** While `active`, `retry` every so often at a calm and growing pace, and not while the tab is hidden. */

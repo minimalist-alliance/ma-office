@@ -1,0 +1,65 @@
+{
+  "id": "files-012",
+  "area": "files",
+  "title": "Make a folder, then save into it",
+  "prompt": "Save a note at Harness/garden/plan.md saying I'll plant tulips in October. The garden folder doesn't exist yet.",
+  "setup": {
+    "files": {
+      "Harness/notes/readme.txt": "Notes live here.\n"
+    }
+  },
+  "approve": "all",
+  "checks": [
+    {
+      "kind": "file",
+      "path": "Harness/garden/"
+    },
+    {
+      "kind": "file",
+      "path": "Harness/garden/plan.md",
+      "contains": [
+        "tulips",
+        "October"
+      ]
+    },
+    {
+      "kind": "cards",
+      "tools": [
+        "files_mkdir",
+        "files_write"
+      ]
+    }
+  ],
+  "policy": {
+    "tools": [
+      "files_mkdir",
+      "files_write"
+    ]
+  },
+  "standIn": [
+    {
+      "calls": [
+        {
+          "name": "files_mkdir",
+          "input": {
+            "path": "Harness/garden"
+          }
+        }
+      ]
+    },
+    {
+      "calls": [
+        {
+          "name": "files_write",
+          "input": {
+            "path": "Harness/garden/plan.md",
+            "text": "Plant tulips in October.\n"
+          }
+        }
+      ]
+    },
+    {
+      "text": "Made Harness/garden and saved plan.md in it."
+    }
+  ]
+}

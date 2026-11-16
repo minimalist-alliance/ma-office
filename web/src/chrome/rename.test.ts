@@ -1,7 +1,8 @@
 // Renaming a desk (contract tiers.md section 8, words.md): who may, what a name may be, and the failures in plain words.
 import { describe, expect, it } from 'vitest';
 import { DEFAULT_TIER_NAMES, tierNamesFrom } from '../platform/tiers';
-import { cleanName, DIDNT_SAVE, kindLabel, kindTipFor, mayRename, NAME_RULE, nameProblem, renameFailure, withoutControls } from './rename';
+import { kindLabel, kindTipFor, mayRename } from './rename';
+import { cleanName, DIDNT_SAVE, NAME_RULE, nameProblem, renameFailure, withoutControls } from './renameName';
 
 describe('nameProblem', () => {
   it('takes 1 to 40 characters, trimmed, counted as code points', () => {

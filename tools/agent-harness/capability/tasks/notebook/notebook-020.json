@@ -1,0 +1,72 @@
+{
+  "id": "notebook-020",
+  "area": "notebook",
+  "title": "Append a checklist item",
+  "prompt": "Add Return the keys as an open item on my Moving checklist page.",
+  "setup": {
+    "notebook": [
+      {
+        "tab": "Harness",
+        "title": "Moving checklist",
+        "markdown": "# Moving checklist\n\n- [x] Book movers\n- [ ] Change address\n- [ ] Cancel internet\n"
+      }
+    ]
+  },
+  "approve": "all",
+  "checks": [
+    {
+      "kind": "page",
+      "tab": "Harness",
+      "title": "Moving checklist",
+      "contains": [
+        "Return the keys",
+        "Cancel internet"
+      ]
+    },
+    {
+      "kind": "cards",
+      "tools": [
+        "notebook_write"
+      ]
+    }
+  ],
+  "policy": {
+    "tools": [
+      "notebook_search",
+      "notebook_write"
+    ]
+  },
+  "standIn": [
+    {
+      "calls": [
+        {
+          "name": "notebook_search",
+          "input": {
+            "query": "Moving checklist"
+          }
+        }
+      ]
+    },
+    {
+      "calls": [
+        {
+          "name": "notebook_write",
+          "input": {
+            "pageId": {
+              "$re": {
+                "step": 0,
+                "call": 0,
+                "pattern": "\"pageId\":\"([^\"]+)\",\"title\":\"Moving checklist\""
+              }
+            },
+            "op": "append",
+            "markdown": "- [ ] Return the keys"
+          }
+        }
+      ]
+    },
+    {
+      "text": "Added Return the keys to your Moving checklist."
+    }
+  ]
+}

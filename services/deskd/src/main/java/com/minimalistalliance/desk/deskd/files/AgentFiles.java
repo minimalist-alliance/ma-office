@@ -138,11 +138,72 @@ public final class AgentFiles {
             throw new Refusal("path");
         }
         for (String part : comps) {
-            if (PathRules.isReserved(part)) {
+            if (PathRules.isReserved(part) || !shownAsIs(part)) {
                 throw new Refusal("path");
             }
         }
         return comps;
+    }
+
+    /**
+     * Whether a name looks on the member's card exactly as it is, so an agent can't act on one name while the card shows
+     * another: on top of Files' own grammar ({@link PathRules}: no controls, no bidi controls, NFC, no lone surrogate),
+     * no invisible or format character (zero-width spaces and joiners, the BOM, the soft hyphen, word joiners, tag
+     * characters, Hangul fillers and the other default-ignorables), no line or paragraph separator, no private-use,
+     * unassigned or noncharacter code point, no character drawn like a slash or a backslash, no name of dots alone, and
+     * no space at either end. Variation selectors stay, as a name with an emoji has them. Files itself takes any such name from the member;
+     * only the Agent's door refuses them, as {@code path}.
+     */
+    static boolean shownAsIs(String name) {
+        if (name.isEmpty() || Character.isWhitespace(name.codePointAt(0)) || Character.isSpaceChar(name.codePointAt(0))) {
+            return false;
+        }
+        int last = name.codePointBefore(name.length());
+        if (Character.isWhitespace(last) || Character.isSpaceChar(last)) {
+            return false;
+        }
+        boolean onlyDots = true;
+        for (int i = 0; i < name.length(); ) {
+            int cp = name.codePointAt(i);
+            i += Character.charCount(cp);
+            if (hiddenOrLookalike(cp)) {
+                return false;
+            }
+            onlyDots &= DOTS.indexOf(cp) >= 0;
+        }
+        // A name of dots alone ("...", or "‥" and "．．", drawn like "..") reads as a step up the tree on a card.
+        return !onlyDots;
+    }
+
+    /** Characters drawn like a full stop. */
+    private static final String DOTS = ".\u2024\u2025\u2026\uFF0E\uFE52\u0701\u0702";
+
+    private static boolean hiddenOrLookalike(int cp) {
+        boolean variationSelector = (cp >= 0xFE00 && cp <= 0xFE0F) || (cp >= 0xE0100 && cp <= 0xE01EF);
+        if (variationSelector) {
+            return false;
+        }
+        switch (Character.getType(cp)) {
+            case Character.FORMAT, Character.CONTROL, Character.LINE_SEPARATOR, Character.PARAGRAPH_SEPARATOR,
+                    Character.PRIVATE_USE, Character.UNASSIGNED, Character.SURROGATE -> {
+                return true;
+            }
+            default -> {
+            }
+        }
+        // Default-ignorables that aren't format characters: they draw as nothing.
+        if (cp == 0x034F || cp == 0x115F || cp == 0x1160 || cp == 0x17B4 || cp == 0x17B5 || (cp >= 0x180B && cp <= 0x180F)
+                || cp == 0x3164 || cp == 0xFFA0 || (cp >= 0xFFF0 && cp <= 0xFFF8) || (cp >= 0x1BCA0 && cp <= 0x1BCA3)
+                || (cp >= 0x1D173 && cp <= 0x1D17A) || (cp >= 0xE0000 && cp <= 0xE0FFF) || (cp >= 0x2060 && cp <= 0x206F)) {
+            return true;
+        }
+        // Noncharacters.
+        if ((cp >= 0xFDD0 && cp <= 0xFDEF) || (cp & 0xFFFE) == 0xFFFE) {
+            return true;
+        }
+        // Drawn like a slash or a backslash: a card would show a folder that isn't one.
+        return cp == 0x2215 || cp == 0x2044 || cp == 0xFF0F || cp == 0x29F8 || cp == 0x29F9 || cp == 0xFF3C
+                || cp == 0x2216 || cp == 0xFE68 || cp == 0x2571 || cp == 0x2572;
     }
 
     private static boolean reservedAnywhere(String path) {
@@ -218,8 +279,9 @@ public final class AgentFiles {
      */
     public Read read(String path, long offset) throws Refusal {
         String[] comps = path(path, false);
+        // An offset the file doesn't have is the offset's word, never the path's: the path is right.
         if (offset < 0) {
-            throw new Refusal("path");
+            throw new Refusal("offset");
         }
         SafeTree.Opened opened;
         try {
@@ -244,7 +306,7 @@ public final class AgentFiles {
                 throw new Refusal("not_text");
             }
             if (offset > size) {
-                throw new Refusal("path");
+                throw new Refusal("offset");
             }
             return textPage(ch, size, offset);
         } catch (IOException e) {
@@ -258,7 +320,8 @@ public final class AgentFiles {
         fill(ch, offset, bytes);
         bytes.flip();
         if (offset > 0 && want > 0 && (bytes.get(0) & 0xC0) == 0x80) {
-            throw new Refusal("path");
+            // Inside a character: not a `next` this file gave.
+            throw new Refusal("offset");
         }
         CharsetDecoder decoder = StandardCharsets.UTF_8.newDecoder()
                 .onMalformedInput(CodingErrorAction.REPORT)
@@ -667,6 +730,92 @@ public final class AgentFiles {
             tree.lock.unlock();
         }
         quota.forget();
+    }
+
+    // ---- done without asking (draft ADR §15): the switch's folder, and the undo
+
+    /**
+     * Whether {@code path} is inside the switch's {@code folder}, by Files' own parts (both read as {@link #path} reads
+     * them): the folder's every part equal to the path's, and the path at least one part longer. {@code Research2/x},
+     * {@code research/x} and a look-alike {@code Reѕearch/x} aren't inside {@code Research}; nothing is inside the top.
+     * The write itself walks every part with links never followed, so a link at or under the folder is never gone through.
+     *
+     * @throws Refusal {@code place} when it isn't; {@code path} for a path Files doesn't take
+     */
+    public void requireInside(String path, String folder) throws Refusal {
+        String[] comps = path(path, false);
+        String[] place;
+        try {
+            place = folder == null ? null : path(folder, false);
+        } catch (Refusal e) {
+            place = null;
+        }
+        if (place == null || place.length == 0 || comps.length <= place.length
+                || !Arrays.equals(Arrays.copyOf(comps, place.length), place)) {
+            throw new Refusal("place");
+        }
+    }
+
+    /**
+     * The undo of a file an agent saved without asking: to the trash, only while it's still the file the agent wrote
+     * (the same SHA-256) and a plain file. A file the member has changed or moved since stays as it is.
+     *
+     * @throws Refusal {@code changed} when it isn't as the agent left it, or isn't there
+     */
+    public void trashIfUnchanged(String path, String sha256) throws Refusal {
+        String[] comps = path(path, false);
+        tree.lock.lock();
+        try {
+            SafeTree.Entry entry = tree.stat(comps);
+            if (entry == null || entry.dir()) {
+                throw new Refusal("changed");
+            }
+            Before now = beforeOf(comps);
+            if (now == null || sha256 == null || !sha256.equals(now.sha256())) {
+                throw new Refusal("changed");
+            }
+            trash.put(comps, PathRules.join(comps), false);
+            feed.dir(PathRules.join(Arrays.copyOf(comps, comps.length - 1)));
+            feed.trash();
+        } catch (SafeTree.TreeException e) {
+            throw e.kind() == SafeTree.Kind.NOT_FOUND || e.kind() == SafeTree.Kind.NOT_A_DIR ? new Refusal("changed") : refusal(e, "changed");
+        } finally {
+            tree.lock.unlock();
+        }
+        quota.forget();
+    }
+
+    /**
+     * The undo of a folder an agent made without asking: to the trash, only while it's still an empty folder.
+     *
+     * @throws Refusal {@code changed} when something is in it, or it isn't there as a folder
+     */
+    public void trashIfEmptyFolder(String path) throws Refusal {
+        String[] comps = path(path, false);
+        tree.lock.lock();
+        try {
+            SafeTree.Entry entry = tree.stat(comps);
+            if (entry == null || !entry.dir() || !tree.names(comps).isEmpty()) {
+                throw new Refusal("changed");
+            }
+            trash.put(comps, PathRules.join(comps), true);
+            feed.dir(PathRules.join(Arrays.copyOf(comps, comps.length - 1)));
+            feed.trash();
+        } catch (SafeTree.TreeException e) {
+            throw e.kind() == SafeTree.Kind.NOT_FOUND || e.kind() == SafeTree.Kind.NOT_A_DIR ? new Refusal("changed") : refusal(e, "changed");
+        } finally {
+            tree.lock.unlock();
+        }
+        quota.forget();
+    }
+
+    /** The SHA-256 of bytes, as {@link #fileBefore} reads a file's. */
+    public static String sha256(byte[] data) {
+        try {
+            return HexFormat.of().formatHex(MessageDigest.getInstance("SHA-256").digest(data));
+        } catch (NoSuchAlgorithmException e) {
+            throw new IllegalStateException(e);
+        }
     }
 
     // ---- internals

@@ -8,7 +8,7 @@ import { create } from 'zustand';
 import { camera } from '../canvas/controller';
 import { adultOnly, currentBand, mayHaveApp } from '../platform/age';
 import { getMe } from '../platform/api';
-import { loadedConfig, supportAddress } from '../platform/clientConfig';
+import { getClientConfig, loadedConfig, supportAddress } from '../platform/clientConfig';
 import { applyDeskProgress, useDeskStore } from '../state/deskStore';
 import { getView, useViewStore } from '../state/viewStore';
 import { holdClose, letClose } from '../shell/closeGuard';
@@ -18,10 +18,15 @@ import { agentsSeen, watchUploads } from '../setup/used';
 import { isLimitedDesk } from './limited';
 import { trafficHold } from './trafficStop';
 import { activityOfAgents, deskSummary } from './agentStatus';
+import { carryBetween, stopCarrying } from './carrierDoor';
 import { lookedAtDesk, shownDesk } from './attention';
 import { LastSound } from './sound';
 import { IDLE_CHECK_MS, IdleRule } from './idle';
-import { membershipBack } from './rtc/policy';
+import { membershipBack } from '../platform/tiers';
+import { isGuildPanel } from '../guild/panel';
+import { watchTodoBadge } from './todoBadge';
+import { courierOn } from '../apps/courier/door';
+import { loadCourierTile } from '../apps/chunks';
 import { createDeskLink, type AgentActivity, type AppSummary, type DeskLink, type DeskRefusal, type DeskStatus, type LinkDetails, type LinkState, type SummaryMessage } from './deskLink';
 
 export interface LiveDesk {
@@ -137,7 +142,9 @@ function flush(): void {
     whenStill(() => {
       const msg = currentBand() === 'teen' ? withoutAdultOnly(queued) : queued;
       const cur = getLive(deskId);
-      patch(deskId, { seq: msg.seq, agent: msg.agent ?? cur.agent, apps: msg.type === 'snapshot' ? (msg.apps ?? {}) : { ...cur.apps, ...msg.apps } });
+      // Courier's tile is the office's own reading (`apps/courier/tile.ts`), never a desk's summary word.
+      // Courier's tile is the office's own reading (`apps/courier/tile.ts`), never a desk's summary word.
+      patch(deskId, { seq: msg.seq, agent: msg.agent ?? cur.agent, apps: { ...(msg.type === 'snapshot' ? msg.apps : { ...cur.apps, ...msg.apps }), courier: cur.apps['courier'] as AppSummary } });
     });
   }
   pending.clear();
@@ -151,9 +158,22 @@ function withoutAdultOnly<T extends { agent?: AgentActivity; apps?: Record<strin
 
 /** `/v1/me` has just said this member is a teen: what the desks have said so far goes too, and no link asks for the Agent's state. */
 export function dropAdultOnlySummaries(): void {
+  stopCarrying(); // a teen has no Agent, so nothing is carried between their desks either
   for (const held of links.values()) held.dropAgents?.();
   dropRoster();
   whenStill(() => useLiveStore.setState((s) => ({ desks: Object.fromEntries(Object.entries(s.desks).map(([id, live]) => [id, withoutAdultOnly(live)])) })));
+}
+
+/**
+ * An app's own word on its tile, beside whatever `summary` said of the others: To-do's count, Courier's count and names
+ * (`apps/courier/tile.ts`). Nothing renders when it's the same.
+ */
+function noteApp(deskId: string, app: string, said: AppSummary): void {
+  whenStill(() => {
+    const cur = getLive(deskId).apps;
+    const next = { ...cur[app], ...said };
+    if (JSON.stringify(next) !== JSON.stringify(cur[app])) patch(deskId, { apps: { ...cur, [app]: next } });
+  });
 }
 
 function enqueue(deskId: string, msg: SummaryMessage): void {
@@ -204,6 +224,16 @@ export function setOfficeShown(on: boolean): void {
   applyAttention();
 }
 
+/**
+ * Maia Mode's room (`maiamode/`): the desks are unseen, so every desk hears `seen: false`, except the one whose app the
+ * viewport shows. `undefined` is the office's own rule again.
+ */
+let roomLook: string | null | undefined;
+export function setRoomLook(deskId: string | null | undefined): void {
+  roomLook = deskId;
+  applyAttention();
+}
+
 /** When each desk's sound last reached this tab, across its sessions (`sound.ts`). */
 const heard = new Map<string, LastSound>();
 let listenTimer = 0;
@@ -225,10 +255,10 @@ function applyAttention(): void {
   window.clearTimeout(listenTimer);
   listenTimer = 0;
   const view = getView();
-  const shown = shownDesk(view, officeShown);
+  const shown = roomLook !== undefined ? roomLook : shownDesk(view, officeShown);
   const left = document.hidden && shown ? soundLeft(shown) : 0;
   if (left > 0) listenTimer = window.setTimeout(applyAttention, left);
-  const looked = lookedAtDesk(view, document.hidden, officeShown, left > 0);
+  const looked = roomLook !== undefined ? (document.hidden && !(left > 0) ? null : roomLook) : lookedAtDesk(view, document.hidden, officeShown, left > 0);
   for (const [id, { link }] of links) link?.setSeen(id === looked);
 }
 useViewStore.subscribe((v, was) => {
@@ -369,6 +399,11 @@ function dropLink(id: string, entry: { link: DeskLink | null; unsub: () => void 
   heard.delete(id);
 }
 
+/** The links the office holds now, to the carrier's door (W6): it carries between the member's own desks' alone. */
+function carry(): void {
+  carryBetween([...links.values()].flatMap((e) => (e.link ? [e.link] : [])));
+}
+
 /** Keep one link per given desk: open new ones, close the rest. */
 export async function syncLinks(deskIds: readonly string[]): Promise<void> {
   for (const [id, entry] of links) {
@@ -436,6 +471,18 @@ export async function syncLinks(deskIds: readonly string[]): Promise<void> {
     });
     // Installed apps (ADR 0054): their tiles' widgets and the desk menu's Apps row. A deskd before API.md section 19 refuses it.
     const offApps = link.subscribe('apps', (msg) => noteApps(id, msg), () => appsHost?.noteAppsRefused(id));
+    // To-do's tile count (API.md section 22): `todo.summary`'s badge on each `todo` change. Never a Guild Desk's panel, which
+    // has no To-do tile, nor with To-do's kill switch off.
+    const offTodo = isGuildPanel(id) ? () => undefined : watchTodoBadge(link, (badge) => noteApp(id, 'todo', { badge }), () => loadedConfig()?.todo?.enabled !== false);
+    // Courier's tile (Wave 3.4), its own chunk, only while its switch is on; never a Guild Desk's or a teen's.
+    let offCourier = (): void => undefined;
+    if (!isGuildPanel(id)) {
+      void getClientConfig()
+        .then((cfg) => (courierOn(cfg) && currentBand() !== 'teen' ? loadCourierTile() : null))
+        .then((m) => {
+          if (m && links.get(id)?.link === link) offCourier = m.watchCourierTile(link, noteApp);
+        }, () => undefined);
+    }
     links.set(id, {
       link,
       unsub: () => {
@@ -445,6 +492,8 @@ export async function syncLinks(deskIds: readonly string[]): Promise<void> {
         dropAgents();
         offAttention();
         offApps();
+        offTodo();
+        offCourier();
       },
       dropAgents,
     });
@@ -457,6 +506,7 @@ export async function syncLinks(deskIds: readonly string[]): Promise<void> {
     if (wakeAsked && !heldForTraffic(id)) link.wake();
     wakeWithOffice(id);
   }
+  carry();
 }
 
 /**
@@ -468,6 +518,7 @@ export async function syncLinks(deskIds: readonly string[]): Promise<void> {
 export function forgetLinks(which: (deskId: string) => boolean): void {
   for (const [id, entry] of links) if (which(id)) dropLink(id, entry);
   for (const id of wakeOnceLinked) if (which(id)) wakeOnceLinked.delete(id);
+  carry();
   for (const id of pending.keys()) if (which(id)) pending.delete(id);
   const others = <T>(desks: Record<string, T>): Record<string, T> => Object.fromEntries(Object.entries(desks).filter(([id]) => !which(id)));
   // After anything a moving camera holds back, so a word their last session sent can't land after this.
@@ -481,6 +532,7 @@ export function forgetLinks(which: (deskId: string) => boolean): void {
 /** The office is over for this member: signed out, refused, or gone to sign in. Nothing left can reach a desk, so nothing holds the page. */
 export function closeAllLinks(): void {
   letClose();
+  stopCarrying();
   for (const entry of links.values()) {
     entry.unsub();
     entry.link?.close();

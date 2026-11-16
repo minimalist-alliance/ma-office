@@ -97,8 +97,8 @@ p {
 /* The office background (ADR 0094): the member's scene under the desks, on its own compositor layer like the gradient, with
    the theme's scrim (surface.backdrop) over it so text and the rings keep their contrast on any picture. Shown only while
    <html> has data-backdrop: theme/boot.ts paints the last scene's colour and tiny placeholder from the mirror, and
-   theme/backdrop.ts (after the first paint) adds the <picture>, which fades in over 300 ms when it has loaded. "Plain
-   background" hides it with the gradient. The picture is blurred a little, so the desks read over any detail; it's one
+   theme/backdrop.ts (after the first paint) adds the <picture>, which fades in over 300 ms when it has loaded. The automatic
+   flat ground on very large screens (`theme/ground.ts`) drops only the gradient; a scene the member chose always shows. The picture is blurred a little, so the desks read over any detail; it's one
    rasterized layer, so a camera move costs nothing more (tests/perf). */
 .ma-backdrop {
   display: none;
@@ -114,10 +114,6 @@ p {
 }
 :root[data-backdrop] .ma-backdrop {
   display: block;
-}
-/* Over the rule above, so "Plain background" wins. */
-:root.flat-ground .ma-backdrop {
-  display: none;
 }
 .ma-backdrop-img {
   position: absolute;
@@ -239,7 +235,7 @@ p {
 :root[data-backdrop] .proxy.editing::after {
   box-shadow: 0 0 0 1px var(--ma-ring-halo);
 }
-:root[data-backdrop] :is(.topbar :focus-visible, .bottombar :focus-visible, .bw:focus-visible, .setup-circle:focus-visible):not(.menu *, .ma-window *) {
+:root[data-backdrop] :is(.topbar :focus-visible, .bottombar :focus-visible, .bw:focus-visible, .setup-circle:focus-visible):not(.menu *, .mark-pop *, .ma-window *) {
   box-shadow: 0 0 0 5px var(--ma-ring-halo);
 }
 
@@ -270,17 +266,48 @@ p {
   pointer-events: auto;
 }
 .home-mark {
+  position: relative;
   display: flex;
   margin: 0;
   line-height: 0;
 }
+/* The mark's button (`TopBar.tsx` `HomeMark`, the mark menu's spec): the mark plus 6 px a side and 8 px above and below, a
+   57 x 44 target with no box of its own in the bar, since the same margin is taken back: in layout it's still the mark's
+   45 x 28, so `useScopeFolds`' measure and the folded scope button never move. Its background is the plate: the bar's chip
+   look while hovered (with a mouse), focused or while its menu is there, the ribbon's soft blue while open. Over the menu's
+   layer (40), so the bridge under it never takes the plate's press. The menu itself is `chrome/markMenu.css`. */
 .home-mark-btn {
-  padding: 0;
+  position: relative;
+  z-index: 41;
+  display: block;
+  padding: 8px 6px;
+  margin: -8px -6px;
   border: 0;
-  border-radius: 8px;
+  border-radius: 22px;
   background: none;
   line-height: 0;
   cursor: pointer;
+  transition: background-color 120ms, box-shadow 120ms;
+}
+@media (hover: hover) {
+  .home-mark-btn:hover {
+    background-color: var(--ma-surface-chrome);
+    box-shadow: inset 0 0 0 1px var(--ma-border);
+  }
+}
+.home-mark-btn:focus-visible,
+.home-mark:has(.mark-pop) .home-mark-btn {
+  background-color: var(--ma-surface-chrome);
+  box-shadow: inset 0 0 0 1px var(--ma-border);
+}
+/* Over the rule above, whose `:has` weighs more: open is the ribbon's blue. */
+.home-mark .home-mark-btn[aria-expanded='true'] {
+  background-color: var(--ma-accent-subtle);
+}
+@media (prefers-reduced-motion: reduce) {
+  .home-mark-btn {
+    transition: none;
+  }
 }
 .home-mark-img {
   display: block;
@@ -310,11 +337,67 @@ p {
   pointer-events: auto;
 }
 @media (max-width: 599px) {
-  /* A phone: with several desks the scope switch and the buttons don't fit one row, so they wrap, from the right. */
+  /* A phone, where the scope switch folds before it would wrap (below); were it ever to meet the buttons, they wrap from the
+     right rather than run off the screen. */
   .top-actions {
     flex-wrap: wrap;
     justify-content: flex-end;
   }
+}
+/* The scope switch folded into one menu button after the mark (`chrome/TopBar.tsx`, `useScopeFolds`): in short-viewport
+   mode, and wherever the whole switch and the buttons on its right don't fit one row, as on a phone with two desks or
+   more. The bar is then one row: the button gives up its name's end (an ellipsis) before anything wraps. */
+.topbar.folded {
+  flex-wrap: nowrap;
+}
+.topbar.folded > .home-mark,
+.topbar.folded > .top-actions {
+  flex: none;
+}
+.topbar > .scope-menu {
+  flex: 0 1 auto;
+  min-width: 0;
+  margin-right: auto;
+}
+/* With a scope switch, a phone's bar is a little tighter, folded or not, so the measure (`useScopeFolds`) is the same either
+   way: the mark 8 px from what follows, and under 375 px short-viewport mode's row, the mark and the scope's button 8 px
+   apart, the button 4 px from the four, which are 36 px and 4 px apart (8 with a finger, so each keeps a whole 44 px
+   target). So "Personal" is whole from 360 px with a finger, "Work" and "Guild" from 320 with a mouse. (Short-viewport
+   mode, under 400 px high, has its own row, below.) */
+@media (max-width: 599px) and (min-height: 400px) {
+  .topbar.has-scope {
+    gap: 8px;
+  }
+}
+@media (max-width: 374.98px) and (min-height: 400px) {
+  .topbar.has-scope {
+    gap: 4px;
+  }
+  .topbar.has-scope > .home-mark {
+    margin-right: 4px;
+  }
+  .topbar.has-scope .top-actions {
+    gap: 4px;
+  }
+  .topbar.has-scope .top-actions .icon-btn {
+    width: 36px;
+    height: 36px;
+  }
+}
+@media (max-width: 374.98px) and (min-height: 400px) and (pointer: coarse) {
+  .topbar.has-scope .top-actions {
+    gap: 8px;
+  }
+}
+/* What the whole switch would take (`useScopeFolds` measures it): a copy, never seen, heard or pressed, its labels at the
+   chosen one's weight, held to the right edge so that however wide it is it never scrolls the page sideways. */
+.topbar > .scope-ghost {
+  position: absolute;
+  top: 0;
+  right: 0;
+  width: max-content;
+  visibility: hidden;
+  pointer-events: none;
 }
 
 .segmented {
@@ -325,7 +408,8 @@ p {
   border-radius: 999px;
   background: var(--ma-switcher-track);
 }
-.segmented button {
+.segmented button,
+.scope-ghost > span {
   display: inline-flex;
   align-items: center;
   justify-content: center;
@@ -348,6 +432,9 @@ p {
   border-color: var(--ma-border-strong);
   font-weight: 600;
 }
+.scope-ghost > span {
+  font-weight: 600;
+}
 .segmented.theme-switch {
   display: flex;
 }
@@ -363,22 +450,23 @@ p {
   width: 38px;
   height: 38px;
   padding: 0;
-  border: 1px solid var(--ma-border);
+  border: 1px solid var(--ma-glass-line, var(--ma-border));
   border-radius: 999px;
   background: var(--ma-surface-window);
   color: var(--ma-text-primary);
 }
-.icon-btn:hover:not(:disabled) {
+/* A button in glass (`styles/glass.css`) shows its states over its body: "the office's chrome in glass", at the end. */
+.icon-btn:where(:not(.ma-glass)):hover:not(:disabled) {
   background: var(--ma-surface-fill);
 }
 .icon-btn:disabled {
   opacity: 0.35;
   cursor: default;
 }
-.icon-btn.chrome {
+.icon-btn.chrome:where(:not(.ma-glass)) {
   background: var(--ma-surface-chrome);
 }
-.icon-btn.chrome.on {
+.icon-btn.chrome.on:where(:not(.ma-glass)) {
   background: var(--ma-surface-fill-strong);
 }
 .icon-btn.sm {
@@ -433,7 +521,7 @@ p {
   text-overflow: ellipsis;
   padding: 6px 14px;
   border-radius: 999px;
-  background: var(--ma-surface-chrome);
+  --ma-glass-solid-bg: var(--ma-surface-chrome);
   font-size: 13px;
   line-height: 18px;
   color: var(--ma-text-secondary);
@@ -445,9 +533,9 @@ p {
   align-items: center;
   gap: 4px;
   padding: 3px; /* 4 px with its 1 px ring, so the ring moves nothing in the bars */
-  border: 1px solid var(--ma-border);
+  border: 1px solid var(--ma-glass-line, var(--ma-border));
   border-radius: 999px;
-  background: var(--ma-surface-chrome);
+  --ma-glass-solid-bg: var(--ma-surface-chrome);
 }
 .desk-nav .icon-btn,
 .zoom-ctl .icon-btn {
@@ -509,7 +597,7 @@ p {
   padding: 10px 16px;
   border-radius: 12px;
   background: var(--ma-surface-overlay);
-  border: 1px solid var(--ma-border);
+  border: 1px solid var(--ma-glass-line, var(--ma-border));
   color: var(--ma-text-primary);
   font-size: 13px;
   box-shadow: var(--ma-elevation-menu);
@@ -605,12 +693,15 @@ p {
   max-width: min(460px, calc(100% - 32px));
   padding: 10px 16px;
   border-radius: 12px;
-  background: var(--ma-surface-overlay);
-  border: 1px solid var(--ma-border);
+  --ma-glass-fill: var(--ma-glass-body-full);
+  --ma-glass-solid-bg: var(--ma-surface-overlay);
+  --ma-glass-solid-shadow: var(--ma-elevation-menu);
+  --ma-glass-lift: var(--ma-elevation-menu);
+  --ma-glass-edge: 1px;
+  border: 1px solid var(--ma-glass-line, var(--ma-border));
   color: var(--ma-text-primary);
   font-size: 13px;
   text-align: center;
-  box-shadow: var(--ma-elevation-menu);
   z-index: 9;
 }
 .closed-link {
@@ -628,7 +719,7 @@ p {
 .menu.desk-menu {
   position: fixed;
   right: auto;
-  width: 220px;
+  width: 236px;
   padding: 6px;
   border-radius: 12px;
 }
@@ -685,7 +776,7 @@ p {
 .desk-style-row {
   display: flex;
   flex-wrap: nowrap;
-  gap: 12px;
+  gap: 8px; /* six 26 px swatches fill the 236 px menu's row exactly */
   padding: 4px;
 }
 .desk-style-swatch {
@@ -828,8 +919,12 @@ p {
 /* ------------------------------------------------------------ a desk's hidden apps (ADR 0064) */
 .menu.desk-menu.hidden-list {
   width: 188px;
-  /* Six rows of 40, with the menu's padding and border, and then it scrolls. */
-  max-height: calc(6 * 40px + 2 * 6px + 2px);
+}
+/* Six rows of 40, and then they scroll, inside the menu (whose light stays put). */
+.hidden-list-rows {
+  max-height: calc(6 * 40px);
+  overflow-y: auto;
+  overscroll-behavior: contain;
 }
 .menu.desk-menu .hidden-list-item {
   display: flex;
@@ -873,6 +968,147 @@ p {
   }
 }
 
+/* ------------------------------------------------------------ a range slider (the app zoom popout's; the theme sliders')
+   The office's one range style, drawn from tokens, never the browser's: Chromium's dark scheme gives the native track a
+   near-black fill with a grey rim, a stripe on Zen's and Dark's slate popovers (the Product Designer, BRAND-19/20).
+   A 4 px `fillStrong` track; its filled part and the 16 px thumb are the accent, the thumb with a 2 px `overlay` rim, so it
+   cuts the track as it passes; the focus ring is the office's own (`:focus-visible`). The component sets `--ma-range-at`,
+   how far along the value is from 0 to 1, and the fill ends at the thumb's centre. */
+.ma-range {
+  --ma-range-at: 0;
+  -webkit-appearance: none;
+  appearance: none;
+  background: transparent;
+  cursor: pointer;
+}
+.ma-range::-webkit-slider-runnable-track {
+  height: 4px;
+  border-radius: 999px;
+  background: linear-gradient(to right, var(--ma-accent) calc(10px + (100% - 20px) * var(--ma-range-at)), var(--ma-surface-fill-strong) 0);
+}
+.ma-range::-webkit-slider-thumb {
+  -webkit-appearance: none;
+  appearance: none;
+  box-sizing: content-box;
+  width: 16px;
+  height: 16px;
+  margin-top: -8px;
+  border: 2px solid var(--ma-surface-overlay);
+  border-radius: 50%;
+  background: var(--ma-accent);
+}
+.ma-range::-moz-range-track {
+  height: 4px;
+  border-radius: 999px;
+  background: var(--ma-surface-fill-strong);
+}
+.ma-range::-moz-range-progress {
+  height: 4px;
+  border-radius: 999px;
+  background: var(--ma-accent);
+}
+.ma-range::-moz-range-thumb {
+  box-sizing: content-box;
+  width: 16px;
+  height: 16px;
+  border: 2px solid var(--ma-surface-overlay);
+  border-radius: 50%;
+  background: var(--ma-accent);
+}
+.ma-range:hover::-webkit-slider-thumb {
+  background: var(--ma-accent-hover);
+}
+.ma-range:hover::-moz-range-thumb {
+  background: var(--ma-accent-hover);
+}
+.ma-range:active::-webkit-slider-thumb {
+  background: var(--ma-accent-pressed);
+}
+.ma-range:active::-moz-range-thumb {
+  background: var(--ma-accent-pressed);
+}
+/* Light: the unfilled track is the strong border, 3.7:1 on the popover's white; `fillStrong` there is 1.3:1, too faint to
+   see where the range runs (WCAG 1.4.11's 3:1 for a control's parts; the coordinator, Nov 15). Zen and Dark keep theirs. */
+:root[data-theme='light'] .ma-range::-webkit-slider-runnable-track {
+  background: linear-gradient(to right, var(--ma-accent) calc(10px + (100% - 20px) * var(--ma-range-at)), var(--ma-border-strong) 0);
+}
+:root[data-theme='light'] .ma-range::-moz-range-track {
+  background: var(--ma-border-strong);
+}
+/* High contrast: the system's own control, which follows the member's colours. */
+@media (forced-colors: active) {
+  .ma-range {
+    -webkit-appearance: auto;
+    appearance: auto;
+  }
+}
+
+/* ------------------------------------------------------------ the theme sliders (`chrome/ThemeSliders.tsx`)
+   Under the theme picker: a name and the office's range (`.ma-range`) on each row; "Reset" on the Theme label's line. */
+.menu-label-row {
+  display: flex;
+  align-items: center;
+  justify-content: space-between;
+  gap: 8px;
+  min-height: 26px;
+}
+.theme-tune {
+  display: grid;
+  gap: 2px;
+  margin-top: 6px;
+}
+.theme-tune-row {
+  display: grid;
+  grid-template-columns: 72px 1fr;
+  align-items: center;
+  gap: 8px;
+  padding: 0 6px;
+  min-height: 36px;
+}
+.theme-tune-name {
+  font-size: 13px;
+  line-height: 18px;
+  color: var(--ma-text-secondary);
+}
+.theme-tune-slider {
+  width: 100%;
+  height: 30px;
+  margin: 0;
+  border-radius: 999px;
+}
+.theme-tune-slider:focus-visible {
+  outline-offset: 3px;
+}
+.theme-tune-slider:disabled {
+  cursor: default;
+}
+.theme-tune-reset {
+  padding: 2px 6px;
+  border: 0;
+  border-radius: 6px;
+  background: none;
+  color: var(--ma-text-link);
+  font: inherit;
+  font-size: 13px;
+  line-height: 18px;
+  cursor: pointer;
+}
+.theme-tune-reset:hover {
+  background: var(--ma-surface-fill);
+}
+@media (pointer: coarse) {
+  .theme-tune-row {
+    min-height: 44px;
+  }
+  /* A finger's 44 px and a little over, the whole row the slider (release 6's touch gate, touch.shell.spec.ts). */
+  .theme-tune-slider {
+    height: 48px;
+  }
+  .theme-tune-reset {
+    min-height: 34px;
+  }
+}
+
 /* ------------------------------------------------------------ account menu */
 .menu-wrap {
   position: relative;
@@ -885,7 +1121,7 @@ p {
   max-height: calc(100dvh - 90px);
   overflow-y: auto;
   padding: 12px;
-  border: 1px solid var(--ma-border);
+  border: 1px solid var(--ma-glass-line, var(--ma-border));
   border-radius: 16px;
   background: var(--ma-surface-overlay);
   box-shadow: var(--ma-elevation-menu);
@@ -935,36 +1171,39 @@ p {
 
 /* ------------------------------------------------------------ the member's avatar (task 45) */
 /* The Product Designer's spec (design-drafts/badges, spec.json): a circle of D px with up to two initials on one of six
-   tints, and option 1's seal at the lower right, cut out of the circle by a gap so it reads on any surface. */
+   tints, and option 1's seal at the lower right, cut out of the circle by a gap so it reads on any surface. The seal's
+   centre is at 86 % of the circle across and down, so it follows the circle at any size. Lighter since Nov 16 (the owner:
+   "After making myself a custom avatar, the thing is awkward"): 12 px with a 1.25 px gap on the button, 13 and 1.5 on the
+   menu's 40, where the spec had 12 and 14 on 32 and 40. */
 .avatar {
+  --seal-c: 86%;
   position: relative;
   flex: none;
   display: block;
   width: var(--av-d);
   height: var(--av-d);
-  overflow: visible; /* the seal may pass the box by up to 2.25 px */
+  overflow: visible; /* the seal may pass the box by up to 1 px */
 }
 .avatar.s32 {
   --av-d: 32px;
   --av-font: 12.5px;
   --av-weight: 750;
   --seal-d: 12px;
-  --seal-gap: 1.5px;
-  --seal-c: 27.6px;
+  --seal-gap: 1.25px;
 }
 .avatar.s40 {
   --av-d: 40px;
   --av-font: 15.5px;
   --av-weight: 700;
-  --seal-d: 14px;
-  --seal-gap: 1.75px;
-  --seal-c: 34.4px;
+  --seal-d: 13px;
+  --seal-gap: 1.5px;
 }
 .avatar-face {
   display: grid;
   place-items: center;
   width: 100%;
   height: 100%;
+  overflow: hidden; /* a built avatar's closer framing is cut to the circle */
   border-radius: 50%;
   background: linear-gradient(var(--av-top), var(--av-bottom));
   box-shadow: inset 0 0 0 1px var(--ma-avatar-hairline);
@@ -984,6 +1223,15 @@ p {
   border-radius: 50%;
   object-fit: cover;
 }
+/* A built avatar is framed a little closer than the kit draws it: 1.14 times about a point 24/256 down its middle line, so
+   the head sits in the middle of the circle with the room the kit gives above the hair, the shoulders still show, and the
+   kit's own disc still covers the whole circle. The same at every size (24, 32 or 40), so a member looks the same
+   everywhere. A picture is the member's own crop and is never moved. */
+.avatar-picture.avatar-built {
+  border-radius: 0;
+  transform: scale(1.14);
+  transform-origin: 50% 9.375%;
+}
 /* The initials are a picture, not text: see Avatar.tsx. */
 .avatar-face::before {
   content: attr(data-initials);
@@ -994,10 +1242,10 @@ p {
   mask: radial-gradient(circle at var(--seal-c) var(--seal-c), transparent calc(var(--seal-d) / 2 + var(--seal-gap)), black calc(var(--seal-d) / 2 + var(--seal-gap) + 0.5px));
 }
 .avatar[data-hue='blue'] { --av-top: var(--ma-avatar-blue-top); --av-bottom: var(--ma-avatar-blue-bottom); --av-ink: var(--ma-avatar-blue-ink); }
-.avatar[data-hue='green'] { --av-top: var(--ma-avatar-green-top); --av-bottom: var(--ma-avatar-green-bottom); --av-ink: var(--ma-avatar-green-ink); }
-.avatar[data-hue='amber'] { --av-top: var(--ma-avatar-amber-top); --av-bottom: var(--ma-avatar-amber-bottom); --av-ink: var(--ma-avatar-amber-ink); }
-.avatar[data-hue='rose'] { --av-top: var(--ma-avatar-rose-top); --av-bottom: var(--ma-avatar-rose-bottom); --av-ink: var(--ma-avatar-rose-ink); }
-.avatar[data-hue='violet'] { --av-top: var(--ma-avatar-violet-top); --av-bottom: var(--ma-avatar-violet-bottom); --av-ink: var(--ma-avatar-violet-ink); }
+.avatar[data-hue='denim'] { --av-top: var(--ma-avatar-denim-top); --av-bottom: var(--ma-avatar-denim-bottom); --av-ink: var(--ma-avatar-denim-ink); }
+.avatar[data-hue='mist'] { --av-top: var(--ma-avatar-mist-top); --av-bottom: var(--ma-avatar-mist-bottom); --av-ink: var(--ma-avatar-mist-ink); }
+.avatar[data-hue='periwinkle'] { --av-top: var(--ma-avatar-periwinkle-top); --av-bottom: var(--ma-avatar-periwinkle-bottom); --av-ink: var(--ma-avatar-periwinkle-ink); }
+.avatar[data-hue='steel'] { --av-top: var(--ma-avatar-steel-top); --av-bottom: var(--ma-avatar-steel-bottom); --av-ink: var(--ma-avatar-steel-ink); }
 .avatar[data-hue='slate'] { --av-top: var(--ma-avatar-slate-top); --av-bottom: var(--ma-avatar-slate-bottom); --av-ink: var(--ma-avatar-slate-ink); }
 .avatar-seal {
   position: absolute;
@@ -1027,15 +1275,246 @@ p {
   --seal-glyph: url('../assets/badges/star.svg');
   background: linear-gradient(var(--ma-seal-lead-top), var(--ma-seal-lead-bottom));
 }
-/* The account button holds the 32 px avatar in its 38 px ring. */
+/* The account button is the avatar (the owner, Nov 16): the same round as the shield, full screen and bell beside it (38
+   px, 36 in short-viewport mode), with their edge, 1 px of `border` over `surface.chrome`. The avatar's own circle draws
+   that edge, so the seal's cut-out cuts it too, and the art runs right up to it: no ring round a smaller circle. Hover, a
+   press and the open menu strengthen the edge to `border.strong`, the quiet version of the fill its neighbours change. */
 .icon-btn.account-btn {
   overflow: visible;
+  /* Its row never hangs on its content's baseline: on an image's, it sat 6 px low and the bar grew 12 px taller. */
+  vertical-align: top;
+}
+.icon-btn.account-btn:has(> .avatar),
+.icon-btn.account-btn:has(> .avatar):is(:hover, :active, .on) {
+  border: 0;
+}
+/* In glass (release 6.10) the button keeps the recipe's body under the avatar: "the office's chrome in glass", at the end. */
+.icon-btn.account-btn:where(:not(.ma-glass)):has(> .avatar) {
+  background: none;
+}
+.account-btn > .avatar {
+  --av-d: 100%;
+  --av-font: 14px;
+}
+.account-btn > .avatar .avatar-face {
+  border: 1px solid var(--ma-border);
+  background: linear-gradient(var(--av-top), var(--av-bottom)) padding-box, var(--ma-surface-chrome) border-box;
+  box-shadow: none;
+}
+.account-btn:is(:hover, :active, .on) > .avatar .avatar-face {
+  border-color: var(--ma-border-strong);
 }
 .menu-label {
   padding: 4px 6px;
   font-size: 13px;
   line-height: 18px;
   color: var(--ma-text-tertiary);
+}
+/* ------------------------------------------------------------ the account menu's shape (`chrome/AccountPanel.tsx`)
+   Never taller than 60 % of the page, at any size (the owner, Nov 16), and its first view fits without scrolling: the member,
+   the theme, a row for each tucked section, Account settings and Sign out. Rows are 36 px with a mouse (44 with a finger,
+   below), the theme's label sits beside its switch, and a section opens in place, one at a time; if what's open can't fit,
+   the menu scrolls inside, under the member's header, which stays pinned (release 6.8's brand review: it was cut mid-line).
+   The keyboard's focus is brought into view below the header (`--acct-head`, its height, from `AccountPanel.tsx`). In glass
+   (release 6.10) a plate holds it and takes its place, edge and ground: "the office's chrome in glass", at the end. */
+.menu.account-menu {
+  max-height: min(60dvh, calc(100dvh - 90px));
+  overscroll-behavior: contain;
+  scroll-padding-top: var(--acct-head, 0px);
+}
+.account-menu .menu-item {
+  padding: 8px 6px;
+}
+/* One column: the left column's box goes, so the header's sticky reaches the whole menu (its containing block). Room at a
+   column's foot (`--acct-room`, while a section is open) lets the menu's scroll land on whole lines when it ends first. */
+.account-menu .acct-left {
+  display: contents;
+}
+.account-menu .acct-left,
+.account-menu .acct-account {
+  padding-bottom: var(--acct-room, 0px);
+}
+/* The member, pinned: out to the menu's edges and its top (the menu's 12 px padding taken in as its own), in the menu's own
+   colour, so what scrolls under it never shows through or above it. At rest it sits exactly where it did. A hairline at its
+   foot only while something is under it (`data-over`). A sticky box sticks inside its scroller's padding, so `top` is minus
+   the menu's padding: the header's own top edge stays on the menu's. It's over what's below it only while something is
+   under it, so at rest the theme radios' finger targets (`.segmented button::after`, which reach up into its padding) stay
+   whole. */
+.account-menu .menu-me {
+  position: sticky;
+  top: -12px;
+  margin: -12px -12px 0;
+  padding: 12px 18px 10px;
+  background: var(--ma-surface-overlay);
+}
+.account-menu .menu-me::after {
+  content: '';
+  position: absolute;
+  right: 12px;
+  bottom: 0;
+  left: 12px;
+  height: 1px;
+  background: var(--ma-border);
+  opacity: 0;
+  transition: opacity 120ms ease-out;
+}
+.account-menu .menu-me[data-over] {
+  z-index: 2;
+}
+.account-menu .menu-me[data-over]::after {
+  opacity: 1;
+}
+@media (prefers-reduced-motion: reduce) {
+  .account-menu .menu-me::after {
+    transition: none;
+  }
+}
+.menu-theme {
+  display: flex;
+  flex-wrap: wrap;
+  align-items: center;
+  justify-content: space-between;
+  gap: 4px 12px;
+  padding-bottom: 4px;
+}
+.menu-theme .theme-switch {
+  flex: 1 1 210px;
+  max-width: 236px;
+}
+.menu-disclosure-label {
+  flex: 1;
+  min-width: 0;
+}
+.menu-state {
+  margin-right: 8px;
+  font-size: 13px;
+  line-height: 18px;
+  color: var(--ma-text-secondary);
+}
+/* A section's contents, under its row: set in a little and kept apart from the rows around it by a hairline at its left, so
+   it reads as the row's own without a box. */
+.menu-section {
+  display: grid;
+  gap: 2px;
+  margin: 2px 0 6px 6px;
+  padding-left: 6px;
+  border-left: 1px solid var(--ma-border);
+}
+.menu-section > .mm-menu > .menu-sep:first-child {
+  display: none; /* Maia's rows open with a rule of their own; the section has its edge */
+}
+.menu-section .menu-label-row {
+  min-height: 24px;
+}
+.menu-section .bg-picker {
+  padding: 2px 0 0;
+}
+/* The swatches and the chosen scene's name start where "Background" and the section's other labels do, 6 px in (brand
+   review, release 6.8: they sat 2 px left of them); the chosen swatch's ring still has its room. */
+.menu-section .bg-picker-row,
+.menu-section .bg-picker-name {
+  padding-left: 6px;
+}
+/* A short screen that's wide enough (a phone on its side, a short window): the first view in two columns, the member and
+   their choices on the left, the account and signing out on the right, so it fits in 60 % of a 360 px page. Narrower, it's
+   one column and scrolls inside if it must. */
+@media (max-height: 399.98px) and (min-width: 560px) {
+  .menu.account-menu {
+    display: grid;
+    grid-template-columns: minmax(0, 1fr) minmax(0, 1fr);
+    align-items: start;
+    column-gap: 12px;
+    width: min(600px, calc(100vw - 32px));
+    padding: 8px 10px;
+  }
+  .account-menu .acct-sep-cols {
+    display: none;
+  }
+  /* Each column sticky, so only the taller one scrolls (the one with a section open) and the other stays whole beside it;
+     the header pinned at the top of the left one. */
+  .account-menu .acct-left,
+  .account-menu .acct-account {
+    position: sticky;
+    top: 0;
+  }
+  .account-menu .acct-left {
+    display: block;
+  }
+  .account-menu .acct-account {
+    padding-left: 12px;
+    border-left: 1px solid var(--ma-border);
+  }
+  .account-menu .menu-me {
+    top: -8px;
+    margin: -8px 0 0 -10px;
+    padding: 8px 6px 6px 16px;
+  }
+  .account-menu .menu-me::after {
+    right: 0;
+    left: 10px;
+  }
+  .account-menu .menu-sep {
+    margin: 4px 0;
+  }
+}
+
+/* ------------------------------------------------------------ Keyboard shortcuts (`chrome/ShortcutsDialog.tsx`)
+   A modal over the menu, in the top layer: the lists in one column, the install offer at the foot. Its own scroll past
+   80 % of the page; the head stays put. */
+.shortcuts-dialog {
+  width: min(440px, calc(100vw - 32px));
+  max-width: none;
+  max-height: min(80dvh, 720px);
+  margin: auto;
+  padding: 0 0 12px;
+  overflow-y: auto;
+  overscroll-behavior: contain;
+  border: 1px solid var(--ma-border);
+  border-radius: 16px;
+  background: var(--ma-surface-overlay);
+  color: var(--ma-text-primary);
+  box-shadow: var(--ma-elevation-menu);
+}
+.shortcuts-dialog:focus {
+  outline: none;
+}
+.shortcuts-dialog:focus-visible {
+  outline: 2px solid var(--ma-focus-ring);
+  outline-offset: 2px;
+}
+.shortcuts-dialog::backdrop {
+  background: var(--ma-surface-scrim);
+}
+.shortcuts-head {
+  position: sticky;
+  top: 0;
+  z-index: 1;
+  display: flex;
+  align-items: center;
+  justify-content: space-between;
+  gap: 12px;
+  padding: 12px 12px 8px 18px;
+  background: var(--ma-surface-overlay);
+}
+.shortcuts-head h2 {
+  margin: 0;
+  font-size: 15px;
+  line-height: 20px;
+  font-weight: 600;
+}
+.shortcuts-dialog .shortcuts {
+  padding: 0 12px;
+}
+.shortcuts-group {
+  margin-top: 6px;
+  color: var(--ma-text-tertiary);
+}
+.shortcuts-install {
+  display: grid;
+  gap: 2px;
+  margin-top: 6px;
+  padding-top: 6px;
+  border-top: 1px solid var(--ma-border);
 }
 .menu-item {
   display: block;
@@ -1050,16 +1529,11 @@ p {
 .menu-item:hover:not(:disabled):not([aria-disabled='true']) {
   background: var(--ma-surface-sunken);
 }
-/* A sign-out on its way: both buttons wait, quieter. "Sign out everywhere" is aria-disabled, so it keeps focus. */
+/* A row that waits (Sign out on its way, "Signing out…"), or one that can't act now: quieter. */
 .menu-item:disabled,
 .menu-item[aria-disabled='true'] {
   cursor: default;
   color: var(--ma-text-secondary);
-}
-/* "We couldn't sign you out everywhere": under its button, in the menu's own words size. */
-.menu-failed {
-  padding: 2px 6px 6px;
-  color: var(--ma-text-primary);
 }
 a.menu-item {
   color: inherit;
@@ -1432,6 +1906,11 @@ a.menu-item {
   inset: 0;
   background: var(--ma-surface-scrim);
 }
+/* The window lift (ADR 0029's addendum, the owner's pick of the Designer's option 5): a window sits on a tight contact
+   shadow under a short soft one (`--ma-window-lift-rest`, and `-active` for the active or full window), and its edge is lit
+   from above, the top strongest and the left faint (`--ma-window-lift-edge`). The edge is a ::after over the window's
+   content, because its panes paint their own grounds over an inset shadow on the window itself. The window is a stacking
+   context of its own (its inline z-index), so the edge's z-index stays inside it. */
 .ma-window {
   position: absolute;
   display: flex;
@@ -1439,13 +1918,22 @@ a.menu-item {
   overflow: hidden;
   border-radius: 16px;
   background: var(--ma-surface-window);
-  box-shadow: var(--ma-elevation-menu);
+  box-shadow: var(--ma-window-lift-rest);
+}
+.ma-window::after {
+  content: '';
+  position: absolute;
+  inset: 0;
+  z-index: 5;
+  border-radius: inherit;
+  box-shadow: var(--ma-window-lift-edge);
+  pointer-events: none;
 }
 .ma-window:focus {
   outline: none;
 }
 .ma-window.active {
-  box-shadow: var(--ma-elevation-window);
+  box-shadow: var(--ma-window-lift-active);
 }
 .ma-window.parked {
   display: none;
@@ -1455,7 +1943,7 @@ a.menu-item {
   left: 12px;
   right: 12px;
   bottom: 12px;
-  box-shadow: var(--ma-elevation-window);
+  box-shadow: var(--ma-window-lift-active);
 }
 .window-head {
   flex: none;
@@ -1528,6 +2016,18 @@ a.menu-item {
   background: var(--ma-surface-window);
   box-shadow: var(--ma-elevation-menu);
   pointer-events: auto;
+  isolation: isolate;
+}
+/* The stage's lit edge, as a window's: over the head, the track and the app's own raised parts. The stage is its own
+   stacking context (`isolation`), so the edge's z-index stays inside it. */
+.carousel-stage::after {
+  content: '';
+  position: absolute;
+  inset: 0;
+  z-index: 5;
+  border-radius: inherit;
+  box-shadow: var(--ma-window-lift-edge);
+  pointer-events: none;
 }
 .carousel-stage:focus {
   outline: none;
@@ -1600,6 +2100,10 @@ a.menu-item {
   border-radius: 0;
   box-shadow: none;
 }
+/* A slide is inside the stage, whose edge is the lit one. */
+.ma-window.carousel-slide::after {
+  content: none;
+}
 .carousel-slide.leaving {
   pointer-events: none;
 }
@@ -1617,6 +2121,18 @@ a.menu-item {
 }
 .carousel-stage.phone:focus-visible {
   outline: none;
+}
+/* The phone's stage fills the screen: no edge to light. */
+.carousel-stage.phone::after {
+  content: none;
+}
+/* Forced colours: the browser drops every shadow, the lit edge's with them, so the edge isn't drawn at all. (After the
+   rules that draw it, which it must outrank.) */
+@media (forced-colors: active) {
+  .ma-window::after,
+  .carousel-stage::after {
+    content: none;
+  }
 }
 .carousel-phone.shielded .carousel-stage {
   filter: blur(14px);
@@ -1736,6 +2252,50 @@ a.menu-item {
 .thumb:focus-visible {
   outline: 2px solid var(--ma-focus-ring);
   outline-offset: -4px;
+}
+/* The "+" when the row can't hold every app (`carousel/thumbs.ts`): the apps with no tab, then the Apps sheet's row, in the
+   office's menu, opened above the row and right-aligned to the "+", 48 px rows in thumb reach. */
+.thumb-more {
+  position: relative;
+  flex: none;
+  display: flex;
+}
+.menu.thumb-menu {
+  top: auto;
+  right: 0;
+  bottom: calc(100% + 8px);
+  width: max-content;
+  min-width: 200px;
+  max-width: calc(100vw - 32px);
+  max-height: calc(100dvh - 140px);
+  padding: 6px;
+  border-radius: 14px;
+}
+.thumb-menu .thumb-menu-item {
+  display: flex;
+  align-items: center;
+  gap: 12px;
+  min-height: 48px;
+  padding: 8px 12px 8px 10px;
+  color: var(--ma-text-primary);
+  font-size: 15px;
+  cursor: pointer;
+}
+.thumb-menu .thumb-menu-item:focus-visible {
+  outline: 2px solid var(--ma-focus-ring);
+  outline-offset: -2px;
+}
+.thumb-menu-name {
+  flex: 1 1 auto;
+  white-space: nowrap;
+}
+/* "Coming later", as the tile's chip says it (`LATER`), quieter. */
+.thumb-menu-later {
+  font-size: 12px;
+  color: var(--ma-text-secondary);
+}
+.thumb-menu .menu-sep {
+  margin: 4px 6px;
 }
 .thumb-sep {
   flex: none;
@@ -2876,6 +3436,65 @@ a.menu-item {
   line-height: 20px;
   color: var(--ma-text-tertiary);
 }
+/* Card D's "what changed" (endedCard.tsx): a quiet two-column list, With {tier} against Now, left-aligned in the centered
+   card. No red and nothing loud: Now is the primary text, With the secondary. */
+.desk-notice[data-card='D'] {
+  width: min(480px, calc(100% - 32px));
+}
+.ended-list {
+  align-self: stretch;
+  margin-top: 16px;
+  text-align: left;
+  font-size: 13px;
+  line-height: 20px;
+}
+.ended-head,
+.ended-row {
+  display: grid;
+  grid-template-columns: 6.5rem 1fr 1fr;
+  gap: 12px;
+  padding: 6px 0;
+}
+.ended-list[data-was='no'] .ended-head,
+.ended-list[data-was='no'] .ended-row {
+  grid-template-columns: 6.5rem 1fr;
+}
+.ended-head {
+  padding-top: 0;
+  font-weight: 600;
+  color: var(--ma-text-tertiary);
+}
+.ended-row {
+  border-top: 1px solid var(--ma-border-hairline);
+}
+.ended-list dl,
+.ended-row dd {
+  margin: 0;
+}
+.ended-row dt {
+  color: var(--ma-text-secondary);
+}
+.ended-row .ended-was {
+  color: var(--ma-text-secondary);
+}
+.ended-row .ended-now {
+  color: var(--ma-text-primary);
+}
+/* The With value's name, said by a screen reader, seen only where the rows stack (phone). */
+.ended-row .ended-pre {
+  position: absolute;
+  width: 1px;
+  height: 1px;
+  margin: -1px;
+  overflow: hidden;
+  clip-path: inset(50%);
+  white-space: nowrap;
+}
+.desk-notice .desk-notice-after {
+  margin-top: 12px;
+  font-size: 13px;
+  line-height: 20px;
+}
 @media (max-width: 599px) {
   .desk-notice {
     width: calc(100% - 32px);
@@ -2898,6 +3517,36 @@ a.menu-item {
   .desk-notice-link {
     min-height: 44px;
     margin-top: 0;
+  }
+  /* Each row stacks: its label, then Now in full, with the With value smaller under it (Sales' note 4). */
+  .ended-head {
+    display: none;
+  }
+  .ended-row,
+  .ended-list[data-was='no'] .ended-row {
+    grid-template-columns: 1fr;
+    gap: 0;
+  }
+  .ended-row dt {
+    font-weight: 600;
+    color: var(--ma-text-primary);
+  }
+  .ended-row .ended-now {
+    order: 1;
+  }
+  .ended-row .ended-was {
+    order: 2;
+    font-size: 12px;
+    line-height: 18px;
+  }
+  .ended-row .ended-pre {
+    position: static;
+    width: auto;
+    height: auto;
+    margin: 0;
+    clip-path: none;
+    white-space: normal;
+    overflow: visible;
   }
 }
 /* A short screen, such as a phone on its side or 400% zoom: centered in all the room under the top bar, scrolling if
@@ -2954,7 +3603,8 @@ a.menu-item {
 /* ------------------------------------------------------------ small screens */
 /* The scope switch's four segments are about 305 px, more than a 320 px screen leaves them (288), so it reached the edge. */
 @media (max-width: 359px) {
-  .segmented.scope button {
+  .segmented.scope button,
+  .scope-ghost > span {
     padding-inline: 12px;
   }
 }
@@ -3012,7 +3662,7 @@ a.menu-item {
   .office-notice {
     top: calc(148px + env(safe-area-inset-top, 0px));
   }
-  /* Phones: a window is a full-screen sheet with a back chevron. */
+  /* Phones: a window is a full-screen sheet with a back chevron, with no edge to light. */
   .ma-window.full {
     top: 0;
     left: 0;
@@ -3021,6 +3671,9 @@ a.menu-item {
     border-radius: 0;
     padding-top: env(safe-area-inset-top, 0px);
     padding-bottom: env(safe-area-inset-bottom, 0px);
+  }
+  .ma-window.full::after {
+    content: none;
   }
   .window-back {
     display: inline-grid;
@@ -3143,7 +3796,7 @@ a.menu-item {
   max-width: 100%;
   height: 36px;
   padding: 0 6px 0 10px;
-  border: 1px solid var(--ma-border);
+  border: 1px solid var(--ma-glass-line, var(--ma-border));
   border-radius: 999px;
   background: var(--ma-surface-chrome);
   color: var(--ma-text-primary);
@@ -3152,10 +3805,10 @@ a.menu-item {
   font-weight: 500;
   white-space: nowrap;
 }
-.chip-btn:hover {
+.chip-btn:where(:not(.ma-glass)):hover {
   background: var(--ma-surface-fill);
 }
-.chip-btn[aria-expanded='true'] {
+.chip-btn:where(:not(.ma-glass))[aria-expanded='true'] {
   background: var(--ma-surface-fill-strong);
 }
 .chip-btn .icon {
@@ -3205,7 +3858,8 @@ a.menu-item {
   position: absolute;
   right: 0;
   bottom: calc(100% + 8px);
-  box-shadow: var(--ma-elevation-menu);
+  --ma-glass-lift: var(--ma-elevation-menu);
+  --ma-glass-solid-shadow: var(--ma-elevation-menu);
   z-index: 40;
 }
 /* Open, the bottom bar is over the windows (20) and Maia's open panel (25), as the top bar is with its menu open. */
@@ -3237,7 +3891,7 @@ a.menu-item {
   padding: 6px 14px;
   overflow: hidden;
   border-radius: 999px;
-  background: var(--ma-surface-chrome);
+  --ma-glass-solid-bg: var(--ma-surface-chrome);
   color: var(--ma-text-secondary);
   font-size: 13px;
   line-height: 18px;
@@ -3283,11 +3937,6 @@ a.menu-item {
   .home-mark {
     flex: none;
     margin-right: 4px;
-  }
-  .topbar > .scope-menu {
-    flex: 0 1 auto;
-    min-width: 0;
-    margin-right: auto;
   }
   .top-actions {
     flex: none;
@@ -3379,6 +4028,9 @@ a.menu-item {
     padding-right: env(safe-area-inset-right, 0px);
     padding-bottom: env(safe-area-inset-bottom, 0px);
   }
+  .ma-window.full::after {
+    content: none;
+  }
   .br-tabs {
     min-height: 0;
     padding-top: 2px;
@@ -3452,6 +4104,23 @@ a.menu-item {
   display: flex;
 }
 .files-app-host[data-dim='true'] {
+  opacity: 0.55;
+}
+/* ------------------------------------------------------------ to-do's host (the app's own CSS is apps/todo/todo.css) */
+.todo-host {
+  position: relative;
+  flex: 1;
+  min-width: 0;
+  min-height: 0;
+  display: flex;
+  flex-direction: column;
+}
+.todo-app-host {
+  flex: 1;
+  min-height: 0;
+  display: flex;
+}
+.todo-app-host[data-dim='true'] {
   opacity: 0.55;
 }
 /* ------------------------------------------------------------ a Guild Desk (task 48, src/guild/) */
@@ -3882,7 +4551,8 @@ a.menu-item {
   max-width: none;
 }
 
-/* A Work desk a step down stopped (chrome/EndedDeskPanel.tsx, billing spec still 15): over the desk, on the closed-desk pattern. */
+/* A desk kept for download (chrome/EndedDeskPanel.tsx): a Work desk a step down stopped (billing spec still 15), or a Personal
+   desk that can't be the Free desk (Terms 6). Over the desk, on the closed-desk pattern. */
 .ended-desk {
   position: fixed;
   left: 0;
@@ -3902,6 +4572,8 @@ a.menu-item {
 .ended-desk-title {
   font-size: 15px;
   font-weight: 600;
+  /* "…stopped on December 1" never leaves its day alone on a line at phone width. */
+  text-wrap: balance;
 }
 .ended-desk-body {
   margin-top: 8px !important;
@@ -3954,4 +4626,239 @@ a.menu-item {
 .btn.primary:active:not(:disabled) {
   background: var(--ma-accent-hover);
   border-color: var(--ma-accent-hover);
+}
+
+/* ------------------------------------------------------------ the office's chrome in glass (`styles/glass.css`)
+   The owner, Nov 16, after the app tiles' glass C: "Probably all of the UI elements in office actually." The bars' controls
+   and pills, the notices, and the office's menus and popovers wear the one recipe (the class `ma-glass`) at its dense body,
+   so their words keep 4.5:1 and their icons 3:1 over anything behind them (`theme/glassCss.ts`); each one's look above is its
+   fallback under reduced transparency or more contrast. The account button and its menu joined after their rework (releases
+   6.8 and 6.9), in release 6.10. Record: `docs/sub-status/office-glass.md`. */
+
+/* The bars' round buttons and chips: the light is their edge, the tiles' contact shadow their lift. A hover and a press (the
+   shield on, a chip's menu open) wash the body, as their solid fills did. */
+.icon-btn.ma-glass,
+.chip-btn.ma-glass {
+  position: relative;
+  --ma-glass-edge: 1px;
+  --ma-glass-solid-bg: var(--ma-surface-chrome);
+}
+.icon-btn.ma-glass:hover:not(:disabled),
+.chip-btn.ma-glass:hover {
+  --ma-glass-state: linear-gradient(var(--ma-glass-hover), var(--ma-glass-hover));
+  --ma-glass-solid-bg: var(--ma-surface-fill);
+}
+.icon-btn.ma-glass.on,
+.icon-btn.ma-glass.on:hover:not(:disabled),
+.chip-btn.ma-glass[aria-expanded='true'] {
+  --ma-glass-state: linear-gradient(var(--ma-glass-press), var(--ma-glass-press));
+  --ma-glass-solid-bg: var(--ma-surface-fill-strong);
+}
+/* The scope switch's track; its segments keep their own fills, and the chosen one its edge. */
+.segmented.ma-glass {
+  position: relative;
+  --ma-glass-solid-bg: var(--ma-switcher-track);
+}
+/* The pills: the hints, the edit row's name, the desk switch and the zoom (and the zoom's popover in short-viewport mode). */
+.hints.ma-glass,
+.edit-name.ma-glass {
+  position: relative;
+}
+.desk-nav.ma-glass,
+.zoom-ctl.ma-glass {
+  position: relative;
+  --ma-glass-edge: 1px;
+}
+.zoom-ctl.zoom-pop.ma-glass {
+  position: absolute;
+  --ma-glass-fill: var(--ma-glass-body-full);
+}
+/* Notices, at a menu's height, on the full body: their words never sit on a ghost of what's behind. */
+.notice.ma-glass {
+  --ma-glass-fill: var(--ma-glass-body-full);
+  --ma-glass-edge: 1px;
+  --ma-glass-solid-bg: var(--ma-surface-overlay);
+  --ma-glass-solid-shadow: var(--ma-elevation-menu);
+  --ma-glass-lift: var(--ma-elevation-menu);
+}
+/* Menus and popovers: a desk's, the hidden list, the scope list, the bell's panel. Their rows keep their own hover. A glass
+   menu doesn't scroll, or its light would scroll with it: its rows do, where there can be many (the hidden list's, the
+   bell's), and the bell's header and footer stay put. */
+.menu.ma-glass {
+  overflow: visible;
+  --ma-glass-fill: var(--ma-glass-body-full);
+  --ma-glass-edge: 1px;
+  --ma-glass-solid-bg: var(--ma-surface-overlay);
+  --ma-glass-solid-shadow: var(--ma-elevation-menu);
+  --ma-glass-lift: var(--ma-elevation-menu);
+}
+.menu.bell-panel.ma-glass {
+  display: flex;
+  flex-direction: column;
+}
+.menu.bell-panel.ma-glass > * {
+  flex: none;
+}
+.menu.bell-panel.ma-glass > .bell-list {
+  flex: 0 1 auto;
+  min-height: 0;
+  overflow-y: auto;
+  overscroll-behavior: contain;
+}
+/* The account menu (release 6.10): opaque glass, as the menus above. It scrolls when what's open needs it (`AccountPanel.tsx`),
+   and a glass element never scrolls, so a plate wears the glass and takes the menu's place, width, edge and lift, and the
+   menu is the scroller inside it, as before, on the plate's own ground. The plate's light is over the menu, or the menu's
+   ground would hide the inner part of its glow; it's only the rim's 2.5 px, clear of every row. */
+.account-glass {
+  position: absolute;
+  right: 0;
+  top: calc(100% + 8px);
+  z-index: 40;
+  width: min(320px, calc(100vw - 32px));
+  border: 1px solid var(--ma-glass-line, var(--ma-border));
+  border-radius: 16px;
+}
+/* Under reduced transparency or more contrast the plate draws nothing, and the menu inside draws release 6.9's ground, edge
+   and lift itself (below), as the one element it was, so its corners and its words are 6.9's to the pixel. */
+.account-glass.ma-glass {
+  --ma-glass-fill: var(--ma-glass-body-full);
+  --ma-glass-edge: 1px;
+  --ma-glass-solid-bg: none;
+  --ma-glass-lift: var(--ma-elevation-menu);
+}
+.account-glass.ma-glass::before,
+.account-glass.ma-glass::after {
+  z-index: 3;
+}
+/* The menu inside: the plate's padding box exactly (its 60 % is the plate's, less the plate's 1 px edge top and bottom; its
+   corners the plate's inner ones). Its ground is the plate's
+   own, the body and sheen at its size, which doesn't scroll, over an opaque colour: a scroller with an opaque ground keeps
+   its words' subpixel smoothing as it scrolls, as 6.9's did (one with none draws them greyscale). */
+.account-glass > .menu.account-menu {
+  position: relative;
+  top: auto;
+  right: auto;
+  left: auto;
+  z-index: auto;
+  width: auto;
+  max-height: calc(min(60dvh, calc(100dvh - 90px)) - 2px);
+  border: 0;
+  border-radius: 15px;
+  background: var(--ma-glass-sheen), var(--ma-glass-fill) var(--ma-surface-overlay);
+  box-shadow: none;
+}
+/* The member's header, pinned, is opaque, so nothing that scrolls under it shows through: on glass its ground is the plate's
+   own body and sheen, drawn at the plate's size from the plate's corner (`--acct-w`, `--acct-h`, from `AccountPanel.tsx`),
+   which is where the header's own corner is, so it shows no seam. */
+.account-glass .account-menu .menu-me {
+  background: var(--ma-glass-sheen), var(--ma-glass-fill);
+  background-size: var(--acct-w, 100%) var(--acct-h, 100%);
+  background-repeat: no-repeat;
+}
+@media (max-height: 399.98px) and (min-width: 560px) {
+  .account-glass {
+    width: min(600px, calc(100vw - 32px));
+  }
+}
+@media (max-width: 359px) {
+  .account-glass {
+    position: fixed;
+    left: 16px;
+    right: 16px;
+    top: calc(90px + env(safe-area-inset-top, 0px));
+    width: auto;
+  }
+}
+/* The account button: the avatar fills it, so its glass is its neighbours' edge, the 1 px ring round the art, clear, with the
+   rim's light on it, and their depth and lift. A hover, a press and the open menu strengthen that ring to `border.strong`, as
+   before: their wash of the body can't show through the art. With no avatar yet it's a round button like them. */
+.icon-btn.account-btn.ma-glass:has(> .avatar) {
+  --ma-glass-edge: 0px;
+}
+.account-btn.ma-glass > .avatar .avatar-face {
+  border-color: transparent;
+  background: linear-gradient(var(--av-top), var(--av-bottom)) padding-box;
+}
+.account-btn.ma-glass:is(:hover, :active, .on) > .avatar .avatar-face {
+  border-color: var(--ma-border-strong);
+}
+@media (prefers-reduced-transparency: reduce), (prefers-contrast: more) {
+  .account-glass.ma-glass {
+    border: 0;
+  }
+  .account-glass > .menu.account-menu {
+    max-height: min(60dvh, calc(100dvh - 90px));
+    border: 1px solid var(--ma-border);
+    border-radius: 16px;
+    box-shadow: var(--ma-elevation-menu);
+  }
+  .account-glass > .menu.account-menu,
+  .account-glass .account-menu .menu-me {
+    background: var(--ma-surface-overlay);
+  }
+  .icon-btn.account-btn.ma-glass:has(> .avatar) {
+    background: none;
+    box-shadow: none;
+  }
+  .account-btn.ma-glass > .avatar .avatar-face {
+    border-color: var(--ma-border);
+    background: linear-gradient(var(--av-top), var(--av-bottom)) padding-box, var(--ma-surface-chrome) border-box;
+  }
+  .account-btn.ma-glass:is(:hover, :active, .on) > .avatar .avatar-face {
+    border-color: var(--ma-border-strong);
+  }
+}
+/* What sits on the glass in the surface's own greys (a notice's button, the bell's kind chip, a row's hover) takes the body's
+   wash instead, so it still reads against the egg; under the fallback it's as it was. */
+.ma-glass .new-version-reload,
+.ma-glass .bell-chip {
+  background: var(--ma-glass-hover);
+}
+.ma-glass .new-version-reload:hover,
+.ma-glass :is(.menu-item, .bell-link):active:not(:disabled):not([aria-disabled='true']) {
+  background: var(--ma-glass-press);
+}
+.ma-glass :is(.menu-item, .bell-link):hover:not(:disabled):not([aria-disabled='true']),
+.mark-pop :is(.menu-item, .mark-foot a):hover {
+  background: var(--ma-glass-hover);
+}
+@media (prefers-reduced-transparency: reduce), (prefers-contrast: more) {
+  .ma-glass .new-version-reload,
+  .ma-glass .bell-chip,
+  .ma-glass :is(.menu-item, .bell-link):active:not(:disabled):not([aria-disabled='true']),
+  .ma-glass :is(.menu-item, .bell-link):hover:not(:disabled):not([aria-disabled='true']),
+  .mark-pop :is(.menu-item, .mark-foot a):hover {
+    background: var(--ma-surface-sunken);
+  }
+  .ma-glass .new-version-reload:hover {
+    background: var(--ma-surface-fill-strong);
+  }
+}
+/* With a finger, a round button's or a chip's 44 px target (LS-41) was its `::after`, which glass gives to the rim's light:
+   so it's the `::before` instead, which is otherwise the soft light just inside the rim (too faint to miss on a phone). Under
+   reduced transparency or more contrast too, where the light is gone. */
+@media (pointer: coarse) {
+  .icon-btn.ma-glass::before,
+  .chip-btn.ma-glass::before {
+    content: '';
+    inset: min(0px, (100% - 44px) / 2);
+    padding: 0;
+    border-radius: 0;
+    background: none;
+    -webkit-mask: none;
+    mask: none;
+    pointer-events: auto;
+  }
+  .chip-btn.ma-glass::before {
+    inset: min(0px, (100% - 44px) / 2) -1px;
+  }
+}
+/* An office background's halo round a focused control keeps the glass's depth and lift under it. */
+:root[data-backdrop] :is(.topbar, .bottombar) .ma-glass:focus-visible:not(.menu *, .mark-pop *, .ma-window *) {
+  box-shadow: 0 0 0 5px var(--ma-ring-halo), var(--ma-glass-depth), var(--ma-glass-lift);
+}
+@media (prefers-reduced-transparency: reduce), (prefers-contrast: more) {
+  :root[data-backdrop] :is(.topbar, .bottombar) .ma-glass:focus-visible:not(.menu *, .mark-pop *, .ma-window *) {
+    box-shadow: 0 0 0 5px var(--ma-ring-halo), var(--ma-glass-solid-shadow, 0 0 transparent);
+  }
 }

@@ -44,7 +44,9 @@ import java.util.regex.Pattern;
  */
 public final class OpenAiResponsesProvider implements ChatProvider {
 
-    public static final ProviderInfo OPENAI = new ProviderInfo(ProviderId.OPENAI, "platform.openai.com", "sk-");
+    /** OpenAI's project, service-account and admin keys are its alone; a legacy {@code sk-} key may be Moonshot AI's. */
+    public static final ProviderInfo OPENAI = new ProviderInfo(ProviderId.OPENAI, "platform.openai.com", "sk-",
+            List.of("sk-proj-", "sk-svcacct-", "sk-admin-"));
     public static final ProviderInfo XAI = new ProviderInfo(ProviderId.XAI, "console.x.ai", "xai-");
 
     /** The effort every call asks for: enough to plan a tool run, short of the cost of the top levels. */
@@ -81,7 +83,7 @@ public final class OpenAiResponsesProvider implements ChatProvider {
         if (!request.system().isEmpty()) {
             body.put("instructions", request.system());
         }
-        body.put("input", Messages.responses(request.messages()));
+        body.put("input", Messages.responses(request.messagesWithNote()));
         if (!request.tools().isEmpty()) {
             body.put("tools", Messages.responsesTools(request.tools()));
         }

@@ -53,6 +53,7 @@ class GuildMemberPurgeTest {
         String key = desk.key();
         for (Caller member : List.of(MEMBER_A, MEMBER_B)) {
             desk.service.call("agent.bind", m("agentId", member.memberId(), "keyId", key, "model", Rig.MODEL), member);
+            com.minimalistalliance.desk.agent.testing.Setups.setUpMember(desk.service, member);
         }
     }
 

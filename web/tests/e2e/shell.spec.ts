@@ -1,6 +1,6 @@
 // The shell through its proxy layer (design 3.11), with MockDeskLink and fixtures.
 import { expect, test, type APIRequestContext, type Locator, type Page } from '@playwright/test';
-import { canvasPainted, focusCanvas, harness, setTheme, signIn, themeRadio, watchConsole, type ThemeId } from './helpers';
+import { canvasPainted, focusCanvas, fromStored, harness, homeMark, setTheme, signIn, stored, themeRadio, watchConsole, type ThemeId } from './helpers';
 
 type KNode = {
   x(): number;
@@ -48,7 +48,7 @@ for (const theme of ['light', 'dusk', 'dark'] as ThemeId[]) {
       await expect(page.getByRole('button', { name: 'Next desk' })).toHaveCount(0);
       await expect(page.getByRole('button', { name: /^Personal desk, 4 apps/ })).toHaveCount(1);
 
-      for (const app of ['Chat', 'Notebook', 'Browser', 'Agent']) {
+      for (const app of ['Courier', 'Notebook', 'Browser', 'Agent']) {
         const tile = page.getByRole('button', { name: new RegExp(`^${app}`) });
         await tile.focus();
         await page.keyboard.press('Enter');
@@ -152,7 +152,7 @@ for (const theme of ['light', 'dusk', 'dark'] as ThemeId[]) {
     test('screenshot of the longest line on the smallest desk', async ({ page, request }) => {
       await setTheme(page, theme);
       await page.addInitScript((id) => {
-        const items = ['chat', 'notebook', 'browser', 'agent'].map((app) => ({ id: `${id}:${app}`, app, size: 'icon' }));
+        const items = ['courier', 'notebook', 'browser', 'agent'].map((app) => ({ id: `${id}:${app}`, app, size: 'icon' }));
         localStorage.setItem('ma.layout.v1', JSON.stringify({ desks: { [id]: { id, x: 0, y: 36, cols: 2, rows: 2, items } }, z: [id] }));
       }, PERSONAL);
       await harness(request, { fleet: [personal('starting')] });
@@ -181,7 +181,7 @@ test('a real click on the canvas opens the app under the pointer', async ({ page
 test('the proxy layer follows the camera', async ({ page }) => {
   await signIn(page, '/?fixture=one');
   await canvasPainted(page);
-  const proxy = page.getByRole('button', { name: /^Chat/ });
+  const proxy = page.getByRole('button', { name: /^Courier/ });
   const before = await proxy.boundingBox();
   await page.getByRole('button', { name: 'Zoom out' }).click();
   await page.waitForTimeout(500);
@@ -193,11 +193,13 @@ test('three desks: scope, cycling, overview', async ({ page }) => {
   const errors = watchConsole(page);
   await signIn(page, '/?fixture=three');
   await canvasPainted(page);
-  const allDesks = page.getByRole('button', { name: 'Your office, show all desks' });
+  const allDesks = homeMark(page);
   await expect(page.getByRole('radiogroup', { name: 'Scope' })).toBeVisible();
   await page.getByRole('radio', { name: 'Work' }).click();
   await page.waitForTimeout(600);
-  await expect(page.getByRole('img', { name: 'Minimalist Alliance' })).toBeVisible(); // one desk in scope: nowhere to go back to
+  // One desk in scope: nowhere to go back to, so the mark's click is its menu's.
+  await expect(page.getByRole('button', { name: 'Minimalist Alliance', exact: true })).toBeVisible();
+  await expect(allDesks).toHaveCount(0);
   await page.getByRole('radio', { name: 'All' }).click();
   await page.waitForTimeout(600);
   await expect(allDesks).toHaveCount(0);
@@ -227,7 +229,7 @@ test('the top left is the mark alone, by theme, with an accessible name', async 
   const errors = watchConsole(page);
   await signIn(page, '/?fixture=one');
   await canvasPainted(page);
-  await expect(page.getByRole('img', { name: 'Minimalist Alliance' })).toBeVisible();
+  await expect(page.getByRole('button', { name: 'Minimalist Alliance', exact: true })).toBeVisible();
   await expect(page.locator('.topbar')).toHaveText(''); // no words beside the mark, under any name
   for (const [theme, file] of [['light', 'ma-mark-primary'], ['dusk', 'ma-mark-zen'], ['dark', 'ma-mark-on-dark']] as const) {
     await page.evaluate((t) => { document.documentElement.dataset['theme'] = t; }, theme);
@@ -247,7 +249,7 @@ test('Tab order reaches the canvas as one stop, and arrows move inside it', asyn
   await page.keyboard.press('ArrowRight');
   await expect(page.locator('.proxy-layer :focus')).toHaveAttribute('aria-label', /^Notebook/);
   await page.keyboard.press('ArrowLeft');
-  await expect(page.locator('.proxy-layer :focus')).toHaveAttribute('aria-label', /^Chat/);
+  await expect(page.locator('.proxy-layer :focus')).toHaveAttribute('aria-label', /^Courier/);
 });
 
 test('the hints name the privacy key while it works, with one desk and with several', async ({ page }) => {
@@ -384,16 +386,16 @@ test('a phone gets a sheet and no resize handles', async ({ browser }) => {
   const page = await ctx.newPage();
   await signIn(page, '/?fixture=one');
   await canvasPainted(page);
-  const tile = page.getByRole('button', { name: /^Chat/ });
+  const tile = page.getByRole('button', { name: /^Courier/ });
   await tile.focus();
   await page.keyboard.press('Enter');
   // The sheet is the desk's carousel on a phone (carousel.phone.shell.spec.ts), named by its app as a window is.
-  const win = page.getByRole('dialog', { name: /Chat/ });
+  const win = page.getByRole('dialog', { name: /Courier/ });
   await expect(win).toHaveClass(/carousel-stage phone/);
   await page.waitForTimeout(350); // the open animation
   const box = await win.boundingBox();
   expect(box).toMatchObject({ x: 0, y: 0, width: 390, height: 844 });
-  await expect(win.getByRole('button', { name: 'Back from Chat' })).toBeVisible();
+  await expect(win.getByRole('button', { name: 'Back from Courier' })).toBeVisible();
   await expect(win.locator('.window-edge')).toHaveCount(0);
   await page.screenshot({ path: 'test-results/shots/phone-window.png' });
   await ctx.close();
@@ -470,7 +472,7 @@ test.describe('waking', () => {
   async function arriveWith(page: Page, remembered: { mirror: string[]; layout: string[]; view?: Record<string, unknown> }): Promise<void> {
     await page.addInitScript(({ names, mirror, layout, view }) => {
       localStorage.setItem('ma.desks.v1', JSON.stringify(mirror.map((id) => ({ id, name: names[id], kind: names[id]!.toLowerCase() }))));
-      const items = (id: string): unknown[] => [{ id: `${id}:chat`, app: 'chat', x: 24, y: 24, w: 76, h: 76 }];
+      const items = (id: string): unknown[] => [{ id: `${id}:courier`, app: 'courier', x: 24, y: 24, w: 76, h: 76 }];
       const desks = Object.fromEntries(layout.map((id, i) => [id, { id, x: i * 656, y: 0, w: 584, h: 144, items: items(id) }]));
       localStorage.setItem('ma.layout.v2', JSON.stringify({ desks, z: layout }));
       if (view) localStorage.setItem('ma.view.v1', JSON.stringify(view));
@@ -562,8 +564,8 @@ test.describe('waking', () => {
     await page.waitForTimeout(800);
     expect(await connects(request)).toHaveLength(3);
 
-    await press(page.getByRole('button', { name: /^Chat/ }));
-    await expect(page.getByRole('dialog', { name: /Chat/ })).toBeVisible();
+    await press(page.getByRole('button', { name: /^Courier/ }));
+    await expect(page.getByRole('dialog', { name: /Courier/ })).toBeVisible();
     await expect.poll(() => wakes(request)).toHaveLength(2);
     await expect(proxyOf(page, 'Personal')).toHaveAccessibleName(/, waking · 1 of 4$/);
   });
@@ -602,29 +604,29 @@ test.describe('what a desk shows', () => {
     }
   });
 
-  const spaceUnderChat = async (page: Page): Promise<number> => {
+  const spaceUnderCourier = async (page: Page): Promise<number> => {
     const box = await proxyOf(page, 'Personal').boundingBox();
-    const tile = await page.getByRole('button', { name: /^Chat/ }).boundingBox();
+    const tile = await page.getByRole('button', { name: /^Courier/ }).boundingBox();
     const scale = await page.evaluate(() => (window as unknown as { __maDesk: { camera: { cam: { s: number } } } }).__maDesk.camera.cam.s);
     return (box!.y + box!.height - (tile!.y + tile!.height)) / scale;
   };
 
   test('no empty row: a saved desk one row tall stays that way, with the strip under its apps and no more', async ({ page, request }) => {
     await page.addInitScript((id) => {
-      const items = [{ id: `${id}:chat`, app: 'chat', x: 24, y: 24, w: 76, h: 76 }];
+      const items = [{ id: `${id}:courier`, app: 'courier', x: 24, y: 24, w: 76, h: 76 }];
       localStorage.setItem('ma.layout.v2', JSON.stringify({ desks: { [id]: { id, x: 0, y: 0, w: 584, h: 144, items } }, z: [id] }));
     }, PERSONAL);
     await harness(request, { fleet: [personal('running')] });
     await signIn(page);
     await canvasPainted(page);
     await page.waitForTimeout(800);
-    expect(await spaceUnderChat(page)).toBeCloseTo(44, 0);
+    expect(await spaceUnderCourier(page)).toBeCloseTo(44, 0);
   });
 
   test('a new desk has a free band under its row, and then the strip', async ({ page }) => {
     await signIn(page, '/?fixture=one');
     await canvasPainted(page);
-    expect(await spaceUnderChat(page)).toBeCloseTo(92 + 44, 0);
+    expect(await spaceUnderCourier(page)).toBeCloseTo(480 - 24 - 76, 0); // a new desk is 480 tall, its row at the top (ADR 0057)
   });
 
   test('asleep shows nothing, and waking shows once the member has asked', async ({ page, request }) => {
@@ -653,17 +655,20 @@ test.describe('what a desk shows', () => {
     await expect.poll(() => surfaceOf(page, PERSONAL)).toEqual({ status: [], dots: 0, texts: [], name: 'PERSONAL' });
   });
 
-  test('a widget with no data is blank, not "Not connected yet"', async ({ page, request }) => {
+  test('a widget with no data is its glyph, centred, not "Not connected yet"', async ({ page, request }) => {
     await page.addInitScript((id) => {
-      const items = [{ id: `${id}:chat`, app: 'chat', size: 'small' }, { id: `${id}:notebook`, app: 'notebook', size: 'icon' }];
+      const items = [{ id: `${id}:courier`, app: 'courier', size: 'small' }, { id: `${id}:notebook`, app: 'notebook', size: 'icon' }];
       localStorage.setItem('ma.layout.v1', JSON.stringify({ desks: { [id]: { id, x: 0, y: 36, cols: 6, rows: 2, items } }, z: [id] }));
     }, PERSONAL);
     await harness(request, { fleet: [personal('running'), work()] }); // two desks, so arriving asks for no wake
     await signIn(page, REAL_LINK);
     await canvasPainted(page);
     const { texts } = await surfaceOf(page, PERSONAL);
-    expect(texts).toContain('Chat'); // the widget is there
     expect(texts).not.toContain('Not connected yet');
+    // With nothing to read it wears the icon's look: no name row, its glyph centred (tilefaces.shell.spec.ts, the owner, Nov 11).
+    expect(texts).not.toContain('Courier');
+    const face = await page.evaluate((id) => (window as unknown as { __maDesk: { camera: { getStage(): { findOne(q: string): { findOne(q: string): { getAttr(k: string): unknown } } } } } }).__maDesk.camera.getStage().findOne(`#tile-${id}:courier`).findOne('Shape').getAttr('face'), PERSONAL);
+    expect(face).toBe('glyph');
     await page.screenshot({ path: 'test-results/shots/widget-no-data.png' });
   });
 
@@ -725,7 +730,7 @@ test.describe('what a desk shows', () => {
 test.describe('growing a desk', () => {
   const scaleOf = (page: Page): Promise<number> => page.evaluate(() => (window as unknown as { __maDesk: { camera: { cam: { s: number } } } }).__maDesk.camera.cam.s);
   const saved = (page: Page, key = 'ma.layout.v2'): Promise<{ desks: Record<string, { x: number; y: number; w: number; h: number; items: { id: string; x: number; y: number; w: number; h: number }[] }>; z: string[] }> =>
-    page.evaluate((k) => JSON.parse(localStorage.getItem(k) ?? 'null'), key);
+    page.evaluate((k) => JSON.parse(localStorage.getItem(k) ?? 'null'), key).then(fromStored);
 
   /** Drags a desk's corner by screen pixels, and hands back its size in world units. */
   async function dragCorner(page: Page, name: string, dx: number, dy: number): Promise<{ w: number; h: number }> {
@@ -773,16 +778,17 @@ test.describe('growing a desk', () => {
     await canvasPainted(page);
     const s = await scaleOf(page);
     const size = await dragCorner(page, 'Personal', 97, 63);
-    expect(size.w).toBeCloseTo(584 + 97 / s, 0);
-    expect(size.h).toBeCloseTo(236 + 63 / s, 0);
+    // From a new desk's 860 x 480 (ADR 0057).
+    expect(size.w).toBeCloseTo(860 + 97 / s, 0);
+    expect(size.h).toBeCloseTo(480 + 63 / s, 0);
     expect((size.w - 32) % 92).not.toBeCloseTo(0, 0); // not whole cells
 
     await page.waitForTimeout(1_200); // the mirror is debounced by 1 s
     await page.reload();
     await canvasPainted(page);
     const doc = await saved(page);
-    expect(doc.desks[PERSONAL]!.w).toBeCloseTo(584 + 97 / s, 0);
-    expect(doc.desks[PERSONAL]!.h).toBeCloseTo(236 + 63 / s, 0);
+    expect(doc.desks[PERSONAL]!.w).toBeCloseTo(860 + 97 / s, 0);
+    expect(doc.desks[PERSONAL]!.h).toBeCloseTo(480 + 63 / s, 0);
   });
 
   test("it can't shrink past what it holds, and stops there without jumping", async ({ page, request }) => {
@@ -913,7 +919,7 @@ test.describe('growing a desk', () => {
       const desk = stage.findOne(`#desk-${id}`);
       return { statusY: desk.findOne('.desk-status')!.getParent().y() };
     }, PERSONAL);
-    expect(live.statusY).toBeCloseTo(236 + 60 / s - 22, 0);
+    expect(live.statusY).toBeCloseTo(480 + 60 / s - 22, 0); // a new desk is 480 tall (ADR 0057)
     await page.screenshot({ path: 'test-results/shots/desk-growing.png' });
     await page.mouse.up();
   });
@@ -953,12 +959,12 @@ test.describe('growing a desk', () => {
     const doc = await saved(page);
     expect(doc.desks[REAL_V1_ID.work]).toMatchObject({ x: 728, y: 128, w: 584, h: 144 });
     expect(doc.desks[REAL_V1_ID.personal]).toMatchObject({ x: 0, y: 36, w: 676, h: 328 });
-    expect(doc.desks[REAL_V1_ID.personal]!.items[0]).toMatchObject({ id: `${REAL_V1_ID.personal}:chat`, w: 168, h: 168 });
-    expect(doc.desks[REAL_V1_ID.guild]!.items.map((i) => i.id.split(':')[1])).toEqual(['agent', 'chat', 'notebook', 'browser']);
+    expect(doc.desks[REAL_V1_ID.personal]!.items[0]).toMatchObject({ id: `${REAL_V1_ID.personal}:courier`, w: 168, h: 168 });
+    expect(doc.desks[REAL_V1_ID.guild]!.items.map((i) => i.id.split(':')[1])).toEqual(['agent', 'courier', 'notebook', 'browser']);
     expect(doc.z).toEqual([REAL_V1_ID.guild, REAL_V1_ID.work, REAL_V1_ID.personal]);
     expect(await page.evaluate(() => localStorage.getItem('ma.layout.v1'))).toBe(REAL_V1);
 
-    await expect(page.getByRole('group', { name: 'Personal desk' }).getByRole('button', { name: /^Chat/ })).toHaveCount(1);
+    await expect(page.getByRole('group', { name: 'Personal desk' }).getByRole('button', { name: /^Courier/ })).toHaveCount(1);
     await page.screenshot({ path: 'test-results/shots/migrated-layout.png' });
 
     // A change lands in the new copy only.
@@ -981,7 +987,7 @@ test.describe('the etched strip', () => {
 
   const tile = (deskId: string, app: string, x: number, y: number, w = 76, h = 76): Seed['items'][number] => ({ id: `${deskId}:${app}`, app, x, y, w, h });
   // Off the whole numbers, so a desk's corner lands on a fraction of a pixel at any zoom.
-  const BIG = (id: string, items: Seed['items'] = [tile(id, 'chat', 24, 24)]): Seed => ({ id, x: 13.37, y: 7.77, w: 1200, h: 800, items });
+  const BIG = (id: string, items: Seed['items'] = [tile(id, 'courier', 24, 24)]): Seed => ({ id, x: 13.37, y: 7.77, w: 1200, h: 800, items });
 
   async function seed(page: Page, request: APIRequestContext, desks: Seed[], names?: Record<string, string>): Promise<void> {
     const doc = { desks: Object.fromEntries(desks.map((d) => [d.id, d])), z: desks.map((d) => d.id) };
@@ -1112,12 +1118,14 @@ test.describe('the etched strip', () => {
 
   test('it replaces the label: centered in the strip, baseline 17 up times the zoom, with nothing above the desk', async ({ page }) => {
     const errors = watchConsole(page);
+    // A screen where a new desk is framed well over 100 %, as main's 175 % was (ADR 0057: 149 % at 2560 x 1440; 88 % at 1440 x 900).
+    await page.setViewportSize({ width: 2560, height: 1440 });
     await signIn(page, '/?fixture=one');
     await canvasPainted(page);
     await page.waitForTimeout(400);
     expect(await surfaceOf(page, 'd-personal')).toEqual({ status: [], dots: 0, texts: [], name: 'PERSONAL' });
     const r = await rectOf(page, 'd-personal');
-    // One desk fills the screen, over 100 %: the name is its size and place at 100 %, times the zoom.
+    // One new desk, framed over 100 %: the name is its size and place at 100 %, times the zoom.
     const s = r.s;
     const ink = await inkIn(page, nameBox(r, 118, s));
     expect(ink.count).toBeGreaterThan(100);
@@ -1128,8 +1136,8 @@ test.describe('the etched strip', () => {
     expect(ink.y1 - ink.y0).toBeLessThan(13 * s);
     // The desk's proxy is the panel, and no more.
     const proxy = (await page.locator('[id="proxy-d-personal"]').boundingBox())!;
-    const chat = (await page.getByRole('button', { name: /^Chat/ }).boundingBox())!;
-    expect((chat.y - proxy.y) / s).toBeCloseTo(24, 0);
+    const courier = (await page.getByRole('button', { name: /^Courier/ }).boundingBox())!;
+    expect((courier.y - proxy.y) / s).toBeCloseTo(24, 0);
     // An app's name on hover hangs just under it. Here that's the free band, well above the etched name.
     const browser = (await page.getByRole('button', { name: /^Browser/ }).boundingBox())!;
     await page.mouse.move(browser.x + browser.width / 2, browser.y + browser.height / 2);
@@ -1194,7 +1202,7 @@ test.describe('the etched strip', () => {
   });
 
   test('the status line sits at the left, and the name gives way only while they\'d touch', async ({ page, request }) => {
-    const small = { id: PERSONAL, x: 0, y: 0, w: G_MIN_DESK_W, h: 124, items: [{ id: `${PERSONAL}:chat`, app: 'chat', x: 24, y: 24, w: 56, h: 56 }] };
+    const small = { id: PERSONAL, x: 0, y: 0, w: G_MIN_DESK_W, h: 124, items: [{ id: `${PERSONAL}:courier`, app: 'courier', x: 24, y: 24, w: 56, h: 56 }] };
     const wide = { id: WORK, x: 300, y: 0, w: 584, h: 144, items: [] };
     await page.addInitScript(({ doc }) => {
       if (!localStorage.getItem('test.seeded') && (location.pathname === '/auth/callback' || localStorage.getItem('ma-desk-web-refresh') || sessionStorage.getItem('ma-desk-web-refresh'))) {
@@ -1343,7 +1351,7 @@ test.describe('the etched strip', () => {
         onCommitFiberRoot: () => { w['__commits'] = (w['__commits'] as number) + 1; },
       };
     });
-    const small = { id: PERSONAL, x: 0, y: 0, w: 600, h: 300, items: [tile(PERSONAL, 'chat', 24, 24)] };
+    const small = { id: PERSONAL, x: 0, y: 0, w: 600, h: 300, items: [tile(PERSONAL, 'courier', 24, 24)] };
     await seed(page, request, [small], { [PERSONAL]: 'The very long name of a desk that a member chose' });
     await aim(page, 1, 300, 150);
     await page.mouse.move(720, 450);
@@ -1402,7 +1410,7 @@ test.describe('the etched strip', () => {
   });
 
   test('a desk that\'s off screen does none of this', async ({ page, request }) => {
-    const far = (id: string, x: number): Seed => ({ id, x, y: 0, w: 800, h: 300, items: [tile(id, 'chat', 24, 24)] });
+    const far = (id: string, x: number): Seed => ({ id, x, y: 0, w: 800, h: 300, items: [tile(id, 'courier', 24, 24)] });
     await seed(page, request, [far(PERSONAL, 0), far(WORK, 9000)]);
     await aim(page, 1, 400, 150);
     const before = { near: await drawnName(page, PERSONAL), far: await drawnName(page, WORK) };
@@ -1474,8 +1482,8 @@ test.describe('the etched strip', () => {
   // ----- the icons
   const WORK_X = 700;
   const WITH_WORK = (): Seed[] => [
-    { id: PERSONAL, x: 0, y: 0, w: 600, h: 300, items: [tile(PERSONAL, 'chat', 24, 24)] }, // tidy, and the first: it has the ring
-    { id: WORK, x: WORK_X, y: 0, w: 800, h: 300, items: [tile(WORK, 'chat', 200, 100)] }, // not tidy, and needs the pointer
+    { id: PERSONAL, x: 0, y: 0, w: 600, h: 300, items: [tile(PERSONAL, 'courier', 24, 24)] }, // tidy, and the first: it has the ring
+    { id: WORK, x: WORK_X, y: 0, w: 800, h: 300, items: [tile(WORK, 'courier', 200, 100)] }, // not tidy, and needs the pointer
   ];
   const WORK_MID = WORK_X + 400;
   const WORK_END = WORK_X + 800;
@@ -1609,9 +1617,9 @@ test.describe('the etched strip', () => {
 
   test('they hide on a desk under 290 wide at any zoom, and on any desk under 50 %, and then a press there is the desk\'s', async ({ page, request }) => {
     // 289 and 290 wide, in desk units, and a flat one for the zoom. A desk is at least 124 tall, so the 72 never decides.
-    const narrow: Seed = { id: PERSONAL, x: 0, y: 0, w: 289, h: 400, items: [tile(PERSONAL, 'chat', 24, 24)] };
-    const flat: Seed = { id: WORK, x: WORK_X, y: 0, w: 1000, h: 144, items: [tile(WORK, 'chat', 200, 24)] };
-    const wide: Seed = { id: GUILD, x: WORK_X + 1100, y: 0, w: 290, h: 400, items: [tile(GUILD, 'chat', 24, 24)] };
+    const narrow: Seed = { id: PERSONAL, x: 0, y: 0, w: 289, h: 400, items: [tile(PERSONAL, 'courier', 24, 24)] };
+    const flat: Seed = { id: WORK, x: WORK_X, y: 0, w: 1000, h: 144, items: [tile(WORK, 'courier', 200, 24)] };
+    const wide: Seed = { id: GUILD, x: WORK_X + 1100, y: 0, w: 290, h: 400, items: [tile(GUILD, 'courier', 24, 24)] };
     await seed(page, request, [narrow, flat, wide]);
     // At 50 % the name is 7 px, and they show; just under, they're gone.
     await aim(page, 0.5, WORK_X + 500, 72);
@@ -1648,7 +1656,7 @@ test.describe('the etched strip', () => {
   test('an app right above the strip never covers an icon, since the icons scale with the desk: a press on the app is the app\'s, on an icon the icon\'s, and under 50 % the desk\'s', async ({ page, request }) => {
     // An app in the work area's bottom right corner, right above the strip. Apps stop at the strip's top edge, 44 up, and the
     // icons are in the strip at every zoom (ADR 0064, Nov 9 note), so no app is ever over one.
-    const under: Seed = { id: WORK, x: WORK_X, y: 0, w: 1000, h: 700, items: [tile(WORK, 'chat', 1000 - 8 - 460, 700 - 44 - 200, 460, 200)] };
+    const under: Seed = { id: WORK, x: WORK_X, y: 0, w: 1000, h: 700, items: [tile(WORK, 'courier', 1000 - 8 - 460, 700 - 44 - 200, 460, 200)] };
     await seed(page, request, [WITH_WORK()[0]!, under]);
     // At 0.3 the icons are hidden with the name: in the strip a press is the desk's, and above it the app's.
     await aim(page, 0.3, WORK_X + 500, 350);
@@ -1671,7 +1679,7 @@ test.describe('the etched strip', () => {
     expect(await hitIn(page, r, (56 + c), 60)).toBe('app-tile');
     expect((await inkIn(page, iconBox(r, GRIP, r.s))).count).toBeGreaterThan(10);
     // A drag from the app above the icons, clear of its own corner handle, moves the app, and doesn't resize the desk.
-    const app = page.locator(`[id="proxy-${WORK}:chat"]`);
+    const app = page.locator(`[id="proxy-${WORK}:courier"]`);
     const place = (): Promise<number> => app.evaluate((el: HTMLElement) => parseFloat(el.style.left));
     const before = await place();
     const from = { x: r.right - SPARKLE * r.s, y: r.bottom - 100 * r.s };
@@ -1828,7 +1836,7 @@ test.describe('the etched strip', () => {
     const ctx = await browser.newContext({ viewport: { width: 1024, height: 768 }, hasTouch: true, isMobile: true, baseURL: test.info().project.use.baseURL });
     const page = await ctx.newPage();
     await page.request.post('/__harness', { data: { reset: true } });
-    await seed(page, page.request, [{ id: PERSONAL, x: 0, y: 0, w: 800, h: 500, items: [tile(PERSONAL, 'chat', 300, 200)] }]);
+    await seed(page, page.request, [{ id: PERSONAL, x: 0, y: 0, w: 800, h: 500, items: [tile(PERSONAL, 'courier', 300, 200)] }]);
     for (const s of [0.5, 1, 1.5]) {
       await aim(page, s, 700, 400);
       const r = await rectOf(page, PERSONAL);
@@ -1920,7 +1928,7 @@ test.describe('the etched strip', () => {
   test('the name stays in the strip at every zoom, so an app right above it never covers it, and under 50 % it hides', async ({ page, request }) => {
     // An app right where the name goes, straight above the strip. The strip and the name scale together (ADR 0064, Nov 9
     // note): the capitals, 17 to 27 up, are always under the strip's top edge, 44 up, where apps stop.
-    const covered: Seed = { id: PERSONAL, x: 0, y: 0, w: 584, h: 300, items: [tile(PERSONAL, 'chat', 292 - 85, 300 - 44 - 170, 170, 170)] };
+    const covered: Seed = { id: PERSONAL, x: 0, y: 0, w: 584, h: 300, items: [tile(PERSONAL, 'courier', 292 - 85, 300 - 44 - 170, 170, 170)] };
     await seed(page, request, [covered]);
     for (const s of [1, 0.6, 0.5]) {
       await aim(page, s, 292, 150);
@@ -1937,7 +1945,9 @@ test.describe('the etched strip', () => {
     await aim(page, 0.32, 292, 150);
     const r = await rectOf(page, PERSONAL);
     expect((await drawnName(page, PERSONAL)).text).toBe('');
-    expect((await inkIn(page, { x: r.left + 8, y: r.bottom - 40 * r.s, w: r.w - 16, h: 38 * r.s })).count).toBe(0);
+    // The band the name's capitals sit in (17 to 27 up) and round it, short of the desk's edge. The app right above casts its
+    // lift's soft shadow (APP-TILES) a few units below its foot at 44 up, onto the desk as a shadow should; the band starts under it.
+    expect((await inkIn(page, { x: r.left + 8, y: r.bottom - 29 * r.s, w: r.w - 16, h: 26 * r.s })).count).toBe(0);
   });
 
   test('the name keeps 12 from the status line, in desk units, as both scale with the desk', async ({ page, request }) => {
@@ -2089,9 +2099,9 @@ test.describe('the etched strip', () => {
         await setTheme(page, theme);
         const row = (id: string, x: number, w: number, h: number, apps: string[]): Seed => ({ id, x, y: 0, w, h, items: apps.map((a, i) => tile(id, a, 24 + i * 92, 24)) });
         await seed(page, page.request, [
-          row(PERSONAL, 0, 232, 124, ['chat']), // the smallest a desk can be
-          row(WORK, 300, 584, 236, ['chat', 'notebook', 'browser', 'agent']),
-          row(GUILD, 960, 584, 144, ['chat', 'notebook', 'browser', 'agent']), // apps right above the strip
+          row(PERSONAL, 0, 232, 124, ['courier']), // the smallest a desk can be
+          row(WORK, 300, 584, 236, ['courier', 'notebook', 'browser', 'agent']),
+          row(GUILD, 960, 584, 144, ['courier', 'notebook', 'browser', 'agent']), // apps right above the strip
         ]);
         await aim(page, 0.42, 770, 80);
         await page.mouse.move(5, 5);
@@ -2105,7 +2115,7 @@ test.describe('the etched strip', () => {
 
 // ----- apps move and resize freely, and anything can go over anything (ADR 0062, 0064).
 test.describe('moving and resizing apps', () => {
-  const CHAT = `${PERSONAL}:chat`;
+  const COURIER = `${PERSONAL}:courier`;
   const NOTEBOOK = `${PERSONAL}:notebook`;
   const BROWSER = `${PERSONAL}:browser`;
   const AGENT = `${PERSONAL}:agent`;
@@ -2113,18 +2123,20 @@ test.describe('moving and resizing apps', () => {
 
   /**
    * One desk, 800 x 500, four icons. Only the first load seeds it, so a reload shows what was saved. `stack` is stored
-   * as given, and left out if there's none. `list` is the order of `items`, which is a phone's grid: Chat, Notebook,
+   * as given, and left out if there's none. `list` is the order of `items`, which is a phone's grid: Courier, Notebook,
    * Browser, Agent unless it says otherwise.
    */
   async function seeded(page: Page, request: APIRequestContext, at: Partial<Record<string, Box>> = {}, stack?: unknown, list: readonly string[] = []): Promise<void> {
-    await page.addInitScript(({ id, chat, notebook, browser, agent, at: over, stack: order, list: listed }) => {
+    const place = (key: string, app: string, x: number): Record<string, unknown> => ({ id: key, app, x, y: 24, w: 76, h: 76, ...at[key] });
+    const items = [place(COURIER, 'courier', 24), place(NOTEBOOK, 'notebook', 300), place(BROWSER, 'browser', 500), place(AGENT, 'agent', 650)];
+    if (list.length) items.sort((a, b) => list.indexOf(a['id'] as string) - list.indexOf(b['id'] as string));
+    // As this build stores it (Courier's id: `stored` in helpers.ts), so a test of the stored bytes reads what it wrote.
+    const doc = stored(JSON.stringify({ desks: { [PERSONAL]: { id: PERSONAL, x: 0, y: 36, w: 800, h: 500, items, ...(stack === undefined ? {} : { stack }) } }, z: [PERSONAL] }));
+    await page.addInitScript((text) => {
       if (localStorage.getItem('test.seeded') || !(location.pathname === '/auth/callback' || localStorage.getItem('ma-desk-web-refresh') || sessionStorage.getItem('ma-desk-web-refresh'))) return;
       localStorage.setItem('test.seeded', '1');
-      const place = (key: string, app: string, x: number): Record<string, unknown> => ({ id: key, app, x, y: 24, w: 76, h: 76, ...over[key] });
-      const items = [place(chat, 'chat', 24), place(notebook, 'notebook', 300), place(browser, 'browser', 500), place(agent, 'agent', 650)];
-      if (listed.length) items.sort((a, b) => listed.indexOf(a['id'] as string) - listed.indexOf(b['id'] as string));
-      localStorage.setItem('ma.layout.v2', JSON.stringify({ desks: { [id]: { id, x: 0, y: 36, w: 800, h: 500, items, ...(order === undefined ? {} : { stack: order }) } }, z: [id] }));
-    }, { id: PERSONAL, chat: CHAT, notebook: NOTEBOOK, browser: BROWSER, agent: AGENT, at, stack, list });
+      localStorage.setItem('ma.layout.v2', text);
+    }, doc);
     await harness(request, { fleet: [personal('running')] });
     await signIn(page);
     await canvasPainted(page);
@@ -2172,7 +2184,7 @@ test.describe('moving and resizing apps', () => {
     return a.x + a.w <= b.x + 0.01 || b.x + b.w <= a.x + 0.01 || a.y + a.h <= b.y + 0.01 || b.y + b.h <= a.y + 0.01;
   }
 
-  const ALL_APPS = [CHAT, NOTEBOOK, BROWSER, AGENT];
+  const ALL_APPS = [COURIER, NOTEBOOK, BROWSER, AGENT];
 
   async function expectOnDesk(page: Page, deskW = 800, deskH = 500): Promise<void> {
     for (const id of ALL_APPS) {
@@ -2201,7 +2213,7 @@ test.describe('moving and resizing apps', () => {
     return stage.findOne(`#desk-${deskId}`).find('.app-tile').map((n) => n.id().slice('tile-'.length));
   }, PERSONAL);
   const onTop = async (page: Page): Promise<string> => (await drawOrder(page)).at(-1)!;
-  const savedDesk = (page: Page): Promise<{ stack?: string[]; items: { id: string }[] }> => page.evaluate((deskId) => (JSON.parse(localStorage.getItem('ma.layout.v2')!) as { desks: Record<string, { stack?: string[]; items: { id: string }[] }> }).desks[deskId]!, PERSONAL);
+  const savedDesk = (page: Page): Promise<{ stack?: string[]; items: { id: string }[] }> => page.evaluate((deskId) => (JSON.parse(localStorage.getItem('ma.layout.v2')!) as { desks: Record<string, { stack?: string[]; items: { id: string }[] }> }).desks[deskId]!, PERSONAL).then(fromStored);
   /** The list as saved, which is a phone's grid. The mirror is debounced by 1 s. */
   const savedList = async (page: Page): Promise<string[]> => (await savedDesk(page)).items.map((i) => i.id);
   /** The stack as saved: its field, or the list's order if there's none. */
@@ -2226,8 +2238,8 @@ test.describe('moving and resizing apps', () => {
   test('an app goes where it\'s dragged, with no grid, and stays there across a reload', async ({ page, request }) => {
     const errors = watchConsole(page);
     await seeded(page, request);
-    await dragApp(page, CHAT, 37.5, 111.25);
-    const place = await placeOf(page, CHAT);
+    await dragApp(page, COURIER, 37.5, 111.25);
+    const place = await placeOf(page, COURIER);
     near(place.x, 24 + 37.5);
     near(place.y, 24 + 111.25);
     await page.screenshot({ path: 'test-results/shots/apps-moved.png' });
@@ -2236,37 +2248,37 @@ test.describe('moving and resizing apps', () => {
     await page.reload();
     await canvasPainted(page);
     await page.waitForTimeout(600);
-    expect(await placeOf(page, CHAT)).toEqual(place);
+    expect(await placeOf(page, COURIER)).toEqual(place);
     expect(errors).toEqual([]);
   });
 
   test('a drag doesn\'t open the app, and a click still does', async ({ page, request }) => {
     await seeded(page, request);
-    await dragApp(page, CHAT, 60, 60);
-    await expect(page.getByRole('dialog', { name: /Chat/ })).toHaveCount(0);
-    const c = await centerOf(page, CHAT);
+    await dragApp(page, COURIER, 60, 60);
+    await expect(page.getByRole('dialog', { name: /Courier/ })).toHaveCount(0);
+    const c = await centerOf(page, COURIER);
     await page.mouse.click(c.x, c.y);
-    await expect(page.getByRole('dialog', { name: /Chat/ })).toBeVisible();
+    await expect(page.getByRole('dialog', { name: /Courier/ })).toBeVisible();
   });
 
   test('an app dragged over another ends overlapping it, exactly where it was dropped', async ({ page, request }) => {
     const errors = watchConsole(page);
     await seeded(page, request);
-    await dragApp(page, CHAT, 300, 20); // onto the Notebook
-    const place = await placeOf(page, CHAT);
+    await dragApp(page, COURIER, 300, 20); // onto the Notebook
+    const place = await placeOf(page, COURIER);
     near(place.x, 324);
     near(place.y, 44);
     const notebook = await placeOf(page, NOTEBOOK);
     expect(notebook).toEqual({ x: 300, y: 24, w: 76, h: 76 }); // a drop never moves another app
     expect(clear(place, notebook)).toBe(false);
-    expect(await onTop(page)).toBe(CHAT);
+    expect(await onTop(page)).toBe(COURIER);
     await page.screenshot({ path: 'test-results/shots/apps-stacked.png' });
     expect(errors).toEqual([]);
   });
 
   test('dragged across and past another app, it stays with the pointer at every step, with no hop', async ({ page, request }) => {
     await seeded(page, request);
-    const c = await centerOf(page, CHAT);
+    const c = await centerOf(page, COURIER);
     const s = await scale(page);
     await page.mouse.move(c.x, c.y);
     await page.mouse.down();
@@ -2274,20 +2286,20 @@ test.describe('moving and resizing apps', () => {
     // Over the Notebook at 300 and the Browser at 500, and out past both.
     for (let units = 16; units <= 620; units += 12) {
       await page.mouse.move(c.x + units * s, c.y);
-      const at = await tileAt(page, CHAT);
+      const at = await tileAt(page, COURIER);
       near(at.x, 24 + units);
       near(at.y, 24);
     }
     // And back again, at a slant, onto the Browser.
     for (let units = 620; units >= 440; units -= 12) {
       await page.mouse.move(c.x + units * s, c.y + (620 - units) * s * 0.2);
-      const at = await tileAt(page, CHAT);
+      const at = await tileAt(page, COURIER);
       near(at.x, 24 + units);
       near(at.y, 24 + (620 - units) * 0.2);
     }
     await page.mouse.up();
     await page.waitForTimeout(100);
-    const place = await placeOf(page, CHAT);
+    const place = await placeOf(page, COURIER);
     near(place.x, 24 + 440);
     near(place.y, 24 + 180 * 0.2);
     expect(await placeOf(page, BROWSER)).toEqual({ x: 500, y: 24, w: 76, h: 76 });
@@ -2295,29 +2307,29 @@ test.describe('moving and resizing apps', () => {
 
   test('a single huge step lands on the far side of what it crossed', async ({ page, request }) => {
     await seeded(page, request);
-    await dragApp(page, CHAT, 600, 0, 1);
-    near((await placeOf(page, CHAT)).x, 624);
+    await dragApp(page, COURIER, 600, 0, 1);
+    near((await placeOf(page, COURIER)).x, 624);
     await expectOnDesk(page);
   });
 
   test('a release lands exactly under the pointer, at once', async ({ page, request }) => {
     await seeded(page, request);
-    const c = await centerOf(page, CHAT);
+    const c = await centerOf(page, COURIER);
     const s = await scale(page);
     await page.mouse.move(c.x, c.y);
     await page.mouse.down();
     await page.mouse.move(c.x + 320 * s, c.y + 90 * s, { steps: 2 });
     await page.mouse.up();
-    const place = await placeOf(page, CHAT);
+    const place = await placeOf(page, COURIER);
     near(place.x, 344);
     near(place.y, 114);
   });
 
-  // Chat is under the Notebook, sticking out to the right and below.
-  const CHAT_UNDER: Box = { x: 320, y: 44, w: 76, h: 76 };
+  // Courier is under the Notebook, sticking out to the right and below.
+  const COURIER_UNDER: Box = { x: 320, y: 44, w: 76, h: 76 };
 
   test('where two apps overlap, the top one takes the hover and the click', async ({ page, request }) => {
-    await seeded(page, request, { [CHAT]: CHAT_UNDER });
+    await seeded(page, request, { [COURIER]: COURIER_UNDER });
     expect(await onTop(page)).toBe(AGENT);
     const both = await onDesk(page, 350, 70);
     await page.mouse.move(both.x, both.y);
@@ -2325,34 +2337,34 @@ test.describe('moving and resizing apps', () => {
     expect(await hoverNow(page)).toEqual({ corners: [`tile-${NOTEBOOK}`], names: ['Notebook'] });
     await page.mouse.click(both.x, both.y);
     await expect(page.getByRole('dialog', { name: /Notebook/ })).toBeVisible();
-    await expect(page.getByRole('dialog', { name: /Chat/ })).toHaveCount(0);
+    await expect(page.getByRole('dialog', { name: /Courier/ })).toHaveCount(0);
   });
 
   test('the lower app\'s visible part takes the hover, and pressing it raises it at once, before any drag', async ({ page, request }) => {
-    await seeded(page, request, { [CHAT]: CHAT_UNDER }, [CHAT, NOTEBOOK, BROWSER, AGENT]);
-    const visible = await onDesk(page, 386, 70); // Chat alone, and clear of its resize corner
+    await seeded(page, request, { [COURIER]: COURIER_UNDER }, [COURIER, NOTEBOOK, BROWSER, AGENT]);
+    const visible = await onDesk(page, 386, 70); // Courier alone, and clear of its resize corner
     await page.mouse.move(visible.x, visible.y);
     await page.waitForTimeout(120);
-    expect((await hoverNow(page)).corners).toEqual([`tile-${CHAT}`]);
-    expect((await drawOrder(page)).indexOf(CHAT)).toBe(0);
+    expect((await hoverNow(page)).corners).toEqual([`tile-${COURIER}`]);
+    expect((await drawOrder(page)).indexOf(COURIER)).toBe(0);
 
     await page.mouse.down();
     await page.waitForTimeout(50);
-    expect(await onTop(page)).toBe(CHAT);
-    expect(await drawOrder(page)).toEqual([NOTEBOOK, BROWSER, AGENT, CHAT]);
+    expect(await onTop(page)).toBe(COURIER);
+    expect(await drawOrder(page)).toEqual([NOTEBOOK, BROWSER, AGENT, COURIER]);
     await page.mouse.up();
-    await expect(page.getByRole('dialog', { name: /Chat/ })).toBeVisible(); // a click also opens it, as it did
+    await expect(page.getByRole('dialog', { name: /Courier/ })).toBeVisible(); // a click also opens it, as it did
     await page.keyboard.press('Escape');
     await expect(page.getByRole('dialog')).toHaveCount(0);
     await page.waitForTimeout(300);
 
-    // Chat now takes what the Notebook took.
+    // Courier now takes what the Notebook took.
     const both = await onDesk(page, 350, 70);
     await page.mouse.move(both.x, both.y);
     await page.waitForTimeout(120);
-    expect((await hoverNow(page)).corners).toEqual([`tile-${CHAT}`]);
+    expect((await hoverNow(page)).corners).toEqual([`tile-${COURIER}`]);
     await page.waitForTimeout(1_200);
-    expect((await savedStack(page)).at(-1)).toBe(CHAT);
+    expect((await savedStack(page)).at(-1)).toBe(COURIER);
     expect(await savedList(page)).toEqual(ALL_APPS); // the list didn't move for it
   });
 
@@ -2374,7 +2386,7 @@ test.describe('moving and resizing apps', () => {
 
   test('what you grab is what moves: the raised app stays on top through a drag, and a render in the middle of it', async ({ page, request }) => {
     await countCommits(page);
-    await seeded(page, request, { [CHAT]: CHAT_UNDER }, [CHAT, NOTEBOOK, BROWSER, AGENT]);
+    await seeded(page, request, { [COURIER]: COURIER_UNDER }, [COURIER, NOTEBOOK, BROWSER, AGENT]);
     const visible = await onDesk(page, 386, 70);
     const s = await scale(page);
     await page.mouse.move(visible.x, visible.y);
@@ -2382,7 +2394,7 @@ test.describe('moving and resizing apps', () => {
     await page.mouse.down();
     await page.mouse.move(visible.x + 20 * s, visible.y + 20 * s, { steps: 3 });
     await page.waitForTimeout(50);
-    const raised = [NOTEBOOK, BROWSER, AGENT, CHAT];
+    const raised = [NOTEBOOK, BROWSER, AGENT, COURIER];
     expect(await drawOrder(page)).toEqual(raised);
 
     // The privacy shield re-renders the desk and every app on it, with the drag still going.
@@ -2394,34 +2406,34 @@ test.describe('moving and resizing apps', () => {
 
     await page.mouse.move(visible.x + 90 * s, visible.y + 60 * s, { steps: 5 });
     await page.waitForTimeout(50);
-    const at = await tileAt(page, CHAT);
-    near(at.x, CHAT_UNDER.x + 90);
-    near(at.y, CHAT_UNDER.y + 60);
+    const at = await tileAt(page, COURIER);
+    near(at.x, COURIER_UNDER.x + 90);
+    near(at.y, COURIER_UNDER.y + 60);
     await page.keyboard.press('\\');
     await page.waitForTimeout(100);
     expect(await drawOrder(page)).toEqual(raised);
-    near((await tileAt(page, CHAT)).x, CHAT_UNDER.x + 90);
+    near((await tileAt(page, COURIER)).x, COURIER_UNDER.x + 90);
     await page.mouse.up();
     await page.waitForTimeout(100);
     expect(await drawOrder(page)).toEqual(raised);
-    near((await placeOf(page, CHAT)).x, CHAT_UNDER.x + 90);
+    near((await placeOf(page, COURIER)).x, COURIER_UNDER.x + 90);
   });
 
   test('on a touch screen too, a press raises what\'s under the finger, and only that', async ({ browser }) => {
     const ctx = await browser.newContext({ viewport: { width: 1024, height: 768 }, hasTouch: true, baseURL: test.info().project.use.baseURL });
     const page = await ctx.newPage();
     await page.request.post('/__harness', { data: { reset: true } });
-    await seeded(page, page.request, { [CHAT]: CHAT_UNDER }, [CHAT, NOTEBOOK, BROWSER, AGENT]);
+    await seeded(page, page.request, { [COURIER]: COURIER_UNDER }, [COURIER, NOTEBOOK, BROWSER, AGENT]);
     const visible = await onDesk(page, 386, 70);
     await page.touchscreen.tap(visible.x, visible.y);
-    await expect(page.getByRole('dialog', { name: /Chat/ })).toBeVisible();
-    expect(await drawOrder(page)).toEqual([NOTEBOOK, BROWSER, AGENT, CHAT]);
+    await expect(page.getByRole('dialog', { name: /Courier/ })).toBeVisible();
+    expect(await drawOrder(page)).toEqual([NOTEBOOK, BROWSER, AGENT, COURIER]);
     await ctx.close();
   });
 
   test('the resize corner goes to the top app too: one under another can\'t be grabbed', async ({ page, request }) => {
-    // Chat's corner is inside the Notebook.
-    await seeded(page, request, { [CHAT]: { x: 230, y: 10, w: 76, h: 76 } }, [CHAT, NOTEBOOK, BROWSER, AGENT]);
+    // Courier's corner is inside the Notebook.
+    await seeded(page, request, { [COURIER]: { x: 230, y: 10, w: 76, h: 76 } }, [COURIER, NOTEBOOK, BROWSER, AGENT]);
     const corner = await onDesk(page, 303, 83);
     const s = await scale(page);
     await page.mouse.move(corner.x, corner.y);
@@ -2431,7 +2443,7 @@ test.describe('moving and resizing apps', () => {
     await page.mouse.move(corner.x + 40 * s, corner.y + 40 * s, { steps: 5 });
     await page.mouse.up();
     await page.waitForTimeout(100);
-    expect(await placeOf(page, CHAT)).toEqual({ x: 230, y: 10, w: 76, h: 76 });
+    expect(await placeOf(page, COURIER)).toEqual({ x: 230, y: 10, w: 76, h: 76 });
     const notebook = await placeOf(page, NOTEBOOK);
     near(notebook.x, 340);
     near(notebook.y, 64);
@@ -2441,11 +2453,11 @@ test.describe('moving and resizing apps', () => {
   test('the stack and every place survive a reload', async ({ page, request }) => {
     const errors = watchConsole(page);
     await seeded(page, request);
-    await dragApp(page, CHAT, 300, 20); // on the Notebook
+    await dragApp(page, COURIER, 300, 20); // on the Notebook
     await dragApp(page, BROWSER, -170, 30); // on both
     await resizeApp(page, AGENT, 0, 0, 1); // lifts the Agent, moving nothing
     const stack = await drawOrder(page);
-    expect(stack).toEqual([NOTEBOOK, CHAT, BROWSER, AGENT]);
+    expect(stack).toEqual([NOTEBOOK, COURIER, BROWSER, AGENT]);
     const places = await Promise.all(ALL_APPS.map((id) => placeOf(page, id)));
     await page.waitForTimeout(1_200);
     expect((await savedDesk(page)).stack).toEqual(stack);
@@ -2465,10 +2477,10 @@ test.describe('moving and resizing apps', () => {
 
   test('a saved desk with overlaps loads as it is, in its order, with nothing repaired or written back', async ({ page, request }) => {
     const errors = watchConsole(page);
-    const twins: Record<string, Box> = { [CHAT]: { x: 100, y: 100, w: 76, h: 76 }, [NOTEBOOK]: { x: 100, y: 100, w: 76, h: 76 }, [BROWSER]: { x: 130, y: 120, w: 76, h: 76 } };
-    await seeded(page, request, twins, [BROWSER, AGENT, NOTEBOOK, CHAT]);
-    for (const id of [CHAT, NOTEBOOK, BROWSER]) expect(await placeOf(page, id)).toEqual(twins[id]);
-    expect(await drawOrder(page)).toEqual([BROWSER, AGENT, NOTEBOOK, CHAT]);
+    const twins: Record<string, Box> = { [COURIER]: { x: 100, y: 100, w: 76, h: 76 }, [NOTEBOOK]: { x: 100, y: 100, w: 76, h: 76 }, [BROWSER]: { x: 130, y: 120, w: 76, h: 76 } };
+    await seeded(page, request, twins, [BROWSER, AGENT, NOTEBOOK, COURIER]);
+    for (const id of [COURIER, NOTEBOOK, BROWSER]) expect(await placeOf(page, id)).toEqual(twins[id]);
+    expect(await drawOrder(page)).toEqual([BROWSER, AGENT, NOTEBOOK, COURIER]);
     const stored = await page.evaluate(() => localStorage.getItem('ma.layout.v2'));
     await page.waitForTimeout(1_200);
     expect(await page.evaluate(() => localStorage.getItem('ma.layout.v2'))).toBe(stored);
@@ -2476,9 +2488,9 @@ test.describe('moving and resizing apps', () => {
   });
 
   test('a saved desk from before stacking looks the same, and keeps its list', async ({ page, request }) => {
-    await seeded(page, request, {}, undefined, [AGENT, CHAT, BROWSER, NOTEBOOK]); // not reading order, as a phone may have left it
-    expect(await drawOrder(page)).toEqual([AGENT, CHAT, BROWSER, NOTEBOOK]);
-    expect(await domOrder(page)).toEqual([CHAT, NOTEBOOK, BROWSER, AGENT]); // the keyboard reads by place regardless
+    await seeded(page, request, {}, undefined, [AGENT, COURIER, BROWSER, NOTEBOOK]); // not reading order, as a phone may have left it
+    expect(await drawOrder(page)).toEqual([AGENT, COURIER, BROWSER, NOTEBOOK]);
+    expect(await domOrder(page)).toEqual([COURIER, NOTEBOOK, BROWSER, AGENT]); // the keyboard reads by place regardless
     await expect(page.getByRole('button', { name: 'Clean up Personal desk', exact: true })).toHaveCount(1); // as it was: these aren't 16 apart
   });
 
@@ -2514,10 +2526,10 @@ test.describe('moving and resizing apps', () => {
 
     // A raise adds the field and changes nothing else.
     const focus = (id: string): Promise<void> => page.locator(`[id="proxy-${id}"]`).focus();
-    await focus(CHAT);
+    await focus(COURIER);
     await page.waitForTimeout(1_200);
     const raised = await storedDoc(page);
-    expect((await savedDesk(page)).stack).toEqual([NOTEBOOK, BROWSER, AGENT, CHAT]);
+    expect((await savedDesk(page)).stack).toEqual([NOTEBOOK, BROWSER, AGENT, COURIER]);
     expect(raised.replace(/,"stack":\[[^\]]*\]/, '')).toBe(original);
 
     // Raised around until it says what the list says: the field goes, and the doc is what it was.
@@ -2531,7 +2543,7 @@ test.describe('moving and resizing apps', () => {
     ['isn\'t a list', 'nope', ALL_APPS],
     ['is a number', 7, ALL_APPS],
     ['holds only ids that aren\'t here', ['gone', 'also-gone'], ALL_APPS],
-    ['has junk, repeats and unknown ids, and leaves some out', [1, null, 'gone', BROWSER, { a: 1 }, BROWSER, AGENT], [BROWSER, AGENT, CHAT, NOTEBOOK]],
+    ['has junk, repeats and unknown ids, and leaves some out', [1, null, 'gone', BROWSER, { a: 1 }, BROWSER, AGENT], [BROWSER, AGENT, COURIER, NOTEBOOK]],
   ] as const) {
     test(`a stack that ${what} loads, and takes a raise`, async ({ page, request }) => {
       const errors = watchConsole(page);
@@ -2557,7 +2569,7 @@ test.describe('moving and resizing apps', () => {
 
   test('raises on a larger screen leave a phone\'s grid alone, and the stack comes back with the width', async ({ page, request }) => {
     const errors = watchConsole(page);
-    await seeded(page, request, { [CHAT]: CHAT_UNDER });
+    await seeded(page, request, { [COURIER]: COURIER_UNDER });
     const cells = (): Promise<Box[]> => Promise.all(ALL_APPS.map((id) => placeOf(page, id)));
     await sizedTo(page, PHONE_SIZE);
     const grid = await cells();
@@ -2566,8 +2578,8 @@ test.describe('moving and resizing apps', () => {
     await sizedTo(page, WIDE_SIZE);
 
     await page.locator(`[id="proxy-${BROWSER}"]`).focus();
-    await page.locator(`[id="proxy-${CHAT}"]`).focus();
-    const stack = [NOTEBOOK, AGENT, BROWSER, CHAT];
+    await page.locator(`[id="proxy-${COURIER}"]`).focus();
+    const stack = [NOTEBOOK, AGENT, BROWSER, COURIER];
     expect(await drawOrder(page)).toEqual(stack);
 
     await sizedTo(page, PHONE_SIZE);
@@ -2588,13 +2600,13 @@ test.describe('moving and resizing apps', () => {
     await seeded(page, request);
     expect(await drawOrder(page)).toEqual(ALL_APPS);
 
-    // Chat is first in the list, and stays in its own cell.
-    const c = await centerOf(page, CHAT);
+    // Courier is first in the list, and stays in its own cell.
+    const c = await centerOf(page, COURIER);
     await page.mouse.move(c.x, c.y);
     await page.mouse.down();
     await page.mouse.move(c.x + 12, c.y + 12, { steps: 4 });
     await page.waitForTimeout(100);
-    expect(await onTop(page)).toBe(CHAT); // it passes over the others
+    expect(await onTop(page)).toBe(COURIER); // it passes over the others
     await page.mouse.up();
     await page.waitForTimeout(400);
     expect(await drawOrder(page)).toEqual(ALL_APPS); // and goes back
@@ -2609,14 +2621,14 @@ test.describe('moving and resizing apps', () => {
     await page.setViewportSize(PHONE_SIZE);
     await seeded(page, request);
     const browserCell = await placeOf(page, BROWSER);
-    const from = await centerOf(page, CHAT);
+    const from = await centerOf(page, COURIER);
     const to = await centerOf(page, BROWSER);
     await page.mouse.move(from.x, from.y);
     await page.mouse.down();
     await page.mouse.move(to.x, to.y, { steps: 10 });
     await page.waitForTimeout(100);
-    expect(await onTop(page)).toBe(CHAT);
-    const held = await tileAt(page, CHAT); // React moved its node mid-drag, and it stayed with the pointer
+    expect(await onTop(page)).toBe(COURIER);
+    const held = await tileAt(page, COURIER); // React moved its node mid-drag, and it stayed with the pointer
     expect(Math.abs(held.x - browserCell.x)).toBeLessThan(2);
     await page.mouse.up();
     await page.waitForTimeout(400);
@@ -2657,7 +2669,7 @@ test.describe('moving and resizing apps', () => {
     type Node = { id(): string; text(): string; findAncestor(q: string): Node };
     const stage = (window as unknown as { __maDesk: { camera: { getStage(): { findOne(q: string): { find(q: string): Node[] } } } } }).__maDesk.camera.getStage();
     const desk = stage.findOne(`#desk-${deskId}`);
-    return { corners: desk.find('.app-resize').map((n) => n.findAncestor('.app-tile').id()), names: desk.find('Text').map((n) => n.text()).filter((t) => ['Chat', 'Notebook', 'Browser', 'Agent'].includes(t)) };
+    return { corners: desk.find('.app-resize').map((n) => n.findAncestor('.app-tile').id()), names: desk.find('Text').map((n) => n.text()).filter((t) => ['Courier', 'Notebook', 'Browser', 'Agent'].includes(t)) };
   }, PERSONAL);
 
   test('moving an app: no app takes hover, and React doesn\'t render at all, until the drop', async ({ page, request }) => {
@@ -2711,15 +2723,15 @@ test.describe('moving and resizing apps', () => {
     const stage = (window as unknown as { __maDesk: { camera: { getStage(): N } } }).__maDesk.camera.getStage();
     return Object.fromEntries(stage.findOne(`#desk-${deskId}`).find('.app-tile').map((n) => [n.id().slice('tile-'.length), n.findOne('Shape').getAttr('stacked') as boolean]));
   }, PERSONAL);
-  const OVER_CHAT = { x: 60, y: 50, w: 76, h: 76 };
+  const OVER_COURIER = { x: 60, y: 50, w: 76, h: 76 };
 
   test('the stacked look goes by the stack, and updates at a raise, a drop and a cleanup', async ({ page, request }) => {
     const errors = watchConsole(page);
-    await seeded(page, request, { [NOTEBOOK]: OVER_CHAT });
-    expect(await looks(page)).toEqual({ [CHAT]: false, [NOTEBOOK]: true, [BROWSER]: false, [AGENT]: false });
+    await seeded(page, request, { [NOTEBOOK]: OVER_COURIER });
+    expect(await looks(page)).toEqual({ [COURIER]: false, [NOTEBOOK]: true, [BROWSER]: false, [AGENT]: false });
 
-    // Pressing Chat raises it, so it's the one over the other now. A small move, so it doesn't open.
-    const c = await centerOf(page, CHAT);
+    // Pressing Courier raises it, so it's the one over the other now. A small move, so it doesn't open.
+    const c = await centerOf(page, COURIER);
     const s = await scale(page);
     const corner = { x: c.x - 30 * s, y: c.y - 30 * s };
     await page.mouse.move(corner.x, corner.y);
@@ -2727,12 +2739,12 @@ test.describe('moving and resizing apps', () => {
     await page.mouse.move(corner.x - 8 * s, corner.y, { steps: 3 });
     await page.mouse.up();
     await page.waitForTimeout(100);
-    expect(await looks(page)).toMatchObject({ [CHAT]: true, [NOTEBOOK]: false });
+    expect(await looks(page)).toMatchObject({ [COURIER]: true, [NOTEBOOK]: false });
 
     // A drop that clears it goes back to the resting look.
-    await dragApp(page, CHAT, 0, 200);
+    await dragApp(page, COURIER, 0, 200);
     await page.waitForTimeout(100);
-    expect(await looks(page)).toEqual({ [CHAT]: false, [NOTEBOOK]: false, [BROWSER]: false, [AGENT]: false });
+    expect(await looks(page)).toEqual({ [COURIER]: false, [NOTEBOOK]: false, [BROWSER]: false, [AGENT]: false });
 
     // A drop onto another takes it, and cleanup takes it away.
     await dragApp(page, BROWSER, -400, 30);
@@ -2741,7 +2753,7 @@ test.describe('moving and resizing apps', () => {
     await page.getByRole('button', { name: /^Clean up/ }).focus();
     await page.keyboard.press('Enter');
     await page.waitForTimeout(400);
-    expect(await looks(page)).toEqual({ [CHAT]: false, [NOTEBOOK]: false, [BROWSER]: false, [AGENT]: false });
+    expect(await looks(page)).toEqual({ [COURIER]: false, [NOTEBOOK]: false, [BROWSER]: false, [AGENT]: false });
     expect(errors).toEqual([]);
   });
 
@@ -2773,7 +2785,7 @@ test.describe('moving and resizing apps', () => {
 
   test('a corner in hand wears the stacked look too, and gives it back at the drop', async ({ page, request }) => {
     await seeded(page, request);
-    const b = (await page.locator(`[id="proxy-${CHAT}"]`).boundingBox())!;
+    const b = (await page.locator(`[id="proxy-${COURIER}"]`).boundingBox())!;
     const s = await scale(page);
     await page.mouse.move(b.x + b.width / 2, b.y + b.height / 2);
     await page.waitForTimeout(100);
@@ -2782,22 +2794,22 @@ test.describe('moving and resizing apps', () => {
     await page.mouse.down();
     await page.mouse.move(from.x + 20 * s, from.y, { steps: 4 });
     await page.waitForTimeout(100);
-    expect((await looks(page))[CHAT]).toBe(true);
+    expect((await looks(page))[COURIER]).toBe(true);
     await page.mouse.up();
     await page.waitForTimeout(100);
-    expect((await looks(page))[CHAT]).toBe(false);
+    expect((await looks(page))[COURIER]).toBe(false);
   });
 
   test('a phone stacks nothing at rest, and only the tile in hand wears the look', async ({ page, request }) => {
     await page.setViewportSize(PHONE_SIZE);
-    await seeded(page, request, { [NOTEBOOK]: OVER_CHAT });
+    await seeded(page, request, { [NOTEBOOK]: OVER_COURIER });
     expect(Object.values(await looks(page))).toEqual([false, false, false, false]);
-    const c = await centerOf(page, CHAT);
+    const c = await centerOf(page, COURIER);
     await page.mouse.move(c.x, c.y);
     await page.mouse.down();
     await page.mouse.move(c.x + 12, c.y + 12, { steps: 4 });
     await page.waitForTimeout(100);
-    expect(await looks(page)).toEqual({ [CHAT]: true, [NOTEBOOK]: false, [BROWSER]: false, [AGENT]: false });
+    expect(await looks(page)).toEqual({ [COURIER]: true, [NOTEBOOK]: false, [BROWSER]: false, [AGENT]: false });
     await page.mouse.up();
     await page.waitForTimeout(400);
     expect(Object.values(await looks(page))).toEqual([false, false, false, false]);
@@ -2821,7 +2833,7 @@ test.describe('moving and resizing apps', () => {
         const read = (x: number, y: number): number => ctx.getImageData(Math.round((desk.x() + x) * k + cam.x * camera.dpr()), Math.round((desk.y() + y) * k + cam.y * camera.dpr()), 1, 1).data[0]!;
         const midX = at.x() + 38;
         return read(midX, at.y() + 300) - read(midX, at.y() + 76 + 1);
-      }, { deskId: PERSONAL, tile: CHAT });
+      }, { deskId: PERSONAL, tile: COURIER });
       expect(shade).toBeGreaterThanOrEqual(least);
     });
   }
@@ -2829,7 +2841,7 @@ test.describe('moving and resizing apps', () => {
   test('resizing an app: only its own corner shows, and React renders only at a detail threshold', async ({ page, request }) => {
     await countCommits(page);
     await seeded(page, request);
-    const b = (await page.locator(`[id="proxy-${CHAT}"]`).boundingBox())!;
+    const b = (await page.locator(`[id="proxy-${COURIER}"]`).boundingBox())!;
     const s = await scale(page);
     await page.mouse.move(b.x + b.width / 2, b.y + b.height / 2);
     await page.waitForTimeout(100);
@@ -2840,10 +2852,10 @@ test.describe('moving and resizing apps', () => {
     await page.waitForTimeout(100);
     const started = await commits(page);
 
-    // Across the gap and over the Notebook. Chat stays an icon: it isn't tall enough for more.
+    // Across the gap and over the Notebook. Courier stays an icon: it isn't tall enough for more.
     await page.mouse.move(from.x + 260 * s, from.y, { steps: 30 });
     await page.waitForTimeout(100);
-    expect(await hoverNow(page)).toEqual({ corners: [`tile-${CHAT}`], names: [] });
+    expect(await hoverNow(page)).toEqual({ corners: [`tile-${COURIER}`], names: [] });
     expect(await commits(page) - started).toBe(0);
 
     // Tall enough for a widget: that one threshold is the one render.
@@ -2860,8 +2872,8 @@ test.describe('moving and resizing apps', () => {
     await seeded(page, request);
     const box = (await proxyOf(page, 'Personal').boundingBox())!;
     const s = await scale(page);
-    const c = await centerOf(page, CHAT);
-    // Press the panel under the Chat tile and drag up, so the desk's apps pass nothing, and the pointer stays on the desk.
+    const c = await centerOf(page, COURIER);
+    // Press the panel under the Courier tile and drag up, so the desk's apps pass nothing, and the pointer stays on the desk.
     const at = { x: c.x, y: box.y + box.height - 60 * s };
     await page.mouse.move(at.x, at.y);
     await page.waitForTimeout(100);
@@ -2878,36 +2890,36 @@ test.describe('moving and resizing apps', () => {
 
   test('it stops at the desk\'s edges, and can reach the strip but not enter it', async ({ page, request }) => {
     await seeded(page, request);
-    await dragApp(page, CHAT, -300, -300);
-    expect(await placeOf(page, CHAT)).toMatchObject({ x: 8, y: 8 });
-    await dragApp(page, CHAT, -10, 900);
-    const low = await placeOf(page, CHAT);
+    await dragApp(page, COURIER, -300, -300);
+    expect(await placeOf(page, COURIER)).toMatchObject({ x: 8, y: 8 });
+    await dragApp(page, COURIER, -10, 900);
+    const low = await placeOf(page, COURIER);
     expect(low.y + low.h).toBeCloseTo(500 - 44, 0);
     await page.screenshot({ path: 'test-results/shots/apps-at-strip.png' });
   });
 
   test('resizing: any size, a minimum of 56, and it goes over what it meets', async ({ page, request }) => {
     await seeded(page, request);
-    await resizeApp(page, CHAT, 37, 22);
-    let p = await placeOf(page, CHAT);
+    await resizeApp(page, COURIER, 37, 22);
+    let p = await placeOf(page, COURIER);
     near(p.w, 76 + 37);
     near(p.h, 76 + 22);
 
-    await resizeApp(page, CHAT, -300, -300);
-    p = await placeOf(page, CHAT);
+    await resizeApp(page, COURIER, -300, -300);
+    p = await placeOf(page, COURIER);
     expect(p).toMatchObject({ w: 56, h: 56 });
 
-    await resizeApp(page, CHAT, 350, 20); // over the Notebook, with the pointer still on the corner
-    p = await placeOf(page, CHAT);
+    await resizeApp(page, COURIER, 350, 20); // over the Notebook, with the pointer still on the corner
+    p = await placeOf(page, COURIER);
     near(p.w, 56 + 350);
     near(p.h, 56 + 20);
     expect(clear(p, await placeOf(page, NOTEBOOK))).toBe(false);
     expect(await placeOf(page, NOTEBOOK)).toEqual({ x: 300, y: 24, w: 76, h: 76 });
-    expect(await onTop(page)).toBe(CHAT);
+    expect(await onTop(page)).toBe(COURIER);
     await page.screenshot({ path: 'test-results/shots/apps-resized.png' });
 
-    await resizeApp(page, CHAT, 5000, 5000, 2); // stopped only by the desk
-    p = await placeOf(page, CHAT);
+    await resizeApp(page, COURIER, 5000, 5000, 2); // stopped only by the desk
+    p = await placeOf(page, COURIER);
     expect(p.x + p.w).toBeCloseTo(800 - 8, 1);
     expect(p.y + p.h).toBeCloseTo(500 - 44, 1);
   });
@@ -2915,18 +2927,22 @@ test.describe('moving and resizing apps', () => {
   test('resizing a corner doesn\'t move or open the app, and the detail follows the size', async ({ page, request }) => {
     await seeded(page, request);
     const texts = async (): Promise<string[]> => (await surfaceOf(page, PERSONAL)).texts;
-    expect(await texts()).not.toContain('Chat');
+    // Courier comes later: small, it's its glyph with "Coming later" under it, never widget words (courierlater.shell.spec.ts).
+    const chip = (): Promise<unknown> => page.evaluate((id) => (window as unknown as { __maDesk: { camera: { getStage(): { findOne(q: string): { findOne(q: string): { getAttr(k: string): unknown } } } } } }).__maDesk.camera.getStage().findOne(`#tile-${id}`).findOne('Shape').getAttr('later'), COURIER);
+    expect(await texts()).not.toContain('Courier');
+    expect(await chip()).toBe(false);
 
-    await resizeApp(page, CHAT, 168 - 76 + 3, 168 - 76 + 3);
-    expect(await placeOf(page, CHAT)).toMatchObject({ x: 24, y: 24 });
-    await expect(page.getByRole('dialog', { name: /Chat/ })).toHaveCount(0);
-    expect(await texts()).toContain('Chat'); // small, from 168 x 168
+    await resizeApp(page, COURIER, 168 - 76 + 3, 168 - 76 + 3);
+    expect(await placeOf(page, COURIER)).toMatchObject({ x: 24, y: 24 });
+    await expect(page.getByRole('dialog', { name: /Courier/ })).toHaveCount(0);
+    expect(await chip()).toBe(true); // small, from 168 x 168
     await page.screenshot({ path: 'test-results/shots/apps-small.png' });
 
-    await resizeApp(page, CHAT, 0, -24); // too short for small
+    await resizeApp(page, COURIER, 0, -24); // too short for small
     await page.mouse.move(5, 450); // off the app, since an icon names itself on hover
     await page.waitForTimeout(100);
-    expect(await texts()).not.toContain('Chat');
+    expect(await texts()).not.toContain('Courier');
+    expect(await chip()).toBe(false);
   });
 
   test('the corner shows on hover, and the old size chip is gone', async ({ page, request }) => {
@@ -2950,6 +2966,15 @@ test.describe('moving and resizing apps', () => {
       await canvasPainted(page);
       await page.waitForTimeout(800);
     }
+    /** ADR 0062's new desk, 584 x 236, as a member who arrived before ADR 0057 has it saved: its free band under the row. */
+    async function savedOldDefault(page: Page, request: APIRequestContext): Promise<void> {
+      const items = [COURIER, NOTEBOOK, BROWSER, AGENT].map((id, n) => ({ id, app: id.split(':')[1]!, x: 24 + 92 * n, y: 24, w: 76, h: 76 }));
+      const layout = { schemaVersion: 2, desks: { [PERSONAL]: { x: 0, y: 0, w: 584, h: 236, items } }, z: [PERSONAL] };
+      await harness(request, { fleet: [personal('running')], layoutDocs: { 'u-test': { version: 1, updatedAt: '2026-11-12T00:00:00Z', layout } } });
+      await signIn(page);
+      await canvasPainted(page);
+      await page.waitForTimeout(800);
+    }
     // placeOf is for a desk at y 36. This one's at 0.
     const at = async (page: Page, id: string): Promise<Box> => {
       const p = await placeOf(page, id);
@@ -2959,33 +2984,33 @@ test.describe('moving and resizing apps', () => {
       for (const [id, x] of ids) expect(await at(page, id)).toEqual({ x, y: 24, w: 76, h: 76 });
     };
 
-    test('it is 584 x 236, with its apps in a row at the top, and it saves as that', async ({ page, request }) => {
+    test('it is 860 x 480 (ADR 0057), with its apps in a row at the top, and it saves as that', async ({ page, request }) => {
       await fresh(page, request);
       const size = await page.locator(`[id="proxy-${PERSONAL}"]`).evaluate((el: HTMLElement) => ({ w: parseFloat(el.style.width), h: parseFloat(el.style.height) }));
-      expect(size).toEqual({ w: 584, h: 236 });
-      await expectOthersStill(page, [[CHAT, 24], [NOTEBOOK, 116], [BROWSER, 208], [AGENT, 300]]);
+      expect(size).toEqual({ w: 860, h: 480 });
+      await expectOthersStill(page, [[COURIER, 24], [NOTEBOOK, 116], [BROWSER, 208], [AGENT, 300]]);
       await page.screenshot({ path: 'test-results/shots/new-desk.png' });
       await page.waitForTimeout(1_200); // the mirror is debounced by 1 s
       const doc = await page.evaluate(() => JSON.parse(localStorage.getItem('ma.layout.v2') ?? 'null') as { desks: Record<string, { w: number; h: number }> });
-      expect(doc.desks[PERSONAL]).toMatchObject({ w: 584, h: 236 });
+      expect(doc.desks[PERSONAL]).toMatchObject({ w: 860, h: 480 });
     });
 
     test('an app moves vertically, passes the others under the row, and comes back up beyond them', async ({ page, request }) => {
       const errors = watchConsole(page);
       await fresh(page, request);
-      await dragApp(page, CHAT, 0, 92);
-      const down = await at(page, CHAT);
+      await dragApp(page, COURIER, 0, 92);
+      const down = await at(page, COURIER);
       near(down.x, 24);
       near(down.y, 116);
       await page.screenshot({ path: 'test-results/shots/new-desk-app-at-strip.png' }); // its name on hover, right above the etched name
 
-      await dragApp(page, CHAT, 400, 0);
-      const along = await at(page, CHAT);
+      await dragApp(page, COURIER, 400, 0);
+      const along = await at(page, COURIER);
       near(along.x, 424);
       near(along.y, 116);
 
-      await dragApp(page, CHAT, 0, -92);
-      const up = await at(page, CHAT);
+      await dragApp(page, COURIER, 0, -92);
+      const up = await at(page, COURIER);
       near(up.x, 424);
       near(up.y, 24);
       expect(up.x).toBeGreaterThan(300 + 76); // past the Agent, the last of them
@@ -2995,9 +3020,9 @@ test.describe('moving and resizing apps', () => {
       expect(errors).toEqual([]);
     });
 
-    test('an app resizes to widget height, stops at the strip, and shows its widget', async ({ page, request }) => {
+    test('on ADR 0062\'s desk as saved, an app resizes to widget height, stops at the strip, and shows its widget', async ({ page, request }) => {
       const errors = watchConsole(page);
-      await fresh(page, request);
+      await savedOldDefault(page, request);
       const texts = async (): Promise<string[]> => (await surfaceOf(page, PERSONAL)).texts;
       expect(await texts()).not.toContain('Agent');
 
@@ -3010,12 +3035,12 @@ test.describe('moving and resizing apps', () => {
       expect(await texts()).toContain('Agent'); // small, from 168 x 168
       await page.screenshot({ path: 'test-results/shots/new-desk-widget.png' });
 
-      // The Notebook is beside the Chat, and the Chat goes over it, to the same height.
-      await resizeApp(page, CHAT, 300, 92);
-      const chat = await at(page, CHAT);
-      expect(chat).toMatchObject({ x: 24, y: 24 });
-      near(chat.w, 376);
-      near(chat.h, 168);
+      // The Notebook is beside the Courier, and the Courier goes over it, to the same height.
+      await resizeApp(page, COURIER, 300, 92);
+      const courier = await at(page, COURIER);
+      expect(courier).toMatchObject({ x: 24, y: 24 });
+      near(courier.w, 376);
+      near(courier.h, 168);
       expect(errors).toEqual([]);
     });
   });
@@ -3043,23 +3068,23 @@ test.describe('moving and resizing apps', () => {
 
   test('keyboard: m moves, Enter keeps, Esc restores, and each step is announced', async ({ page, request }) => {
     await seeded(page, request);
-    const tile = page.locator(`[id="proxy-${CHAT}"]`);
+    const tile = page.locator(`[id="proxy-${COURIER}"]`);
     const said = page.getByRole('status').first();
     await tile.focus();
 
     await page.keyboard.press('m');
-    await expect(said).toContainText('Moving Chat');
+    await expect(said).toContainText('Moving Courier');
     await expect(tile).toHaveClass(/editing/);
     await page.keyboard.press('ArrowRight');
-    expect(await placeOf(page, CHAT)).toMatchObject({ x: 32, y: 24 });
-    await expect(said).toHaveText('Chat at 32, 24');
+    expect(await placeOf(page, COURIER)).toMatchObject({ x: 32, y: 24 });
+    await expect(said).toHaveText('Courier at 32, 24');
     await page.keyboard.press('Shift+ArrowDown');
-    expect(await placeOf(page, CHAT)).toMatchObject({ x: 32, y: 64 });
-    await expect(said).toHaveText('Chat at 32, 64');
+    expect(await placeOf(page, COURIER)).toMatchObject({ x: 32, y: 64 });
+    await expect(said).toHaveText('Courier at 32, 64');
     await page.screenshot({ path: 'test-results/shots/apps-keyboard.png' });
 
     await page.keyboard.press('Escape');
-    expect(await placeOf(page, CHAT)).toMatchObject({ x: 24, y: 24 });
+    expect(await placeOf(page, COURIER)).toMatchObject({ x: 24, y: 24 });
     await expect(said).toHaveText('Restored');
     await expect(tile).not.toHaveClass(/editing/);
     await expect(page.getByRole('dialog')).toHaveCount(0);
@@ -3067,7 +3092,7 @@ test.describe('moving and resizing apps', () => {
     await page.keyboard.press('m');
     await page.keyboard.press('Shift+ArrowRight');
     await page.keyboard.press('Enter');
-    expect(await placeOf(page, CHAT)).toMatchObject({ x: 64, y: 24 });
+    expect(await placeOf(page, COURIER)).toMatchObject({ x: 64, y: 24 });
     await expect(said).toHaveText('Kept');
     await expect(page.getByRole('dialog')).toHaveCount(0); // Enter kept it, and didn't open it
     await expect(tile).toBeFocused();
@@ -3077,85 +3102,85 @@ test.describe('moving and resizing apps', () => {
     // Out of the mode, Enter opens as it always did, and arrows move the focus.
     await page.keyboard.press('ArrowRight');
     await expect(page.locator(`[id="proxy-${NOTEBOOK}"]`)).toBeFocused();
-    expect(await placeOf(page, CHAT)).toMatchObject({ x: 64, y: 24 });
+    expect(await placeOf(page, COURIER)).toMatchObject({ x: 64, y: 24 });
   });
 
   test('keyboard: arrows go straight over another app, one step at a time, and stop only at the edge', async ({ page, request }) => {
-    await seeded(page, request, { [CHAT]: { x: 200, y: 24, w: 76, h: 76 } });
-    const tile = page.locator(`[id="proxy-${CHAT}"]`);
+    await seeded(page, request, { [COURIER]: { x: 200, y: 24, w: 76, h: 76 } });
+    const tile = page.locator(`[id="proxy-${COURIER}"]`);
     const said = page.getByRole('status').first();
     await tile.focus();
     await page.keyboard.press('m');
     await page.keyboard.press('ArrowRight');
-    expect((await placeOf(page, CHAT)).x).toBe(208);
+    expect((await placeOf(page, COURIER)).x).toBe(208);
     await page.keyboard.press('Shift+ArrowRight'); // 248, which reaches the Notebook at 300
-    expect((await placeOf(page, CHAT)).x).toBe(248);
+    expect((await placeOf(page, COURIER)).x).toBe(248);
     await page.keyboard.press('Shift+ArrowRight'); // over it
-    expect((await placeOf(page, CHAT)).x).toBe(288);
-    await expect(said).toHaveText('Chat at 288, 24');
-    expect(clear(await placeOf(page, CHAT), await placeOf(page, NOTEBOOK))).toBe(false);
+    expect((await placeOf(page, COURIER)).x).toBe(288);
+    await expect(said).toHaveText('Courier at 288, 24');
+    expect(clear(await placeOf(page, COURIER), await placeOf(page, NOTEBOOK))).toBe(false);
     expect(await placeOf(page, NOTEBOOK)).toEqual({ x: 300, y: 24, w: 76, h: 76 });
-    expect(await onTop(page)).toBe(CHAT);
+    expect(await onTop(page)).toBe(COURIER);
     // The edit's row has the keyboard (`EditBar.tsx`) while the keys move it; the tile's button holds still meanwhile.
     await expect(page.getByRole('group', { name: /^Moving / }).getByRole('button', { name: 'Move left' })).toBeFocused();
 
     await page.keyboard.press('Shift+ArrowUp');
-    expect((await placeOf(page, CHAT)).y).toBe(8);
+    expect((await placeOf(page, COURIER)).y).toBe(8);
     await page.keyboard.press('ArrowUp');
     await expect(said).toContainText("Can't go further");
     await page.keyboard.press('ArrowUp');
     await expect(said).toContainText("Can't go further");
-    expect((await placeOf(page, CHAT)).y).toBe(8);
+    expect((await placeOf(page, COURIER)).y).toBe(8);
     await page.keyboard.press('Escape');
-    expect(await placeOf(page, CHAT)).toMatchObject({ x: 200, y: 24 });
+    expect(await placeOf(page, COURIER)).toMatchObject({ x: 200, y: 24 });
     await expect(tile).toBeFocused();
 
     // Kept, over the Notebook: it stays, on top, and the buttons take up the new reading order.
     await page.keyboard.press('m');
     for (let i = 0; i < 3; i += 1) await page.keyboard.press('Shift+ArrowRight');
-    expect((await placeOf(page, CHAT)).x).toBe(320);
+    expect((await placeOf(page, COURIER)).x).toBe(320);
     await page.keyboard.press('Enter');
     await page.waitForTimeout(100);
-    expect(await domOrder(page)).toEqual([NOTEBOOK, CHAT, BROWSER, AGENT]);
+    expect(await domOrder(page)).toEqual([NOTEBOOK, COURIER, BROWSER, AGENT]);
     await expect(tile).toBeFocused();
-    near((await placeOf(page, CHAT)).x, 320);
+    near((await placeOf(page, COURIER)).x, 320);
   });
 
   test('keyboard: focus brings an app to the front, even one fully covered, and the keyboard still goes by place', async ({ page, request }) => {
     const sameSpot = { x: 300, y: 100, w: 120, h: 120 };
-    await seeded(page, request, { [CHAT]: sameSpot, [NOTEBOOK]: sameSpot, [BROWSER]: { x: 24, y: 24, w: 76, h: 76 } }, [CHAT, NOTEBOOK, BROWSER, AGENT]);
+    await seeded(page, request, { [COURIER]: sameSpot, [NOTEBOOK]: sameSpot, [BROWSER]: { x: 24, y: 24, w: 76, h: 76 } }, [COURIER, NOTEBOOK, BROWSER, AGENT]);
     const proxy = (id: string): Locator => page.locator(`[id="proxy-${id}"]`);
-    const reading = [BROWSER, AGENT, CHAT, NOTEBOOK];
+    const reading = [BROWSER, AGENT, COURIER, NOTEBOOK];
     expect(await domOrder(page)).toEqual(reading);
 
-    // Chat is entirely under the Notebook, and the arrows reach it.
+    // Courier is entirely under the Notebook, and the arrows reach it.
     await proxy(BROWSER).focus();
     expect(await onTop(page)).toBe(BROWSER);
     await page.keyboard.press('ArrowRight');
     await expect(proxy(AGENT)).toBeFocused();
     expect(await onTop(page)).toBe(AGENT);
     await page.keyboard.press('ArrowRight');
-    await expect(proxy(CHAT)).toBeFocused();
-    expect(await onTop(page)).toBe(CHAT);
+    await expect(proxy(COURIER)).toBeFocused();
+    expect(await onTop(page)).toBe(COURIER);
     await page.screenshot({ path: 'test-results/shots/apps-covered-focused.png' });
     await page.keyboard.press('ArrowRight');
     await expect(proxy(NOTEBOOK)).toBeFocused();
     expect(await onTop(page)).toBe(NOTEBOOK);
     await page.keyboard.press('ArrowLeft');
-    await expect(proxy(CHAT)).toBeFocused();
-    expect(await onTop(page)).toBe(CHAT);
+    await expect(proxy(COURIER)).toBeFocused();
+    expect(await onTop(page)).toBe(COURIER);
 
     // None of that changed the order the keyboard goes in, with two apps at one place.
     expect(await domOrder(page)).toEqual(reading);
 
     // Enter opens the app that's focused.
     await page.keyboard.press('Enter');
-    await expect(page.getByRole('dialog', { name: /Chat/ })).toBeVisible();
+    await expect(page.getByRole('dialog', { name: /Courier/ })).toBeVisible();
   });
 
   test('the menu: Bring to front and Send to back, by mouse and by keyboard', async ({ page, request }) => {
     const said = page.getByRole('status').first();
-    await seeded(page, request, { [CHAT]: CHAT_UNDER }, [CHAT, NOTEBOOK, BROWSER, AGENT]);
+    await seeded(page, request, { [COURIER]: COURIER_UNDER }, [COURIER, NOTEBOOK, BROWSER, AGENT]);
     const menu = page.getByRole('menu');
     const front = menu.getByRole('menuitem', { name: 'Bring to front' });
     const back = menu.getByRole('menuitem', { name: 'Send to back' });
@@ -3164,18 +3189,18 @@ test.describe('moving and resizing apps', () => {
     const visible = await onDesk(page, 386, 70);
     await page.mouse.click(visible.x, visible.y, { button: 'right' });
     await expect(menu.getByRole('menuitem')).toHaveCount(4);
-    expect((await drawOrder(page))[0]).toBe(CHAT);
+    expect((await drawOrder(page))[0]).toBe(COURIER);
     await expect(back).toBeDisabled(); // it's at the back already
     await front.click();
     await expect(menu).toHaveCount(0);
-    expect(await onTop(page)).toBe(CHAT);
-    await expect(said).toHaveText('Chat brought to front');
+    expect(await onTop(page)).toBe(COURIER);
+    await expect(said).toHaveText('Courier brought to front');
 
     await page.mouse.click(visible.x, visible.y, { button: 'right' });
     await expect(front).toBeDisabled();
     await back.click();
-    expect((await drawOrder(page))[0]).toBe(CHAT);
-    await expect(said).toHaveText('Chat sent to back');
+    expect((await drawOrder(page))[0]).toBe(COURIER);
+    await expect(said).toHaveText('Courier sent to back');
     const both = await onDesk(page, 350, 70);
     await page.mouse.move(both.x, both.y);
     // A move in the same frame as a reorder can read the hit map before it redraws. A real pointer's next move
@@ -3185,30 +3210,30 @@ test.describe('moving and resizing apps', () => {
     await page.waitForTimeout(120);
     expect((await hoverNow(page)).corners).toEqual([`tile-${NOTEBOOK}`]);
     await page.waitForTimeout(1_200);
-    expect((await savedStack(page))[0]).toBe(CHAT); // saved like any other change
+    expect((await savedStack(page))[0]).toBe(COURIER); // saved like any other change
     expect(await savedList(page)).toEqual(ALL_APPS);
 
     // From the keyboard: focus raised it, and sending it back stays sent, with the focus still there.
-    const tile = page.locator(`[id="proxy-${CHAT}"]`);
+    const tile = page.locator(`[id="proxy-${COURIER}"]`);
     await tile.focus();
-    expect(await onTop(page)).toBe(CHAT);
+    expect(await onTop(page)).toBe(COURIER);
     await page.keyboard.press('.');
     await expect(back).toBeFocused();
     await page.keyboard.press('Enter');
     await expect(menu).toHaveCount(0);
     await expect(tile).toBeFocused();
-    expect((await drawOrder(page))[0]).toBe(CHAT);
+    expect((await drawOrder(page))[0]).toBe(COURIER);
     // Esc from the menu changes nothing either.
     await page.keyboard.press('.');
     await expect(front).toBeEnabled();
     await page.keyboard.press('Escape');
     await expect(tile).toBeFocused();
-    expect((await drawOrder(page))[0]).toBe(CHAT);
+    expect((await drawOrder(page))[0]).toBe(COURIER);
     // Moving on and back is focus taken again.
     await page.keyboard.press('ArrowRight');
     await page.keyboard.press('ArrowLeft');
     await expect(tile).toBeFocused();
-    expect(await onTop(page)).toBe(CHAT);
+    expect(await onTop(page)).toBe(COURIER);
   });
 
   for (const theme of ['light', 'dusk', 'dark'] as ThemeId[]) {
@@ -3219,7 +3244,7 @@ test.describe('moving and resizing apps', () => {
         await page.request.post('/__harness', { data: { reset: true } });
         await setTheme(page, theme);
         await seeded(page, page.request, {
-          [CHAT]: { x: 60, y: 60, w: 240, h: 200 }, // two widgets
+          [COURIER]: { x: 60, y: 60, w: 240, h: 200 }, // two widgets
           [NOTEBOOK]: { x: 200, y: 150, w: 240, h: 200 },
           [BROWSER]: { x: 520, y: 80, w: 76, h: 76 }, // two icons
           [AGENT]: { x: 560, y: 110, w: 76, h: 76 },
@@ -3235,21 +3260,21 @@ test.describe('moving and resizing apps', () => {
 
   test('keyboard: r resizes, with the same rules', async ({ page, request }) => {
     await seeded(page, request);
-    const tile = page.locator(`[id="proxy-${CHAT}"]`);
+    const tile = page.locator(`[id="proxy-${COURIER}"]`);
     const said = page.getByRole('status').first();
     await tile.focus();
     await page.keyboard.press('r');
-    await expect(said).toContainText('Resizing Chat');
+    await expect(said).toContainText('Resizing Courier');
     await page.keyboard.press('ArrowRight');
     await page.keyboard.press('Shift+ArrowDown');
-    expect(await placeOf(page, CHAT)).toMatchObject({ w: 84, h: 116 });
-    await expect(said).toHaveText('Chat, 84 by 116');
+    expect(await placeOf(page, COURIER)).toMatchObject({ w: 84, h: 116 });
+    await expect(said).toHaveText('Courier, 84 by 116');
 
     for (let i = 0; i < 4; i += 1) await page.keyboard.press('Shift+ArrowLeft');
-    expect((await placeOf(page, CHAT)).w).toBe(56);
+    expect((await placeOf(page, COURIER)).w).toBe(56);
     await expect(said).toContainText("Can't go further");
     await page.keyboard.press('Enter');
-    expect(await placeOf(page, CHAT)).toMatchObject({ x: 24, y: 24, w: 56, h: 116 });
+    expect(await placeOf(page, COURIER)).toMatchObject({ x: 24, y: 24, w: 56, h: 116 });
     await expect(tile).toBeFocused();
   });
 
@@ -3284,7 +3309,7 @@ test.describe('moving and resizing apps', () => {
     const nodes = (page: Page, q: string): Promise<number> => page.evaluate((sel) => (window as unknown as { __maDesk: { camera: { getStage(): { find(q: string): unknown[] } } } }).__maDesk.camera.getStage().find(sel).length, q);
     const cleanButton = (page: Page, name = 'Personal') => page.getByRole('button', { name: `Clean up ${name} desk`, exact: true });
     const undoButton = (page: Page, name = 'Personal') => page.getByRole('button', { name: `Undo clean up ${name} desk`, exact: true });
-    const allPlaces = async (page: Page): Promise<Record<string, Box>> => Object.fromEntries(await Promise.all([CHAT, NOTEBOOK, BROWSER, AGENT].map(async (id) => [id, await placeOf(page, id)] as const)));
+    const allPlaces = async (page: Page): Promise<Record<string, Box>> => Object.fromEntries(await Promise.all([COURIER, NOTEBOOK, BROWSER, AGENT].map(async (id) => [id, await placeOf(page, id)] as const)));
     /** Click a strip control with the real mouse, where its proxy says it is. */
     async function clickProxy(page: Page, proxy: Locator): Promise<void> {
       const b = (await proxy.boundingBox())!;
@@ -3293,7 +3318,7 @@ test.describe('moving and resizing apps', () => {
       await page.mouse.click(b.x + b.width / 2, b.y + b.height / 2);
     }
     const SCATTERED = {
-      [CHAT]: { x: 300, y: 200, w: 200, h: 180 },
+      [COURIER]: { x: 300, y: 200, w: 200, h: 180 },
       [NOTEBOOK]: { x: 40, y: 300, w: 76, h: 76 },
       [BROWSER]: { x: 600, y: 30, w: 90, h: 60 },
       [AGENT]: { x: 420, y: 40, w: 76, h: 76 },
@@ -3312,7 +3337,7 @@ test.describe('moving and resizing apps', () => {
       expect(await allPlaces(page)).toEqual({
         [AGENT]: { x: 24, y: 24, w: 76, h: 76 },
         [BROWSER]: { x: 116, y: 24, w: 90, h: 60 },
-        [CHAT]: { x: 222, y: 24, w: 200, h: 180 },
+        [COURIER]: { x: 222, y: 24, w: 200, h: 180 },
         [NOTEBOOK]: { x: 438, y: 24, w: 76, h: 76 },
       });
       expect(await cameraNow(page)).toEqual(cam);
@@ -3339,11 +3364,11 @@ test.describe('moving and resizing apps', () => {
       test(`a desk stacked into one pile, ${what}: no overlap, no shrinking, the stack reset, and undo restores all of it`, async ({ page, request }) => {
         const errors = watchConsole(page);
         const pile = { x: 100, y: 100, ...size };
-        await seeded(page, request, { [CHAT]: pile, [NOTEBOOK]: pile, [BROWSER]: pile, [AGENT]: pile }, [NOTEBOOK, AGENT, CHAT, BROWSER]);
+        await seeded(page, request, { [COURIER]: pile, [NOTEBOOK]: pile, [BROWSER]: pile, [AGENT]: pile }, [NOTEBOOK, AGENT, COURIER, BROWSER]);
         const before = await allPlaces(page);
         const deskSize = (): Promise<{ w: number; h: number }> => proxyOf(page, 'Personal').evaluate((el: HTMLElement) => ({ w: parseFloat(el.style.width), h: parseFloat(el.style.height) }));
         const stack = await drawOrder(page);
-        expect(stack).toEqual([NOTEBOOK, AGENT, CHAT, BROWSER]);
+        expect(stack).toEqual([NOTEBOOK, AGENT, COURIER, BROWSER]);
         expect(await deskSize()).toEqual({ w: 800, h: 500 });
 
         await clickProxy(page, cleanButton(page));
@@ -3352,12 +3377,12 @@ test.describe('moving and resizing apps', () => {
         await expectAllClear(page, 800, deskH);
         for (const id of ALL_APPS) expect(after[id]).toMatchObject(size); // never shrinks
         expect(await deskSize()).toEqual({ w: 800, h: deskH });
-        // The stack is now reading order. Ties among a pile went by id: agent, browser, chat, notebook.
-        expect(await drawOrder(page)).toEqual([AGENT, BROWSER, CHAT, NOTEBOOK]);
-        expect(await domOrder(page)).toEqual([AGENT, BROWSER, CHAT, NOTEBOOK]);
+        // The stack is now reading order. Ties among a pile went by id: agent, browser, courier, notebook.
+        expect(await drawOrder(page)).toEqual([AGENT, BROWSER, COURIER, NOTEBOOK]);
+        expect(await domOrder(page)).toEqual([AGENT, BROWSER, COURIER, NOTEBOOK]);
         await expect(cleanButton(page)).toHaveCount(0); // running it twice is no change
         await page.waitForTimeout(1_200);
-        expect(await savedStack(page)).toEqual([AGENT, BROWSER, CHAT, NOTEBOOK]);
+        expect(await savedStack(page)).toEqual([AGENT, BROWSER, COURIER, NOTEBOOK]);
         expect(await savedList(page)).toEqual(ALL_APPS); // a phone's grid doesn't hear of it
 
         // By keyboard: a desk that grew can have its strip off the screen, since the camera doesn't move.
@@ -3376,25 +3401,25 @@ test.describe('moving and resizing apps', () => {
     }
 
     test('any overlap offers it. A tidy desk doesn\'t, whatever its stacking', async ({ page, request }) => {
-      const tidy = { [CHAT]: { x: 24, y: 24, w: 76, h: 76 }, [NOTEBOOK]: { x: 116, y: 24, w: 76, h: 76 }, [BROWSER]: { x: 208, y: 24, w: 76, h: 76 }, [AGENT]: { x: 300, y: 24, w: 76, h: 76 } };
+      const tidy = { [COURIER]: { x: 24, y: 24, w: 76, h: 76 }, [NOTEBOOK]: { x: 116, y: 24, w: 76, h: 76 }, [BROWSER]: { x: 208, y: 24, w: 76, h: 76 }, [AGENT]: { x: 300, y: 24, w: 76, h: 76 } };
       await seeded(page, request, tidy);
       await expect(cleanButton(page)).toHaveCount(0);
-      const c = await centerOf(page, CHAT);
+      const c = await centerOf(page, COURIER);
       await page.mouse.move(c.x, c.y);
       await page.mouse.down();
       await page.waitForTimeout(50);
-      expect(await onTop(page)).toBe(CHAT);
+      expect(await onTop(page)).toBe(COURIER);
       await page.mouse.up(); // a raise alone is no mess
       await page.keyboard.press('Escape');
       await expect(page.getByRole('dialog')).toHaveCount(0);
       await page.waitForTimeout(300);
       await expect(cleanButton(page)).toHaveCount(0);
-      await dragApp(page, CHAT, 10, 0); // onto nothing, but out of line
+      await dragApp(page, COURIER, 10, 0); // onto nothing, but out of line
       await expect(cleanButton(page)).toHaveCount(1);
     });
 
     test('a click on an app after a cleanup leaves its undo alone, and undo brings back the stack from before', async ({ page, request }) => {
-      await seeded(page, request, SCATTERED, [AGENT, BROWSER, NOTEBOOK, CHAT]);
+      await seeded(page, request, SCATTERED, [AGENT, BROWSER, NOTEBOOK, COURIER]);
       const before = await allPlaces(page);
       await clickProxy(page, cleanButton(page));
       await page.waitForTimeout(400);
@@ -3409,12 +3434,12 @@ test.describe('moving and resizing apps', () => {
       await clickProxy(page, undoButton(page));
       await page.waitForTimeout(400);
       expect(await allPlaces(page)).toEqual(before);
-      expect(await drawOrder(page)).toEqual([AGENT, BROWSER, NOTEBOOK, CHAT]);
+      expect(await drawOrder(page)).toEqual([AGENT, BROWSER, NOTEBOOK, COURIER]);
     });
 
     test('the button shows only on a desk with something to clean up, while the pointer is on it or it has focus', async ({ page, request }) => {
-      const scattered = (id: string, x: number): Record<string, unknown> => ({ id, x, y: 0, w: 500, h: 400, items: [{ id: `${id}:chat`, app: 'chat', x: 200, y: 100, w: 76, h: 76 }] });
-      const tidy = { id: GUILD, x: 1100, y: 0, w: 500, h: 400, items: [{ id: `${GUILD}:chat`, app: 'chat', x: 24, y: 24, w: 76, h: 76 }] };
+      const scattered = (id: string, x: number): Record<string, unknown> => ({ id, x, y: 0, w: 500, h: 400, items: [{ id: `${id}:courier`, app: 'courier', x: 200, y: 100, w: 76, h: 76 }] });
+      const tidy = { id: GUILD, x: 1100, y: 0, w: 500, h: 400, items: [{ id: `${GUILD}:courier`, app: 'courier', x: 24, y: 24, w: 76, h: 76 }] };
       await page.addInitScript((doc) => {
         if (localStorage.getItem('test.seeded') || !(location.pathname === '/auth/callback' || localStorage.getItem('ma-desk-web-refresh') || sessionStorage.getItem('ma-desk-web-refresh'))) return;
         localStorage.setItem('test.seeded', '1');
@@ -3506,7 +3531,7 @@ test.describe('moving and resizing apps', () => {
           if (log.length < 90) requestAnimationFrame(loop);
         };
         requestAnimationFrame(loop);
-      }, [CHAT, NOTEBOOK]);
+      }, [COURIER, NOTEBOOK]);
       const log = (): Promise<{ t: number; at: number[] }[]> => page.evaluate(() => (window as unknown as { __glide: { t: number; at: number[] }[] }).__glide);
 
       await watch();
@@ -3542,7 +3567,7 @@ test.describe('moving and resizing apps', () => {
         localStorage.setItem('test.seeded', '1');
         localStorage.setItem('ma.layout.v2', JSON.stringify(doc));
       }, { desks: { [id]: { id, x: 0, y: 36, w: 400, h: 300, items: [
-        { id: `${id}:chat`, app: 'chat', x: 8, y: 8, w: 180, h: 130 },
+        { id: `${id}:courier`, app: 'courier', x: 8, y: 8, w: 180, h: 130 },
         { id: `${id}:notebook`, app: 'notebook', x: 200, y: 8, w: 180, h: 130 },
         { id: `${id}:browser`, app: 'browser', x: 8, y: 146, w: 372, h: 110 },
       ] } }, z: [id] });
@@ -3613,7 +3638,7 @@ test.describe('moving and resizing apps', () => {
     test('keyboard: the arrows reach it after the apps, Enter runs it, and Enter again undoes it, with focus kept', async ({ page, request }) => {
       await seeded(page, request, SCATTERED);
       const before = await allPlaces(page);
-      await page.locator(`[id="proxy-${CHAT}"]`).focus();
+      await page.locator(`[id="proxy-${COURIER}"]`).focus();
       for (let i = 0; i < 4; i += 1) {
         const focused = await page.evaluate(() => document.activeElement?.getAttribute('aria-label') ?? '');
         if (focused.startsWith('Clean up')) break;
@@ -3777,7 +3802,7 @@ test.describe('moving and resizing apps', () => {
         if (localStorage.getItem('test.seeded') || !(location.pathname === '/auth/callback' || localStorage.getItem('ma-desk-web-refresh') || sessionStorage.getItem('ma-desk-web-refresh'))) return;
         localStorage.setItem('test.seeded', '1');
         localStorage.setItem('ma.layout.v2', JSON.stringify(doc));
-      }, { desks: { [PERSONAL]: { id: PERSONAL, x: 0, y: 0, w: 800, h: 500, items: [{ id: CHAT, app: 'chat', x: 300, y: 200, w: 76, h: 76 }] } }, z: [PERSONAL] });
+      }, { desks: { [PERSONAL]: { id: PERSONAL, x: 0, y: 0, w: 800, h: 500, items: [{ id: COURIER, app: 'courier', x: 300, y: 200, w: 76, h: 76 }] } }, z: [PERSONAL] });
       await signIn(page);
       await canvasPainted(page);
       await page.waitForTimeout(800);
@@ -3794,12 +3819,13 @@ test.describe('moving and resizing apps', () => {
   test.describe('layout on Platform', () => {
     type Saved = { schemaVersion: number; desks: Record<string, Box & { items: (Box & { id: string })[] }>; z: string[] };
     type Harness = { layoutDocs: Record<string, { version: number; layout: Saved | null } | undefined>; layoutPuts: { status: number; ifMatch: string | null; bytes: number; at: number; user: string }[]; layoutGets: { status: number; ifNoneMatch: string | null }[] };
-    const server = async (request: APIRequestContext): Promise<Harness> => (await (await request.get('/__harness')).json()) as Harness;
+    // Platform's documents in memory's terms: Courier's stored `chat` read as `courier` (helpers.ts `fromStored`).
+    const server = async (request: APIRequestContext): Promise<Harness> => fromStored((await (await request.get('/__harness')).json()) as Harness);
     const saved = async (request: APIRequestContext): Promise<{ version: number; layout: Saved | null } | undefined> => (await server(request)).layoutDocs['u-test'];
     const putsOf = async (request: APIRequestContext): Promise<Harness['layoutPuts']> => (await server(request)).layoutPuts;
     /** What this desk is at on Platform, in that document's own numbers. */
     const appOnServer = async (request: APIRequestContext, id: string): Promise<(Box & { id: string }) | undefined> => (await saved(request))?.layout?.desks[PERSONAL]?.items.find((i) => i.id === id);
-    const serverDoc = (version: number, chatX: number, deskX = 0, extra: Record<string, unknown> = {}): Record<string, unknown> => ({
+    const serverDoc = (version: number, courierX: number, deskX = 0, extra: Record<string, unknown> = {}): Record<string, unknown> => ({
       version,
       updatedAt: '2026-11-05T10:00:00Z',
       layout: {
@@ -3808,7 +3834,7 @@ test.describe('moving and resizing apps', () => {
           [PERSONAL]: {
             x: deskX, y: 36, w: 800, h: 500,
             items: [
-              { id: CHAT, app: 'chat', x: chatX, y: 24, w: 76, h: 76 },
+              { id: COURIER, app: 'courier', x: courierX, y: 24, w: 76, h: 76 },
               { id: NOTEBOOK, app: 'notebook', x: 300, y: 24, w: 76, h: 76 },
               { id: BROWSER, app: 'browser', x: 500, y: 24, w: 76, h: 76 },
               { id: AGENT, app: 'agent', x: 650, y: 24, w: 76, h: 76 },
@@ -3821,11 +3847,11 @@ test.describe('moving and resizing apps', () => {
     });
     /** The app's own console errors. A browser logs a failed request by itself, and no app code can stop that. */
     const ownErrors = (errors: string[]): string[] => errors.filter((e) => !e.includes('Failed to load resource') && !e.includes('net::ERR_'));
-    /** A desk with Chat alone, in a document's own terms. */
-    const bareDesk = (id: string, x: number, chatY = 24): Record<string, unknown> => ({ x, y: 0, w: 584, h: 300, items: [{ id: `${id}:chat`, app: 'chat', x: 24, y: chatY, w: 76, h: 76 }] });
-    const chatY = (p: Page, id: string): Promise<number> => p.locator(`[id="proxy-${id}:chat"]`).evaluate((el: HTMLElement) => parseFloat(el.style.top));
+    /** A desk with Courier alone, in a document's own terms. */
+    const bareDesk = (id: string, x: number, courierY = 24): Record<string, unknown> => ({ x, y: 0, w: 584, h: 300, items: [{ id: `${id}:courier`, app: 'courier', x: 24, y: courierY, w: 76, h: 76 }] });
+    const courierY = (p: Page, id: string): Promise<number> => p.locator(`[id="proxy-${id}:courier"]`).evaluate((el: HTMLElement) => parseFloat(el.style.top));
     const dragIn = async (p: Page, id: string, dy: number): Promise<void> => {
-      const box = (await p.locator(`[id="proxy-${id}:chat"]`).boundingBox())!;
+      const box = (await p.locator(`[id="proxy-${id}:courier"]`).boundingBox())!;
       await p.mouse.move(box.x + box.width / 2, box.y + box.height / 2);
       await p.mouse.down();
       await p.mouse.move(box.x + box.width / 2, box.y + box.height / 2 + dy, { steps: 5 });
@@ -3835,12 +3861,12 @@ test.describe('moving and resizing apps', () => {
 
     test('the first load after this ships: what\'s only in this browser is uploaded, not wiped', async ({ page, request }) => {
       const errors = watchConsole(page);
-      await seeded(page, request, { [CHAT]: { x: 111.5, y: 222.25, w: 200, h: 180 } });
+      await seeded(page, request, { [COURIER]: { x: 111.5, y: 222.25, w: 200, h: 180 } });
       await expect.poll(() => saved(request).then((d) => d?.version)).toBe(1);
       const puts = await putsOf(request);
       expect(puts[0]).toMatchObject({ ifMatch: '"0"', status: 200 });
-      expect(await appOnServer(request, CHAT)).toMatchObject({ x: 111.5, y: 222.25, w: 200, h: 180 });
-      expect(await placeOf(page, CHAT)).toMatchObject({ x: 111.5, y: 222.25, w: 200, h: 180 });
+      expect(await appOnServer(request, COURIER)).toMatchObject({ x: 111.5, y: 222.25, w: 200, h: 180 });
+      expect(await placeOf(page, COURIER)).toMatchObject({ x: 111.5, y: 222.25, w: 200, h: 180 });
       expect(errors).toEqual([]);
     });
 
@@ -3860,8 +3886,8 @@ test.describe('moving and resizing apps', () => {
       expect(layout.schemaVersion).toBe(2);
       expect(layout.desks[ids.work]).toMatchObject({ x: 728, y: 128, w: 584, h: 144 });
       expect(layout.desks[ids.personal]).toMatchObject({ x: 0, y: 36, w: 676, h: 328 });
-      expect(layout.desks[ids.personal]!.items[0]).toMatchObject({ id: `${ids.personal}:chat`, w: 168, h: 168 });
-      expect(layout.desks[ids.guild]!.items.map((i) => i.id.split(':')[1])).toEqual(['agent', 'chat', 'notebook', 'browser']);
+      expect(layout.desks[ids.personal]!.items[0]).toMatchObject({ id: `${ids.personal}:courier`, w: 168, h: 168 });
+      expect(layout.desks[ids.guild]!.items.map((i) => i.id.split(':')[1])).toEqual(['agent', 'courier', 'notebook', 'browser']);
       expect(layout.z).toEqual([ids.guild, ids.work, ids.personal]);
       expect(await page.evaluate(() => localStorage.getItem('ma.layout.v1'))).toBe(v1);
     });
@@ -3869,9 +3895,9 @@ test.describe('moving and resizing apps', () => {
     test('with a document on Platform and an older copy here, Platform\'s wins, nothing is saved back, and version 1 is untouched', async ({ page, request }) => {
       await page.addInitScript(() => localStorage.setItem('ma.layout.v1', '{"untouched":true}'));
       await harness(request, { layoutDocs: { 'u-test': serverDoc(7, 400) } });
-      await seeded(page, request, { [CHAT]: { x: 24, y: 300, w: 76, h: 76 } });
-      await expect.poll(() => placeOf(page, CHAT).then((p) => p.x)).toBe(400);
-      expect((await placeOf(page, CHAT)).y).toBe(24);
+      await seeded(page, request, { [COURIER]: { x: 24, y: 300, w: 76, h: 76 } });
+      await expect.poll(() => placeOf(page, COURIER).then((p) => p.x)).toBe(400);
+      expect((await placeOf(page, COURIER)).y).toBe(24);
       await page.waitForTimeout(2_600); // past a save's debounce
       expect(await putsOf(request)).toEqual([]);
       expect((await saved(request))!.version).toBe(7);
@@ -3900,13 +3926,13 @@ test.describe('moving and resizing apps', () => {
       await harness(request, { layoutDocs: { 'u-test': serverDoc(1, 24) } });
       await seeded(page, request);
       await page.waitForTimeout(600);
-      await dragApp(page, CHAT, 5, 40, 3);
-      await dragApp(page, CHAT, 5, 40, 3);
-      await dragApp(page, CHAT, 5, 40, 3);
+      await dragApp(page, COURIER, 5, 40, 3);
+      await dragApp(page, COURIER, 5, 40, 3);
+      await dragApp(page, COURIER, 5, 40, 3);
       await expect.poll(() => putsOf(request).then((p) => p.length), { timeout: 6_000 }).toBe(1);
       await page.waitForTimeout(2_500);
       expect(await putsOf(request)).toHaveLength(1);
-      expect((await appOnServer(request, CHAT))!.y).toBeCloseTo(24 + 120, -1);
+      expect((await appOnServer(request, COURIER))!.y).toBeCloseTo(24 + 120, -1);
 
       // A change is still waiting when the next drag starts, and that drag outlasts the debounce.
       await dragApp(page, BROWSER, 0, 120, 3);
@@ -3956,7 +3982,7 @@ test.describe('moving and resizing apps', () => {
       await harness(request, { layoutDocs: { 'u-test': serverDoc(1, 24) } });
       await seeded(page, request);
       await page.waitForTimeout(600);
-      const c = await centerOf(page, CHAT);
+      const c = await centerOf(page, COURIER);
       const s = await scale(page);
       await page.mouse.move(c.x, c.y);
       await page.mouse.down();
@@ -3969,12 +3995,12 @@ test.describe('moving and resizing apps', () => {
       const under = await page.evaluate((id) => {
         const st = (window as unknown as { __maDesk: { camera: { getStage(): { findOne(q: string): { x(): number } } } } }).__maDesk.camera.getStage();
         return { tile: st.findOne(`#tile-${id}`).x(), desk: st.findOne(`#desk-${'d-personal00001'}`).x() };
-      }, CHAT);
+      }, COURIER);
       expect(Math.abs(under.tile - 54)).toBeLessThan(2);
       expect(under.desk).toBe(0);
       await page.mouse.up();
       // The desk's own layout is the last writer's, and that's this drop.
-      await expect.poll(() => appOnServer(request, CHAT).then((a) => Math.round(a?.y ?? 0)), { timeout: 8_000 }).toBeGreaterThan(200);
+      await expect.poll(() => appOnServer(request, COURIER).then((a) => Math.round(a?.y ?? 0)), { timeout: 8_000 }).toBeGreaterThan(200);
       expect((await putsOf(request)).at(-1)!.status).toBe(200);
       await expectAllClear(page);
     });
@@ -4042,17 +4068,17 @@ test.describe('moving and resizing apps', () => {
     });
 
     test('leaving with a document still held back for a drag sends what that document said as well', async ({ page, request }) => {
-      const doc = (version: number, workChatY: number): Record<string, unknown> => ({ version, updatedAt: null, layout: { schemaVersion: 2, desks: { [PERSONAL]: bareDesk(PERSONAL, 0), [WORK]: bareDesk(WORK, 656, workChatY) }, z: [PERSONAL, WORK] } });
+      const doc = (version: number, workCourierY: number): Record<string, unknown> => ({ version, updatedAt: null, layout: { schemaVersion: 2, desks: { [PERSONAL]: bareDesk(PERSONAL, 0), [WORK]: bareDesk(WORK, 656, workCourierY) }, z: [PERSONAL, WORK] } });
       await harness(request, { fleet: [personal('running'), work('running')], layoutDocs: { 'u-test': doc(1, 24) } });
       await signIn(page);
       await canvasPainted(page);
       await page.waitForTimeout(5_200); // past the gap between reads
       await dragIn(page, PERSONAL, 60);
-      const box = (await page.locator(`[id="proxy-${PERSONAL}:chat"]`).boundingBox())!;
+      const box = (await page.locator(`[id="proxy-${PERSONAL}:courier"]`).boundingBox())!;
       await page.mouse.move(box.x + box.width / 2, box.y + box.height / 2);
       await page.mouse.down();
       await page.mouse.move(box.x + box.width / 2, box.y + box.height / 2 + 20, { steps: 4 });
-      await harness(request, { layoutDocs: { 'u-test': doc(2, 200) } }); // another browser moved Chat on Work
+      await harness(request, { layoutDocs: { 'u-test': doc(2, 200) } }); // another browser moved Courier on Work
       await page.evaluate(() => window.dispatchEvent(new Event('focus')));
       await expect.poll(async () => (await server(request)).layoutGets.at(-1)?.status).toBe(200);
       await page.waitForTimeout(100);
@@ -4090,9 +4116,9 @@ test.describe('moving and resizing apps', () => {
       // Each hears of the other's when it comes back to the page.
       await a.waitForTimeout(5_100);
       for (const p of [a, b]) await p.evaluate(() => window.dispatchEvent(new Event('focus')));
-      await expect.poll(async () => [await chatY(a, PERSONAL), await chatY(a, WORK)].join()).toBe([await chatY(b, PERSONAL), await chatY(b, WORK)].join());
-      expect(await chatY(a, WORK)).toBeGreaterThan(50);
-      expect(await chatY(b, PERSONAL)).toBeGreaterThan(50);
+      await expect.poll(async () => [await courierY(a, PERSONAL), await courierY(a, WORK)].join()).toBe([await courierY(b, PERSONAL), await courierY(b, WORK)].join());
+      expect(await courierY(a, WORK)).toBeGreaterThan(50);
+      expect(await courierY(b, PERSONAL)).toBeGreaterThan(50);
       await a.context().close();
       await b.context().close();
     });
@@ -4173,10 +4199,10 @@ test.describe('moving and resizing apps', () => {
       await harness(request, { layoutFail: { status: 404, code: 'not_found' } });
       await seeded(page, request);
       await page.waitForTimeout(600);
-      await dragApp(page, CHAT, 40, 200, 3);
+      await dragApp(page, COURIER, 40, 200, 3);
       await page.waitForTimeout(2_800);
       expect(await putsOf(request)).toEqual([]);
-      expect((await placeOf(page, CHAT)).y).toBeGreaterThan(150);
+      expect((await placeOf(page, COURIER)).y).toBeGreaterThan(150);
       await expect(page.locator('.notice')).toHaveCount(0);
       expect(ownErrors(errors)).toEqual([]);
 
@@ -4184,15 +4210,15 @@ test.describe('moving and resizing apps', () => {
       await harness(request, { layoutFail: null });
       await page.reload();
       await canvasPainted(page);
-      await expect.poll(() => appOnServer(request, CHAT).then((a) => a?.y), { timeout: 6_000 }).toBeGreaterThan(150);
+      await expect.poll(() => appOnServer(request, COURIER).then((a) => a?.y), { timeout: 6_000 }).toBeGreaterThan(150);
     });
 
     test('a document from a newer build is left alone, and nothing here is lost', async ({ page, request }) => {
       const newer = { version: 9, updatedAt: null, layout: { schemaVersion: 99, whatever: { future: true } } };
       await harness(request, { layoutDocs: { 'u-test': newer } });
-      await seeded(page, request, { [CHAT]: { x: 111, y: 222, w: 76, h: 76 } });
+      await seeded(page, request, { [COURIER]: { x: 111, y: 222, w: 76, h: 76 } });
       await page.waitForTimeout(600);
-      expect(await placeOf(page, CHAT)).toMatchObject({ x: 111, y: 222 });
+      expect(await placeOf(page, COURIER)).toMatchObject({ x: 111, y: 222 });
       await dragApp(page, NOTEBOOK, 0, 200, 3);
       await page.waitForTimeout(2_800);
       expect(await putsOf(request)).toEqual([]);
@@ -4203,11 +4229,11 @@ test.describe('moving and resizing apps', () => {
     test('a bad document loses nothing here, and this browser\'s copy replaces it', async ({ page, request }) => {
       const errors = watchConsole(page);
       await harness(request, { layoutDocs: { 'u-test': { version: 4, updatedAt: null, layout: { schemaVersion: 2, desks: 'not desks' } } } });
-      await seeded(page, request, { [CHAT]: { x: 111, y: 222, w: 76, h: 76 } });
-      expect(await placeOf(page, CHAT)).toMatchObject({ x: 111, y: 222 });
+      await seeded(page, request, { [COURIER]: { x: 111, y: 222, w: 76, h: 76 } });
+      expect(await placeOf(page, COURIER)).toMatchObject({ x: 111, y: 222 });
       await expect.poll(() => saved(request).then((d) => d?.version), { timeout: 6_000 }).toBe(5);
       expect((await putsOf(request))[0]!.ifMatch).toBe('"4"');
-      expect(await appOnServer(request, CHAT)).toMatchObject({ x: 111, y: 222 });
+      expect(await appOnServer(request, COURIER)).toMatchObject({ x: 111, y: 222 });
       expect(errors).toEqual([]);
     });
 
@@ -4244,7 +4270,7 @@ test.describe('moving and resizing apps', () => {
     });
 
     test('a desk gone elsewhere takes only its own entry, and a new one finds a place without moving the rest', async ({ page, request }) => {
-      const two = (id: string, x: number): Record<string, unknown> => ({ ...bareDesk(id, x), items: [{ id: `${id}:chat`, app: 'chat', x: 123, y: 45, w: 76, h: 76 }] });
+      const two = (id: string, x: number): Record<string, unknown> => ({ ...bareDesk(id, x), items: [{ id: `${id}:courier`, app: 'courier', x: 123, y: 45, w: 76, h: 76 }] });
       await harness(request, {
         fleet: [personal('running'), work('running')],
         layoutDocs: { 'u-test': { version: 1, updatedAt: null, layout: { schemaVersion: 2, desks: { [PERSONAL]: two(PERSONAL, 0), [WORK]: two(WORK, 700), 'd-destroyed0000': two('d-destroyed0000', 1400) }, z: [] } } },
@@ -4252,7 +4278,7 @@ test.describe('moving and resizing apps', () => {
       await signIn(page);
       await canvasPainted(page);
       await page.waitForTimeout(600);
-      const placed = (id: string): Promise<number> => page.locator(`[id="proxy-${id}:chat"]`).evaluate((el: HTMLElement) => parseFloat(el.style.left));
+      const placed = (id: string): Promise<number> => page.locator(`[id="proxy-${id}:courier"]`).evaluate((el: HTMLElement) => parseFloat(el.style.left));
       expect(await placed(PERSONAL)).toBe(123);
       expect(await placed(WORK)).toBe(700 + 123);
       await expect(page.locator(`[id="proxy-d-destroyed0000"]`)).toHaveCount(0);
@@ -4266,7 +4292,7 @@ test.describe('moving and resizing apps', () => {
       // Nothing changed by the member, so nothing is saved for this alone. The next real change tidies the document.
       await page.waitForTimeout(2_500);
       expect(await putsOf(request)).toEqual([]);
-      const box = (await page.locator(`[id="proxy-${PERSONAL}:chat"]`).boundingBox())!;
+      const box = (await page.locator(`[id="proxy-${PERSONAL}:courier"]`).boundingBox())!;
       await page.mouse.move(box.x + box.width / 2, box.y + box.height / 2);
       await page.mouse.down();
       await page.mouse.move(box.x + box.width / 2 + 20, box.y + box.height / 2 + 20, { steps: 4 });
@@ -4310,27 +4336,27 @@ test.describe('moving and resizing apps', () => {
       expect(docs['u-test']!.version).toBe(1);
     });
 
-    /** Two desks, in a document's own terms. Work's Chat is at `workChatY`. */
-    const twoDesks = (version: number, workX: number, workChatY = 24): Record<string, unknown> => ({
+    /** Two desks, in a document's own terms. Work's Courier is at `workCourierY`. */
+    const twoDesks = (version: number, workX: number, workCourierY = 24): Record<string, unknown> => ({
       version,
       updatedAt: '2026-11-05T10:00:00Z',
-      layout: { schemaVersion: 2, desks: { [PERSONAL]: bareDesk(PERSONAL, 0), [WORK]: bareDesk(WORK, workX, workChatY) }, z: [PERSONAL, WORK] },
+      layout: { schemaVersion: 2, desks: { [PERSONAL]: bareDesk(PERSONAL, 0), [WORK]: bareDesk(WORK, workX, workCourierY) }, z: [PERSONAL, WORK] },
     });
     type Mirror = { desks: Record<string, Box & { stack?: string[] }> } | null;
-    const mirrorOf = (p: Page): Promise<Mirror> => p.evaluate(() => JSON.parse(localStorage.getItem('ma.layout.v2') ?? 'null') as Mirror);
+    const mirrorOf = (p: Page): Promise<Mirror> => p.evaluate(() => JSON.parse(localStorage.getItem('ma.layout.v2') ?? 'null') as Mirror).then(fromStored);
     const gapBetween = (a: Box, b: Box): number => Math.max(b.x - (a.x + a.w), a.x - (b.x + b.w), b.y - (a.y + a.h), a.y - (b.y + b.h));
 
     test('a document with a stack comes through whole, saves nothing by itself, and the next save carries it', async ({ page, request }) => {
       const doc = serverDoc(2, 24);
-      ((doc['layout'] as Saved).desks[PERSONAL] as Record<string, unknown>)['stack'] = [AGENT, BROWSER, NOTEBOOK, CHAT];
+      ((doc['layout'] as Saved).desks[PERSONAL] as Record<string, unknown>)['stack'] = [AGENT, BROWSER, NOTEBOOK, COURIER];
       await harness(request, { layoutDocs: { 'u-test': doc } });
       await seeded(page, request); // the same places here, with no stack
-      await expect.poll(() => mirrorOf(page).then((m) => m?.desks[PERSONAL]?.stack), { timeout: 4_000 }).toEqual([AGENT, BROWSER, NOTEBOOK, CHAT]);
+      await expect.poll(() => mirrorOf(page).then((m) => m?.desks[PERSONAL]?.stack), { timeout: 4_000 }).toEqual([AGENT, BROWSER, NOTEBOOK, COURIER]);
       await page.waitForTimeout(2_400);
       expect(await putsOf(request)).toEqual([]);
       await dragApp(page, NOTEBOOK, 0, 200, 3); // pressing it raises it
       await expect.poll(() => putsOf(request).then((p) => p.length), { timeout: 6_000 }).toBe(1);
-      expect(((await saved(request))!.layout!.desks[PERSONAL] as unknown as { stack: string[] }).stack).toEqual([AGENT, BROWSER, CHAT, NOTEBOOK]);
+      expect(((await saved(request))!.layout!.desks[PERSONAL] as unknown as { stack: string[] }).stack).toEqual([AGENT, BROWSER, COURIER, NOTEBOOK]);
     });
 
     test('a document whose desks overlap loads clear, as a local one does, with no save and no loop', async ({ page, request }) => {
@@ -4424,7 +4450,7 @@ test.describe('moving and resizing apps', () => {
       expect(doc.version).toBe(6);
       expect(doc.layout!.desks[PERSONAL]!.items[0]!.y).toBeGreaterThan(30); // this browser's
       expect(doc.layout!.desks[WORK]!.items[0]!.y).toBe(120); // the other's
-      expect(await chatY(page, WORK)).toBe(120);
+      expect(await courierY(page, WORK)).toBe(120);
       await page.waitForTimeout(2_500);
       expect((await putsOf(request)).length).toBe(2);
       await expect(page.locator('.notice')).toHaveCount(0);
@@ -4451,7 +4477,7 @@ test.describe('moving and resizing apps', () => {
       await harness(request, { fleet: [personal('running')], layoutDocs: { 'u-test': serverDoc(3, 400) } });
       await signIn(page);
       await canvasPainted(page);
-      await expect.poll(() => placeOf(page, CHAT).then((p) => p.x), { timeout: 4_000 }).toBe(400);
+      await expect.poll(() => placeOf(page, COURIER).then((p) => p.x), { timeout: 4_000 }).toBe(400);
       await page.waitForTimeout(2_600);
       expect(await putsOf(request)).toEqual([]);
       expect((await saved(request))!.version).toBe(3);
@@ -4504,12 +4530,12 @@ test.describe('moving and resizing apps', () => {
     await page.evaluate(() => (document.activeElement as HTMLElement | null)?.blur());
     await page.keyboard.press('m');
     await page.keyboard.press('ArrowRight');
-    expect(await placeOf(page, CHAT)).toMatchObject({ x: 24, y: 24 });
+    expect(await placeOf(page, COURIER)).toMatchObject({ x: 24, y: 24 });
     await expect(page.locator('.proxy.editing')).toHaveCount(0);
 
-    await page.locator(`[id="proxy-${CHAT}"]`).focus();
+    await page.locator(`[id="proxy-${COURIER}"]`).focus();
     await page.keyboard.press('Enter');
-    const win = page.getByRole('dialog', { name: /Chat/ });
+    const win = page.getByRole('dialog', { name: /Courier/ });
     await expect(win).toBeVisible();
     await page.keyboard.press('m');
     await page.keyboard.press('r');
@@ -4518,12 +4544,12 @@ test.describe('moving and resizing apps', () => {
 
   test('a click during a keyboard edit keeps it and ends it', async ({ page, request }) => {
     await seeded(page, request);
-    await page.locator(`[id="proxy-${CHAT}"]`).focus();
+    await page.locator(`[id="proxy-${COURIER}"]`).focus();
     await page.keyboard.press('m');
     await page.keyboard.press('ArrowRight');
     await page.mouse.click(5, 450);
     await expect(page.locator('.proxy.editing')).toHaveCount(0);
-    expect((await placeOf(page, CHAT)).x).toBe(32);
+    expect((await placeOf(page, COURIER)).x).toBe(32);
   });
 
   test('a phone keeps the grid: apps stored over each other come apart in its cells, and nothing stacks', async ({ browser }) => {
@@ -4531,8 +4557,8 @@ test.describe('moving and resizing apps', () => {
     const page = await ctx.newPage();
     await page.request.post('/__harness', { data: { reset: true } });
     const pile = { x: 100, y: 100, w: 76, h: 76 };
-    const list = [AGENT, CHAT, BROWSER, NOTEBOOK];
-    const items = [{ id: AGENT, app: 'agent', ...pile }, { id: CHAT, app: 'chat', ...pile }, { id: BROWSER, app: 'browser', ...pile }, { id: NOTEBOOK, app: 'notebook', ...pile }];
+    const list = [AGENT, COURIER, BROWSER, NOTEBOOK];
+    const items = [{ id: AGENT, app: 'agent', ...pile }, { id: COURIER, app: 'courier', ...pile }, { id: BROWSER, app: 'browser', ...pile }, { id: NOTEBOOK, app: 'notebook', ...pile }];
     await page.addInitScript((doc) => {
       if (localStorage.getItem('test.seeded') || !(location.pathname === '/auth/callback' || localStorage.getItem('ma-desk-web-refresh') || sessionStorage.getItem('ma-desk-web-refresh'))) return;
       localStorage.setItem('test.seeded', '1');
@@ -4557,7 +4583,7 @@ test.describe('moving and resizing apps', () => {
     await page.mouse.up();
     await page.waitForTimeout(250);
     await page.keyboard.press('Escape');
-    await page.locator(`[id="proxy-${CHAT}"]`).focus();
+    await page.locator(`[id="proxy-${COURIER}"]`).focus();
     await page.waitForTimeout(1_200);
     expect(await drawOrder(page)).toEqual(list);
     await ctx.close();
@@ -4571,13 +4597,13 @@ test.describe('moving and resizing apps', () => {
     const count = (q: string): Promise<number> => page.evaluate((sel) => (window as unknown as { __maDesk: { camera: { getStage(): { find(q: string): unknown[] } } } }).__maDesk.camera.getStage().find(sel).length, q);
     expect(await count('.app-resize')).toBe(0);
     expect(await count('.size-toggle')).toBe(4);
-    const first = page.getByRole('button', { name: /^Chat/ });
+    const first = page.getByRole('button', { name: /^Courier/ });
     await first.focus();
     await page.keyboard.press('m');
     await expect(page.locator('.proxy.editing')).toHaveCount(0);
 
-    // Drag Agent onto Chat: it takes Chat's cell, and nothing is free-floating.
-    const chatAt = (await page.locator('[id="proxy-d-personal:chat"]').evaluate((el: HTMLElement) => el.style.left));
+    // Drag Agent onto Courier: it takes Courier's cell, and nothing is free-floating.
+    const courierAt = (await page.locator('[id="proxy-d-personal:courier"]').evaluate((el: HTMLElement) => el.style.left));
     const from = (await page.locator('[id="proxy-d-personal:agent"]').boundingBox())!;
     const to = (await first.boundingBox())!;
     await page.mouse.move(from.x + from.width / 2, from.y + from.height / 2);
@@ -4586,7 +4612,7 @@ test.describe('moving and resizing apps', () => {
     await page.waitForTimeout(100);
     await page.mouse.up();
     await page.waitForTimeout(300);
-    expect(await page.locator('[id="proxy-d-personal:agent"]').evaluate((el: HTMLElement) => el.style.left)).toBe(chatAt);
+    expect(await page.locator('[id="proxy-d-personal:agent"]').evaluate((el: HTMLElement) => el.style.left)).toBe(courierAt);
     await ctx.close();
   });
 });
@@ -4595,8 +4621,17 @@ test.describe('moving and resizing apps', () => {
 test.describe('a click outside the desk', () => {
   const viewMode = (page: Page): Promise<string> => page.evaluate(() => (JSON.parse(localStorage.getItem('ma.view.v1') ?? '{}') as { mode: string }).mode);
   const zoom = (page: Page): Locator => page.locator('.zoom-label');
-  const allDesks = (page: Page): Locator => page.getByRole('button', { name: 'Your office, show all desks' });
+  const allDesks = (page: Page): Locator => homeMark(page);
   const settled = (page: Page): Promise<void> => page.waitForTimeout(800);
+  // A desk's framing at 1440 x 900 (ADR 0057): a new desk at the area share of half a 16:9 screen's width, so 88 %, and
+  // one wheel notch (1.25x) in from it; the three new desks' overview; the framing at 1200 x 800.
+  const FRAMED = '88%';
+  const FRAMED_IN = '110%';
+  const OVERVIEW_THREE = '67%';
+  const FRAMED_1200 = '76%';
+  // One new desk at 1920 x 1080: framed at 112 %, its overview at 100 %, so zooming out shows (the review, Nov 12).
+  const FRAMED_1920 = '112%';
+  const OVERVIEW_1920 = '100%';
 
   /** A spot on the empty canvas, left of this desk. */
   async function emptySpot(page: Page, name: string): Promise<{ x: number; y: number }> {
@@ -4613,14 +4648,14 @@ test.describe('a click outside the desk', () => {
     await page.keyboard.press('1');
     await settled(page);
     expect(await viewMode(page)).toBe('desk');
-    await expect(zoom(page)).toHaveText('175%');
+    await expect(zoom(page)).toHaveText(FRAMED);
     return emptySpot(page, 'Personal');
   }
 
   async function expectOverview(page: Page): Promise<void> {
     await settled(page);
     expect(await viewMode(page)).toBe('overview');
-    await expect(zoom(page)).toHaveText('100%');
+    await expect(zoom(page)).toHaveText(OVERVIEW_THREE);
     await expect(allDesks(page)).toHaveCount(0);
   }
 
@@ -4650,7 +4685,7 @@ test.describe('a click outside the desk', () => {
       await page.mouse.up();
       await settled(page);
       expect(await viewMode(page)).toBe('free');
-      await expect(zoom(page)).toHaveText('175%');
+      await expect(zoom(page)).toHaveText(FRAMED);
       await expect(allDesks(page)).toBeVisible();
     }
   });
@@ -4685,7 +4720,7 @@ test.describe('a click outside the desk', () => {
     await page.mouse.click(again.x, again.y);
     await settled(page);
     expect(await viewMode(page)).toBe('free');
-    await expect(zoom(page)).toHaveText('175%');
+    await expect(zoom(page)).toHaveText(FRAMED);
     expect((await proxyOf(page, 'Personal').boundingBox())!.x).toBeCloseTo(panned.x, 0);
   });
 
@@ -4694,7 +4729,7 @@ test.describe('a click outside the desk', () => {
     await page.keyboard.press('+'); // 1.25x at the middle of the screen
     await settled(page);
     expect(await viewMode(page)).toBe('free');
-    await expect(zoom(page)).toHaveText('219%');
+    await expect(zoom(page)).toHaveText(FRAMED_IN);
     const box = (await proxyOf(page, 'Personal').boundingBox())!;
     await page.mouse.click(box.x + box.width / 2, box.y - 40); // above it
     await expectOverview(page);
@@ -4765,7 +4800,7 @@ test.describe('a click outside the desk', () => {
     await page.mouse.click(spot.x, spot.y); // the canvas, beside the window
     await settled(page);
     expect(await viewMode(page)).toBe('desk');
-    await expect(zoom(page)).toHaveText('175%');
+    await expect(zoom(page)).toHaveText(FRAMED);
     await expect(win).toBeVisible();
 
     await page.keyboard.press('Escape');
@@ -4775,49 +4810,53 @@ test.describe('a click outside the desk', () => {
   });
 
   test('one desk: arriving, a click outside leaves it be; once the member clicks the desk, a click zooms out and it stays out', async ({ page }) => {
+    await page.setViewportSize({ width: 1920, height: 1080 });
     await signIn(page, '/?fixture=one');
     await canvasPainted(page);
     expect(await viewMode(page)).toBe('desk');
-    await expect(zoom(page)).toHaveText('175%');
+    await expect(zoom(page)).toHaveText(FRAMED_1920);
     const spot = await emptySpot(page, 'Personal');
     // The office focused it for the member, who didn't: the click changes nothing (the owner, Nov 9).
     await page.mouse.click(spot.x, spot.y);
     await settled(page);
     expect(await viewMode(page)).toBe('desk');
-    await expect(zoom(page)).toHaveText('175%');
+    await expect(zoom(page)).toHaveText(FRAMED_1920);
 
     const own = (await proxyOf(page, 'Personal').boundingBox())!;
     await page.mouse.click(own.x + own.width - 60, own.y + own.height / 2); // the member focuses it
     await settled(page);
     expect(await viewMode(page)).toBe('desk');
+    await expect(zoom(page)).toHaveText(FRAMED_1920);
     await page.mouse.click(spot.x, spot.y);
     await settled(page);
     expect(await viewMode(page)).toBe('overview');
-    await expect(zoom(page)).toHaveText('100%');
+    await expect(zoom(page)).toHaveText(OVERVIEW_1920);
 
     await page.setViewportSize({ width: 1200, height: 800 }); // a later refit
     await settled(page);
     expect(await viewMode(page)).toBe('overview');
-    await expect(zoom(page)).toHaveText('100%');
+    await expect(zoom(page)).toHaveText(FRAMED_1200);
 
     const desk = (await proxyOf(page, 'Personal').boundingBox())!;
     await page.mouse.click(desk.x + desk.width - 60, desk.y + desk.height / 2);
     await settled(page);
     expect(await viewMode(page)).toBe('desk');
-    await expect(zoom(page)).toHaveText('175%');
+    await expect(zoom(page)).toHaveText(FRAMED_1200);
   });
 
-  test('one desk: Esc zooms out too, and the Fit button fills the screen with it again', async ({ page }) => {
+  test('one desk: Esc zooms out too, and the Fit button frames it again', async ({ page }) => {
+    await page.setViewportSize({ width: 1920, height: 1080 });
     await signIn(page, '/?fixture=one');
     await canvasPainted(page);
+    await expect(zoom(page)).toHaveText(FRAMED_1920);
     await page.keyboard.press('Escape');
     await settled(page);
     expect(await viewMode(page)).toBe('overview');
-    await expect(zoom(page)).toHaveText('100%');
+    await expect(zoom(page)).toHaveText(OVERVIEW_1920);
     await page.getByRole('button', { name: 'Fit the desk' }).click();
     await settled(page);
     expect(await viewMode(page)).toBe('desk');
-    await expect(zoom(page)).toHaveText('175%');
+    await expect(zoom(page)).toHaveText(FRAMED_1920);
   });
 
   test('one stopped desk: zooming out and a later refit send no wake; arriving again counts as focus', async ({ page, request }) => {

@@ -183,7 +183,8 @@ for (const desks of [1, 4]) {
       const top = await controls(page, '.topbar');
       const bottom = await controls(page, '.bottombar');
       const was = before.get(size.width)!;
-      expect(top.length, at).toBeGreaterThanOrEqual(desks > 1 ? 8 : 4); // the mark, the scope switch, shield, full screen, account
+      // The mark, the scope switch (folded into one button where it doesn't fit one row, `useScopeFolds`), shield, full screen, account.
+      expect(top.length, at).toBeGreaterThanOrEqual(desks > 1 ? 6 : 4);
       expect(top, at).toEqual(was.top);
       expect(bottom, at).toEqual(was.bottom); // the bottom bar is as it was, on screen or not, and the notice is on none of it
       for (const c of top) expect(c.shown, `${c.name} at ${at}`).toBe(true);

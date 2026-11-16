@@ -9,6 +9,7 @@ import { closedLine, closedMembership } from './closed';
 import { useEffect, useRef, useState } from 'react';
 import { createDeskLink, type DeskLink } from '../desk/deskLink';
 import { keepOpen, linkOf, wakeDesk } from '../desk/liveStore';
+import { exportUntilOf, isAccountClosed, useAccountClosed } from '../platform/accountClosed';
 import { api, getDesks, type PlatformDesk } from '../platform/api';
 import { currentMember } from '../platform/auth';
 import { siblingUrl } from '../platform/hosts';
@@ -287,13 +288,16 @@ export function ExportPanel({ inOffice = false, onHolding }: { inOffice?: boolea
   // looks like any other here (the client isn't told why); the server refuses its export `connect`, and that shows as
   // the desk's calm "can't be opened" line, with nothing asked again.
   const ended = closedMembership(status);
+  // A closed account (`platform/accountClosed.ts`) downloads as an ended one does; its desks can't move, and its line's date
+  // is its window's end, as its card says, once Platform sends it.
+  const accountClosed = isAccountClosed(me, useAccountClosed((s) => s.heard));
   const offered = list.filter((d) => deskNote(d).can);
   const chosen = offered.filter((d) => !off[d.deskId]);
   const saveWay = canResume() ? 'browser' : canPickFile() ? 'file' : null;
   const ready = account.status === 'ready' && desks.status === 'ready' && saveWay !== null;
   const deleteAt = (() => {
     const m = account.status === 'ready' ? ((account.data as { membership?: Record<string, unknown> } | null)?.membership ?? null) : null;
-    const raw = m?.['dataDeleteAt'] ?? m?.['deleteAt'];
+    const raw = (accountClosed ? exportUntilOf(me?.membership) : null) ?? m?.['dataDeleteAt'] ?? m?.['deleteAt'];
     const t = typeof raw === 'string' ? Date.parse(raw) : Number.NaN;
     return Number.isFinite(t) ? new Date(t).toLocaleDateString('en-US', { month: 'long', day: 'numeric', year: 'numeric' }) : null;
   })();
@@ -706,7 +710,7 @@ export function ExportPanel({ inOffice = false, onHolding }: { inOffice?: boolea
           )}
         </section>
 
-        {config?.export?.moves === true && desks.status === 'ready' && <MovePanel desks={list} guideUrl={guide} />}
+        {config?.export?.moves === true && desks.status === 'ready' && !accountClosed && <MovePanel desks={list} guideUrl={guide} />}
     </>
   );
   if (inOffice) {

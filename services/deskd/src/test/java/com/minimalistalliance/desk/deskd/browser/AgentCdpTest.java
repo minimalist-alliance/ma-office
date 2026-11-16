@@ -48,6 +48,9 @@ class AgentCdpTest {
             "Runtime.evaluate",
             "Runtime.releaseObject",
             "Runtime.runIfWaitingForDebugger",
+            "Runtime.getHeapUsage",
+            "Runtime.getIsolateId",
+            "HeapProfiler.collectGarbage",
             "DOM.describeNode",
             "DOM.getBoxModel",
             "DOM.getFrameOwner",
@@ -238,4 +241,56 @@ class AgentCdpTest {
         refused(null, "Browser.setDownloadBehavior", Map.of("behavior", "deny"));
         refused(null, "Browser.setDownloadBehavior", Map.of("behavior", "deny", "browserContextId", "DEFAULT"));
     }
+
+    @Test
+    void aCommandNamingWhatWasTheAgentsAndWentIsAnsweredAsGoneAndNothingElseIs() {
+        Set<String> went = Set.of("s-gone", "t-gone", "ctx-gone");
+        AgentCdp cdp = new AgentCdp(null, new AgentCdp.Scope() {
+            @Override
+            public boolean session(String sessionId) {
+                return "s-1".equals(sessionId);
+            }
+
+            @Override
+            public boolean target(String targetId) {
+                return "t-1".equals(targetId);
+            }
+
+            @Override
+            public boolean context(String contextId) {
+                return "ctx-1".equals(contextId);
+            }
+
+            @Override
+            public boolean went(String id) {
+                return went.contains(id);
+            }
+        });
+        java.time.Duration wait = java.time.Duration.ofSeconds(1);
+        // A tab, a frame or a context that went under a call: as Chromium answers one that's gone, and nothing sent (the
+        // client is null here, so anything sent would fail otherwise).
+        for (org.assertj.core.api.ThrowableAssert.ThrowingCallable gone : List.<org.assertj.core.api.ThrowableAssert.ThrowingCallable>of(
+                () -> cdp.send("s-gone", "Runtime.runIfWaitingForDebugger", Map.of(), wait),
+                () -> cdp.send("s-gone", "Page.getFrameTree", Map.of(), wait),
+                () -> cdp.sendLong("s-gone", "Runtime.getHeapUsage", Map.of(), wait),
+                () -> cdp.send(null, "Target.getTargetInfo", Map.of("targetId", "t-gone"), wait),
+                () -> cdp.sendBrowser("Target.closeTarget", Map.of("targetId", "t-gone"), wait, reply -> {}),
+                () -> cdp.send(null, "Target.disposeBrowserContext", Map.of("browserContextId", "ctx-gone"), wait))) {
+            assertThatThrownBy(gone).isInstanceOfSatisfying(CdpException.class,
+                    e -> assertThat(e.kind()).isEqualTo(CdpException.Kind.REMOTE));
+        }
+        // Still deskd's bug, and refused as one: never the Agent's, off the list, or what it may never say.
+        for (org.assertj.core.api.ThrowableAssert.ThrowingCallable bug : List.<org.assertj.core.api.ThrowableAssert.ThrowingCallable>of(
+                () -> cdp.send("s-member", "Page.enable", Map.of(), wait),
+                () -> cdp.send("s-gone", "Input.dispatchMouseEvent", Map.of(), wait),
+                () -> cdp.send("s-gone", "Network.clearBrowserCookies", Map.of(), wait),
+                () -> cdp.send("s-gone", "Runtime.evaluate", Map.of("expression", "document.cookie", "contextId", 1), wait),
+                () -> cdp.send(null, "Target.createTarget",
+                        Map.of("url", "about:blank", "browserContextId", "ctx-gone", "hidden", false, "background", true), wait),
+                () -> cdp.send(null, "Target.closeTarget", Map.of("targetId", "t-member"), wait),
+                () -> cdp.send("s-gone", "Target.closeTarget", Map.of("targetId", "t-gone"), wait))) {
+            assertThatThrownBy(bug).isInstanceOf(AgentCdp.NotAllowed.class);
+        }
+    }
+
 }

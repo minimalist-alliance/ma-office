@@ -176,6 +176,37 @@ public final class AgentService {
             com.minimalistalliance.desk.agent.tool.ToolPolicy.DEFAULT;
     /** The Agent's tools at launch, their registry and policy (the tools and approvals draft, section 2). */
     private final com.minimalistalliance.desk.agent.tool.AgentTools agentTools;
+    /** Each run's records as it goes: its reply at each step, each call before it's sent (durable runs' seam). */
+    private final com.minimalistalliance.desk.agent.run.RunCalls runCalls;
+    /** Runs' waits on things outside them, kept across a restart (durable runs). */
+    private final com.minimalistalliance.desk.agent.run.Waits waits;
+    /** Whether any reply was ever resumed, so a desk where none was reads nothing for it. */
+    private volatile boolean anyResumed;
+    /** Messages between the member's desks (the tools and approvals draft, section 14): the outbox, inbox and waits. */
+    private final com.minimalistalliance.desk.agent.desks.DeskMessages desks;
+    /**
+     * Each agent's access: what the member chose on its setup screen (the tools and approvals draft, section 16). No
+     * run starts before it's chosen, and an app switched off takes its tools away from the next step.
+     */
+    private final com.minimalistalliance.desk.agent.access.AccessBook access;
+    /** Maia Mode (API.md §23): Desk Maia on the member's home desk, dark until the member turns it on. Null before start. */
+    private volatile MaiaHooks maia;
+    /** Desk Maia's provider (Minimalist Alliance's service through deskd), or null where a test stands in for it. */
+    private final com.minimalistalliance.desk.agent.provider.ma.MaiaServiceProvider maiaService;
+    /**
+     * Helpers on the member's MA credits (ma-platform desk-helpers.md, ADR 0142; API.md §24): Minimalist Alliance as the
+     * provider of the member's own agents, through deskd. Null where a test stands in for it.
+     */
+    private final com.minimalistalliance.desk.agent.provider.ma.HelperServiceProvider helperService;
+    /** The member's one credits wallet, shared by Desk Maia's service and their agents' on MA's credits (0.4.10). */
+    private final com.minimalistalliance.desk.agent.provider.ma.CreditsWallet wallet;
+    /** What each agent's calls on MA's credits drew a day here: the team view's usage per source. */
+    private final com.minimalistalliance.desk.agent.limits.CreditDays creditDays;
+    /** deskd's hello said this is a Guild Desk: MA's credits are the member's own, so never offered there. */
+    private volatile boolean onGuildDesk;
+    /** deskd's link, once the socket is up: whether its hello offered her model. */
+    private volatile com.minimalistalliance.desk.agent.tool.DeskLink deskLink =
+            com.minimalistalliance.desk.agent.tool.DeskLink.NONE;
 
     /** With staging and readers of its own, as tests and the first wiring have them. */
     public AgentService(AgentStore store, ManagerAgent manager, KeyRing keys, KeyVault vault,
@@ -202,6 +233,55 @@ public final class AgentService {
         this.audit = audit;
         this.topics = topics;
         this.clock = clock;
+        // Desk Maia's only provider, Minimalist Alliance's own AI service through deskd (API.md §23, "Her model"): the
+        // desk's own, registered here unless a test put its stand-in under the same id first. Linked with the socket.
+        if (providers.get(ProviderId.MA) == null) {
+            providers.register(new com.minimalistalliance.desk.agent.provider.ma.MaiaServiceProvider(clock));
+        }
+        this.maiaService = providers.get(ProviderId.MA) instanceof
+                com.minimalistalliance.desk.agent.provider.ma.MaiaServiceProvider own ? own : null;
+        // Helpers on the member's MA credits, through deskd (API.md §24): registered here unless a test put its stand-in first.
+        if (providers.get(ProviderId.MA_CREDITS) == null) {
+            providers.register(new com.minimalistalliance.desk.agent.provider.ma.HelperServiceProvider(clock));
+        }
+        this.helperService = providers.get(ProviderId.MA_CREDITS) instanceof
+                com.minimalistalliance.desk.agent.provider.ma.HelperServiceProvider own ? own : null;
+        // One wallet for Desk Maia and the member's agents on MA's credits (the coordinator's decision, Nov 15): both
+        // services report into it, and the room, her note and the Keys list read the newest.
+        this.wallet = new com.minimalistalliance.desk.agent.provider.ma.CreditsWallet(clock);
+        if (maiaService != null) {
+            maiaService.wallet(wallet);
+        }
+        if (helperService != null) {
+            helperService.wallet(wallet);
+        }
+        this.creditDays = new com.minimalistalliance.desk.agent.limits.CreditDays(store, clock, limits::zone);
+        if (manager != null && manager.gateway() != null) {
+            manager.gateway().creditsSpent((agentId, centi) -> {
+                try {
+                    creditDays.add(agentId, centi);
+                } catch (SQLException e) {
+                    log.warn("an agent's credits weren't counted: {}", e.getClass().getSimpleName());
+                }
+            });
+        }
+        if (maiaService != null) {
+            // Nothing goes to her service while the desk holds only an older Maia Mode disclosure (v1 said her calls went
+            // nowhere but the member's own key).
+            maiaService.gate(() -> maia != null && maia.mode.on() && !maia.mode.disclosed() ? "disclosure" : null);
+            // Her spend is in credits (contract 0.4.8), counted on the desk for the member's own day cap on her, which
+            // refuses her turns once reached. Never money: her calls are the company's (the owner, Nov 15).
+            maiaService.spent(centi -> {
+                MaiaHooks m = maia;
+                if (m != null) {
+                    m.mode.creditsSpent(centi);
+                }
+            });
+            maiaService.cap(() -> {
+                MaiaHooks m = maia;
+                return m == null ? null : m.mode.capRefusal();
+            });
+        }
         MemoryStore memoryStore = new MemoryStore(store);
         // A guild member's own agent goes by the member, whom deskd and allow() refuse while a teen.
         this.memories = new Memories(memoryStore, audit, clock, id -> Caller.isMemberAgent(id) || team.adult());
@@ -211,9 +291,91 @@ public final class AgentService {
                 new com.minimalistalliance.desk.agent.tool.ToolRegistry(), team.toolStore(), clock, new ToolDesk());
         this.toolPolicy = agentTools.policy();
         agentTools.plans().host(this::republishReply);
+        this.access = new com.minimalistalliance.desk.agent.access.AccessBook(store, audit, clock);
+        access.onChange(this::publishState);
+        agentTools.access(access);
         this.approvals = new com.minimalistalliance.desk.agent.approval.Approvals(store, audit, clock);
         approvals.attach(new ApprovalHost());
-        compactor.marks(approvals::carried);
+        // Each agent's auto-approve switches and their places, from its access record, over the ADR's low-risk class (the
+        // gate checks the class again whatever this says; deskd checks all of it again). Asking is the default.
+        approvals.policy(com.minimalistalliance.desk.agent.approval.ApprovalPolicy.perAgentWithPlaces(
+                access::switches, com.minimalistalliance.desk.agent.approval.LowRisk.ADR));
+        approvals.switches(access::switches);
+        // An agent's day of calls done without asking ends at the member's midnight (ADR 0043's zone).
+        approvals.zone(limits::zone);
+        // A summary's marks: the replies' (their runs' marks) and another desk's words in what it folds (Security's DM-I2).
+        compactor.marks(rows -> {
+            Set<com.minimalistalliance.desk.agent.tool.Taint> marks = java.util.EnumSet.noneOf(
+                    com.minimalistalliance.desk.agent.tool.Taint.class);
+            marks.addAll(approvals.carried(rows));
+            marks.addAll(deskMarks(rows));
+            return marks;
+        });
+        this.runCalls = new com.minimalistalliance.desk.agent.run.RunCalls(store, audit, clock);
+        // Each step's reply text goes down only after its marks, so a killed reply never reads unmarked.
+        runCalls.marks(approvals::stepMarks);
+        // A call deskd runs carries its record's key, which deskd keeps its result by for 10 minutes.
+        agentTools.keys(runCalls::current);
+        // Durable runs: each checkpoint keeps the run's gate counts; a call a restart left in flight goes with retry.
+        runCalls.checkpoints().books(approvals::book);
+        runCalls.checkpoints().decls(agentTools.registry()::decl);
+        approvals.bookChanged(runId -> runCalls.checkpoints().saveBook(approvals.run(runId)));
+        agentTools.retrying(runCalls::retrying);
+        this.waits = new com.minimalistalliance.desk.agent.run.Waits(runCalls.checkpoints().store(), clock);
+        // A call that settles without having read its kept wait (desk_message interrupted) ends that wait: an answer that
+        // comes later goes to the thread at once (DR-L10).
+        runCalls.onSettled(waits::cancelAny);
+        waits.onChange((agentId, runId) -> {
+            String kind = waits.waitingOn(runId);
+            runCalls.checkpoints().state(runId, kind == null ? "running" : "waiting_" + kind);
+            publishState(agentId);
+        });
+        // Messages between the member's desks (section 14). Their 120 s wait is durable: kept in run_waits, so a
+        // restart picks it up with what's left of its time, and an answer that came meanwhile is the call's result.
+        com.minimalistalliance.desk.agent.desks.DeskBook deskBook = new com.minimalistalliance.desk.agent.desks.DeskBook(
+                store);
+        com.minimalistalliance.desk.agent.run.DurableDeskWaits deskWaits =
+                new com.minimalistalliance.desk.agent.run.DurableDeskWaits(waits, ref -> {
+                    try {
+                        com.minimalistalliance.desk.agent.desks.DeskBook.OutRow out = deskBook.out(ref);
+                        return out == null ? null : out.agentId();
+                    } catch (SQLException e) {
+                        return null;
+                    }
+                });
+        this.desks = new com.minimalistalliance.desk.agent.desks.DeskMessages(deskBook, access, audit, clock, deskWaits);
+        desks.host(new DesksHost());
+        agentTools.desks(desks);
+        access.desks(desks::incoming, grantId -> {
+            try {
+                return desks.book().peerAgent(grantId);
+            } catch (SQLException e) {
+                return null;
+            }
+        });
+        // An answer a kept wait took whose run ended without reading it goes to the thread, as one no wait took does.
+        waits.untaken(u -> {
+            if (com.minimalistalliance.desk.agent.desks.DeskWaits.KIND.equals(u.kind())) {
+                desks.untaken(u.answer());
+            } else {
+                audit("system", "wait.untaken", "agent:" + u.agentId() + " run:" + u.runId(), u.kind());
+            }
+        });
+    }
+
+    /** Waits of runs on things outside them (durable runs): the desk messages' 120 s wait is one. */
+    public com.minimalistalliance.desk.agent.run.RunWaits waits() {
+        return waits;
+    }
+
+    /** Messages between the member's desks: the outbox, the inbox and the waits. */
+    public com.minimalistalliance.desk.agent.desks.DeskMessages desks() {
+        return desks;
+    }
+
+    /** The runs' records: each call's, and each reply's text and chips at each step. */
+    public com.minimalistalliance.desk.agent.run.RunCalls runCalls() {
+        return runCalls;
     }
 
     /** The policy every gated run's calls go through: the tool registry's. */
@@ -224,6 +386,14 @@ public final class AgentService {
     /** The tools deskd runs, over the agent socket: until it's set, and until deskd's hello, none is offered. */
     public void deskLink(com.minimalistalliance.desk.agent.tool.DeskLink link) {
         agentTools.link(link);
+        desks.link(link);
+        this.deskLink = link == null ? com.minimalistalliance.desk.agent.tool.DeskLink.NONE : link;
+        if (maiaService != null) {
+            maiaService.link(link);
+        }
+        if (helperService != null) {
+            helperService.link(link);
+        }
     }
 
     public com.minimalistalliance.desk.agent.tool.AgentTools agentTools() {
@@ -270,6 +440,25 @@ public final class AgentService {
         }
     }
 
+    /** Each agent's access (the setup screen's choices), for tests and the approvals core's per-agent policy. */
+    public com.minimalistalliance.desk.agent.access.AccessBook access() {
+        return access;
+    }
+
+    /** deskd's hello says this is a Guild Desk: no "without asking" switch acts here (the draft ADR's §15 rule 8). */
+    public void guildDesk() {
+        access.guildDesk(true);
+        onGuildDesk = true;
+    }
+
+    /**
+     * deskd's hello said which agents it holds the member's choice for (its own copy, API.md section 18): an agent set
+     * up here that deskd doesn't hold waits for the member to confirm it again.
+     */
+    public void deskdHoldsAccess(java.util.Collection<String> agentIds) {
+        access.deskdHolds(agentIds);
+    }
+
     /** The approval gate, for tests and the tools. */
     public com.minimalistalliance.desk.agent.approval.Approvals approvals() {
         return approvals;
@@ -291,11 +480,26 @@ public final class AgentService {
      */
     public void restore(boolean startTimers) throws SQLException {
         restoreKeys();
-        // What a restart left of approvals: pending ones expire (restart), started ones are interrupted.
-        approvals.restore();
+        // Runs a restart left that can resume (durable runs): their calls, approvals and timers stay as they are.
+        List<com.minimalistalliance.desk.agent.run.RunCheckpoints.Loaded> resuming = loadResumable();
+        Set<String> resumingIds = new HashSet<>();
+        for (com.minimalistalliance.desk.agent.run.RunCheckpoints.Loaded loaded : resuming) {
+            if (!loaded.broken()) {
+                resumingIds.add(loaded.row().runId());
+            }
+        }
+        // What a restart left of calls: one that came back settles its approval from its record; one still started is
+        // interrupted and audited, whether it asked or not. Then of approvals: pending ones expire (restart), started
+        // ones are interrupted. Runs that resume keep theirs.
+        runCalls.restore(approvals, resumingIds);
+        approvals.restore(resumingIds);
         for (AgentRow row : store.agents()) {
             if (row.limits() != null) {
                 limits.setAgent(row.id(), LimitSettings.AgentLimits.fromJson(row.limits()));
+            }
+            if (com.minimalistalliance.desk.agent.maia.MaiaAgent.is(row.id())) {
+                // A desk from before Nov 14 bound her to a member's key: she's on the company service now.
+                row = companyBound(row);
             }
             ManagerAgent runner = runnerOf(row.id());
             if (row.keyId() != null) {
@@ -306,10 +510,27 @@ public final class AgentService {
         if (desk != null) {
             limits.setDesk(LimitSettings.DeskLimits.fromJson(desk));
         }
+        // A checkpoint that doesn't read whole: its run ends interrupted now, its calls and cards swept above.
+        for (com.minimalistalliance.desk.agent.run.RunCheckpoints.Loaded loaded : resuming) {
+            if (loaded.broken()) {
+                try {
+                    runCalls.checkpoints().store().interruptReply(loaded.row().messageId());
+                } catch (SQLException e) {
+                    log.warn("a reply wasn't ended: {}", e.getClass().getSimpleName());
+                }
+                waits.ended(loaded.row().runId(), true);
+                runCalls.checkpoints().ended(loaded.row().runId(), "interrupted", "checkpoint");
+                endedAtOpen.add(new String[] {loaded.row().runId(), loaded.row().agentId()});
+            }
+        }
+        Map<String, com.minimalistalliance.desk.agent.tool.RunContext> contexts = holdResuming(resuming);
         team.restore();
         if (startTimers) {
             team.timers().start();
+            // Messages from other desks a restart left: started, answered as failed, or posted (section 14).
+            desks.restore();
         }
+        resumeLater(resuming, contexts);
     }
 
     public Team team() {
@@ -331,7 +552,23 @@ public final class AgentService {
             case "agent.providers" -> providers();
             case "agent.list" -> Map.of("agents", agents(caller));
             case "agent.get" -> Map.of("agent", agentView(row(agentId(p), caller)));
-            case "agent.create" -> Map.of("agent", agentView(row((String) team.call(method, p).get("agentId"))));
+            case "agent.create" -> {
+                // ifRunnable (the welcome's helpers, the owner, Nov 15): with no key, made only if it can run now on the
+                // member's MA credits, so no helper sits dead on the desk. A key given wins, and ifRunnable changes nothing.
+                boolean ifRunnable = p.get("ifRunnable") != null && bool(p, "ifRunnable");
+                boolean mustRun = ifRunnable && p.get("keyId") == null;
+                if (mustRun && runnableCredits() == null) {
+                    throw RpcError.of("precondition_failed", "reason", "cant_run");
+                }
+                String created = (String) team.call(method, p).get("agentId");
+                // A new helper runs on the member's MA credits when it came with no key and the member has some (the owner,
+                // Nov 15: the welcome never stalls on "bring your own key"). A key given wins.
+                if (p.get("keyId") == null && !creditsByDefault(created) && mustRun) {
+                    takeBack(created);
+                    throw RpcError.of("precondition_failed", "reason", "cant_run");
+                }
+                yield Map.of("agent", agentView(row(created)));
+            }
             case "agent.links.set", "agent.workspace.share", "agent.icon.upload" -> {
                 team.call(method, p);
                 yield Map.of("agent", agentView(row(agentId(p))));
@@ -357,20 +594,147 @@ public final class AgentService {
                     p.get("memoryId") instanceof String id ? id : null, actor(caller));
             case "agent.memory.clear" -> memories.clear(row(agentId(p), caller).id(), actor(caller));
             case "agent.guild.usage" -> guildUsage();
-            case "agent.approvals.list", "agent.approval.get", "agent.approval.decide" ->
-                    approvals.call(method, p, caller);
+            case "agent.approvals.list", "agent.approval.get", "agent.approval.decide" -> approvals.call(method, p, caller);
+            case com.minimalistalliance.desk.agent.approval.Approvals.UNDO -> maiaUndone(approvals.call(method, p, caller));
+            case com.minimalistalliance.desk.agent.maia.TeamView.METHOD -> {
+                if (!caller.isOwner()) {
+                    throw RpcError.of("forbidden", "reason", "permission");
+                }
+                yield maiaHooks().team.summary(p);
+            }
+            // The setup screen and the agent's settings (the tools and approvals draft, section 16): the member's own.
+            case "agent.access.get" -> access.get(row(agentId(p), caller).id());
+            case "agent.access.set" -> {
+                String id = row(agentId(p), caller).id();
+                yield access.set(id, p, caller, Caller.isMemberAgent(id));
+            }
+            case "agent.desks.revoke" -> {
+                // An answer half here (section 14), else a send half of one of the caller's agents.
+                Map<String, Object> answer = desks.revokeAnswer(p, caller);
+                yield answer != null ? answer : access.revoke(p, caller, caller::sees);
+            }
+            case "desk.maia.away" -> {
+                // deskd's word from the Platform's heartbeat reply (Maia Mode Phase 2, Security's MA-M1): whether she
+                // may keep working while the member is away, and whether today's hours are used.
+                maiaHooks().away.platform(Boolean.TRUE.equals(p.get("away")), p.get("hold") instanceof String h ? h : "off");
+                yield Map.of();
+            }
+            case "agent.desks.list", "agent.desks.answer", "agent.desks.take", "agent.desks.done", "desk.desks.queue",
+                    "desk.desks.deliver", "desk.desks.take", "desk.desks.done", "desk.desks.outbox" -> {
+                if ("agent.desks.answer".equals(method)
+                        && com.minimalistalliance.desk.agent.maia.MaiaAgent.is(p.get("agentId") instanceof String a ? a
+                                : null)) {
+                    // Desk Maia only briefs; no other desk's agent may message her (one hop, API.md §23).
+                    throw RpcError.of("bad_request", "detail", "agentId", "reason", "maia");
+                }
+                yield desks.call(method, p, caller);
+            }
+            case "agent.delete" -> {
+                Map<String, Object> deleted = team.call(method, p);
+                // Deleting an agent revokes its grants to other desks, and its choices go with it (section 14).
+                access.deleted(string(p, "agentId"));
+                desks.agentGone(string(p, "agentId"));
+                yield deleted;
+            }
             case "desk.prices.set" -> pricesSet(p);
             case "desk.account.set" -> accountSet(p);
             case "desk.guild.set" -> guildSet(p);
             case MEMBER_PURGE -> purgeMember(p);
+            case com.minimalistalliance.desk.agent.maia.DocReader.METHOD -> docRead(p);
+            case DOCS_WRITEUPS -> docWriteups(p);
             case "agent.key.add" -> throw RpcError.badRequest("key_frame");
             default -> {
                 if (Team.handles(method)) {
                     yield team.call(method, p);
                 }
+                if (com.minimalistalliance.desk.agent.maia.MaiaMode.handles(method)) {
+                    yield maiaHooks().mode.call(method, p, caller, this::maiaHalf);
+                }
                 throw RpcError.of("not_found", "detail", "method");
             }
         };
+    }
+
+    /**
+     * Documents' reader (deskd API.md §25): deskd asks for one reading of one version it's about to show. Only while Desk
+     * Maia is active on this desk (on, listed, an adult's, not a Guild Desk), on her service's task {@code read}, in her
+     * credits; otherwise skipped, and deskd sorts from structure alone.
+     */
+    private Map<String, Object> docRead(Map<String, Object> p) {
+        MaiaHooks m;
+        try {
+            m = maiaHooks();
+        } catch (RuntimeException e) {
+            return Map.of("skipped", "maia_off");
+        }
+        if (m == null || !m.mode.active()) {
+            return Map.of("skipped", "maia_off");
+        }
+        com.minimalistalliance.desk.agent.maia.DocReader reader = new com.minimalistalliance.desk.agent.maia.DocReader(
+                (system, user, max) -> m.complete(com.minimalistalliance.desk.agent.maia.MaiaAgent.ID, "read", system, user, max));
+        Map<String, Object> facts;
+        try {
+            facts = reader.read(p);
+        } catch (InterruptedException e) {
+            Thread.currentThread().interrupt();
+            return Map.of("skipped", "interrupted");
+        }
+        audit("agent:maia", "maia.docread", p.get("docId") instanceof String id && id.length() <= 40 ? "doc:" + id : "doc:?",
+                facts.containsKey("skipped") ? String.valueOf(facts.get("skipped")) : "ok");
+        return facts;
+    }
+
+    /** Documents' index of Desk Maia's write-ups kept on this desk (deskd API.md §25): deskd's own request, never relayed. */
+    public static final String DOCS_WRITEUPS = "desk.docs.writeups";
+    /** A write-up's text as Documents takes it, at most this many characters. */
+    static final int WRITEUP_DOC_CHARS = 200_000;
+    private volatile com.minimalistalliance.desk.agent.maia.AwayStore docsWriteups;
+
+    /**
+     * {@code {after, afterId, limit}}: the write-ups kept after that cursor, oldest first; {@code {id}}: that one;
+     * {@code {kept: true}}: the ids still kept, and those marked readable. Each item {@code {id, agentId, agentName, at, readable, text}}, where
+     * {@code readable} says its answer went back without this desk's private data (Documents never gives the rest to the
+     * reader). Nothing here leaves the desk: deskd indexes it for the member's own Documents.
+     */
+    private Map<String, Object> docWriteups(Map<String, Object> p) throws SQLException, RpcError {
+        com.minimalistalliance.desk.agent.maia.AwayStore kept = docsWriteups;
+        if (kept == null) {
+            kept = new com.minimalistalliance.desk.agent.maia.AwayStore(store);
+            docsWriteups = kept;
+        }
+        if (Boolean.TRUE.equals(p.get("kept"))) {
+            // With the ones marked readable, so the index follows a mark made after it read the write-up.
+            return Map.of("kept", kept.writeUpIds(false), "readable", kept.writeUpIds(true));
+        }
+        List<com.minimalistalliance.desk.agent.maia.AwayStore.Kept> rows;
+        if (p.get("id") instanceof String id) {
+            if (!id.matches("wu-[a-z2-7]{1,40}")) {
+                throw RpcError.badRequest("id");
+            }
+            com.minimalistalliance.desk.agent.maia.AwayStore.WriteUp w = kept.writeUp(id);
+            rows = w == null ? List.of() : List.of(new com.minimalistalliance.desk.agent.maia.AwayStore.Kept(
+                    new com.minimalistalliance.desk.agent.maia.AwayStore.WriteUp(w.id(), w.envId(), w.agentId(),
+                            w.fromDeskId(), w.text().length() > WRITEUP_DOC_CHARS ? w.text().substring(0, WRITEUP_DOC_CHARS)
+                                    : w.text(), w.at()), kept.writeUpReadable(id)));
+        } else {
+            long after = p.get("after") instanceof Number n ? Math.max(0, n.longValue()) : 0;
+            String afterId = p.get("afterId") instanceof String s && s.length() <= 64 ? s : "";
+            int limit = p.get("limit") instanceof Number n ? (int) Math.max(1, Math.min(20, n.longValue())) : 20;
+            rows = kept.writeUpsAfter(after, afterId, limit, WRITEUP_DOC_CHARS);
+        }
+        List<Map<String, Object>> items = new ArrayList<>();
+        for (com.minimalistalliance.desk.agent.maia.AwayStore.Kept k : rows) {
+            Map<String, Object> m = new LinkedHashMap<>();
+            m.put("id", k.writeUp().id());
+            m.put("agentId", k.writeUp().agentId());
+            AgentRow row = k.writeUp().agentId() == null ? null : store.agent(k.writeUp().agentId());
+            m.put("agentName", row == null ? null : row.name());
+            m.put("at", k.writeUp().at());
+            m.put("readable", k.readable());
+            m.put("text", k.writeUp().text());
+            items.add(m);
+        }
+        return Map.of("items", items);
     }
 
     /** What only the Founder, or an Officer with manage_agents, may do on a guild desk: deskd checks it first too. */
@@ -454,6 +818,10 @@ public final class AgentService {
     private Map<String, Object> providers() {
         List<Map<String, Object>> list = new ArrayList<>();
         for (ChatProvider provider : providers.all()) {
+            if (ProviderId.MA.equals(provider.id()) || ProviderId.MA_CREDITS.equals(provider.id())) {
+                // Minimalist Alliance's service: no member makes a key for it (her service, or the member's MA credits).
+                continue;
+            }
             Map<String, Object> p = new LinkedHashMap<>();
             p.put("id", provider.id().id());
             p.put("name", provider.id().displayName());
@@ -482,7 +850,9 @@ public final class AgentService {
         Team.Snapshot snapshot = team.snapshot();
         List<Map<String, Object>> list = new ArrayList<>();
         for (AgentRow row : store.agents()) {
-            if (caller.sees(row.id())) {
+            // Desk Maia is in deskd's own view only (the heartbeat counts her runs), never the Agent app's (API.md §23).
+            if (caller.sees(row.id()) && (caller.isSystem()
+                    || !com.minimalistalliance.desk.agent.maia.MaiaAgent.is(row.id()))) {
                 list.add(decorated(baseView(row), snapshot, full));
             }
         }
@@ -539,10 +909,15 @@ public final class AgentService {
         boolean paused = team.paused(row.id());
         agent.put("status", paused ? "paused" : runner.status().wireName());
         int waiting = approvals.pendingCount(row.id());
+        String waitingOn = runner.status() == ManagerAgent.Status.WORKING ? waitingOn(row.id()) : null;
         agent.put("statusDetail", paused ? "agent_cap"
                 : waiting > 0 && runner.status() == ManagerAgent.Status.WORKING ? "awaiting_approval"
+                : waitingOn != null ? "waiting_" + waitingOn
+                : runner.status() == ManagerAgent.Status.WORKING && desks.waiting(row.id()) ? "waiting_desk"
                 : runner.statusDetail());
         agent.put("approvalsPending", waiting);
+        // Why its setup screen shows, or null once the member has saved it (section 16): new, upgrade or confirm.
+        agent.put("setup", setupOf(row.id()));
         if (row.keyId() == null) {
             agent.put("binding", null);
         } else {
@@ -556,8 +931,19 @@ public final class AgentService {
         agent.put("badgeHidden", row.badgeHidden());
         agent.put("badgeNotice", row.badgeNotice());
         agent.put("unseen", row.unseen());
+        // What a run the member didn't start did without asking, until they look (the draft ADR's §15).
+        agent.put("autoUnseen", approvals.autoUnseen(row.id()));
         agent.put("createdAt", row.createdAt());
         return agent;
+    }
+
+    /** The agent's {@code setup}: null once chosen; {@code confirm} if its access can't be read now. */
+    private String setupOf(String agentId) {
+        try {
+            return access.of(agentId).setup();
+        } catch (SQLException | RuntimeException e) {
+            return com.minimalistalliance.desk.agent.access.AgentAccess.CONFIRM;
+        }
     }
 
     /*
@@ -567,6 +953,9 @@ public final class AgentService {
 
     private Map<String, Object> update(Map<String, Object> p, Caller caller) throws RpcError, SQLException {
         String agentId = agentId(p);
+        if (com.minimalistalliance.desk.agent.maia.MaiaAgent.is(agentId)) {
+            throw RpcError.notFound("agent");
+        }
         row(agentId, caller);
         String name = null;
         if (p.containsKey("name")) {
@@ -584,7 +973,14 @@ public final class AgentService {
 
     private Map<String, Object> bind(Map<String, Object> p, Caller caller) throws RpcError, SQLException {
         String agentId = agentId(p);
+        if (com.minimalistalliance.desk.agent.maia.MaiaAgent.is(agentId)) {
+            // Desk Maia always runs on Minimalist Alliance's service (the owner, Nov 14): her binding is the desk's own.
+            throw RpcError.of("forbidden", "reason", "company");
+        }
         row(agentId, caller);
+        if (KeyRing.CREDITS.equals(string(p, "keyId"))) {
+            return bindCredits(agentId, string(p, "model"));
+        }
         KeyRow key = store.key(string(p, "keyId"));
         if (key == null) {
             throw RpcError.notFound("key");
@@ -604,10 +1000,153 @@ public final class AgentService {
         return Map.of("agent", agentView(row));
     }
 
+    /**
+     * {@code agent.bind} to the member's MA credits ({@link KeyRing#CREDITS}, model {@code auto}: the Platform picks). Only
+     * where deskd offers helpers on MA's credits and not on a Guild Desk; Desk Maia is refused before this.
+     */
+    private Map<String, Object> bindCredits(String agentId, String model) throws RpcError, SQLException {
+        if (!com.minimalistalliance.desk.agent.provider.ma.HelperServiceProvider.AUTO.equals(model)) {
+            throw RpcError.badRequest("model");
+        }
+        if (helperService == null || onGuildDesk || !helperService.offered()) {
+            throw RpcError.of("precondition_failed", "reason", "no_service");
+        }
+        store.setBinding(agentId, KeyRing.CREDITS, ProviderId.MA_CREDITS.id(), model);
+        AgentRow row = row(agentId);
+        ManagerAgent runner = runnerOf(row.id());
+        if (runner != null) {
+            runner.bind(binding(row));
+        }
+        publishState(agentId);
+        return Map.of("agent", agentView(row));
+    }
+
+    /**
+     * A new agent with no key on the member's MA credits, when deskd offers them and the member has some left (or the
+     * lighter model's share). Never fails the create: without credits, the agent waits for a key as before.
+     *
+     * @return whether it's on the credits now
+     */
+    private boolean creditsByDefault(String agentId) {
+        try {
+            if (agentId == null || com.minimalistalliance.desk.agent.maia.MaiaAgent.is(agentId) || Caller.isMemberAgent(agentId)
+                    || runnableCredits() == null) {
+                return false;
+            }
+            AgentRow row = store.agent(agentId);
+            if (row == null || row.keyId() != null) {
+                return false;
+            }
+            bindCredits(agentId, com.minimalistalliance.desk.agent.provider.ma.HelperServiceProvider.AUTO);
+            audit("system", "agent.bind", "agent:" + agentId + " key:" + KeyRing.CREDITS, "credits");
+            return true;
+        } catch (RpcError | SQLException | RuntimeException e) {
+            log.warn("a new agent wasn't put on MA's credits: {}", e.getClass().getSimpleName());
+            return false;
+        }
+    }
+
+    /**
+     * The member's MA credits when a helper on them can run now: deskd offers them, this isn't a Guild Desk, and some are
+     * left (or the lighter model's share). Null otherwise, or when the read fails.
+     */
+    private com.minimalistalliance.desk.agent.provider.ma.HelperServiceProvider.Credits runnableCredits() {
+        if (helperService == null || onGuildDesk || !helperService.offered()) {
+            return null;
+        }
+        try {
+            com.minimalistalliance.desk.agent.provider.ma.HelperServiceProvider.Credits credits = helperService.credits();
+            return credits != null && credits.usable() ? credits : null;
+        } catch (InterruptedException e) {
+            Thread.currentThread().interrupt();
+            return null;
+        } catch (RuntimeException e) {
+            log.warn("MA's credits weren't read: {}", e.getClass().getSimpleName());
+            return null;
+        }
+    }
+
+    /** An {@code agent.create {ifRunnable}} whose agent couldn't be put on the credits after all: taken out again. */
+    private void takeBack(String agentId) {
+        try {
+            team.call("agent.delete", Map.of("agentId", agentId));
+        } catch (RpcError | SQLException | RuntimeException e) {
+            log.warn("a helper that can't run stays: {}", e.getClass().getSimpleName());
+        }
+    }
+
+    /**
+     * The member's MA credits as the Keys list shows them: one row, {@code credits: true}, while deskd offers them and not
+     * on a Guild Desk; null otherwise. Reads at most {@link #CREDITS_READ_WAIT} when nothing fresh is held.
+     */
+    private Map<String, Object> creditsKeyView() {
+        if (helperService == null || onGuildDesk || !helperService.offered()) {
+            return null;
+        }
+        com.minimalistalliance.desk.agent.provider.ma.HelperServiceProvider.Credits credits = helperService.lastCredits();
+        if (credits == null) {
+            try {
+                java.util.concurrent.CompletableFuture<com.minimalistalliance.desk.agent.provider.ma.HelperServiceProvider.Credits>
+                        read = new java.util.concurrent.CompletableFuture<>();
+                Thread.ofVirtual().name("helpers-credits").start(() -> {
+                    try {
+                        read.complete(helperService.credits());
+                    } catch (InterruptedException e) {
+                        read.complete(null);
+                    } catch (RuntimeException e) {
+                        read.complete(null);
+                    }
+                });
+                credits = read.get(CREDITS_READ_WAIT.toMillis(), java.util.concurrent.TimeUnit.MILLISECONDS);
+            } catch (InterruptedException e) {
+                Thread.currentThread().interrupt();
+            } catch (java.util.concurrent.ExecutionException | java.util.concurrent.TimeoutException e) {
+                // Shown without a count; the next list asks again.
+            }
+        }
+        Map<String, Object> key = new LinkedHashMap<>();
+        key.put("keyId", KeyRing.CREDITS);
+        key.put("provider", ProviderId.MA_CREDITS.id());
+        key.put("providerName", ProviderId.MA_CREDITS.displayName());
+        key.put("label", "MA credits");
+        key.put("last4", "");
+        key.put("createdAt", 0);
+        key.put("createdByDesk", "");
+        key.put("available", true);
+        Map<String, Object> shown = credits == null ? null : credits.view();
+        com.minimalistalliance.desk.agent.provider.ma.CreditsWallet.View one = wallet.latest();
+        if (one != null) {
+            // The member's one wallet (0.4.10), the newest from Desk Maia's answers or an agent's: the same balance, in
+            // the row's shape (left, starting, topUp, lighter), with the month's part besides. Never money.
+            shown = new LinkedHashMap<>();
+            shown.put("left", one.left());
+            shown.put("starting", one.starting());
+            shown.put("topUp", one.topUp());
+            shown.put("lighter", one.lighter());
+            if (one.lighterLeft() != null) {
+                shown.put("lighterLeft", one.lighterLeft());
+            }
+            shown.put("month", one.month());
+            shown.put("monthLeft", one.monthLeft());
+            if (one.renewsAt() != null) {
+                shown.put("renewsAt", one.renewsAt().toString());
+            }
+        }
+        key.put("credits", shown);
+        return key;
+    }
+
+    /** How long the Keys list waits for a first credits read. */
+    private static final java.time.Duration CREDITS_READ_WAIT = java.time.Duration.ofSeconds(3);
+
     private Map<String, Object> seen(Map<String, Object> p, Caller caller) throws RpcError, SQLException {
         AgentRow row = row(agentId(p), caller);
-        if (row.unseen() != 0) {
-            store.clearUnseen(row.id());
+        boolean unasked = approvals.autoUnseen(row.id()) != 0;
+        if (row.unseen() != 0 || unasked) {
+            if (row.unseen() != 0) {
+                store.clearUnseen(row.id());
+            }
+            approvals.seen(row.id());
             publishState(row.id());
         }
         return Map.of();
@@ -633,19 +1172,23 @@ public final class AgentService {
             Map<String, Object> thread = new LinkedHashMap<>();
             thread.put("agentId", agentId);
             thread.put("messages", page.messages());
+            thread.put("approvals", page.approvals());
             thread.put("older", page.older());
             thread.put("seq", topics.seq(topic));
             return thread;
         });
     }
 
-    /** The thread for a new subscriber, with streaming replies' text so far: its newest page, as {@code agent.thread.get}'s. */
+    /**
+     * The thread for a new subscriber, with streaming replies' text so far: its newest page, as {@code agent.thread.get}'s,
+     * with every approval of those messages beside them (§18: a waiting card is drawn after a reload or a restart).
+     */
     public Map<String, Object> conversationSnapshot(String agentId) {
         try {
             Page page = page(agentId, null);
-            return Map.of("messages", page.messages(), "older", page.older());
+            return Map.of("messages", page.messages(), "approvals", page.approvals(), "older", page.older());
         } catch (SQLException e) {
-            return Map.of("messages", List.of());
+            return Map.of("messages", List.of(), "approvals", List.of());
         }
     }
 
@@ -671,12 +1214,24 @@ public final class AgentService {
                 if (proposals.containsKey(row.id())) {
                     view.put("proposals", proposals.get(row.id()));
                 }
-                int bytes = Json.bytes(view).length + 1;
+                // The page's own approvals (§18) carry the reply's again, so they count twice.
+                List<Map<String, Object>> its = approvalsOf(view);
+                int bytes = Json.bytes(view).length + 1 + (its.isEmpty() ? 0 : Json.bytes(its).length + 1);
                 if (used + bytes > PAGE_BYTES) {
                     if (!newestFirst.isEmpty()) {
                         return Page.of(newestFirst, true);
                     }
-                    view = cut(view, PAGE_BYTES - used);
+                    // The newest alone: its approvals, both copies, without their payloads (agent.approval.get has
+                    // each), then the start of its text that fits.
+                    List<Map<String, Object>> light = new ArrayList<>();
+                    for (Map<String, Object> a : its) {
+                        light.add(withoutPayload(a));
+                    }
+                    if (!light.isEmpty()) {
+                        view.put("approvals", light);
+                    }
+                    view = cut(view, PAGE_BYTES - used - Json.bytes(light).length - 1);
+                    view.put(PAGE_APPROVALS, light);
                     full = true;
                 }
                 newestFirst.add(view);
@@ -689,12 +1244,47 @@ public final class AgentService {
         }
     }
 
-    /** A page of a thread, oldest first. */
-    private record Page(List<Map<String, Object>> messages, boolean older) {
+    /** Where a message view holds the page's copies of its approvals while the page fills; never sent. */
+    private static final String PAGE_APPROVALS = "\u0000pageApprovals";
+
+    /** A reply's approvals as its view lists them (§18), or none. */
+    @SuppressWarnings("unchecked")
+    private static List<Map<String, Object>> approvalsOf(Map<String, Object> view) {
+        return view.get("approvals") instanceof List<?> list ? (List<Map<String, Object>>) list : List.of();
+    }
+
+    /** An approval as a page carries it when it can't carry its payload: {@code payloadOmitted}, as an event does over 32 KiB. */
+    private static Map<String, Object> withoutPayload(Map<String, Object> approval) {
+        Map<String, Object> copy = new LinkedHashMap<>(approval);
+        if (copy.get("payload") != null) {
+            copy.put("payload", null);
+            copy.put("payloadOmitted", true);
+        }
+        return copy;
+    }
+
+    /**
+     * A page of a thread, oldest first, and every approval of its messages in the same order (§18: the snapshot and
+     * {@code agent.thread.get} carry {@code approvals}, which the Agent app draws its cards from).
+     */
+    private record Page(List<Map<String, Object>> messages, List<Map<String, Object>> approvals, boolean older) {
+        @SuppressWarnings("unchecked")
         static Page of(List<Map<String, Object>> newestFirst, boolean older) {
             List<Map<String, Object>> inOrder = new ArrayList<>(newestFirst);
             Collections.reverse(inOrder);
-            return new Page(inOrder, older);
+            List<Map<String, Object>> approvals = new ArrayList<>();
+            for (int i = 0; i < inOrder.size(); i++) {
+                Map<String, Object> view = inOrder.get(i);
+                if (view.containsKey(PAGE_APPROVALS)) {
+                    approvals.addAll((List<Map<String, Object>>) view.get(PAGE_APPROVALS));
+                    Map<String, Object> sent = new LinkedHashMap<>(view);
+                    sent.remove(PAGE_APPROVALS);
+                    inOrder.set(i, sent);
+                } else {
+                    approvals.addAll(approvalsOf(view));
+                }
+            }
+            return new Page(inOrder, approvals, older);
         }
     }
 
@@ -715,6 +1305,8 @@ public final class AgentService {
         }
         Map<String, Object> view = messageView(row, text);
         approvals.decorate(view, row, decor);
+        maiaDecorate(view, row);
+        resumedInto(view, row);
         agentTools.plans().decorate(view, row);
         if (row.role().equals("user")) {
             try {
@@ -819,6 +1411,11 @@ public final class AgentService {
     }
 
     private Map<String, Object> send(Map<String, Object> p, Caller caller) throws RpcError, SQLException {
+        return send(p, caller, false);
+    }
+
+    /** {@code tapped}: Desk Maia's choice tapped by the member (agent.maia.choose), sent as their message. */
+    private Map<String, Object> send(Map<String, Object> p, Caller caller, boolean tapped) throws RpcError, SQLException {
         String agentId = agentId(p);
         AgentRow agent = row(agentId, caller);
         List<String> uploads = uploadIds(p);
@@ -828,6 +1425,23 @@ public final class AgentService {
         }
         if (text.length() > MAX_TEXT) {
             throw RpcError.of("too_large", "detail", "text");
+        }
+        MaiaHooks m = com.minimalistalliance.desk.agent.maia.MaiaAgent.is(agentId) ? maiaHooks() : null;
+        if (m != null) {
+            // Maia Mode, before anything is staged or claimed (Security's DMA-I5): her choices' counts (a tap's are
+            // counted already), and whether the member's own words asked to see something (code, counts only).
+            if (!tapped) {
+                m.mode.beforeSend(text, p.get("choice"));
+            } else {
+                m.mode.requireActive();
+            }
+            // She runs on Minimalist Alliance's service: the member has accepted the disclosure that says so, and deskd
+            // relays her model on this connection (API.md §23, "Her model"). Refused before anything is added.
+            m.mode.requireDisclosure();
+            if (!deskLink.maiaModel()) {
+                throw RpcError.of("unavailable", "reason", "no_service");
+            }
+            m.profile.memberSaid(tapped ? "" : text);
         }
         if (approvals.waiting(agentId)) {
             // Its run waits for the member's answer to a card (§18): answer it or stop the run first.
@@ -861,6 +1475,9 @@ public final class AgentService {
         }
         // From here the run owns the files, and wipes them wherever it ends, startRun's refusals included.
         Begun begun = startRun(agentId, text, null, Team.Chain.start(agentId), attachments);
+        if (m != null) {
+            m.notes.after(begun.replyId());
+        }
         if (summary != null) {
             try {
                 audit.append(AuditLog.Entry.of("user", "attach.send", summary, "ok"));
@@ -877,7 +1494,7 @@ public final class AgentService {
     private boolean busyFor(String agentId) {
         startLock.lock();
         try {
-            if (runs.values().stream().anyMatch(active -> active.agentId().equals(agentId))) {
+            if (held.contains(agentId) || runs.values().stream().anyMatch(active -> active.agentId().equals(agentId))) {
                 return true;
             }
             if (Caller.isMemberAgent(agentId)) {
@@ -1077,6 +1694,12 @@ public final class AgentService {
         if (!member && team.paused(agentId)) {
             throw RpcError.of("precondition_failed", "reason", "agent_cap");
         }
+        // No run before the member has saved the agent's setup screen: the member's, a timer's or another agent's
+        // (the tools and approvals draft, section 16). Refused before anything is added to the thread. A key comes
+        // before the screen in the New agent flow, so an agent with neither says no_key first.
+        if (!access.chosen(agentId)) {
+            throw RpcError.of("precondition_failed", "reason", runner.binding() == null ? "no_key" : "setup");
+        }
         if (origin != null && !team.adult()) {
             throw RpcError.of("precondition_failed", "reason", "age_band");
         }
@@ -1088,7 +1711,8 @@ public final class AgentService {
                         java.nio.charset.StandardCharsets.UTF_8));
         // A run that answers another agent reads only that pairing's turns, and nothing it remembers. Any other reads
         // the thread's summary and what fits after it, within the budget, so no thread outgrows a run (S-14).
-        boolean answering = origin != null && "agent".equals(origin.get("kind"));
+        boolean fromDesk = origin != null && "desk".equals(origin.get("kind"));
+        boolean answering = origin != null && ("agent".equals(origin.get("kind")) || fromDesk);
         List<MessageRow> rows;
         String lead = null;
         // What the run reads before its first step, for its taint (the tools and approvals draft, section 6).
@@ -1115,19 +1739,27 @@ public final class AgentService {
         }
         // A guild member's own agent has no team tools. Every run but one answering another agent remembers (S-14).
         ManagerAgent.RunSetup setup = member ? new ManagerAgent.RunSetup(MEMBER_INSTRUCTIONS, ManagerAgent.Tools.NONE)
-                : team.setupFor(agentId, origin);
+                : maiaSetup(agentId, origin);
         // The desk's tools around the run's own: Files, the Browser and Notebook through deskd (Notebook only for a
         // guild member's agent), plan_update, follow_up and workspace_delete (the tools and approvals draft).
-        setup = agentTools.wrap(setup, agentId, member);
+        setup = agentTools.wrap(setup, agentId, member, fromDesk);
         if (!answering) {
-            // The member's attached files are untrusted content. Memory adds S for what it pins, and U for a line or
-            // summary that carries the mark (Memories.withMemory): Security's rules 1 and 2 on the protocol.
+            // The member's attached files are untrusted content, and their own private data as a Files read is (S and
+            // U; Security's ATA-L2). Memory adds S for what it pins, and U for a line or summary that carries the mark
+            // (Memories.withMemory): Security's rules 1 and 2 on the protocol.
             if (!attachments.isEmpty()) {
                 read.add(com.minimalistalliance.desk.agent.tool.Taint.U);
+                read.add(com.minimalistalliance.desk.agent.tool.Taint.S);
             }
             setup = memories.withMemory(setup, agentId, read);
         }
-        setup = withGating(setup, agentId, replyId, origin, rows, !attachments.isEmpty());
+        // A run answering another agent or another desk never resumes: its sender reads its answer once, now (DR-L8).
+        boolean answers = answering || (origin != null && "desk".equals(origin.get("kind")));
+        setup = withGating(setup, agentId, replyId, origin, rows, !attachments.isEmpty(),
+                new com.minimalistalliance.desk.agent.run.Resume.Start(null, thread, origin, chainMap(chain),
+                        setup.maxMicroUsd(), resumeOn && attachments.isEmpty() && !answers));
+        // A run another desk's message started answers it as its closing call, through the gate (section 14).
+        setup = setup.withClosing(desks.closingFor(origin));
 
         String topic = CONVERSATION_PREFIX + agentId;
         CountDownLatch published = new CountDownLatch(1);
@@ -1155,6 +1787,10 @@ public final class AgentService {
             }
             if (origin == null && approvals.waiting(agentId)) {
                 throw RpcError.of("conflict", "reason", "awaiting_approval");
+            }
+            if (held.contains(agentId)) {
+                // Its run a restart left picks up first (durable runs).
+                throw new AgentException(AgentException.Code.BUSY, null);
             }
             int owners = (int) runs.values().stream().filter(active -> !Caller.isMemberAgent(active.agentId())).count();
             int room = origin == null ? TierCaps.RUNS_AT_ONCE : TierCaps.UNATTENDED_RUNS;
@@ -1252,6 +1888,12 @@ public final class AgentService {
                     com.minimalistalliance.desk.agent.provider.ToolResult result) {
                 return tools.chip(call, result);
             }
+
+            @Override
+            public String endsRun(com.minimalistalliance.desk.agent.provider.ToolCall call,
+                    com.minimalistalliance.desk.agent.provider.ToolResult result) {
+                return tools.endsRun(call, result);
+            }
         });
         ManagerAgent.Gating gating = setup.gating();
         if (gating == null) {
@@ -1287,24 +1929,36 @@ public final class AgentService {
                             com.minimalistalliance.desk.agent.provider.ToolResult result) {
                         gate.settle(run, call, verdict, result);
                     }
-                }, gating.context()));
+                }, gating.context(), gating.records()));
     }
 
     /**
      * The run's gating: the tool policy, the approval gate, and its {@link com.minimalistalliance.desk.agent.tool.RunContext}
      * with the flags it starts with (draft ADR section 6): {@code U} for a run another agent's message started, for the
-     * member's attachments, and for a thread whose earlier reply came from a {@code U} run; {@code S} likewise from a
-     * reply's mark, and whatever the setup holds (memory's pinned lines). The run another agent's message started passes
+     * member's attachments, and for a thread whose earlier reply came from a {@code U} run; {@code S} for the member's
+     * attachments, from a reply's mark, and whatever the setup holds (memory's pinned lines). The run another agent's message started passes
      * its flags on to that agent's run, which reads its reply.
      */
     private ManagerAgent.RunSetup withGating(ManagerAgent.RunSetup setup, String agentId, String replyId,
-            Map<String, Object> origin, List<MessageRow> context, boolean attached) {
+            Map<String, Object> origin, List<MessageRow> context, boolean attached,
+            com.minimalistalliance.desk.agent.run.Resume.Start begun) {
         // The setup's own live set (memory's adds are in it already), which the run context keeps by reference.
         Set<com.minimalistalliance.desk.agent.tool.Taint> start = setup.taint();
         start.addAll(approvals.carried(context));
+        start.addAll(deskMarks(context));
         boolean fromAgent = origin != null && "agent".equals(origin.get("kind"));
-        if (attached || fromAgent) {
+        boolean fromDesk = origin != null && "desk".equals(origin.get("kind"));
+        if (attached || fromAgent || fromDesk) {
             start.add(com.minimalistalliance.desk.agent.tool.Taint.U);
+        }
+        if (fromDesk && "message".equals(origin.get("role")) && Boolean.TRUE.equals(origin.get("private"))) {
+            // A message whose sending run held the member's private data on its desk (Desk Maia under her grant):
+            // this run holds it too, so its browsing asks (Security's DMA-M1).
+            start.add(com.minimalistalliance.desk.agent.tool.Taint.S);
+        }
+        if (attached) {
+            // The member's own file, as a Files read of it would be (Security's ATA-L2).
+            start.add(com.minimalistalliance.desk.agent.tool.Taint.S);
         }
         com.minimalistalliance.desk.agent.tool.RunContext upstream = null;
         if (fromAgent && origin.get("agentId") instanceof String sender) {
@@ -1322,18 +1976,47 @@ public final class AgentService {
             com.minimalistalliance.desk.agent.tool.RunContext run = com.minimalistalliance.desk.agent.tool.RunContext
                     .of(runId, agentId, owner, card, replyId, start, above);
             approvals.begin(run);
+            // Its start context, so a restart can pick it up (durable runs).
+            runCalls.checkpoints().begin(run, begun);
             return run;
-        }));
+        }, runCalls));
     }
 
     /**
      * What started a run, as an approval's card says it: {@code {kind: "member"}}, {@code {kind: "timer", agentId,
      * timerId, label}} or {@code {kind: "agent", agentId, name}}, the sender named as it is now.
      */
+    /**
+     * Another desk's words among these rows (an answer that came after its wait, a message that started a run) are
+     * untrusted, and private when the run that wrote them read the member's private data there (section 14).
+     */
+    private Set<com.minimalistalliance.desk.agent.tool.Taint> deskMarks(java.util.Collection<MessageRow> rows) {
+        Set<com.minimalistalliance.desk.agent.tool.Taint> marks = java.util.EnumSet.noneOf(
+                com.minimalistalliance.desk.agent.tool.Taint.class);
+        for (MessageRow row : rows) {
+            Map<String, Object> o = row.origin() == null ? null : parse(row.origin());
+            if (o != null && "desk".equals(o.get("kind"))) {
+                marks.add(com.minimalistalliance.desk.agent.tool.Taint.U);
+                if (Boolean.TRUE.equals(o.get("private"))) {
+                    marks.add(com.minimalistalliance.desk.agent.tool.Taint.S);
+                }
+            }
+        }
+        return marks;
+    }
+
     private Map<String, Object> cardOrigin(String agentId, Map<String, Object> origin) {
         Map<String, Object> out = new LinkedHashMap<>();
         if (origin == null) {
             out.put("kind", "member");
+        } else if ("desk".equals(origin.get("kind"))) {
+            // A message from an agent on another of the member's desks: named as that desk said, plain text.
+            out.put("kind", "desk");
+            out.put("deskId", origin.get("deskId"));
+            out.put("agentId", origin.get("agentId"));
+            out.put("name", origin.get("agentName"));
+            // The message that started the run, which each of its calls names to deskd (To-do's source kind desk).
+            out.put("envelopeId", origin.get("envelopeId"));
         } else if ("timer".equals(origin.get("kind"))) {
             out.put("kind", "timer");
             out.put("agentId", agentId);
@@ -1357,13 +2040,43 @@ public final class AgentService {
 
     private void finish(String runId, MessageRow reply, ManagerAgent.RunResult result) {
         ActiveRun active = runs.get(runId);
+        if (reply != null && com.minimalistalliance.desk.agent.maia.MaiaAgent.is(reply.agentId())) {
+            MaiaHooks m = maia;
+            if (m != null) {
+                m.profile.runEnded(runId);
+                m.mode.runEnded();
+                if (result == null || result.state() != ManagerAgent.RunState.PAUSED) {
+                    m.away.runEnded(active == null ? null : active.origin(),
+                            result != null && result.state() == ManagerAgent.RunState.DONE, reply.id());
+                }
+                if (result != null && "limit".equals(result.errorDetail()) && maiaService != null) {
+                    // Her allowance is used up, or the member's own day cap on her is reached: the reply carries which
+                    // and when it resets, for the room's one line.
+                    com.minimalistalliance.desk.agent.provider.ma.MaiaServiceProvider.Limit limit = maiaService.limit();
+                    m.mode.limitOnReply(reply.id(), limit != null ? limit.details() : m.mode.capRefusal());
+                }
+            }
+        }
         if (active != null) {
             active.deltas().close();
         }
-        // What it left waiting expires (stopped), what it left running is interrupted, and the reply keeps its flags.
+        if (result != null && result.state() == ManagerAgent.RunState.PAUSED) {
+            // On the way down (durable runs): its reply stays streaming, its calls and cards as they are, and it picks
+            // up from its checkpoint at the next start.
+            runCalls.checkpoints().paused(runId, "restart");
+            approvals.ended(runId, true);
+            runs.remove(runId);
+            return;
+        }
+        // An answer one of its waits took that it never read goes to the thread, before its checkpoint goes.
+        waits.ended(runId);
+        // What it left running is interrupted, its calls' records and its approvals; what it left waiting expires
+        // (stopped), and the reply keeps its flags.
+        runCalls.ended(runId);
         approvals.ended(runId);
-        // deskd lets go of the run's browser context and any signed-in tab.
-        agentTools.runEnded(runId, reply.agentId());
+        // deskd lets go of the run's browser context and any signed-in tab; a run that ended done counts the Courier
+        // messages it was given as seen (§12).
+        agentTools.runEnded(runId, reply.agentId(), result != null && result.state() == ManagerAgent.RunState.DONE);
         String topic = CONVERSATION_PREFIX + reply.agentId();
         MessageRow done;
         if (result == null) {
@@ -1387,8 +2100,12 @@ public final class AgentService {
         } catch (SQLException e) {
             log.error("a reply couldn't be saved: {}", e.getClass().getSimpleName());
         }
+        runCalls.checkpoints().ended(runId, "failed".equals(done.state()) && "interrupted".equals(done.errorDetail())
+                ? "interrupted" : done.state(), done.errorDetail());
         runs.remove(runId);
         team.ended(active == null ? null : active.origin(), result);
+        // A message from another desk that this run didn't answer gets its failure back; then the next waiting.
+        desks.runEnded(active == null ? null : active.origin(), result);
         compactAfter(reply.agentId(), runId, active == null ? null : active.origin(), result);
         Map<String, Object> view = view(done);
         List<Map<String, Object>> proposals = team.proposalViews(List.of(done)).get(done.id());
@@ -1406,8 +2123,16 @@ public final class AgentService {
      */
     private void compactAfter(String agentId, String runId, Map<String, Object> origin,
             ManagerAgent.RunResult result) {
+        // Desk Maia's thread was too much for her service at once: compacted now if it has grown past the budget, so her
+        // next run fits (the contract's 413 too_large: "the desk compacts its thread first").
+        boolean tooLarge = result != null && com.minimalistalliance.desk.agent.maia.MaiaAgent.is(agentId)
+                && "too_large".equals(result.errorDetail()) && origin == null && team.adult();
+        if (tooLarge) {
+            compactor.afterRun(agentId, runId, runnerOf(agentId)::sideCall);
+            return;
+        }
         if (result == null || result.state() != ManagerAgent.RunState.DONE
-                || (origin != null && "agent".equals(origin.get("kind")))) {
+                || (origin != null && ("agent".equals(origin.get("kind")) || "desk".equals(origin.get("kind"))))) {
             return;
         }
         boolean member = Caller.isMemberAgent(agentId);
@@ -1482,14 +2207,26 @@ public final class AgentService {
         }
     }
 
-    /** Stops every run: SIGTERM's path. Replies end {@code stopped}. */
+    /**
+     * SIGTERM's path (a rollout, the desk's stop): every run pauses (durable runs). Its reply stays {@code streaming},
+     * its cards pending and its calls as they are, and it picks up from its checkpoint at the next start.
+     */
     public void stopAll() {
-        // Waits end with the process: their approvals expire with detail restart, as the next open would say.
-        approvals.ending(agentId -> true, "restart");
+        resumeStopping = true;
+        approvals.pausing();
         team.timers().close();
+        desks.close();
         staging.dropAll();
         compactor.stopAll();
-        runs.values().forEach(active -> active.run().stop());
+        // A run that can resume pauses; one that can't (attachments, past the cap, the kill switch) stops, as before, so
+        // deskd hears its end and lets go of what it held for it (Security's DR-L3).
+        runs.forEach((runId, active) -> {
+            if (resumable(runId)) {
+                active.run().pause();
+            } else {
+                active.run().stop();
+            }
+        });
         for (ActiveRun active : List.copyOf(runs.values())) {
             try {
                 active.run().result().get(5, TimeUnit.SECONDS);
@@ -1499,10 +2236,433 @@ public final class AgentService {
         }
     }
 
+    // ---------------------------------------------------------------- durable runs: pause and resume
+
+    /**
+     * How long a resume waits for deskd's hello before it picks runs up anyway: deskd connects within seconds of
+     * desk-agent's start, and a run that resumes without its tools would tell the model they're gone.
+     */
+    static final Duration RESUME_LINK_WAIT = Duration.ofSeconds(30);
+    /** Set on the way down: nothing resumes after it. */
+    private volatile boolean resumeStopping;
+    /** Agents whose run a restart left and that hasn't picked up yet: they count as running (DR-L6). */
+    private final Set<String> held = ConcurrentHashMap.newKeySet();
+    /** Runs ended at open that deskd must hear the end of once it's back: {runId, agentId} (DR-L3). */
+    private final List<String[]> endedAtOpen = new java.util.concurrent.CopyOnWriteArrayList<>();
+
+    /** Whether a run keeps a checkpoint it can resume from. */
+    private boolean resumable(String runId) {
+        try {
+            com.minimalistalliance.desk.agent.store.RunStore.Run row = runCalls.checkpoints().store().run(runId);
+            return resumeOn && row != null && row.resumable() && row.endedAt() == null;
+        } catch (SQLException | RuntimeException e) {
+            return false;
+        }
+    }
+    /**
+     * The kill switch ({@code /data/agent/resume-switch} saying {@code off}, read at start): runs keep no checkpoint, and
+     * a run a restart left ends {@code interrupted}, as before durable runs. On by default.
+     */
+    private volatile boolean resumeOn = true;
+    /** For tests: resumes wait for {@link #releaseResumes}, not for deskd's hello. */
+    private volatile CountDownLatch resumesHeld;
+
+    /** The kill switch: false before {@link #restore} ends runs a restart left as before durable runs. */
+    public void resumeRuns(boolean on) {
+        this.resumeOn = on;
+    }
+
+    /**
+     * Whether a kill switch file says {@code off}: a regular file, not followed if it's a link, whose first line is
+     * {@code off}. Missing, unreadable or anything else is on.
+     */
+    public static boolean switchedOff(java.nio.file.Path file) {
+        try {
+            if (!java.nio.file.Files.isRegularFile(file, java.nio.file.LinkOption.NOFOLLOW_LINKS)
+                    || java.nio.file.Files.size(file) > 64) {
+                return false;
+            }
+            return java.nio.file.Files.readString(file).strip().equals("off");
+        } catch (IOException | RuntimeException e) {
+            return false;
+        }
+    }
+
+    /** Whether runs resume after a restart (the kill switch). */
+    public boolean resumesRuns() {
+        return resumeOn;
+    }
+
+    /** For tests, before {@link #restore}: runs a restart left wait for {@link #releaseResumes} to pick up. */
+    public void holdResumes() {
+        resumesHeld = new CountDownLatch(1);
+    }
+
+    /** For tests: lets held resumes go. */
+    public void releaseResumes() {
+        CountDownLatch held = resumesHeld;
+        if (held != null) {
+            held.countDown();
+        }
+    }
+    /** The resume's thread, for tests that wait for it. */
+    private volatile Thread resumer;
+
+    /** The runs a restart left that can resume, read back; empty if the store can't say. */
+    private List<com.minimalistalliance.desk.agent.run.RunCheckpoints.Loaded> loadResumable() {
+        try {
+            anyResumed = runCalls.checkpoints().store().anyResumed();
+            // An answer a wait of a run that won't resume took goes to the thread before the run's waits go.
+            for (com.minimalistalliance.desk.agent.store.RunStore.Run row : runCalls.checkpoints().store().unended()) {
+                waits.ended(row.runId(), true);
+            }
+            runCalls.checkpoints().store().endUnresumable(clock.millis());
+            if (!resumeOn) {
+                // The kill switch: each ends interrupted at open, its calls and cards swept as before durable runs.
+                for (com.minimalistalliance.desk.agent.store.RunStore.Run row : runCalls.checkpoints().store()
+                        .resumable()) {
+                    runCalls.checkpoints().store().interruptReply(row.messageId());
+                    waits.ended(row.runId(), true);
+                    runCalls.checkpoints().ended(row.runId(), "interrupted", "off");
+                    endedAtOpen.add(new String[] {row.runId(), row.agentId()});
+                }
+                return List.of();
+            }
+            return runCalls.checkpoints().resumable(runCalls.store());
+        } catch (SQLException e) {
+            log.warn("runs to resume weren't read: {}", e.getClass().getSimpleName());
+            return List.of();
+        }
+    }
+
+    /**
+     * At open, before the timers and anyone's call: each run that resumes gets its run context back (its taint as
+     * kept) and its approvals live again, so a pending card is answerable at once; its agent counts as working, so no
+     * other run of it starts first; and its timer stays {@code running}.
+     */
+    private Map<String, com.minimalistalliance.desk.agent.tool.RunContext> holdResuming(
+            List<com.minimalistalliance.desk.agent.run.RunCheckpoints.Loaded> resuming) {
+        Map<String, com.minimalistalliance.desk.agent.tool.RunContext> contexts = new LinkedHashMap<>();
+        Set<String> timers = new HashSet<>();
+        for (com.minimalistalliance.desk.agent.run.RunCheckpoints.Loaded loaded : resuming) {
+            if (loaded.broken()) {
+                continue;
+            }
+            String agentId = loaded.row().agentId();
+            Map<String, Object> origin = loaded.start().origin();
+            Caller owner = Caller.isMemberAgent(agentId)
+                    ? new Caller(Caller.MEMBER_KIND, agentId, null, List.of(), false) : Caller.OWNER;
+            // Its taint as kept, and its reply's own marks (written before each step's text, DS-M1): never less.
+            Set<com.minimalistalliance.desk.agent.tool.Taint> taint =
+                    java.util.EnumSet.noneOf(com.minimalistalliance.desk.agent.tool.Taint.class);
+            taint.addAll(loaded.taint());
+            try {
+                MessageRow reply = team.teamStore().message(loaded.row().messageId());
+                if (reply != null) {
+                    taint.addAll(approvals.carried(List.of(reply)));
+                }
+            } catch (SQLException e) {
+                taint.add(com.minimalistalliance.desk.agent.tool.Taint.U);
+                taint.add(com.minimalistalliance.desk.agent.tool.Taint.S);
+            }
+            com.minimalistalliance.desk.agent.tool.RunContext context = com.minimalistalliance.desk.agent.tool.RunContext
+                    .of(loaded.row().runId(), agentId, owner, cardOrigin(agentId, origin), loaded.row().messageId(),
+                            taint, null);
+            try {
+                approvals.resume(context, loaded.book(), loaded.pendingSince(), loaded.counted());
+            } catch (SQLException e) {
+                log.warn("a run's approvals weren't restored: {}", e.getClass().getSimpleName());
+                continue;
+            }
+            contexts.put(loaded.row().runId(), context);
+            held.add(agentId);
+            if (origin != null && "timer".equals(origin.get("kind")) && origin.get("timerId") instanceof String id) {
+                timers.add(id);
+            }
+        }
+        team.timers().resuming(timers);
+        return contexts;
+    }
+
+    /**
+     * Picks each run up, on a thread of its own, once deskd has said hello (or {@link #RESUME_LINK_WAIT} passed); a run
+     * that can't resume, or whose checkpoint doesn't read whole, ends {@code interrupted} with what it had, as before.
+     */
+    private void resumeLater(List<com.minimalistalliance.desk.agent.run.RunCheckpoints.Loaded> resuming,
+            Map<String, com.minimalistalliance.desk.agent.tool.RunContext> contexts) {
+        if (resuming.isEmpty() && endedAtOpen.isEmpty()) {
+            return;
+        }
+        CountDownLatch gate = resumesHeld;
+        resumer = Thread.ofVirtual().name("run-resume").start(() -> {
+            if (gate != null) {
+                awaitQuietly(gate);
+            }
+            long until = System.nanoTime() + (gate != null ? 0 : RESUME_LINK_WAIT.toNanos());
+            while (!agentTools.linked() && System.nanoTime() < until && !resumeStopping) {
+                try {
+                    Thread.sleep(50);
+                } catch (InterruptedException e) {
+                    return;
+                }
+            }
+            for (String[] ended : endedAtOpen) {
+                agentTools.runEnded(ended[0], ended[1]);
+            }
+            endedAtOpen.clear();
+            for (com.minimalistalliance.desk.agent.run.RunCheckpoints.Loaded loaded : resuming) {
+                if (resumeStopping) {
+                    return;
+                }
+                if (loaded.broken()) {
+                    continue;
+                }
+                com.minimalistalliance.desk.agent.tool.RunContext context = contexts.get(loaded.row().runId());
+                String why = context == null ? "checkpoint" : resumeRun(loaded, context);
+                if (why != null) {
+                    abandon(loaded, why);
+                }
+            }
+        });
+    }
+
+    /** For tests: waits for the runs a restart left to be picked up (or ended). */
+    public void awaitResumes(Duration within) throws InterruptedException {
+        Thread t = resumer;
+        if (t != null) {
+            t.join(within);
+        }
+    }
+
+    /** One run picked up from its checkpoint. @return null once it runs, or why it can't */
+    private String resumeRun(com.minimalistalliance.desk.agent.run.RunCheckpoints.Loaded loaded,
+            com.minimalistalliance.desk.agent.tool.RunContext context) {
+        String agentId = loaded.row().agentId();
+        String replyId = loaded.row().messageId();
+        com.minimalistalliance.desk.agent.run.Resume.Start start = loaded.start();
+        Map<String, Object> origin = start.origin();
+        boolean member = Caller.isMemberAgent(agentId);
+        boolean answering = origin != null && "agent".equals(origin.get("kind"));
+        ManagerAgent runner = runnerOf(agentId);
+        CountDownLatch published = new CountDownLatch(1);
+        Deltas[] deltas = new Deltas[1];
+        ManagerAgent.Run run;
+        MessageRow reply;
+        com.minimalistalliance.desk.agent.run.Resume resume;
+        try {
+            reply = team.teamStore().message(replyId);
+            if (reply == null || !"streaming".equals(reply.state()) || store.agent(agentId) == null) {
+                return "gone";
+            }
+            if (!access.chosen(agentId)) {
+                return "setup";
+            }
+            resume = com.minimalistalliance.desk.agent.run.RunCheckpoints.withReply(loaded.resume(), reply.text(),
+                    chipsOf(reply.tools()));
+            ManagerAgent.RunSetup setup = member
+                    ? new ManagerAgent.RunSetup(MEMBER_INSTRUCTIONS, ManagerAgent.Tools.NONE)
+                    : maiaSetup(agentId, origin);
+            setup = agentTools.wrap(setup, agentId, member);
+            // Its taint as kept, live: what memory adds now joins it, and nothing of it is ever taken away.
+            setup = new ManagerAgent.RunSetup(setup.instructions(), setup.tools(), start.maxMicroUsd(),
+                    context.taint(), null).withNote(setup.note());
+            if (!answering) {
+                setup = memories.withMemory(setup, agentId, Set.of(), savedBy(loaded.row().runId()));
+            }
+            // Its instructions as they are now, its memory lines included (Security's DR-L7), with the cap it started with.
+            setup = new ManagerAgent.RunSetup(setup.instructions(), setup.tools(), start.maxMicroUsd(), setup.taint(),
+                    null).withNote(setup.note());
+            setup = setup.withGating(new ManagerAgent.Gating(toolPolicy, approvals, id -> context, runCalls));
+            String topic = CONVERSATION_PREFIX + agentId;
+            startLock.lock();
+            try {
+                if (resumeStopping) {
+                    return "restart";
+                }
+                if (!member && !team.adult()) {
+                    return "age_band";
+                }
+                if (member && purging.contains(agentId)) {
+                    return "gone";
+                }
+                // Read again under the lock: a delete or a purge may have come since (Security's DR-L6).
+                MessageRow still = team.teamStore().message(replyId);
+                if (store.agent(agentId) == null || still == null || !"streaming".equals(still.state())) {
+                    return "gone";
+                }
+                DeltaSink sink = piece -> {
+                    awaitQuietly(published);
+                    deltas[0].add(piece);
+                };
+                run = runner.resume(resume, sink, gated(setup, published));
+                deltas[0] = new Deltas(piece -> topics.publish(topic, "delta",
+                        Map.of("messageId", replyId, "runId", run.runId(), "text", piece)), resume.text());
+                runs.put(run.runId(), new ActiveRun(agentId, replyId, run, deltas[0], origin,
+                        chainOf(start.chain(), agentId)));
+            } finally {
+                startLock.unlock();
+            }
+        } catch (AgentException e) {
+            return e.code() == AgentException.Code.NO_KEY ? "no_key" : "busy";
+        } catch (SQLException | RuntimeException e) {
+            log.warn("a run wasn't resumed: {}", e.getClass().getSimpleName());
+            return "internal";
+        }
+        try {
+            runCalls.checkpoints().store().resumed(run.runId(), replyId, clock.millis());
+            anyResumed = true;
+        } catch (SQLException e) {
+            log.warn("a resume wasn't counted: {}", e.getClass().getSimpleName());
+        }
+        audit("system", "run.resume", "agent:" + agentId + " run:" + run.runId(), "step:" + resume.steps()
+                + (resume.pending() == null ? "" : ":in"));
+        // The reply again, its text so far and that it picked up, before any of its new deltas.
+        topics.publish(CONVERSATION_PREFIX + agentId, "message", Map.of("message", view(reply)));
+        publishState(agentId);
+        published.countDown();
+        MessageRow streaming = reply;
+        held.remove(agentId);
+        run.result().whenComplete((result, failure) -> finish(run.runId(), streaming, result));
+        return null;
+    }
+
+    /**
+     * A run that can't resume ends {@code interrupted} with what it had, as every run did before durable runs: its
+     * cards expire ({@code restart}), what it left in flight is interrupted with a trace, its reply ends {@code failed},
+     * {@code unavailable}, {@code interrupted}, and its timer says it didn't finish.
+     */
+    private void abandon(com.minimalistalliance.desk.agent.run.RunCheckpoints.Loaded loaded, String why) {
+        String runId = loaded.row().runId();
+        String agentId = loaded.row().agentId();
+        held.remove(agentId);
+        boolean gone;
+        try {
+            gone = store.agent(agentId) == null;
+        } catch (SQLException e) {
+            gone = false;
+        }
+        if (gone) {
+            // Nothing is written for an agent that's gone (a purge, a delete): no marks, no cards (DR-L6).
+            approvals.forget(runId);
+        } else {
+            approvals.ending(id -> id.equals(agentId), "restart");
+            approvals.ended(runId);
+        }
+        runCalls.ended(runId);
+        waits.ended(runId, true);
+        // deskd lets go of what it held for the run: its browser context, a signed-in tab (DR-L3).
+        agentTools.runEnded(runId, agentId);
+        try {
+            MessageRow reply = team.teamStore().message(loaded.row().messageId());
+            if (reply != null && "streaming".equals(reply.state())) {
+                MessageRow done = new MessageRow(reply.id(), reply.agentId(), "assistant", reply.text(), reply.at(),
+                        runId, reply.badge(), null, null, null, "failed", "unavailable", "interrupted");
+                if (reply.tools() != null) {
+                    done = done.withTools(reply.tools());
+                }
+                store.updateMessage(done);
+                topics.publish(CONVERSATION_PREFIX + agentId, "message", Map.of("message", view(done)));
+                Map<String, Object> origin = loaded.start() == null ? null : loaded.start().origin();
+                team.ended(origin, new ManagerAgent.RunResult(runId, ManagerAgent.RunState.FAILED, reply.text(), null,
+                        null, null, null, "unavailable", "interrupted"));
+            }
+        } catch (SQLException | RuntimeException e) {
+            log.warn("a run that couldn't resume wasn't ended: {}", e.getClass().getSimpleName());
+        }
+        runCalls.checkpoints().ended(runId, "interrupted", why);
+        audit("system", "run.interrupt", "agent:" + agentId + " run:" + runId, why);
+        publishState(agentId);
+    }
+
+    /** How many memory lines the run saved before the restart, so its cap counts on. */
+    private int savedBy(String runId) {
+        try {
+            return (int) runCalls.store().ofRun(runId).stream()
+                    .filter(c -> Memories.TOOL.equals(c.tool()) && "done".equals(c.state())).count();
+        } catch (SQLException e) {
+            return Memories.SAVES_PER_RUN;
+        }
+    }
+
+    private static List<Map<String, Object>> chipsOf(String json) {
+        List<Map<String, Object>> chips = new ArrayList<>();
+        if (json == null) {
+            return chips;
+        }
+        for (Object o : parseList(json)) {
+            if (o instanceof Map<?, ?> m) {
+                Map<String, Object> chip = new LinkedHashMap<>();
+                m.forEach((k, v) -> chip.put(String.valueOf(k), v));
+                chips.add(chip);
+            }
+        }
+        return chips;
+    }
+
+    private static Map<String, Object> chainMap(Team.Chain chain) {
+        if (chain == null) {
+            return null;
+        }
+        Map<String, Object> m = new LinkedHashMap<>();
+        m.put("id", chain.id());
+        m.put("depth", chain.depth());
+        m.put("agents", chain.agents());
+        return m;
+    }
+
+    private static Team.Chain chainOf(Map<String, Object> m, String agentId) {
+        if (m == null || !(m.get("id") instanceof String id) || !(m.get("agents") instanceof List<?> agents)) {
+            return Team.Chain.start(agentId);
+        }
+        return new Team.Chain(id, m.get("depth") instanceof Number n ? n.intValue() : 0,
+                agents.stream().map(String::valueOf).toList());
+    }
+
+    /** What the agent's run waits on outside it now ({@code desk}), or null. */
+    private String waitingOn(String agentId) {
+        for (Map.Entry<String, ActiveRun> entry : runs.entrySet()) {
+            if (entry.getValue().agentId().equals(agentId)) {
+                String kind = waits.waitingOn(entry.getKey());
+                if (kind != null) {
+                    return kind;
+                }
+            }
+        }
+        return null;
+    }
+
+    /** A reply whose run picked up after a restart says how often: {@code resumed}. */
+    private void resumedInto(Map<String, Object> view, MessageRow row) {
+        if (!anyResumed || !"assistant".equals(row.role())) {
+            return;
+        }
+        try {
+            Integer n = runCalls.checkpoints().store().resumes(List.of(row.id())).get(row.id());
+            if (n != null && n > 0) {
+                view.put("resumed", n);
+            }
+        } catch (SQLException e) {
+            log.warn("a reply's resumes weren't read: {}", e.getClass().getSimpleName());
+        }
+    }
+
+    private void audit(String actor, String action, String target, String decision) {
+        try {
+            audit.append(AuditLog.Entry.of(actor, action, target, decision));
+        } catch (SQLException | RuntimeException e) {
+            log.warn("an audit row wasn't written: {} {}", action, e.getClass().getSimpleName());
+        }
+    }
+
     // ---------------------------------------------------------------- keys
 
     private Map<String, Object> keyList() throws SQLException {
         List<Map<String, Object>> list = new ArrayList<>();
+        // The member's MA credits first, when offered: a helper can run on them with no key of the member's.
+        Map<String, Object> credits = creditsKeyView();
+        if (credits != null) {
+            list.add(credits);
+        }
         for (KeyRow row : store.keys()) {
             list.add(keyView(row));
         }
@@ -1540,7 +2700,7 @@ public final class AgentService {
         String keyId = "k-" + RunIds.next(clock);
         try {
             ChatProvider provider = providers.get(stringOr(p, "provider", ""));
-            if (provider == null) {
+            if (provider == null || ProviderId.MA.equals(provider.id()) || ProviderId.MA_CREDITS.equals(provider.id())) {
                 throw RpcError.of("bad_request", "reason", "key_malformed", "detail", "provider");
             }
             // The shape first, as a key in none says nothing of whose it is.
@@ -1614,23 +2774,27 @@ public final class AgentService {
     /**
      * Whether the key starts with another known provider's prefix rather than the chosen one's, so it would go to the
      * wrong provider's API in the check that follows. The longest prefix that matches says whose it is: {@code sk-ant-} is
-     * Anthropic's, though it starts with OpenAI's {@code sk-}. A key with no known prefix is left to the provider's check.
-     * Only the key's first bytes are read, in place.
+     * Anthropic's, though it starts with OpenAI's {@code sk-}. Two providers sharing the longest that matches (OpenAI's and
+     * Moonshot AI's {@code sk-}) are both its possible owners; a provider's own longer prefixes ({@code sk-proj-} and the
+     * like, {@link com.minimalistalliance.desk.agent.provider.ProviderInfo#ownPrefixes}) count too, so an OpenAI project
+     * key picked as Moonshot's is refused. A key with no known prefix is left to the provider's check. Only the key's
+     * first bytes are read, in place.
      */
     private boolean belongsToAnother(ChatProvider chosen, java.nio.ByteBuffer secret) {
         int longest = 0;
         boolean chosenHasIt = false;
         for (ChatProvider provider : providers.all()) {
-            String prefix = provider.info().keyPrefix();
-            if (prefix == null || prefix.isEmpty() || !startsWith(secret, prefix)) {
-                continue;
-            }
-            if (prefix.length() > longest) {
-                longest = prefix.length();
-                chosenHasIt = false;
-            }
-            if (prefix.length() == longest && provider.id().equals(chosen.id())) {
-                chosenHasIt = true;
+            for (String prefix : provider.info().prefixes()) {
+                if (!startsWith(secret, prefix)) {
+                    continue;
+                }
+                if (prefix.length() > longest) {
+                    longest = prefix.length();
+                    chosenHasIt = false;
+                }
+                if (prefix.length() == longest && provider.id().equals(chosen.id())) {
+                    chosenHasIt = true;
+                }
             }
         }
         return longest > 0 && !chosenHasIt;
@@ -1655,6 +2819,10 @@ public final class AgentService {
      */
     private Map<String, Object> keyDelete(Map<String, Object> p) throws RpcError, SQLException {
         String keyId = string(p, "keyId");
+        if (KeyRing.CREDITS.equals(keyId) || KeyRing.COMPANY.equals(keyId)) {
+            // Not a key of the member's: nothing to delete. A helper moves off MA's credits by binding another key.
+            throw RpcError.of("forbidden", "reason", "credits");
+        }
         if (store.key(keyId) != null) {
             List<String> unbound = store.deleteKey(keyId);
             for (String agentId : unbound) {
@@ -1691,6 +2859,18 @@ public final class AgentService {
 
     private Map<String, Object> keyModels(Map<String, Object> p) throws RpcError, SQLException {
         String keyId = string(p, "keyId");
+        if (KeyRing.CREDITS.equals(keyId) && helperService != null && !onGuildDesk && helperService.offered()) {
+            // One choice: Minimalist Alliance picks the model that drives a desk best.
+            Map<String, Object> m = new LinkedHashMap<>();
+            m.put("id", com.minimalistalliance.desk.agent.provider.ma.HelperServiceProvider.AUTO);
+            m.put("label", "Picked by Minimalist Alliance");
+            m.put("inputMicroUsdPerMTok", null);
+            m.put("outputMicroUsdPerMTok", null);
+            m.put("free", false);
+            m.put("tools", true);
+            m.put("credits", true);
+            return Map.of("models", List.of(m));
+        }
         KeyRow row = store.key(keyId);
         if (row == null) {
             throw RpcError.notFound("key");
@@ -1843,6 +3023,8 @@ public final class AgentService {
 
     /** deskd's {@code desk.guild.set}: the guild's limits on members' agents, from its settings. A bad one changes nothing. */
     private Map<String, Object> guildSet(Map<String, Object> p) throws RpcError {
+        // Only a Guild Desk has guild settings: nothing is done without asking there (the draft ADR's §15 rule 8).
+        access.guildDesk(true);
         GuildLimits next = GuildLimits.parse(p);
         if (!next.equals(guild)) {
             guild = next;
@@ -1932,6 +3114,7 @@ public final class AgentService {
             }
             memberAgents.remove(memberId);
             limits.removeAgent(memberId);
+            access.forget(memberId);
             if (purged.agents() + purged.messages() + purged.memories() + usage + staged > 0) {
                 try {
                     audit.append(AuditLog.Entry.of("system", "member.purge", "agent:" + memberId, "ok"));
@@ -2027,7 +3210,29 @@ public final class AgentService {
     /** The {@code agent.state} snapshot as this caller sees it. */
     public Map<String, Object> stateSnapshot(Caller caller) {
         try {
-            return Map.of("agents", agents(caller, false), "caps", team.capsView());
+            Map<String, Object> out = new LinkedHashMap<>();
+            out.put("agents", agents(caller, false));
+            out.put("caps", team.capsView());
+            if (caller.isOwner()) {
+                // How many offers from the member's other desks wait here (section 14).
+                out.put("deskOffers", desks.offersWaiting());
+            }
+            // Maia while the member is away (Phase 2): for deskd's hold, its check-in wake and the bell. Never content.
+            MaiaHooks m = maia;
+            if (m != null && (caller.isOwner() || caller.isSystem())) {
+                Map<String, Object> away = new LinkedHashMap<>(m.away.state());
+                // The shield's word on the bell (API.md §23): Phase 2's questions and finishing through its quiet hours
+                // and day's bells, and the interrupt-level items it holds. Absent while it's off: deskd rings as before.
+                if (Boolean.TRUE.equals(away.get("on"))) {
+                    Map<String, Object> ring = m.mode.shield().ring(away.get("asks") instanceof Number a ? a.intValue()
+                            : 0, away.get("done") instanceof Number d ? d.intValue() : 0, clock.millis());
+                    if (ring != null) {
+                        away.put("ring", ring);
+                    }
+                }
+                out.put("maiaAway", away);
+            }
+            return out;
         } catch (SQLException e) {
             return Map.of("agents", List.of());
         }
@@ -2042,6 +3247,14 @@ public final class AgentService {
     public boolean knows(String topic, Caller caller) {
         if (topic.equals(STATE_TOPIC)) {
             return true;
+        }
+        if (topic.equals(com.minimalistalliance.desk.agent.desks.DeskMessages.OUTBOX_TOPIC)) {
+            // The office's carrier: the desk owner's alone.
+            return caller.isOwner();
+        }
+        if (topic.equals(com.minimalistalliance.desk.agent.maia.MaiaMode.TOPIC)) {
+            // The room (Maia Mode): the desk owner's alone.
+            return caller.isOwner() && maia != null;
         }
         if (!topic.startsWith(CONVERSATION_PREFIX) || caller.isSystem() || (caller.isMember() && caller.teen())) {
             return false;
@@ -2073,6 +3286,12 @@ public final class AgentService {
     }
 
     public java.util.function.Supplier<Map<String, Object>> snapshotFor(String topic, Caller caller) {
+        if (topic.equals(com.minimalistalliance.desk.agent.desks.DeskMessages.OUTBOX_TOPIC)) {
+            return desks::outboxSnapshot;
+        }
+        if (topic.equals(com.minimalistalliance.desk.agent.maia.MaiaMode.TOPIC)) {
+            return () -> maiaHooks().mode.room().snapshot();
+        }
         return topic.equals(STATE_TOPIC)
                 ? () -> stateSnapshot(caller)
                 : () -> conversationSnapshot(topic.substring(CONVERSATION_PREFIX.length()));
@@ -2112,6 +3331,7 @@ public final class AgentService {
 
         @Override
         public void waiting(String agentId, String runId, String messageId) {
+            runCalls.checkpoints().state(runId, approvals.pendingOf(runId).isEmpty() ? "running" : "waiting_approval");
             ActiveRun active = runs.get(runId);
             if (active == null) {
                 return;
@@ -2137,6 +3357,58 @@ public final class AgentService {
 
     // ---------------------------------------------------------------- the team's way back in
 
+    /** What messages between the member's desks need of the service (section 14). */
+    private final class DesksHost implements com.minimalistalliance.desk.agent.desks.DeskMessages.Host {
+
+        @Override
+        public String startAnswering(String agentId, String text, Map<String, Object> origin)
+                throws RpcError, SQLException {
+            if (store.agent(agentId) == null || Caller.isMemberAgent(agentId)
+                    || com.minimalistalliance.desk.agent.maia.MaiaAgent.is(agentId)) {
+                throw RpcError.notFound("agent");
+            }
+            return startRun(agentId, text, origin, Team.Chain.start(agentId)).run().runId();
+        }
+
+        @Override
+        public void post(String agentId, String text, Map<String, Object> origin) throws SQLException {
+            if (agentId == null || store.agent(agentId) == null) {
+                return;
+            }
+            long at = clock.millis();
+            MessageRow row = MessageRow.from(RunIds.next(clock).toString(), agentId, text, at,
+                    new String(Json.bytes(origin), java.nio.charset.StandardCharsets.UTF_8));
+            store.addMessages(List.of(row), Map.of());
+            store.addUnseen(agentId);
+            topics.publish(CONVERSATION_PREFIX + agentId, "message", Map.of("message", view(row)));
+            publishState(agentId);
+            MaiaHooks m = maia;
+            if (m != null && com.minimalistalliance.desk.agent.maia.MaiaAgent.is(agentId)) {
+                m.posted(row.id(), origin, text);
+            }
+        }
+
+        @Override
+        public String agentName(String agentId) throws SQLException {
+            AgentRow row = store.agent(agentId);
+            return row == null ? null : row.name();
+        }
+
+        @Override
+        public void stateChanged(String agentId) {
+            if (agentId == null) {
+                publishState();
+            } else {
+                publishState(agentId);
+            }
+        }
+
+        @Override
+        public void outboxChanged(Map<String, Object> snapshot) {
+            topics.publish(com.minimalistalliance.desk.agent.desks.DeskMessages.OUTBOX_TOPIC, "snapshot", snapshot);
+        }
+    }
+
     /** What {@link Team} calls: runs it starts, and what it changed. */
     private final class TeamHost implements Team.Host {
 
@@ -2159,7 +3431,8 @@ public final class AgentService {
 
         @Override
         public boolean running(String agentId) {
-            return runs.values().stream().anyMatch(active -> active.agentId().equals(agentId));
+            // A run a restart left counts until it has picked up or ended (durable runs, DR-L6).
+            return held.contains(agentId) || runs.values().stream().anyMatch(active -> active.agentId().equals(agentId));
         }
 
         @Override
@@ -2246,7 +3519,26 @@ public final class AgentService {
     }
 
     private ManagerAgent.Binding binding(AgentRow row) {
-        return new ManagerAgent.Binding(row.keyId(), providerId(row.provider()), row.model(), MAX_OUTPUT_TOKENS);
+        boolean company = ProviderId.MA.id().equals(row.provider());
+        return new ManagerAgent.Binding(row.keyId(), company ? ProviderId.MA : providerId(row.provider()), row.model(),
+                company ? com.minimalistalliance.desk.agent.provider.ma.MaiaServiceProvider.OUTPUT_TOKENS
+                        : MAX_OUTPUT_TOKENS);
+    }
+
+    /**
+     * Desk Maia's row bound to Minimalist Alliance's service ({@code KeyRing.COMPANY}, task {@code turn}), as it must be:
+     * set if it's anything else, and the row as it is now.
+     */
+    private AgentRow companyBound(AgentRow row) throws SQLException {
+        if (KeyRing.COMPANY.equals(row.keyId()) && ProviderId.MA.id().equals(row.provider())
+                && com.minimalistalliance.desk.agent.provider.ma.MaiaServiceProvider.TURN.equals(row.model())) {
+            return row;
+        }
+        store.setBinding(row.id(), KeyRing.COMPANY, ProviderId.MA.id(),
+                com.minimalistalliance.desk.agent.provider.ma.MaiaServiceProvider.TURN);
+        audit("system", "agent.bind", "agent:" + row.id() + " key:" + KeyRing.COMPANY, "company");
+        AgentRow now = store.agent(row.id());
+        return now == null ? row : now;
     }
 
     private ProviderId providerId(String id) {
@@ -2390,5 +3682,722 @@ public final class AgentService {
         } catch (InterruptedException e) {
             Thread.currentThread().interrupt();
         }
+    }
+
+    // ---------------------------------------------------------------- Maia Mode (API.md §23)
+
+    /** Desk Maia's pieces on this desk, made once. */
+    private final class MaiaHooks implements com.minimalistalliance.desk.agent.maia.MaiaMode.Host,
+            com.minimalistalliance.desk.agent.maia.CodeCalls {
+        final com.minimalistalliance.desk.agent.maia.MaiaMode mode;
+        final com.minimalistalliance.desk.agent.maia.MaiaProfile profile;
+        final com.minimalistalliance.desk.agent.maia.Notes notes;
+        final com.minimalistalliance.desk.agent.maia.TodoFiler todos;
+        final com.minimalistalliance.desk.agent.maia.TeamView team;
+        /** Maia Mode Phase 2: she keeps going while the member is away (draft-desk-maia.md decision 12). */
+        final com.minimalistalliance.desk.agent.maia.Away away;
+
+        MaiaHooks(java.nio.file.Path dataDir) {
+            com.minimalistalliance.desk.agent.maia.MaiaStore maiaStore =
+                    new com.minimalistalliance.desk.agent.maia.MaiaStore(store, clock);
+            this.mode = new com.minimalistalliance.desk.agent.maia.MaiaMode(maiaStore, clock, dataDir, this,
+                    (actor, action, target, decision) -> {
+                        try {
+                            audit.append(AuditLog.Entry.of(actor, action, target, decision));
+                        } catch (SQLException | RuntimeException e) {
+                            log.warn("Maia Mode's audit row wasn't written: {}", e.getClass().getSimpleName());
+                        }
+                    }, room -> topics.publish(com.minimalistalliance.desk.agent.maia.MaiaMode.TOPIC, "snapshot", room));
+            java.util.function.Function<Integer, List<MessageRow>> thread = n -> {
+                try {
+                    return store.messages(com.minimalistalliance.desk.agent.maia.MaiaAgent.ID, n);
+                } catch (SQLException e) {
+                    throw new IllegalStateException(e);
+                }
+            };
+            this.profile = new com.minimalistalliance.desk.agent.maia.MaiaProfile(mode, thread);
+            this.notes = new com.minimalistalliance.desk.agent.maia.Notes(mode, this, thread, this::postAsMaia);
+            this.todos = new com.minimalistalliance.desk.agent.maia.TodoFiler(mode, this, access::allows, id -> {
+                try {
+                    return !Caller.isMemberAgent(id) && store.agent(id) != null;
+                } catch (SQLException e) {
+                    return false;
+                }
+            });
+            this.team = new com.minimalistalliance.desk.agent.maia.TeamView(store, ledger, clock, limits::zone)
+                    .limits(new com.minimalistalliance.desk.agent.maia.TeamView.Limits() {
+                        @Override
+                        public com.minimalistalliance.desk.agent.limits.LimitPolicy policy(String agentId) {
+                            return limits.policyFor(agentId);
+                        }
+
+                        @Override
+                        public long briefCap(String agentId) {
+                            return AgentService.this.team.briefCap(agentId);
+                        }
+                    })
+                    .home(mode::briefSpend)
+                    .credits(creditDays::since);
+            // Her held brief's card, as her held notes' question: a message of hers that code wrote (Wallet).
+            mode.poster(this::postAsMaia);
+            mode.notes(notes);
+            mode.todos(todos);
+            com.minimalistalliance.desk.agent.maia.AwayStore awayStore =
+                    new com.minimalistalliance.desk.agent.maia.AwayStore(store);
+            this.away = new com.minimalistalliance.desk.agent.maia.Away(awayStore, clock, new AwayHost());
+            mode.away(away);
+            profile.awayTools(new com.minimalistalliance.desk.agent.maia.MaiaProfile.AwayTools() {
+                @Override
+                public String checkIn(Object minutes) throws SQLException {
+                    return away.checkIn(minutes);
+                }
+
+                @Override
+                public com.minimalistalliance.desk.agent.provider.ToolResult read(
+                        com.minimalistalliance.desk.agent.provider.ToolCall call,
+                        com.minimalistalliance.desk.agent.tool.RunContext run) throws SQLException {
+                    return maiaRead(call, run);
+                }
+            });
+            desks.maiaReports(new MaiaReportsHost(awayStore));
+            agentTools.maia(profile, com.minimalistalliance.desk.agent.maia.MaiaProfile.AREAS);
+            desks.inRunAnswers((run, deskId, agentName, isPrivate, failed) -> {
+                if (com.minimalistalliance.desk.agent.maia.MaiaAgent.is(run.agentId())
+                        && !run.runId().startsWith("read-")) {
+                    profile.answeredInRun(run.runId(), deskId, isPrivate);
+                    if (isPrivate && run.messageId() != null) {
+                        // Kept on her reply, so her later runs carry where it came from (Security's DMA-L1).
+                        mode.originOnReply(run.messageId(), deskId);
+                    }
+                    mode.briefAnswered(deskId, deskNameOf(deskId), agentName, null);
+                    away.report(deskId, agentName, null, null, null, true);
+                }
+            });
+        }
+
+        /**
+         * An answer to one of her briefs came to her thread after the wait: a result for the list, and the report goes to
+         * code, which files it or keeps it for her next run (Maia Mode Phase 2, {@code Away.report}).
+         */
+        void posted(String messageId, Map<String, Object> origin, String text) {
+            if (origin != null && "desk".equals(origin.get("kind")) && origin.get("deskId") instanceof String deskId
+                    && ("answer".equals(origin.get("role")) || "notice".equals(origin.get("role")))) {
+                String agentName = origin.get("agentName") instanceof String n ? n : null;
+                if ("answer".equals(origin.get("role"))) {
+                    com.minimalistalliance.desk.agent.maia.Away.Outcome o = away.report(deskId, agentName, text,
+                            messageId, origin.get("replyTo") instanceof String r ? r : null, false);
+                    // Filed by code: the list's result is code's own (Away.Host.result); else the list says it now.
+                    if (o != com.minimalistalliance.desk.agent.maia.Away.Outcome.FILED) {
+                        // The report's code-parsed status, for the focus shield (needs a decision, blocked).
+                        com.minimalistalliance.desk.agent.maia.Reports.Report r =
+                                com.minimalistalliance.desk.agent.maia.Reports.parseCompact(text);
+                        // Its status for the shield; its summary, question and write-up for the decision tray.
+                        mode.reportAnswered(deskId, deskNameOf(deskId), agentName, messageId, r);
+                    }
+                } else {
+                    mode.briefAnswered(deskId, deskNameOf(deskId), agentName, null);
+                    // The desk couldn't answer: a report she reads soon (status failed), and the brief is closed.
+                    away.report(deskId, agentName, null, messageId, origin.get("replyTo") instanceof String r ? r : null,
+                            false);
+                }
+            }
+        }
+
+        /** What {@code Away} needs of the service. */
+        private final class AwayHost implements com.minimalistalliance.desk.agent.maia.Away.Host {
+            @Override
+            public String startHers(String text, Map<String, Object> origin) throws RpcError, SQLException {
+                mode.requireActive();
+                mode.requireDisclosure();
+                return startRun(com.minimalistalliance.desk.agent.maia.MaiaAgent.ID, text, origin,
+                        Team.Chain.start(com.minimalistalliance.desk.agent.maia.MaiaAgent.ID)).run().runId();
+            }
+
+            @Override
+            public boolean running() {
+                return runs.values().stream()
+                        .anyMatch(a -> com.minimalistalliance.desk.agent.maia.MaiaAgent.is(a.agentId()));
+            }
+
+            @Override
+            public String postAsMaia(String text, Map<String, Object> extras) throws SQLException {
+                return MaiaHooks.this.postAsMaia(text, extras);
+            }
+
+            @Override
+            public Map<String, Object> openChoices(String[] messageIdOut) throws SQLException {
+                return mode.openChoicesOf(messageIdOut);
+            }
+
+            @Override
+            public void moveChoices(String messageId) throws SQLException {
+                mode.moveChoices(messageId);
+            }
+
+            @Override
+            public boolean active() {
+                return mode.active() && mode.disclosed();
+            }
+
+            @Override
+            public boolean allowanceUsed() {
+                com.minimalistalliance.desk.agent.maia.MaiaMode.Allowance a = allowance();
+                return a != null && a.usedUp();
+            }
+
+            @Override
+            public String deskName(String deskId) {
+                return deskNameOf(deskId);
+            }
+
+            @Override
+            public void stateChanged() {
+                publishState(com.minimalistalliance.desk.agent.maia.MaiaAgent.ID);
+            }
+
+            @Override
+            public void result(String deskId, String deskName, String agentName, String messageId) {
+                mode.briefAnswered(deskId, deskName, agentName, messageId);
+            }
+
+            @Override
+            public int laterMaxMin() {
+                return mode.laterMaxMin();
+            }
+        }
+
+        private String deskNameOf(String deskId) {
+            for (com.minimalistalliance.desk.agent.maia.MaiaStore.Grant g : mode.grants()) {
+                if (g.deskId().equals(deskId)) {
+                    return g.deskName();
+                }
+            }
+            com.minimalistalliance.desk.agent.maia.Attention.Desk d = mode.room().desk(deskId);
+            return d == null ? null : d.name();
+        }
+
+        /** A message of hers that code wrote, with its extras (the held notes' question). */
+        private String postAsMaia(String text, Map<String, Object> extras) throws SQLException {
+            String id = RunIds.next(clock).toString();
+            MessageRow row = new MessageRow(id, com.minimalistalliance.desk.agent.maia.MaiaAgent.ID, "assistant", text,
+                    clock.millis(), null, null, null, null, null, "done", null, null);
+            store.addMessages(List.of(row), Map.of());
+            mode.store().putExtras(id, extras);
+            topics.publish(CONVERSATION_PREFIX + com.minimalistalliance.desk.agent.maia.MaiaAgent.ID, "message",
+                    Map.of("message", view(row)));
+            return id;
+        }
+
+        // ---- MaiaMode.Host
+
+        @Override
+        public Map<String, Object> sendAsMember(String text) throws RpcError, SQLException {
+            Map<String, Object> p = new LinkedHashMap<>();
+            p.put("agentId", com.minimalistalliance.desk.agent.maia.MaiaAgent.ID);
+            p.put("text", text);
+            return send(p, Caller.OWNER, true);
+        }
+
+        @Override
+        public void stopRuns() {
+            for (ActiveRun active : runs.values()) {
+                if (com.minimalistalliance.desk.agent.maia.MaiaAgent.is(active.agentId())) {
+                    active.run().stop();
+                }
+            }
+        }
+
+        @Override
+        public java.time.ZoneId zone() {
+            return limits.zone();
+        }
+
+        @Override
+        public void clearMemory() {
+            try {
+                memories.clear(com.minimalistalliance.desk.agent.maia.MaiaAgent.ID, "user");
+            } catch (SQLException | RuntimeException e) {
+                log.warn("her memory wasn't cleared: {}", e.getClass().getSimpleName());
+            }
+        }
+
+        @Override
+        public void republish(String messageId) {
+            try {
+                MessageRow row = AgentService.this.team.teamStore().message(messageId);
+                if (row != null) {
+                    topics.publish(CONVERSATION_PREFIX + row.agentId(), "message", Map.of("message", view(row)));
+                }
+            } catch (SQLException e) {
+                log.warn("a message wasn't republished: {}", e.getClass().getSimpleName());
+            }
+        }
+
+        @Override
+        public String tier() {
+            try {
+                return store.setting("account.tier");
+            } catch (SQLException e) {
+                return null;
+            }
+        }
+
+        @Override
+        public String[] answeringAgent(String deskId) {
+            try {
+                for (com.minimalistalliance.desk.agent.access.AccessBook.SendHalf half
+                        : access.activeGrants(com.minimalistalliance.desk.agent.maia.MaiaAgent.ID)) {
+                    if (half.toDeskId().equals(deskId)) {
+                        return desks.book().peerAgent(half.grantId());
+                    }
+                }
+            } catch (SQLException | RuntimeException e) {
+                log.warn("her answering agent wasn't read: {}", e.getClass().getSimpleName());
+            }
+            return null;
+        }
+
+        @Override
+        public com.minimalistalliance.desk.agent.maia.MaiaMode.Allowance allowance() {
+            com.minimalistalliance.desk.agent.provider.ma.MaiaServiceProvider service = maiaService;
+            if (service == null) {
+                return null;
+            }
+            // The member's one wallet (0.4.10): the newest from her answers or their agents', whichever came last.
+            com.minimalistalliance.desk.agent.provider.ma.CreditsWallet.View w = service.walletView();
+            com.minimalistalliance.desk.agent.maia.MaiaMode.Credits one = w == null ? null
+                    : new com.minimalistalliance.desk.agent.maia.MaiaMode.Credits(w.month(), w.monthLeft(), w.week(),
+                            w.weekUsed(), w.day(), w.dayUsed(), w.topUp(), w.drawingFrom(), w.left(), w.starting(),
+                            w.lighterLeft());
+            // The service said limit: used up until it resets. Else its last answer's share left, if it hasn't reset.
+            com.minimalistalliance.desk.agent.provider.ma.MaiaServiceProvider.Limit limit = service.limit();
+            if (limit != null) {
+                return new com.minimalistalliance.desk.agent.maia.MaiaMode.Allowance(0, limit.resetsAt(), true, one,
+                        w != null && w.lighter());
+            }
+            com.minimalistalliance.desk.agent.provider.ma.MaiaServiceProvider.Allowance left = service.allowance();
+            if (w != null) {
+                // The share left of the month's (none for a tier without one: then whether anything is left at all).
+                double fraction = left != null ? left.fraction() : w.month() > 0 ? (double) w.monthLeft() / w.month()
+                        : w.left() > 0 ? 1 : 0;
+                // The monthly part's renewal; a tier without one may have none, and then her own answer's, if any.
+                java.time.Instant renews = w.renewsAt() != null ? w.renewsAt() : left != null ? left.resetsAt() : null;
+                return new com.minimalistalliance.desk.agent.maia.MaiaMode.Allowance(fraction, renews, false, one,
+                        w.lighter());
+            }
+            if (left == null) {
+                return null;
+            }
+            com.minimalistalliance.desk.agent.provider.ma.MaiaServiceProvider.Credits c = left.credits();
+            com.minimalistalliance.desk.agent.maia.MaiaMode.Credits credits = c == null ? null
+                    : new com.minimalistalliance.desk.agent.maia.MaiaMode.Credits(c.month(), c.monthLeft(), c.week(),
+                            c.weekUsed(), c.day(), c.dayUsed(), c.topUpLeft(), c.drawingFrom());
+            // With credits (or the lighter model), nothing left of the month's is the lighter model, never a stop;
+            // without, nothing left is used up.
+            return new com.minimalistalliance.desk.agent.maia.MaiaMode.Allowance(left.fraction(), left.resetsAt(),
+                    credits == null && !left.lighter() && left.fraction() <= 0, credits, left.lighter());
+        }
+
+        @Override
+        public boolean guildDesk() {
+            return access.isGuildDesk();
+        }
+
+        @Override
+        public boolean adult() {
+            return AgentService.this.team.adult();
+        }
+
+        @Override
+        public void agentMade() {
+            try {
+                AgentRow row = store.agent(com.minimalistalliance.desk.agent.maia.MaiaAgent.ID);
+                if (row != null) {
+                    row = companyBound(row);
+                    runnerOf(row.id()).bind(binding(row));
+                    publishState(row.id());
+                }
+            } catch (SQLException e) {
+                log.warn("her binding wasn't set: {}", e.getClass().getSimpleName());
+            }
+        }
+
+        /**
+         * The decision tray's follow-up to a report (API.md §23 "The tray"): code's own desk message under her grant,
+         * with the brief block code adds to every brief of hers, so the agent's answer comes back as a report.
+         */
+        @Override
+        public String trayBrief(String deskId, String text) {
+            String codeRun = "tray-" + RunIds.next(clock);
+            try {
+                // Role "tray": desk_message doesn't wait for it; the agent's answer comes to her thread as a report.
+                com.minimalistalliance.desk.agent.maia.CodeCalls.Result res = call(
+                        com.minimalistalliance.desk.agent.maia.MaiaAgent.ID, codeRun,
+                        Map.of("kind", "maia", "role", "tray"), null, Set.of(), "desk_message",
+                        Map.of("desk", deskId, "text", text, "expect", Map.of("then", "think")));
+                return res.ok() ? "sent" : "refused:" + (res.refusal() == null ? "failed" : res.refusal());
+            } catch (InterruptedException e) {
+                Thread.currentThread().interrupt();
+                return "refused:interrupted";
+            } finally {
+                ended(com.minimalistalliance.desk.agent.maia.MaiaAgent.ID, codeRun, true);
+            }
+        }
+
+        // ---- CodeCalls
+
+        @Override
+        public Result call(String agentId, String runId, Map<String, Object> origin, String replyId,
+                Set<com.minimalistalliance.desk.agent.tool.Taint> taint, String tool, Map<String, Object> input)
+                throws InterruptedException {
+            com.minimalistalliance.desk.agent.tool.RunContext run = com.minimalistalliance.desk.agent.tool.RunContext
+                    .of(runId, agentId, Caller.OWNER, origin, replyId, taint, null);
+            com.minimalistalliance.desk.agent.provider.ToolCall call = new com.minimalistalliance.desk.agent.provider
+                    .ToolCall("code-" + RunIds.next(clock), tool, input);
+            com.minimalistalliance.desk.agent.tool.Classified classified = agentTools.policy().classify(call, run);
+            com.minimalistalliance.desk.agent.approval.Verdict verdict =
+                    approvals.admitUnasked(run, List.of(classified)).get(0);
+            if (verdict instanceof com.minimalistalliance.desk.agent.approval.Verdict.Refused refused) {
+                return Result.refusedWith(refused.reason());
+            }
+            if (!verdict.runs()) {
+                return Result.refusedWith("not_run");
+            }
+            approvals.starting(verdict);
+            com.minimalistalliance.desk.agent.provider.ToolResult result = agentTools.codeCall(call, run, verdict);
+            approvals.settle(run, classified, verdict, result);
+            String approvalId = verdict instanceof com.minimalistalliance.desk.agent.approval.Verdict.Allowed allowed
+                    ? allowed.approvalId() : null;
+            if (result.error()) {
+                String content = result.content() == null ? "" : result.content();
+                String word = content.replaceFirst("^(Refused|Failed): ", "").replaceAll("[.].*$", "").strip();
+                return Result.refusedWith(word.isEmpty() ? "failed" : word);
+            }
+            return new Result(true, approvalId, result.content(), null);
+        }
+
+        @Override
+        public void ended(String agentId, String runId, boolean done) {
+            approvals.ended(runId);
+            agentTools.runEnded(runId, agentId, done);
+        }
+
+        @Override
+        public String complete(String agentId, String purpose, String system, String user, int maxOutputTokens)
+                throws InterruptedException {
+            ManagerAgent runner = runnerOf(agentId);
+            ManagerAgent.Binding binding = runner.binding();
+            if (binding == null) {
+                return null;
+            }
+            // Her reader is its own task on her service (Maia Mode Phase 2); every other small job is the provider's own.
+            String small = "read".equals(purpose) && ProviderId.MA.equals(binding.provider())
+                    ? com.minimalistalliance.desk.agent.provider.ma.MaiaServiceProvider.READ
+                    : com.minimalistalliance.desk.agent.maia.SmallModels.of(binding.provider().id(), binding.model());
+            String runId = purpose + "-" + RunIds.next(clock);
+            List<com.minimalistalliance.desk.agent.provider.ChatMessage> messages =
+                    List.of(com.minimalistalliance.desk.agent.provider.ChatMessage.user(user));
+            try {
+                return runner.sideCall(small, system, messages, maxOutputTokens, runId).result().text();
+            } catch (com.minimalistalliance.desk.agent.provider.ProviderException e) {
+                // Her service picks the model for the task itself: there's nothing of hers to fall back to.
+                if (small != null && !small.equals(binding.model()) && !ProviderId.MA.equals(binding.provider())) {
+                    try {
+                        // The small model isn't open to this key: the agent's own model, once.
+                        return runner.sideCall(null, system, messages, maxOutputTokens, runId + "-b").result().text();
+                    } catch (Exception again) {
+                        return null;
+                    }
+                }
+                return null;
+            } catch (Exception e) {
+                if (Thread.currentThread().isInterrupted()) {
+                    throw new InterruptedException();
+                }
+                log.warn("a {} call didn't run: {}", purpose, e.getClass().getSimpleName());
+                return null;
+            }
+        }
+    }
+
+    // ---------------------------------------------------------------- Maia Mode Phase 2: her reader and write-ups
+
+    /** What her reader gives her at most, and what it reads at most. */
+    static final int READ_FACTS_MAX = 1_200;
+    static final int READ_SOURCE_MAX = 30_000;
+
+    /**
+     * {@code maia_read {desk, writeup?, query?, question}}: her reader (draft-desk-maia.md decision 12). Code asks the other
+     * desk for what already exists there (its code answers from the write-ups its agents left for her; no agent runs),
+     * then one small call on her service (task {@code read}, Haiku by default, counted in her credits) pulls out only what
+     * answers her question. Under her brief grant for that desk, never past "keeps to itself", and what it returns is
+     * the member's private data from another desk's agent: her run holds {@code U} and {@code S}, and that desk's origin.
+     */
+    private com.minimalistalliance.desk.agent.provider.ToolResult maiaRead(
+            com.minimalistalliance.desk.agent.provider.ToolCall call, com.minimalistalliance.desk.agent.tool.RunContext run)
+            throws SQLException {
+        MaiaHooks m = maiaHooks();
+        Map<String, Object> in = call.input();
+        java.util.function.Function<String, com.minimalistalliance.desk.agent.provider.ToolResult> no =
+                why -> new com.minimalistalliance.desk.agent.provider.ToolResult(call.id(), "Refused: " + why, true);
+        String deskId = in.get("desk") instanceof String d ? d.strip() : null;
+        String question = in.get("question") instanceof String q ? q.strip() : "";
+        if (deskId == null || question.isEmpty() || question.length() > 500) {
+            return no.apply("give the desk's id and your question.");
+        }
+        String writeup = in.get("writeup") instanceof String w
+                && com.minimalistalliance.desk.agent.maia.Reports.WRITEUP_ID.matcher(w.strip()).matches() ? w.strip()
+                : null;
+        String query = writeup != null ? null : in.get("query") instanceof String q && !q.isBlank() ? q : question;
+        if (m.mode.grantFor(deskId, "brief") == null) {
+            return no.apply("maia_grant.");
+        }
+        if (m.profile.floor(run, "desk_message", Map.of("desk", deskId))
+                == com.minimalistalliance.desk.agent.tool.Risk.SEND) {
+            return no.apply("keeps_to_itself. What another desk told you stays with it: brief that desk's agent instead,"
+                    + " which asks the member first.");
+        }
+        String text = com.minimalistalliance.desk.agent.maia.Reports.readText(
+                new com.minimalistalliance.desk.agent.maia.Reports.ReadRequest(writeup, query));
+        String codeRun = "read-" + RunIds.next(clock);
+        CodeCallsResult r;
+        try {
+            com.minimalistalliance.desk.agent.maia.CodeCalls.Result res = m.call(
+                    com.minimalistalliance.desk.agent.maia.MaiaAgent.ID, codeRun, Map.of("kind", "maia", "role", "read"),
+                    null, run.taint(), "desk_message", Map.of("desk", deskId, "text", text));
+            r = new CodeCallsResult(res.ok(), res.content() == null ? "" : String.valueOf(res.content()), res.refusal());
+        } catch (InterruptedException e) {
+            Thread.currentThread().interrupt();
+            return no.apply("interrupted.");
+        } finally {
+            m.ended(com.minimalistalliance.desk.agent.maia.MaiaAgent.ID, codeRun, true);
+        }
+        if (!r.ok()) {
+            return no.apply(r.refusal() + ".");
+        }
+        String content = r.content();
+        int nl = content.indexOf('\n');
+        if (!content.startsWith("Untrusted content") || nl < 0) {
+            // Sent but not answered in time (that desk is asleep or busy), or it couldn't answer: as deskd said.
+            return new com.minimalistalliance.desk.agent.provider.ToolResult(call.id(), content.startsWith("Sent.")
+                    ? "Asked, but that desk didn't answer in time: it may be asleep. Brief it, or check in later."
+                    : content, false);
+        }
+        String source;
+        try {
+            Map<String, Object> wrapped = com.minimalistalliance.desk.agent.json.Json.parseObject(
+                    content.substring(nl + 1).getBytes(java.nio.charset.StandardCharsets.UTF_8));
+            source = wrapped.get("content") instanceof String c ? c : "";
+        } catch (RuntimeException | com.minimalistalliance.desk.agent.json.JsonFormatException e) {
+            source = "";
+        }
+        // What came back is that desk's data in her run from here (U, S, and its origin for "keeps to itself").
+        run.add(Set.of(com.minimalistalliance.desk.agent.tool.Taint.U, com.minimalistalliance.desk.agent.tool.Taint.S));
+        m.profile.answeredInRun(run.runId(), deskId, true);
+        String facts;
+        try {
+            facts = m.complete(com.minimalistalliance.desk.agent.maia.MaiaAgent.ID, "read",
+                    "Maia's question: " + com.minimalistalliance.desk.agent.maia.MaiaAgent.plain(question, 500)
+                            + "\nAnswer it from the sources in the message only, with each fact's write-up id.",
+                    com.minimalistalliance.desk.agent.provider.Cut.chars(source, READ_SOURCE_MAX), 900);
+        } catch (InterruptedException e) {
+            Thread.currentThread().interrupt();
+            facts = null;
+        }
+        String out = facts == null || facts.isBlank()
+                ? "(The reader couldn't run; the start of what the desk sent:) "
+                        + com.minimalistalliance.desk.agent.provider.Cut.chars(source, READ_FACTS_MAX)
+                : com.minimalistalliance.desk.agent.provider.Cut.chars(facts.strip(), READ_FACTS_MAX);
+        return new com.minimalistalliance.desk.agent.provider.ToolResult(call.id(), com.minimalistalliance.desk.agent
+                .tool.AgentTools.fenced("what her reader found in write-ups on another of the member's desks", out),
+                false);
+    }
+
+    private record CodeCallsResult(boolean ok, String content, String refusal) {}
+
+    /** The write-ups this desk's agents leave for her briefs, and her reader's requests, answered here by code. */
+    private final class MaiaReportsHost implements com.minimalistalliance.desk.agent.desks.DeskMessages.MaiaReports {
+        private final com.minimalistalliance.desk.agent.maia.AwayStore store;
+        /** Write-ups whose answer held this desk's private data: kept here, never for her reader. */
+        private final java.util.Set<String> privateOnes = java.util.concurrent.ConcurrentHashMap.newKeySet();
+        private final java.util.Set<String> cleared = java.util.concurrent.ConcurrentHashMap.newKeySet();
+
+        MaiaReportsHost(com.minimalistalliance.desk.agent.maia.AwayStore store) {
+            this.store = store;
+        }
+
+        @Override
+        public String urgentIf() {
+            MaiaHooks m = maia;
+            if (m == null) {
+                return null;
+            }
+            try {
+                return com.minimalistalliance.desk.agent.maia.Reports.urgentIfFrom(
+                        m.mode.shield().settings(clock.millis()));
+            } catch (RuntimeException e) {
+                return null;
+            }
+        }
+
+        @Override
+        public void briefSent(com.minimalistalliance.desk.agent.tool.RunContext run, String envId, String deskId,
+                Map<String, Object> input) {
+            MaiaHooks m = maia;
+            if (m != null) {
+                m.away.briefSent(envId, deskId, com.minimalistalliance.desk.agent.maia.Reports.Expect.of(
+                        input.get("expect")));
+            }
+        }
+
+        @Override
+        public String keepWriteUp(String envId, String agentId, String fromDeskId, String text) {
+            try {
+                String id = store.saveWriteUp(envId, agentId == null ? "agent" : agentId, fromDeskId, text,
+                        clock.millis());
+                // Private until the answer's own call says otherwise (writeUpPrivate): fails closed.
+                privateOnes.add(id);
+                audit.append(AuditLog.Entry.of("agent:" + (agentId == null ? "agent" : agentId), "maia.writeup",
+                        "writeup:" + id, "kept"));
+                return id;
+            } catch (SQLException | RuntimeException e) {
+                return null;
+            }
+        }
+
+        @Override
+        public void writeUpPrivate(String writeUpId, boolean isPrivate) {
+            if (isPrivate) {
+                privateOnes.add(writeUpId);
+                cleared.remove(writeUpId);
+            } else {
+                cleared.add(writeUpId);
+                privateOnes.remove(writeUpId);
+            }
+            try {
+                store.markWriteUp(writeUpId, isPrivate);
+            } catch (SQLException e) {
+                log.warn("a write-up's mark wasn't kept: {}", e.getClass().getSimpleName());
+            }
+        }
+
+        @Override
+        public String read(String fromDeskId, com.minimalistalliance.desk.agent.maia.Reports.ReadRequest request) {
+            try {
+                List<com.minimalistalliance.desk.agent.maia.AwayStore.WriteUp> found = new ArrayList<>();
+                if (request.writeupId() != null) {
+                    com.minimalistalliance.desk.agent.maia.AwayStore.WriteUp w = store.writeUp(request.writeupId());
+                    if (w != null && fromDeskId.equals(w.fromDeskId())) {
+                        found.add(w);
+                    }
+                } else {
+                    found.addAll(store.searchWriteUps(fromDeskId, request.query(), 3));
+                }
+                StringBuilder out = new StringBuilder();
+                int withheld = 0;
+                for (com.minimalistalliance.desk.agent.maia.AwayStore.WriteUp w : found) {
+                    // Only write-ups whose answer went back without this desk's private data (no card was needed).
+                    if (!store.writeUpReadable(w.id())) {
+                        withheld++;
+                        continue;
+                    }
+                    out.append("[").append(w.id()).append(", ").append(java.time.Instant.ofEpochMilli(w.at()))
+                            .append("]\n").append(w.text()).append("\n\n");
+                }
+                audit.append(AuditLog.Entry.of("system", "maia.read", "desk:" + fromDeskId,
+                        "found:" + (found.size() - withheld) + " withheld:" + withheld));
+                if (out.length() == 0) {
+                    return withheld > 0 ? "That write-up holds this desk's private data, so it stays here. Brief the"
+                            + " agent instead: it asks the member first." : null;
+                }
+                return com.minimalistalliance.desk.agent.provider.Cut.chars(out.toString().strip(), 7_500);
+            } catch (SQLException | RuntimeException e) {
+                return null;
+            }
+        }
+    }
+
+    /** Desk Maia's pieces, made the first time they're needed, in desk-agent's data directory (its switch file). */
+    private MaiaHooks maiaHooks() {
+        MaiaHooks m = maia;
+        if (m == null) {
+            synchronized (this) {
+                m = maia;
+                if (m == null) {
+                    m = new MaiaHooks(store.directory());
+                    maia = m;
+                }
+            }
+        }
+        return m;
+    }
+
+    /** Starts Maia Mode's parts at desk-agent's start: the list's state and the to-do runs (each off until chosen). */
+    public void startMaia() {
+        MaiaHooks m = maiaHooks();
+        m.mode.start();
+        m.todos.start();
+        m.away.start();
+    }
+
+    /** Maia Mode's parts stop with desk-agent. */
+    public void stopMaia() {
+        MaiaHooks m = maia;
+        if (m != null) {
+            m.mode.close();
+            m.away.close();
+        }
+    }
+
+    /** Her run's setup, or any other agent's. */
+    private ManagerAgent.RunSetup maiaSetup(String agentId, Map<String, Object> origin) throws SQLException {
+        // Her own runs, the member's and code's (her reports, her check-ins: origin kind maia), are always hers.
+        if (com.minimalistalliance.desk.agent.maia.MaiaAgent.is(agentId)
+                && (origin == null || "maia".equals(origin.get("kind")))) {
+            return maiaHooks().profile.setup();
+        }
+        return team.setupFor(agentId, origin);
+    }
+
+    /** Her W6 send half to a desk, for the grants' {@code half}: {@code none}, {@code offered} or {@code active}. */
+    private String maiaHalf(String deskId) {
+        try {
+            for (com.minimalistalliance.desk.agent.access.AccessBook.SendHalf half
+                    : access.liveGrants(com.minimalistalliance.desk.agent.maia.MaiaAgent.ID)) {
+                if (half.toDeskId().equals(deskId)) {
+                    return half.state();
+                }
+            }
+        } catch (SQLException | RuntimeException e) {
+            return "none";
+        }
+        return "none";
+    }
+
+    /** A reply of hers with what code added to it: its choices, its note chips, a show. */
+    private void maiaDecorate(Map<String, Object> view, MessageRow row) {
+        if (!com.minimalistalliance.desk.agent.maia.MaiaAgent.is(row.agentId()) || !"assistant".equals(row.role())) {
+            return;
+        }
+        MaiaHooks m = maia;
+        Map<String, Object> extras = m == null ? null : m.mode.extras(row.id());
+        if (extras != null) {
+            for (String key : List.of("choices", "notes", "show", "doc", "limit", "cost")) {
+                if (extras.get(key) != null) {
+                    view.put(key, extras.get(key));
+                }
+            }
+        }
+    }
+
+    /** A note's Undo (an approval of hers undone): its chip and log say so. */
+    private Map<String, Object> maiaUndone(Map<String, Object> result) {
+        MaiaHooks m = maia;
+        if (m != null && result.get("approval") instanceof Map<?, ?> approval
+                && com.minimalistalliance.desk.agent.maia.MaiaAgent.ID.equals(approval.get("agentId"))
+                && approval.get("id") instanceof String id) {
+            m.notes.undone(id);
+        }
+        return result;
     }
 }

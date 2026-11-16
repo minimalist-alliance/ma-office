@@ -84,11 +84,14 @@ final class ActionProxy {
      *     ({@code off_site}, {@code blocked}) or null to let it go; null for none
      * @param spend for the Agent: the member approved this as a spend, so a payment provider's frame on the page is
      *     what they saw
+     * @param submit for the Agent's click or key: one that submits a form may be done, because the member approved it as
+     *     a submit or deskd judged it a search; otherwise a click or an Enter deskd's half finds submitting a form is
+     *     refused {@code changed}, so the class never falls between the look and the act (a submit is {@code send})
      */
     record Request(String tabId, String nodeId, String action, Object value, String fp, String block, long rev,
-            java.util.function.Function<String, String> navCheck, boolean spend) {
+            java.util.function.Function<String, String> navCheck, boolean spend, boolean submit) {
         Request(String tabId, String nodeId, String action, Object value, String fp, String block, long rev) {
-            this(tabId, nodeId, action, value, fp, block, rev, null, false);
+            this(tabId, nodeId, action, value, fp, block, rev, null, false, false);
         }
     }
 
@@ -506,8 +509,14 @@ final class ActionProxy {
             // didn't approve as a spend isn't done, and the model reads the page again.
             throw refused("changed");
         }
+        if ("submit".equals(look.get("nav")) && !request.submit()) {
+            // A click or an Enter that submits a form is a send: one the member didn't approve as a submit isn't done
+            // (gap 1; Security's BB-L1 for Enter).
+            throw refused("changed");
+        }
         args.put("look", false);
         args.put("spend", request.spend());
+        args.put("submit", request.submit());
         if (url != null) {
             args.put("url", url);
         }

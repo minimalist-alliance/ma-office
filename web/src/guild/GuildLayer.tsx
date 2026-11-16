@@ -1,23 +1,24 @@
 // What the office shows for guilds outside their windows (task 48): the one privacy line on a member's first Guild Desk, a
 // notice for a guild they're no longer in, the choice of desk for a guild page's link, and the door to the guild settings
 // sheet, which loads lazily. Notices go in the shell's stack (`.notices`), never in a bar.
-import { lazy, Suspense, useEffect, useRef, useState } from 'react';
-import { displayText } from '../browser/address';
+import { lazy, Suspense, useState } from 'react';
 import { Icon } from '../chrome/icons';
-import { openInDeskBrowser } from '../notebook/openLink';
 import { useTierNames } from '../platform/useTiers';
-import { ownDesks, useDeskStore } from '../state/deskStore';
 import { layoutMirrorWritable } from '../state/layoutStore';
 import { useViewStore } from '../state/viewStore';
 import { useWindowStore } from '../state/windowStore';
-import { clearLinkChoice, useGuildStore } from './guildStore';
-import { putAway } from './GuildWindow';
+import { putAway, useGuildStore } from './guildStore';
 import { guildPanelId, isGuildPanel } from './panel';
-import { useEscape } from './useEscape';
-import { OPEN_ON } from './words';
+// Kept in the first load though only the lazy parts below use them here: each is also another chunk's (the guild sheet's
+// Esc, the windows' words, the Notebook's, To-do's and Courier's way to a desk's Browser), so no chunk imports it from another.
+import './useEscape';
+import './words';
+import '../notebook/openLink';
 
 const loadSheet = (): Promise<typeof import('./GuildSheet')> => import('./GuildSheet');
 const GuildSheet = lazy(loadSheet);
+// The choice of desk for a guild page's link (`LinkChoice.tsx`): its own chunk, fetched when a link is pressed.
+const LinkChoice = lazy(() => import('./LinkChoice'));
 
 export const PRIVACY_KEY = 'ma.guild.privacy.v1';
 
@@ -51,7 +52,7 @@ export function GuildPrivacy() {
     setSeen(true);
   };
   return (
-    <div className="notice guild-privacy" role="status" data-testid="guild-privacy">
+    <div className="notice guild-privacy ma-glass" role="status" data-testid="guild-privacy">
       <span className="guild-privacy-text">{privacyLine(names.lead, names.officer)}</span>
       <button type="button" className="icon-btn sm guild-privacy-dismiss" aria-label="Dismiss" title="Dismiss" onClick={dismiss}>
         <Icon name="close" size={16} />
@@ -66,7 +67,7 @@ export function GuildRemovedNotices() {
   return (
     <>
       {Object.entries(removed).map(([guildId, name]) => (
-        <div key={guildId} className="notice guild-removed-notice" role="status" data-testid="guild-removed-notice">
+        <div key={guildId} className="notice guild-removed-notice ma-glass" role="status" data-testid="guild-removed-notice">
           <span>
             You're no longer in <span className="guild-name">{name}</span>.
           </span>
@@ -79,53 +80,16 @@ export function GuildRemovedNotices() {
   );
 }
 
-/** A link in a guild page: which of the member's own desks opens it. Only their Personal and Work desks are offered. */
-function LinkChoice({ href }: { href: string }) {
-  useDeskStore((s) => s.desks); // renders again when the list changes
-  const own = ownDesks().filter((d) => (d.kind === 'personal' || d.kind === 'work') && d.vm !== 'held' && d.vm !== 'setting-up');
-  const first = useRef<HTMLButtonElement>(null);
-  useEffect(() => first.current?.focus(), []);
-  useEscape(clearLinkChoice);
-  const pick = (deskId: string): void => {
-    clearLinkChoice();
-    openInDeskBrowser(deskId, href);
-  };
-  return (
-    <div className="guild-modal-away" onClick={clearLinkChoice}>
-      <div
-        className="guild-modal guild-link-choice"
-        role="dialog"
-        aria-modal="true"
-        aria-labelledby="guild-link-title"
-        data-testid="guild-link-choice"
-        onClick={(e) => e.stopPropagation()}
-      >
-        <h2 id="guild-link-title">Open this link on one of your desks</h2>
-        <p className="guild-link-url">{displayText(href)}</p>
-        <p className="guild-quiet-note">The Guild Desk has no Browser. The link opens in that desk's Browser, with its own sign-ins.</p>
-        <div className="guild-modal-actions">
-          {own.length === 0 && <p className="guild-quiet-note">You have no Personal or Work desk to open it on.</p>}
-          {own.map((d, i) => (
-            <button key={d.id} ref={i === 0 ? first : undefined} type="button" className="btn primary" onClick={() => pick(d.id)}>
-              {d.kind === 'work' ? OPEN_ON.work : OPEN_ON.personal}
-              {own.filter((o) => o.kind === d.kind).length > 1 ? ` (${d.name})` : ''}
-            </button>
-          ))}
-          <button type="button" className="btn" onClick={clearLinkChoice}>
-            Cancel
-          </button>
-        </div>
-      </div>
-    </div>
-  );
-}
-
 export function GuildLayer() {
   const sheet = useGuildStore((s) => s.sheet);
   const linkChoice = useGuildStore((s) => s.linkChoice);
   return (
     <>
-      {linkChoice !== null && <LinkChoice href={linkChoice} />}
+      {linkChoice !== null && (
+        <Suspense fallback={null}>
+          <LinkChoice href={linkChoice} />
+        </Suspense>
+      )}
       {sheet && (
         <Suspense fallback={null}>
           <GuildSheet guildId={sheet.guildId} view={sheet.view} />

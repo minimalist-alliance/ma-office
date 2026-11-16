@@ -1,0 +1,12 @@
+From: =?big5?B?puasRrOh?= <admin@example.com>
+To: me@desk.example
+Date: Fri, 13 Nov 2026 10:00:00 +0000
+Subject: =?big5?B?t3zEs67JtqHF3Kfz?=
+Message-ID: <charset-big5-base64@corpus.example>
+MIME-Version: 1.0
+X-Corpus-Note: text/plain in big5, base64, subject and sender name as encoded words in the same charset
+Content-Type: text/plain; charset="big5"
+Content-Transfer-Encoding: base64
+
+plWm7KZQqMahRw0KDQqlu7Znqrq3fMSzrsm2oafvrLCsULTBpXykVaTIpFTCSaFDDQrBwsHCoUMN
+Cg==

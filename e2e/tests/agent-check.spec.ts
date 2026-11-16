@@ -46,9 +46,10 @@ test('the Agent window opens on the test desk and the desk reports agent: connec
 
   const win = page.getByRole('dialog', { name: 'Agent' }).first();
   await expect(win, 'the Agent window opened').toBeVisible({ timeout: 15_000 });
-  // The first screen depends on the account: key setup with no key, else the agent's state or its thread. Any of them
-  // means the window reached desk-agent through deskd's relay.
-  const first = win.getByTestId('key-setup').or(win.getByTestId('agent-state')).or(win.getByTestId('thread')).first();
+  // The first screen depends on the account: key setup with no key, else the agent's state or its thread, or, for an agent
+  // not set up yet (a new one, or one made before desk-agent 2026.11.13-adb0303, once), its setup screen. Any of them means
+  // the window reached desk-agent through deskd's relay. Nothing here saves the setup screen.
+  const first = win.getByTestId('key-setup').or(win.getByTestId('agent-state')).or(win.getByTestId('thread')).or(win.getByTestId('setup-screen')).first();
   await expect(first, 'the window got past its loading state').toBeVisible({ timeout: 45_000 });
   await page.screenshot({ path: SHOT });
   expect(w.errors, 'no console or CSP errors').toEqual([]);

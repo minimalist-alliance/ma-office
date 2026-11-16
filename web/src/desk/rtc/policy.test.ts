@@ -1,6 +1,7 @@
 import { describe, expect, it } from 'vitest';
 import { backoffMs } from './backoff';
-import { CallWindow, closeCodeAction, CONNECT_CALLS_PER_MINUTE, notReadyRetryMs, PongWatch, RECHECK_FIRST_ATTEMPT, membershipBack, refusalOf, sessionClosedAction, WAKE_FAST_FOR_MS, wakePollMs } from './policy';
+import { CallWindow, closeCodeAction, CONNECT_CALLS_PER_MINUTE, notReadyRetryMs, PongWatch, RECHECK_FIRST_ATTEMPT, refusalOf, sessionClosedAction, WAKE_FAST_FOR_MS, wakePollMs } from './policy';
+import { membershipBack } from '../../platform/tiers';
 
 describe('close codes (design 3.9, 4.2.7)', () => {
   it.each([

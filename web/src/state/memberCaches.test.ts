@@ -36,7 +36,7 @@ function memoryStorage(): Storage {
 
 const REFRESH_KEY = 'ma-desk-web-refresh';
 /** Written out, so a key dropped from a list fails here rather than staying behind for the next person. */
-const CACHES = ['ma.streamQuality.v1', 'ma.streamQuality.desks.v1', 'ma.boots.seen.v1', 'ma.bandwidth.notice.v1', 'ma.guild.privacy.v1', 'ma.browser.touchHint.v1', 'ma.rttCapped.v1', 'ma.menu.about.v1'];
+const CACHES = ['ma.streamQuality.v1', 'ma.streamQuality.desks.v1', 'ma.boots.seen.v1', 'ma.bandwidth.notice.v1', 'ma.guild.privacy.v1', 'ma.browser.touchHint.v1', 'ma.rttCapped.v1', 'ma.menu.about.v1', 'ma.appZoom.v1'];
 const TAB = ['ma.maia.conversation.v1', 'ma.maia.open.v1'];
 /** This device's own, which stay: the theme, the view, Maia's motion, a Notebook's zone sent, the phone's carousel. */
 const DEVICE = ['ma.prefs.theme', 'ma.view.v1', 'ma.maia.motion.v1', 'ma.notebook.tz.d-personal'];
@@ -55,6 +55,7 @@ function seed(owner: string | null = 'u-a', tabOwner: string | null = owner): vo
   local.setItem('ma.browser.touchHint.v1', JSON.stringify(['u-a']));
   local.setItem('ma.rttCapped.v1', JSON.stringify({ sub: 'u-a', until: Date.now() + 3_600_000 }));
   local.setItem('ma.menu.about.v1', 'true');
+  local.setItem('ma.appZoom.v1', JSON.stringify({ notebook: 150 }));
   if (owner) local.setItem('ma.layout.owner.v1', owner);
   tab.setItem('ma.maia.conversation.v1', 'c-of-a');
   tab.setItem('ma.maia.open.v1', '1');
@@ -110,10 +111,11 @@ describe('the keys', () => {
     const rtt = await import('../desk/rtc/connectRtt');
     const about = await import('./../chrome/aboutOpen');
     const maia = await import('../maia/chat');
+    const zoom = await import('../zoom/store');
     // The guild's file is the Guild Engineer's, and its chunk's; its constant is read as written.
     const guild = /PRIVACY_KEY = '([^']+)'/.exec(readFileSync(new URL('../guild/GuildLayer.tsx', import.meta.url), 'utf8'))?.[1];
     expect([...store.MEMBER_CACHE_KEYS].sort()).toEqual([...CACHES].sort());
-    for (const key of [quality.MIRROR_KEY, quality.DESK_MIRROR_KEY, boots.SEEN_KEY, bandwidth.SEEN_KEY, guild, touch.HINT_KEY, rtt.CAP_KEY, about.ABOUT_KEY]) expect(store.MEMBER_CACHE_KEYS).toContain(key);
+    for (const key of [quality.MIRROR_KEY, quality.DESK_MIRROR_KEY, boots.SEEN_KEY, bandwidth.SEEN_KEY, guild, touch.HINT_KEY, rtt.CAP_KEY, about.ABOUT_KEY, zoom.ZOOM_KEY]) expect(store.MEMBER_CACHE_KEYS).toContain(key);
     expect([...store.MEMBER_TAB_KEYS].sort()).toEqual([...TAB, 'ma.layout.owner.v1'].sort());
     for (const key of [maia.CONVERSATION_KEY, maia.OPEN_KEY]) expect(store.MEMBER_TAB_KEYS).toContain(key);
     // None is the layout's own: those are ISS-67's list, held in `layoutMirror.test.ts`.
@@ -143,12 +145,56 @@ describe('a wipe (every signed-out state)', () => {
   });
 });
 
+describe('the camera and the view, the device\'s own (ADR 0057)', () => {
+  const kept = (): (string | null)[] => [local.getItem('ma.camera.v1'), local.getItem('ma.view.v1')];
+  const stampedFor = (who: string): void => {
+    local.setItem('ma.camera.v1', JSON.stringify({ x: 12, y: -8, s: 1.25, owner: who }));
+    local.setItem('ma.view.v1', JSON.stringify({ scope: 'work', activeDesk: 'd-work', mode: 'free', owner: who }));
+  };
+
+  it("stay through every signed-out state with no member's id in them, and nobody's to start on", async () => {
+    await load('u-a');
+    stampedFor('u-a');
+    store.forgetLayoutMirror();
+    for (const raw of kept()) {
+      expect(raw).not.toBeNull();
+      expect(raw).not.toContain('u-a');
+      expect(JSON.parse(raw!).owner).toBe(false);
+    }
+    expect(JSON.parse(local.getItem('ma.view.v1')!).scope).toBe('work');
+  });
+
+  it("lose the last member's id at another account's sign-in", async () => {
+    await load('u-a');
+    stampedFor('u-a');
+    expect(store.layoutMirrorFor('u-b')).toBe(false);
+    for (const raw of kept()) expect(raw).not.toContain('u-a');
+  });
+
+  it("are written with the member's id while signed in, and with none from a stale tab or a page that has signed out", async () => {
+    await load('u-a');
+    const view = await vi.importActual<typeof import('./viewStore')>('./viewStore'); // the rest of this file has it mocked
+    view.setView({ mode: 'overview' });
+    expect(JSON.parse(local.getItem('ma.view.v1')!).owner).toBe('u-a');
+    signedIn(false);
+    store.forgetLayoutMirror(false); // another tab's sign-out, as this tab hears it
+    view.setView({ mode: 'desk' });
+    expect(local.getItem('ma.view.v1')).not.toContain('u-a');
+    expect(JSON.parse(local.getItem('ma.view.v1')!).owner).toBe(false);
+    signedIn(true);
+    store.forgetLayoutMirror(); // this page signs out, its token not gone yet
+    view.setView({ mode: 'overview' });
+    expect(local.getItem('ma.view.v1')).not.toContain('u-a');
+  });
+});
+
 /** Every writer of a cache, as the member's own use calls it. */
 async function writeAll(): Promise<void> {
   (await import('../bandwidth/seen')).markHeadsUpSeen('warn:2026-11-16T00:00:00Z');
   (await import('../browser/touchInput')).touchHintShown('u-a');
   (await import('../desk/rtc/connectRtt')).markCapped('u-a', 60, Date.now());
   (await import('../chrome/aboutOpen')).keepAboutOpen(true);
+  (await import('../zoom/store')).setAppLevel('notebook', 'd-home', 140);
   const maia = await import('../maia/chat');
   maia.writeSession(maia.CONVERSATION_KEY, 'c-2');
   maia.writeSession(maia.OPEN_KEY, '1');
@@ -161,7 +207,7 @@ async function writeAll(): Promise<void> {
   // The desk list's mirror, beside the token (`ma.desks.v1`, ISS-89's guard on a key `forgetMember` already took).
   (await import('./deskStore')).setDeskList([{ deskId: 'd-b', name: 'Bakery', kind: 'personal', state: 'running' }] as never);
 }
-const WRITTEN = ['ma.boots.seen.v1', 'ma.bandwidth.notice.v1', 'ma.browser.touchHint.v1', 'ma.rttCapped.v1', 'ma.menu.about.v1'];
+const WRITTEN = ['ma.boots.seen.v1', 'ma.bandwidth.notice.v1', 'ma.browser.touchHint.v1', 'ma.rttCapped.v1', 'ma.menu.about.v1', 'ma.appZoom.v1'];
 
 describe('a write', () => {
   it('signed in: each cache is written', async () => {

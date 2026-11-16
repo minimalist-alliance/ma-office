@@ -1,11 +1,11 @@
 // Office backgrounds (ADR 0094): the scene behind the desks, chosen in the account menu's "Background", saved in the layout
 // document's `prefs.background` (which follows the member), the theme's default with nothing chosen (Zen's first scene),
-// scenes in Zen only (the owner, Nov 11: Light and Dark draw none and have no picker, and the choice stays stored), the fade, reduced motion, "Plain background", and axe on the open menu. The scenes are the
+// scenes in Zen only (the owner, Nov 11: Light and Dark draw none and have no picker, and the choice stays stored), the fade, reduced motion, no "Plain background" (the owner, Nov 13: the automatic flat ground drops only the gradient, and the old switch's key is wiped), and axe on the open menu. The scenes are the
 // manifest the build ships in `public/backgrounds/`.
 import { readFileSync } from 'node:fs';
 import { createRequire } from 'node:module';
 import { expect, test, type APIRequestContext, type Page } from '@playwright/test';
-import { canvasPainted, focusCanvas, harness, setTheme, signIn, watchConsole } from './helpers';
+import { canvasPainted, focusCanvas, harness, setTheme, signIn, watchConsole, openMenuSection } from './helpers';
 
 const AXE = readFileSync(createRequire(import.meta.url).resolve('axe-core/axe.min.js'), 'utf8');
 const ME = 'u-test';
@@ -31,6 +31,7 @@ const savedPref = async (request: APIRequestContext): Promise<unknown> => {
 async function openMenu(page: Page): Promise<void> {
   await page.getByRole('button', { name: 'Account', exact: true }).click();
   await expect(page.getByRole('dialog', { name: 'Account' })).toBeVisible();
+  await openMenuSection(page, 'menu-appearance'); // Background is under Appearance since the owner's Nov 16 tidy
 }
 const picker = (page: Page) => page.getByRole('radiogroup', { name: 'Background' });
 const swatch = (page: Page, name: string) => picker(page).getByRole('radio', { name: `Background: ${name}`, exact: true });
@@ -203,16 +204,19 @@ test('what Platform has is what shows: a scene from another browser, "none" in D
   await expect.poll(() => shown(page)).toBeNull();
   await expect(img(page)).toHaveCount(0);
 
-  await harness(request, doc('from-a-newer-build', 5));
+  // The setup circle on, for its switch in the account menu: another preference in the same document.
+  await harness(request, { ...doc('from-a-newer-build', 5), setupCircle: null });
   await page.reload();
   await expect(page.locator('.ma-shell')).toBeVisible();
   await canvasPainted(page);
   await expect.poll(() => shown(page)).toBe(scenes[0]!.id);
   // Another preference saves the whole document: the unknown id is still there.
   await openMenu(page);
-  await page.getByRole('switch', { name: 'Plain background' }).click();
-  await page.getByRole('switch', { name: 'Plain background' }).click();
-  await page.waitForTimeout(2600);
+  await page.getByRole('switch', { name: "Show setup and what's new" }).click();
+  await page.getByRole('switch', { name: "Show setup and what's new" }).click();
+  const prefs = async (): Promise<Record<string, unknown> | undefined> =>
+    ((await (await request.get('/__harness')).json()) as { layoutDocs: Record<string, { layout: { prefs?: Record<string, unknown> } | null } | undefined> }).layoutDocs[ME]?.layout?.prefs;
+  await expect.poll(async () => (await prefs())?.['circleHidden'], { timeout: 8_000 }).toBe(false); // the document was saved
   expect(await savedPref(request)).toBe('from-a-newer-build');
 });
 
@@ -294,9 +298,15 @@ test('no text sits on bare ground: the bars\' pills stay near opaque over a scen
   await signIn(page, '/?fixture=three');
   await canvasPainted(page);
   await expect.poll(() => shown(page)).toBe(scenes[0]!.id);
-  // The alpha of a computed colour: rgb() is 1, rgba() and color() carry it last.
+  // The alpha of a computed colour: rgb() is 1, rgba() and color() carry it last. In the office's glass (`styles/glass.css`)
+  // the pill's body is its last background layer, the egg: its least alpha.
   const alphaOf = (sel: string) => page.locator(sel).evaluate((el) => {
-    const nums = getComputedStyle(el).backgroundColor.match(/[\d.]+/g) ?? [];
+    const cs = getComputedStyle(el);
+    const layers = cs.backgroundImage.split(/,\s*(?=(?:linear|radial|conic)-gradient\()/);
+    const egg = layers[layers.length - 1] ?? '';
+    const stops = [...egg.matchAll(/rgba?\(([^)]*)\)/g)].map((m) => m[1]!.split(/[ ,/]+/).filter(Boolean).map(Number));
+    if (/radial-gradient/.test(egg) && stops.length) return Math.min(...stops.map((n) => (n.length >= 4 ? n[3]! : 1)));
+    const nums = cs.backgroundColor.match(/[\d.]+/g) ?? [];
     return nums.length >= 4 ? Number(nums[nums.length - 1]) : 1;
   });
   for (const sel of ['.hints', '.desk-nav', '.zoom-ctl']) {
@@ -305,20 +315,48 @@ test('no text sits on bare ground: the bars\' pills stay near opaque over a scen
   }
 });
 
-test('"Plain background" hides the scene with the gradient, and axe finds nothing in the open menu', async ({ page, request }) => {
+test('no "Plain background": the old switch\'s choice is wiped and never read, the menu has no such row, and axe finds nothing in the open menu', async ({ page, request }) => {
   const errors = watchConsole(page);
   const scenes = await manifest(request);
+  // A member who had turned the old switch on: before the office runs, on every load.
+  await page.addInitScript(() => {
+    if (window === window.top) localStorage.setItem('ma.prefs.flatGround', 'true');
+  });
   await setTheme(page, 'dusk');
   await signIn(page);
   await canvasPainted(page);
   await expect.poll(() => shown(page)).toBe(scenes[0]!.id);
+  await expect(backdrop(page)).toBeVisible();
+  // A 1440 x 900 window at 1x is far under the automatic cut-off, and the old choice counts for nothing.
+  expect(await page.evaluate(() => document.documentElement.classList.contains('flat-ground'))).toBe(false);
+  expect(await page.evaluate(() => localStorage.getItem('ma.prefs.flatGround'))).toBeNull();
   await openMenu(page);
   await expect(picker(page)).toBeVisible();
+  await expect(page.getByRole('switch', { name: 'Plain background' })).toHaveCount(0);
+  await expect(page.locator('#pref-flat-ground')).toHaveCount(0);
+  await expect(page.locator('#account-panel')).not.toContainText('Plain background');
   expect(await axe(page)).toEqual([]);
-  await page.getByRole('switch', { name: 'Plain background' }).click();
-  await expect(backdrop(page)).toBeHidden();
-  expect(await shown(page)).toBe(scenes[0]!.id); // still the member's scene, for when the switch goes back
-  await page.getByRole('switch', { name: 'Plain background' }).click();
-  await expect(backdrop(page)).toBeVisible();
   expect(errors).toEqual([]);
+});
+
+test.describe('a very large high-resolution screen (over 12M device pixels)', () => {
+  test.use({ viewport: { width: 2560, height: 1440 }, deviceScaleFactor: 2 });
+
+  test('the automatic flat ground drops only the gradient: a scene chosen in Zen still shows', async ({ page, request }) => {
+    const errors = watchConsole(page);
+    const scenes = await manifest(request);
+    await setTheme(page, 'dusk');
+    await signIn(page);
+    await canvasPainted(page);
+    expect(await page.evaluate(() => document.documentElement.classList.contains('flat-ground'))).toBe(true);
+    // No gradient behind the desks.
+    expect(await page.locator('.ma-shell').evaluate((el) => getComputedStyle(el, '::before').display)).toBe('none');
+    await openMenu(page);
+    await swatch(page, scenes[1]!.name).click();
+    await page.keyboard.press('Escape');
+    await expect.poll(() => shown(page)).toBe(scenes[1]!.id);
+    await expect(backdrop(page)).toBeVisible();
+    await expect(img(page)).toHaveAttribute('srcset', new RegExp(`backgrounds/${scenes[1]!.id}/`));
+    expect(errors).toEqual([]);
+  });
 });

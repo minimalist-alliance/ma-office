@@ -13,7 +13,9 @@ mkdirSync(SHOTS, { recursive: true });
 const STRIP = 44;
 const PAD = 24;
 const GAP = 16;
-const APPS = ['chat', 'notebook', 'browser', 'agent'];
+// Courier's id in the stored layout: `chat` until the flip (src/canvas/storedIds.ts), read as `courier` here as the office does.
+const inMemory = (s) => (s == null ? s : s.replaceAll('"chat"', '"courier"').replaceAll(':chat"', ':courier"'));
+const APPS = ['courier', 'notebook', 'browser', 'agent'];
 const VP = { w: 1440, h: 900 };
 const CONTROL_PROXY = `proxy-cleanup:${ALLOWED}`;
 
@@ -180,7 +182,7 @@ async function settled() {
 /** The saved desk, after the mirror's 1 s debounce. `order` is the list as stored, so reading order can be checked. */
 async function docAfter(quiet = false) {
   await wait(1300);
-  const d = JSON.parse(await storage('ma.layout.v2')).desks[ALLOWED];
+  const d = JSON.parse(inMemory(await storage('ma.layout.v2'))).desks[ALLOWED];
   const items = {};
   for (const a of APPS) {
     const i = d.items.find((it) => it.app === a);
@@ -509,8 +511,8 @@ await shot(SHOTS, 'step1-focused');
   const toward = (d, app, x, y) => [x - d.items[app].x, y - d.items[app].y];
   await dragApp(doc, 'agent', [toward(doc, 'agent', 510.86, 10.29)]);
   doc = await docAfter(true);
-  const chat = doc.items.chat;
-  await dragApp(doc, 'chat', [[0, 110.71 - chat.y], [400.14 - chat.x, 0]]);
+  const courier = doc.items.courier;
+  await dragApp(doc, 'courier', [[0, 110.71 - courier.y], [400.14 - courier.x, 0]]);
   doc = await docAfter(true);
   await dragApp(doc, 'notebook', [toward(doc, 'notebook', 30.29, 100.14)]);
   doc = await docAfter(true);
@@ -518,7 +520,7 @@ await shot(SHOTS, 'step1-focused');
   doc = await docAfter(true);
   await resizeApp(doc, 'browser', 240.43 - doc.items.browser.w, 97.14 - doc.items.browser.h);
   doc = await docAfter(true);
-  await resizeApp(doc, 'chat', 180.29 - doc.items.chat.w, 92.57 - doc.items.chat.h);
+  await resizeApp(doc, 'courier', 180.29 - doc.items.courier.w, 92.57 - doc.items.courier.h);
   doc = await docAfter();
 }
 const before = doc;

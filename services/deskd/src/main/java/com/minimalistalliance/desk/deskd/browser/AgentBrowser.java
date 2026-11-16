@@ -16,7 +16,10 @@ import java.util.Set;
  */
 public interface AgentBrowser {
 
-    /** Agent tabs on the desk at once, in the Agent's own contexts. */
+    /**
+     * Agent tabs on the desk at once, every one: in the Agent's own contexts and in the member's session alike (the draft
+     * ADR's §3 limits; each is a tab's memory, 300 MB at most).
+     */
     int TAB_CAP = 2;
     /** On a free desk. */
     int FREE_TAB_CAP = 1;
@@ -49,7 +52,7 @@ public interface AgentBrowser {
     /** The run's tabs, in the order opened. */
     List<Tab> tabs(String runId);
 
-    /** Tabs in the Agent's own contexts on the desk now, every run's. */
+    /** Agent tabs on the desk now, every run's, its own contexts' and the member's session's. */
     int agentTabs();
 
     /** The cap that applies now: {@link #FREE_TAB_CAP} on a free desk. */
@@ -70,16 +73,22 @@ public interface AgentBrowser {
 
     void close(String runId, String tabId) throws RpcException, InterruptedException;
 
-    /** The run's tab in the member's own session for this site, opened at {@code https://<site>/} if it isn't open. */
+    /**
+     * The run's tab in the member's own session for this site, opened at {@code https://<site>/} if it isn't open: a new
+     * one under the desk's cap ({@code tab_cap}).
+     */
     Navigated useSession(String runId, String site) throws RpcException, InterruptedException;
 
     /** The walker's view of the tab: {@code {tabId, rev, view, mdoc?, fallback?}}, as {@code browser.minified.get}. */
     Map<String, Object> read(String runId, String tabId) throws RpcException, InterruptedException;
 
-    /** One action through the action proxy, as {@code browser.minified.act}: {@code {done, reason?}}. Not a spend. */
+    /**
+     * One action through the action proxy, as {@code browser.minified.act}: {@code {done, reason?}}. Not a spend, and a
+     * click that would submit a form is refused {@code changed}.
+     */
     default Map<String, Object> act(String runId, String tabId, String nodeId, String action, Object value, String fp, String block,
             long rev) throws RpcException, InterruptedException {
-        return act(runId, tabId, nodeId, action, value, fp, block, rev, false);
+        return act(runId, tabId, nodeId, action, value, fp, block, rev, false, false);
     }
 
     /**
@@ -88,10 +97,25 @@ public interface AgentBrowser {
      *
      * @param spend the member approved it as a spend: a payment provider's frame on the page is then what they saw, where
      *     otherwise a click or a submit there is refused {@code changed}
+     * @param submit a click or a key may submit a form: the member approved it as a submit, or deskd judged it a search.
+     *     Otherwise one deskd's half finds submitting a form is refused {@code changed}, so a submit is never done as less
+     *     than the {@code send} it is
      * @return {@code {done, reason?, submitted?}}
      */
     Map<String, Object> act(String runId, String tabId, String nodeId, String action, Object value, String fp, String block, long rev,
-            boolean spend) throws RpcException, InterruptedException;
+            boolean spend, boolean submit) throws RpcException, InterruptedException;
+
+    /**
+     * What a click on this node, or a key in it, would do, by deskd's half on the element itself, with nothing done,
+     * focused or scrolled: {@code nav} ({@code link}, {@code submit} or null), its {@code url}, whether a submitted form
+     * is a {@code search} (a GET form holding a search box), the submit {@code button}'s words for a key, and whether a
+     * payment provider's frame is on the page ({@code pay}). The class of a click or an Enter rises by it: a submit is
+     * {@code send} whatever its label or its field.
+     *
+     * @param key null for a click, or the key
+     * @throws RpcException {@code changed} or {@code gone} for a node the tab no longer shows as read, {@code sensitive}
+     */
+    Map<String, Object> actLook(String runId, String tabId, String nodeId, String fp, String key) throws RpcException, InterruptedException;
 
     /**
      * Whether a payment provider's frame is anywhere in the tab now, whatever its size: in Chromium's frame tree, the

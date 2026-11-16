@@ -9,9 +9,14 @@ import java.util.regex.Pattern;
 /**
  * What one model call sends. {@code maxOutputTokens} is required, because the limits reserve against it (design
  * 9.9): without a cap on the output there's no bound on what one call can cost.
+ *
+ * <p>{@code note} is the caller's lines that change on every call (Desk Maia's time, briefs left and allowance), kept out
+ * of {@code system} so the system part stays byte-stable and the provider's cache holds it. It goes after the thread, as
+ * the last text of the newest user turn, outside every cached prefix (ma-platform {@code desk-maia.md} 0.4.6, {@code
+ * note}). Empty adds nothing; member agents never set one.
  */
 public record ChatRequest(String model, String system, List<ChatMessage> messages, int maxOutputTokens,
-        List<ToolSpec> tools) {
+        List<ToolSpec> tools, String note) {
 
     /** A provider's model id, such as {@code claude-sonnet-4-5} or {@code accounts/x/models/y}. It's audited. */
     private static final Pattern MODEL = Pattern.compile("[A-Za-z0-9][A-Za-z0-9._:/@-]{0,127}");
@@ -44,6 +49,13 @@ public record ChatRequest(String model, String system, List<ChatMessage> message
             throw new IllegalArgumentException("maxOutputTokens must be positive");
         }
         tools = tools == null ? List.of() : List.copyOf(tools);
+        note = note == null ? "" : note;
+    }
+
+    /** A call with no note. */
+    public ChatRequest(String model, String system, List<ChatMessage> messages, int maxOutputTokens,
+            List<ToolSpec> tools) {
+        this(model, system, messages, maxOutputTokens, tools, "");
     }
 
     /** A call with no tools. */
@@ -51,9 +63,22 @@ public record ChatRequest(String model, String system, List<ChatMessage> message
         this(model, system, messages, maxOutputTokens, List.of());
     }
 
+    /**
+     * The thread with the note as one more member's line at its end, for a provider with no place of its own for it:
+     * each adapter joins it to the newest user turn as it joins any two in a row. The thread itself when there's no note.
+     */
+    public List<ChatMessage> messagesWithNote() {
+        if (note.isEmpty()) {
+            return messages;
+        }
+        List<ChatMessage> out = new java.util.ArrayList<>(messages);
+        out.add(ChatMessage.user(note));
+        return List.copyOf(out);
+    }
+
     /** UTF-8 bytes of everything the model reads: the input estimate is this over 3 (design 9.9). */
     public long inputBytes() {
-        long bytes = system.getBytes(StandardCharsets.UTF_8).length;
+        long bytes = system.getBytes(StandardCharsets.UTF_8).length + note.getBytes(StandardCharsets.UTF_8).length;
         for (ChatMessage message : messages) {
             bytes += message.text().getBytes(StandardCharsets.UTF_8).length;
             for (Attachment attachment : message.attachments()) {

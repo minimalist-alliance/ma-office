@@ -1,0 +1,1904 @@
+/* Courier's own look (the launch plan §5), on the office's tokens in Light, Zen and Dark. Every colour is a token. Calm first:
+   neutrals and the accent blue only. Unread is weight and a small accent dot; counts are the badge's blue, capped at 9+; the
+   sender check, pictures off and a link's warnings are neutral notes with an icon and plain words, never amber, red or a green
+   tick (the owner's rule: no green, brown or warm tint). Delete is ordinary words. It answers to its own width: three columns,
+   two, or one on a phone and in any window under 700 px (`data-cols`, from the body's own width). */
+.courier-host {
+  position: relative;
+  flex: 1;
+  min-width: 0;
+  min-height: 0;
+  display: flex;
+  flex-direction: column;
+}
+.courier-app-host {
+  flex: 1;
+  min-height: 0;
+  display: flex;
+}
+.courier-app-host[data-dim='true'] {
+  opacity: 0.55;
+}
+
+.courier-root {
+  flex: 1;
+  min-width: 0;
+  min-height: 0;
+  display: grid;
+  grid-template-columns: 196px minmax(260px, 340px) minmax(0, 1fr);
+  grid-template-rows: minmax(0, 1fr);
+  position: relative;
+  background: var(--ma-surface-window);
+  color: var(--ma-text-primary);
+  font-size: 14px;
+}
+.courier-root[data-cols='2'] {
+  grid-template-columns: minmax(260px, 320px) minmax(0, 1fr);
+}
+.courier-root[data-cols='1'] {
+  grid-template-columns: minmax(0, 1fr);
+}
+.courier-center {
+  display: grid;
+  place-items: center;
+  padding: 24px;
+  text-align: center;
+}
+.courier-empty h3 {
+  margin: 0 0 12px;
+  font-size: 15px;
+  font-weight: 600;
+}
+.courier-i {
+  width: 16px;
+  height: 16px;
+  flex: none;
+  display: block;
+}
+.courier-sr {
+  position: absolute;
+  width: 1px;
+  height: 1px;
+  padding: 0;
+  margin: -1px;
+  overflow: hidden;
+  clip: rect(0, 0, 0, 0);
+  white-space: nowrap;
+  border: 0;
+}
+.courier-quiet {
+  margin: 0;
+  color: var(--ma-text-secondary);
+  font-size: 13px;
+}
+.courier-root :focus-visible {
+  outline: 2px solid var(--ma-focus-ring);
+  outline-offset: 2px;
+}
+:where(.courier-root) button,
+:where(.courier-root) input,
+:where(.courier-root) select,
+:where(.courier-root) textarea {
+  font: inherit;
+  color: inherit;
+}
+
+/* ---------------------------------------------------------------- buttons */
+.courier-btn {
+  display: inline-flex;
+  align-items: center;
+  justify-content: center;
+  gap: 6px;
+  min-height: 32px;
+  padding: 0 12px;
+  border: 1px solid var(--ma-border);
+  border-radius: 8px;
+  background: var(--ma-surface-fill);
+  color: var(--ma-text-primary);
+  font-size: 13px;
+  font-weight: 500;
+  white-space: nowrap;
+}
+.courier-btn:hover {
+  background: var(--ma-surface-fill-strong);
+}
+.courier-btn.primary {
+  border-color: transparent;
+  background: var(--ma-accent);
+  color: var(--ma-text-on-accent);
+}
+.courier-btn.primary:hover {
+  background: var(--ma-accent-hover);
+}
+.courier-btn.quiet {
+  border-color: transparent;
+  background: transparent;
+  color: var(--ma-text-link);
+}
+.courier-btn.quiet:hover {
+  background: var(--ma-surface-fill);
+}
+.courier-btn:disabled {
+  opacity: 0.6;
+}
+.courier-icon-btn {
+  display: inline-grid;
+  place-items: center;
+  width: 32px;
+  height: 32px;
+  flex: none;
+  padding: 0;
+  border: 1px solid transparent;
+  border-radius: 8px;
+  background: transparent;
+  color: var(--ma-text-secondary);
+}
+.courier-icon-btn:hover {
+  background: var(--ma-surface-fill);
+  color: var(--ma-text-primary);
+}
+.courier-icon-btn.sm {
+  width: 28px;
+  height: 28px;
+}
+
+/* ---------------------------------------------------------------- lanes */
+.courier-lanes {
+  display: flex;
+  flex-direction: column;
+  justify-content: space-between;
+  min-height: 0;
+  padding: 12px 8px;
+  border-right: 1px solid var(--ma-border-hairline);
+  background: var(--ma-surface-sunken);
+}
+.courier-lanes ul {
+  display: flex;
+  flex-direction: column;
+  gap: 2px;
+  margin: 0;
+  padding: 0;
+  list-style: none;
+}
+.courier-lane {
+  display: flex;
+  align-items: center;
+  gap: 10px;
+  width: 100%;
+  min-height: 34px;
+  padding: 0 10px;
+  border: 0;
+  border-radius: 8px;
+  background: transparent;
+  color: var(--ma-text-secondary);
+  text-align: left;
+}
+.courier-lane:hover {
+  background: var(--ma-surface-fill);
+  color: var(--ma-text-primary);
+}
+.courier-lane[aria-current] {
+  background: var(--ma-surface-window);
+  color: var(--ma-text-primary);
+  font-weight: 600;
+  box-shadow: var(--ma-elevation-tile);
+}
+.courier-lane-name {
+  flex: 1;
+  min-width: 0;
+  overflow: hidden;
+  text-overflow: ellipsis;
+  white-space: nowrap;
+}
+.courier-count {
+  min-width: 20px;
+  height: 20px;
+  padding: 0 6px;
+  border-radius: 10px;
+  background: var(--ma-badge-bg);
+  color: var(--ma-badge-fg);
+  font-size: 11px;
+  font-weight: 700;
+  line-height: 20px;
+  text-align: center;
+}
+.courier-lanes-foot {
+  display: flex;
+  align-items: center;
+  gap: 4px;
+  padding-top: 8px;
+  border-top: 1px solid var(--ma-border-hairline);
+}
+/* Two columns and one: the lanes are a row above the list, scrolling sideways. */
+.courier-lanes[data-row] {
+  flex-direction: row;
+  align-items: center;
+  gap: 4px;
+  padding: 8px;
+  border-right: 0;
+  border-bottom: 1px solid var(--ma-border-hairline);
+  overflow-x: auto;
+  scrollbar-width: thin;
+}
+.courier-lanes[data-row] ul {
+  flex-direction: row;
+}
+.courier-lanes[data-row] .courier-lane {
+  width: auto;
+  white-space: nowrap;
+}
+.courier-lanes[data-row] .courier-lanes-foot {
+  padding: 0 0 0 4px;
+  border-top: 0;
+  border-left: 1px solid var(--ma-border-hairline);
+}
+
+/* ---------------------------------------------------------------- the list */
+.courier-listpane {
+  position: relative;
+  display: flex;
+  flex-direction: column;
+  min-width: 0;
+  min-height: 0;
+  border-right: 1px solid var(--ma-border-hairline);
+}
+.courier-root[data-cols='1'] .courier-listpane {
+  border-right: 0;
+}
+.courier-listhead {
+  flex: none;
+  display: flex;
+  flex-direction: column;
+  gap: 8px;
+  padding: 14px 14px 8px;
+}
+.courier-listhead h2 {
+  margin: 0;
+  font-size: 16px;
+  font-weight: 650;
+}
+.courier-lane-line {
+  margin: 0;
+  color: var(--ma-text-secondary);
+  font-size: 12px;
+}
+.courier-search {
+  display: flex;
+  align-items: center;
+  gap: 6px;
+  min-height: 34px;
+  padding: 0 4px 0 10px;
+  border: 1px solid var(--ma-border-strong);
+  border-radius: 8px;
+  background: var(--ma-surface-sunken);
+  color: var(--ma-text-secondary);
+}
+.courier-search:focus-within {
+  border-color: var(--ma-focus-ring);
+}
+/* The ring goes round the rounded field, not a square inside it (the root's `:focus-visible` outline outranked the input's). */
+.courier-search:has(input:focus-visible) {
+  outline: 2px solid var(--ma-focus-ring);
+  outline-offset: 2px;
+}
+.courier-search input:focus-visible {
+  outline: none;
+}
+.courier-search input {
+  flex: 1;
+  min-width: 0;
+  height: 32px;
+  border: 0;
+  outline: none;
+  background: transparent;
+  color: var(--ma-text-primary);
+  font: inherit;
+}
+.courier-search input::placeholder {
+  color: var(--ma-text-secondary);
+}
+.courier-search input::-webkit-search-cancel-button {
+  display: none;
+}
+.courier-account-filter {
+  display: flex;
+  align-items: center;
+  gap: 8px;
+  color: var(--ma-text-secondary);
+  font-size: 12px;
+}
+.courier-account-filter select,
+.courier-field select {
+  min-height: 30px;
+  padding: 0 8px;
+  border: 1px solid var(--ma-border);
+  border-radius: 8px;
+  background: var(--ma-surface-fill);
+  color: var(--ma-text-primary);
+  font: inherit;
+  font-size: 13px;
+}
+.courier-list-scroll {
+  flex: 1;
+  min-height: 0;
+  overflow-y: auto;
+  padding: 0 8px 64px;
+}
+.courier-list-scroll > .courier-quiet,
+.courier-empty-line {
+  padding: 16px 8px;
+}
+.courier-empty-line {
+  margin: 0;
+  color: var(--ma-text-secondary);
+}
+.courier-rows,
+.courier-requests {
+  display: flex;
+  flex-direction: column;
+  gap: 2px;
+  margin: 0;
+  padding: 0;
+  list-style: none;
+}
+.courier-row,
+.courier-request-open {
+  display: flex;
+  flex-direction: column;
+  gap: 3px;
+  width: 100%;
+  padding: 10px 10px;
+  border: 0;
+  border-radius: 10px;
+  background: transparent;
+  text-align: left;
+}
+.courier-row:hover,
+.courier-request-open:hover {
+  background: var(--ma-surface-fill);
+}
+.courier-row[aria-current],
+.courier-request-open[aria-current] {
+  background: var(--ma-accent-subtle);
+}
+.courier-row-top,
+.courier-row-bottom {
+  display: flex;
+  align-items: center;
+  gap: 6px;
+  min-width: 0;
+}
+.courier-row-name {
+  flex: 1;
+  min-width: 0;
+  overflow: hidden;
+  text-overflow: ellipsis;
+  white-space: nowrap;
+  font-weight: 500;
+}
+.courier-row.unread .courier-row-name,
+.courier-row.unread .courier-row-line {
+  color: var(--ma-text-primary);
+  font-weight: 650;
+}
+.courier-dot {
+  width: 8px;
+  height: 8px;
+  flex: none;
+  border-radius: 50%;
+  background: var(--ma-accent);
+}
+.courier-row-time,
+.courier-row-lane {
+  flex: none;
+  color: var(--ma-text-secondary);
+  font-size: 12px;
+}
+.courier-row-line {
+  flex: 1;
+  min-width: 0;
+  overflow: hidden;
+  text-overflow: ellipsis;
+  white-space: nowrap;
+  color: var(--ma-text-secondary);
+  font-size: 13px;
+}
+.courier-row-line mark {
+  border-radius: 3px;
+  background: var(--ma-accent-subtle);
+  color: var(--ma-text-primary);
+  font-weight: 600;
+  /* The Designer's call 5: a match keeps the tint and adds an accent underline, so it reads on a bold unread row too. */
+  text-decoration: underline;
+  text-decoration-color: var(--ma-accent);
+  text-decoration-thickness: 1.5px;
+  text-underline-offset: 2px;
+}
+.courier-row-count {
+  flex: none;
+  color: var(--ma-text-secondary);
+  font-size: 12px;
+}
+.courier-medium {
+  display: inline-flex;
+  flex: none;
+  color: var(--ma-text-secondary);
+}
+.courier-medium .courier-i {
+  width: 14px;
+  height: 14px;
+}
+.courier-more {
+  margin: 8px auto;
+  display: flex;
+  justify-content: center;
+}
+.courier-ask {
+  display: inline-flex;
+  flex-wrap: wrap;
+  align-items: center;
+  justify-content: center;
+  gap: 6px;
+  color: var(--ma-text-secondary);
+  font-size: 13px;
+}
+.courier-request {
+  display: flex;
+  flex-direction: column;
+  gap: 4px;
+  padding: 4px 0 10px;
+  border-bottom: 1px solid var(--ma-border-hairline);
+}
+.courier-request .courier-decide-btns {
+  padding: 0 10px;
+}
+.courier-request-subject {
+  overflow: hidden;
+  text-overflow: ellipsis;
+  white-space: nowrap;
+  font-size: 13px;
+  font-weight: 500;
+}
+.courier-address {
+  margin: 0;
+  overflow: hidden;
+  text-overflow: ellipsis;
+  white-space: nowrap;
+  color: var(--ma-text-secondary);
+  font-size: 12px;
+  font-weight: 400;
+}
+.courier-decide-btns {
+  display: flex;
+  flex-wrap: wrap;
+  gap: 6px;
+}
+
+/* ---------------------------------------------------------------- a conversation */
+.courier-thread {
+  position: relative;
+  display: flex;
+  flex-direction: column;
+  min-width: 0;
+  min-height: 0;
+}
+.courier-thread-head {
+  flex: none;
+  display: flex;
+  align-items: center;
+  gap: 8px;
+  padding: 12px 16px;
+  border-bottom: 1px solid var(--ma-border-hairline);
+}
+.courier-thread-title {
+  flex: 1;
+  min-width: 0;
+}
+.courier-thread-title h2 {
+  margin: 0;
+  overflow: hidden;
+  text-overflow: ellipsis;
+  white-space: nowrap;
+  font-size: 16px;
+  font-weight: 650;
+}
+.courier-thread-title h2:focus {
+  outline: none;
+}
+.courier-thread-title h2:focus-visible {
+  outline: 2px solid var(--ma-focus-ring);
+}
+.courier-thread-acts {
+  display: flex;
+  align-items: center;
+  gap: 6px;
+}
+.courier-decide {
+  flex: none;
+  display: flex;
+  flex-direction: column;
+  gap: 8px;
+  padding: 12px 16px;
+  border-bottom: 1px solid var(--ma-border-hairline);
+  background: var(--ma-surface-sunken);
+}
+.courier-decide p {
+  margin: 0;
+  color: var(--ma-text-secondary);
+  font-size: 13px;
+}
+.courier-thread-scroll {
+  flex: 1;
+  min-height: 0;
+  overflow-y: auto;
+  padding: 12px 16px 72px;
+  /* The frame takes the pane's free height (the Designer's call 1): this box is what's left between the header and the reply. */
+  container-type: size;
+}
+/* The scroll and the line at the foot, which sits over the scroll's foot, never over the reply (the Designer's call 3). */
+.courier-pane-body {
+  position: relative;
+  flex: 1;
+  min-height: 0;
+  display: flex;
+  flex-direction: column;
+}
+.courier-earlier {
+  margin: 0 auto 12px;
+  display: flex;
+}
+.courier-messages {
+  display: flex;
+  flex-direction: column;
+  gap: 10px;
+  margin: 0;
+  padding: 0;
+  list-style: none;
+}
+.courier-card {
+  border: 1px solid var(--ma-border);
+  border-radius: 12px;
+  background: var(--ma-surface-window);
+}
+.courier-card.found,
+.courier-bubble.found {
+  box-shadow: 0 0 0 2px var(--ma-focus-ring);
+}
+.courier-card:focus {
+  outline: none;
+}
+.courier-card-head {
+  display: flex;
+  align-items: flex-start;
+  gap: 4px;
+  padding: 4px 4px 0 0;
+}
+.courier-card-toggle {
+  flex: 1;
+  display: flex;
+  flex-wrap: wrap;
+  align-items: baseline;
+  gap: 2px 8px;
+  min-width: 0;
+  padding: 8px 12px;
+  border: 0;
+  border-radius: 10px;
+  background: transparent;
+  text-align: left;
+}
+.courier-card-toggle time {
+  margin-left: auto;
+  color: var(--ma-text-secondary);
+  font-size: 12px;
+}
+.courier-card-snippet {
+  flex-basis: 100%;
+  overflow: hidden;
+  text-overflow: ellipsis;
+  white-space: nowrap;
+  color: var(--ma-text-secondary);
+  font-size: 13px;
+}
+.courier-who {
+  font-weight: 600;
+}
+.courier-card-body {
+  display: flex;
+  flex-direction: column;
+  gap: 10px;
+  padding: 0 12px 12px;
+}
+.courier-subject {
+  margin: 0;
+  font-size: 15px;
+  font-weight: 650;
+}
+.courier-text {
+  white-space: pre-wrap;
+  overflow-wrap: anywhere;
+  line-height: 1.5;
+}
+.courier-status {
+  color: var(--ma-text-secondary);
+  font-size: 12px;
+}
+.courier-modes {
+  display: inline-flex;
+  align-self: flex-start;
+  padding: 2px;
+  gap: 2px;
+  border-radius: 8px;
+  background: var(--ma-surface-fill);
+}
+.courier-modes button {
+  min-height: 26px;
+  padding: 0 10px;
+  border: 1px solid transparent;
+  border-radius: 6px;
+  background: transparent;
+  color: var(--ma-text-secondary);
+  font-size: 12px;
+  font-weight: 500;
+}
+.courier-modes button[aria-pressed='true'] {
+  border-color: var(--ma-border);
+  background: var(--ma-surface-window);
+  color: var(--ma-text-primary);
+}
+/* The message as sent, in its sandboxed frame. It scrolls inside; its own stylesheet paints it on paper. */
+.courier-frame {
+  display: block;
+  width: 100%;
+  height: max(320px, 100cqh);
+  border: 1px solid var(--ma-border);
+  border-radius: 10px;
+  background: var(--ma-surface-tile);
+}
+.courier-root[data-cols='1'] .courier-frame {
+  height: 60vh;
+}
+.courier-images-off {
+  display: flex;
+  align-items: center;
+  gap: 6px;
+}
+.courier-note {
+  display: flex;
+  align-items: flex-start;
+  gap: 8px;
+  margin: 0;
+  padding: 10px 12px;
+  border: 1px solid var(--ma-border);
+  border-radius: 10px;
+  background: var(--ma-surface-sunken);
+  color: var(--ma-text-primary);
+  font-size: 13px;
+}
+.courier-note > .courier-i {
+  margin-top: 1px;
+  color: var(--ma-text-secondary);
+}
+.courier-note > div {
+  display: flex;
+  flex-direction: column;
+  gap: 2px;
+}
+.courier-note > div > span {
+  color: var(--ma-text-secondary);
+}
+
+/* Links, listed outside the frame. */
+.courier-links {
+  border: 1px solid var(--ma-border-hairline);
+  border-radius: 10px;
+}
+.courier-links-head {
+  display: flex;
+  align-items: center;
+  gap: 8px;
+  width: 100%;
+  min-height: 36px;
+  padding: 0 12px;
+  border: 0;
+  border-radius: 10px;
+  background: transparent;
+  color: var(--ma-text-primary);
+  font-size: 13px;
+  font-weight: 600;
+  text-align: left;
+}
+.courier-links-head > span {
+  flex: 1;
+}
+.courier-chev {
+  transform: rotate(-90deg);
+  color: var(--ma-text-secondary);
+}
+.courier-chev.open {
+  transform: rotate(90deg);
+}
+.courier-links-why {
+  margin: 0;
+  padding: 0 12px 8px;
+  color: var(--ma-text-secondary);
+  font-size: 12px;
+}
+.courier-link-list {
+  margin: 0;
+  padding: 0 4px 4px;
+  list-style: none;
+}
+.courier-link {
+  display: flex;
+  flex-wrap: wrap;
+  align-items: center;
+  gap: 8px;
+  padding: 8px;
+  border-top: 1px solid var(--ma-border-hairline);
+}
+.courier-link-main {
+  flex: 1 1 240px;
+  display: flex;
+  flex-direction: column;
+  gap: 2px;
+  min-width: 0;
+}
+.courier-link-words {
+  font-size: 13px;
+}
+.courier-link-host {
+  font-weight: 650;
+  overflow-wrap: anywhere;
+}
+.courier-link-href {
+  overflow: hidden;
+  text-overflow: ellipsis;
+  white-space: nowrap;
+  color: var(--ma-text-secondary);
+  font-size: 12px;
+}
+.courier-link-warn {
+  margin: 4px 0 0;
+  padding: 6px 8px 6px 24px;
+  border-radius: 8px;
+  background: var(--ma-surface-sunken);
+  font-size: 12px;
+}
+.courier-link-quiet {
+  color: var(--ma-text-secondary);
+  font-size: 12px;
+}
+.courier-link-acts {
+  display: flex;
+  gap: 4px;
+}
+
+/* Attachments: named, never opened here. */
+.courier-atts-head {
+  display: flex;
+  align-items: center;
+  gap: 6px;
+  margin: 0 0 6px;
+  font-size: 13px;
+  font-weight: 600;
+}
+.courier-atts ul {
+  display: flex;
+  flex-direction: column;
+  gap: 4px;
+  margin: 0 0 6px;
+  padding: 0;
+  list-style: none;
+}
+.courier-att {
+  display: flex;
+  flex-wrap: wrap;
+  align-items: center;
+  gap: 4px 10px;
+  padding: 6px 10px;
+  border: 1px solid var(--ma-border-hairline);
+  border-radius: 8px;
+}
+.courier-att-name {
+  overflow-wrap: anywhere;
+}
+.courier-att-size {
+  color: var(--ma-text-secondary);
+  font-size: 12px;
+}
+.courier-att-danger {
+  display: flex;
+  flex-basis: 100%;
+  align-items: center;
+  gap: 6px;
+  color: var(--ma-text-secondary);
+  font-size: 12px;
+}
+
+/* Chat: plain bubbles, the member's own on the accent's subtle tint. */
+.courier-bubble {
+  align-self: flex-start;
+  max-width: min(520px, 85%);
+  padding: 8px 12px;
+  border-radius: 14px;
+  background: var(--ma-surface-fill);
+}
+.courier-bubble.mine {
+  align-self: flex-end;
+  background: var(--ma-accent-subtle);
+}
+.courier-bubble:focus {
+  outline: none;
+}
+.courier-bubble-head {
+  display: flex;
+  align-items: center;
+  gap: 6px;
+  margin-bottom: 2px;
+  color: var(--ma-text-secondary);
+  font-size: 12px;
+}
+.courier-bubble-head .courier-who {
+  color: var(--ma-text-primary);
+}
+.courier-bubble-text {
+  white-space: pre-wrap;
+  overflow-wrap: anywhere;
+  line-height: 1.45;
+}
+
+/* ---------------------------------------------------------------- the reply */
+.courier-compose {
+  flex: none;
+  display: flex;
+  flex-direction: column;
+  gap: 6px;
+  padding: 10px 16px 12px;
+  border-top: 1px solid var(--ma-border-hairline);
+  background: var(--ma-surface-window);
+}
+.courier-compose-why {
+  margin: 0;
+  color: var(--ma-text-secondary);
+  font-size: 12px;
+}
+.courier-compose-subject input,
+.courier-compose-text textarea,
+.courier-field input {
+  width: 100%;
+  box-sizing: border-box;
+  padding: 7px 10px;
+  border: 1px solid var(--ma-border-strong);
+  border-radius: 8px;
+  background: var(--ma-surface-sunken);
+  color: var(--ma-text-primary);
+  font: inherit;
+}
+.courier-compose-subject input::placeholder,
+.courier-compose-text textarea::placeholder,
+.courier-field input::placeholder {
+  color: var(--ma-text-secondary);
+}
+.courier-compose-subject input:focus,
+.courier-compose-text textarea:focus,
+.courier-field input:focus {
+  border-color: var(--ma-focus-ring);
+  outline: none;
+}
+.courier-compose-row {
+  display: flex;
+  align-items: flex-end;
+  gap: 8px;
+}
+.courier-compose-text {
+  flex: 1;
+  min-width: 0;
+}
+.courier-compose-text textarea {
+  display: block;
+  resize: vertical;
+  min-height: 44px;
+  max-height: 240px;
+}
+.courier-compose-foot {
+  display: flex;
+  align-items: center;
+  justify-content: space-between;
+  min-height: 20px;
+}
+
+/* ---------------------------------------------------------------- accounts */
+.courier-setup {
+  position: relative;
+  display: flex;
+  flex-direction: column;
+  min-width: 0;
+  min-height: 0;
+}
+.courier-setup-head {
+  flex: none;
+  display: flex;
+  align-items: center;
+  gap: 8px;
+  padding: 12px 16px;
+  border-bottom: 1px solid var(--ma-border-hairline);
+}
+.courier-setup-head h2 {
+  margin: 0;
+  font-size: 16px;
+  font-weight: 650;
+}
+.courier-setup-head h2:focus {
+  outline: none;
+}
+.courier-setup-scroll {
+  flex: 1;
+  min-height: 0;
+  overflow-y: auto;
+  display: flex;
+  flex-direction: column;
+  gap: 20px;
+  padding: 16px 16px 72px;
+}
+.courier-setup-scroll h3 {
+  margin: 0 0 8px;
+  font-size: 13px;
+  font-weight: 650;
+  color: var(--ma-text-secondary);
+}
+.courier-setup-scroll p {
+  margin: 0 0 10px;
+  line-height: 1.5;
+}
+.courier-accounts {
+  display: flex;
+  flex-direction: column;
+  gap: 8px;
+  margin: 0;
+  padding: 0;
+  list-style: none;
+}
+.courier-account {
+  display: flex;
+  flex-wrap: wrap;
+  align-items: center;
+  gap: 8px 12px;
+  padding: 12px;
+  border: 1px solid var(--ma-border);
+  border-radius: 10px;
+}
+.courier-account-main {
+  flex: 1 1 220px;
+  display: flex;
+  flex-direction: column;
+  gap: 2px;
+  min-width: 0;
+}
+.courier-account-label {
+  font-weight: 600;
+}
+.courier-account-line {
+  overflow-wrap: anywhere;
+}
+.courier-account-acts {
+  display: flex;
+  gap: 6px;
+}
+.courier-confirm {
+  flex-basis: 100%;
+  display: flex;
+  flex-direction: column;
+  gap: 8px;
+  padding-top: 8px;
+  border-top: 1px solid var(--ma-border-hairline);
+}
+.courier-confirm-btns {
+  display: flex;
+  gap: 6px;
+}
+.courier-check {
+  display: flex;
+  align-items: center;
+  gap: 8px;
+  min-height: 32px;
+}
+.courier-check input {
+  width: 16px;
+  height: 16px;
+  accent-color: var(--ma-accent);
+}
+.courier-providers {
+  display: grid;
+  grid-template-columns: repeat(auto-fill, minmax(200px, 1fr));
+  gap: 8px;
+  margin: 0;
+  padding: 0;
+  list-style: none;
+}
+.courier-provider {
+  display: flex;
+  align-items: center;
+  justify-content: space-between;
+  gap: 8px;
+  width: 100%;
+  min-height: 44px;
+  padding: 0 12px;
+  border: 1px solid var(--ma-border);
+  border-radius: 10px;
+  background: var(--ma-surface-window);
+  text-align: left;
+  font-weight: 500;
+}
+.courier-provider:hover {
+  background: var(--ma-surface-fill);
+}
+.courier-provider-later {
+  padding: 6px 4px 0;
+}
+.courier-signin {
+  display: flex;
+  flex-direction: column;
+  gap: 12px;
+  max-width: 520px;
+}
+.courier-signin h3 {
+  margin: 0;
+  color: var(--ma-text-primary);
+  font-size: 15px;
+}
+.courier-back {
+  align-self: flex-start;
+  padding-left: 4px;
+}
+.courier-field {
+  display: flex;
+  flex-direction: column;
+  gap: 4px;
+  font-size: 13px;
+}
+.courier-field > span {
+  color: var(--ma-text-secondary);
+}
+.courier-field input[aria-invalid='true'] {
+  border-color: var(--ma-text-primary);
+  border-width: 2px;
+}
+.courier-servers {
+  display: flex;
+  flex-wrap: wrap;
+  gap: 10px;
+  margin: 0;
+  padding: 0;
+  border: 0;
+}
+.courier-servers .grow {
+  flex: 1 1 220px;
+}
+.courier-servers .port {
+  flex: 0 0 90px;
+}
+.courier-sealed {
+  display: flex;
+  gap: 8px;
+  padding: 10px 12px;
+  border-radius: 10px;
+  background: var(--ma-surface-sunken);
+  color: var(--ma-text-secondary);
+  font-size: 13px;
+}
+.courier-sealed p {
+  margin: 0;
+}
+.courier-signin > .courier-btn.primary {
+  align-self: flex-start;
+  min-height: 36px;
+}
+
+/* ---------------------------------------------------------------- menu, the line at the foot, the keys */
+.courier-menu {
+  position: absolute;
+  z-index: 10;
+  min-width: 200px;
+  padding: 4px;
+  border: 1px solid var(--ma-border);
+  border-radius: 10px;
+  background: var(--ma-surface-overlay);
+  box-shadow: var(--ma-elevation-menu);
+}
+.courier-menu-item {
+  display: flex;
+  align-items: center;
+  gap: 8px;
+  width: 100%;
+  min-height: 32px;
+  padding: 0 10px;
+  border: 0;
+  border-radius: 6px;
+  background: transparent;
+  color: var(--ma-text-primary);
+  font-size: 13px;
+  text-align: left;
+}
+.courier-menu-item:hover,
+.courier-menu-item:focus-visible {
+  background: var(--ma-surface-fill);
+}
+/* The line at the foot: inside the pane that acted, 16 px from its left, above the reply (the Designer's call 3); on a phone
+   the pane's width less 12 px. */
+.courier-foot-wrap {
+  position: absolute;
+  left: 16px;
+  bottom: 12px;
+  z-index: 7;
+  max-width: calc(100% - 32px);
+}
+.courier-root[data-cols='1'] .courier-foot-wrap {
+  left: 6px;
+  right: 6px;
+  max-width: none;
+}
+.courier-foot {
+  display: flex;
+  align-items: center;
+  gap: 12px;
+  padding: 8px 8px 8px 14px;
+  border: 1px solid var(--ma-border);
+  border-radius: 10px;
+  background: var(--ma-surface-overlay);
+  box-shadow: var(--ma-elevation-menu);
+  font-size: 13px;
+}
+.courier-foot > span {
+  overflow: hidden;
+  text-overflow: ellipsis;
+  white-space: nowrap;
+}
+.courier-foot.wrap > span {
+  white-space: normal;
+}
+.courier-foot-undo {
+  flex: none;
+  min-height: 28px;
+  padding: 0 10px;
+  border: 0;
+  border-radius: 6px;
+  background: transparent;
+  color: var(--ma-text-link);
+  font-weight: 600;
+}
+.courier-foot-undo:hover {
+  background: var(--ma-surface-fill);
+}
+.courier-scrim {
+  position: absolute;
+  inset: 0;
+  z-index: 9;
+  display: grid;
+  place-items: center;
+  padding: 16px;
+  background: var(--ma-surface-scrim);
+}
+.courier-dialog {
+  width: min(360px, 100%);
+  padding: 20px;
+  border: 1px solid var(--ma-border);
+  border-radius: 14px;
+  background: var(--ma-surface-overlay);
+  box-shadow: var(--ma-elevation-menu);
+}
+.courier-dialog h2 {
+  margin: 0 0 12px;
+  font-size: 16px;
+}
+.courier-keys {
+  display: flex;
+  flex-direction: column;
+  gap: 6px;
+  margin: 0 0 16px;
+}
+.courier-keys div {
+  display: flex;
+  align-items: center;
+  gap: 12px;
+}
+.courier-keys dt {
+  width: 56px;
+}
+.courier-keys dd {
+  margin: 0;
+}
+.courier-keys kbd {
+  display: inline-block;
+  min-width: 22px;
+  padding: 2px 6px;
+  border: 1px solid var(--ma-border-strong);
+  border-radius: 5px;
+  background: var(--ma-surface-sunken);
+  font: inherit;
+  font-size: 12px;
+  text-align: center;
+}
+
+/* ---------------------------------------------------------------- one column: a phone's targets */
+.courier-root[data-cols='1'] .courier-btn,
+.courier-root[data-cols='1'] .courier-lane,
+.courier-root[data-cols='1'] .courier-modes button,
+.courier-root[data-cols='1'] .courier-links-head,
+.courier-root[data-cols='1'] .courier-foot-undo,
+.courier-root[data-cols='1'] .courier-menu-item {
+  min-height: 44px;
+}
+.courier-root[data-cols='1'] .courier-icon-btn {
+  width: 44px;
+  height: 44px;
+}
+.courier-root[data-cols='1'] .courier-search input {
+  height: 42px;
+}
+.courier-root[data-cols='1'] .courier-thread-head,
+.courier-root[data-cols='1'] .courier-setup-head {
+  padding: 6px 8px;
+}
+.courier-root[data-cols='1'] .courier-thread-scroll {
+  padding: 10px 10px 72px;
+}
+.courier-root[data-cols='1'] .courier-compose {
+  padding: 8px 10px 10px;
+}
+.courier-root[data-cols='1'] .courier-bubble {
+  max-width: 92%;
+}
+@media (prefers-reduced-motion: no-preference) {
+  .courier-chev {
+    transition: transform 160ms ease;
+  }
+}
+
+/* ---------------------------------------------------------------- this desk's address (flows 1 and 2) */
+.courier-ground {
+  /* One column, whatever the window's width: the card is centred on the window's ground and scrolls when it's taller. */
+  grid-template-columns: minmax(0, 1fr);
+  place-items: safe center;
+  overflow-y: auto;
+  background: var(--ma-surface-sunken);
+}
+.courier-addr-card {
+  display: flex;
+  flex-direction: column;
+  gap: 10px;
+  width: min(520px, 100%);
+  padding: 28px;
+  border: 1px solid var(--ma-border-hairline);
+  border-radius: 16px;
+  background: var(--ma-surface-window);
+  box-shadow: var(--ma-elevation-menu);
+  text-align: left;
+}
+.courier-root[data-cols='1'] .courier-addr-card {
+  padding: 20px 16px;
+}
+.courier-addr-card h2 {
+  margin: 0;
+  font-size: 20px;
+  font-weight: 650;
+}
+.courier-tag {
+  align-self: flex-start;
+  padding: 2px 8px;
+  border-radius: 999px;
+  background: var(--ma-surface-fill);
+  color: var(--ma-text-secondary);
+  font-size: 12px;
+  font-weight: 600;
+}
+.courier-addr-lead,
+.courier-addr-help,
+.courier-addr-how {
+  margin: 0;
+  color: var(--ma-text-secondary);
+  font-size: 14px;
+  line-height: 1.45;
+}
+.courier-addr-help,
+.courier-addr-how {
+  font-size: 13px;
+}
+.courier-addr-field {
+  display: flex;
+  align-items: stretch;
+  min-width: 0;
+  border: 1px solid var(--ma-border-strong);
+  border-radius: 10px;
+  background: var(--ma-surface-window);
+  overflow: hidden;
+}
+.courier-addr-field:focus-within {
+  outline: 2px solid var(--ma-focus-ring);
+  outline-offset: 1px;
+}
+.courier-addr-field input {
+  flex: 1;
+  min-width: 0;
+  height: 44px;
+  padding: 0 12px;
+  border: 0;
+  background: transparent;
+  font-weight: 600;
+  outline: none;
+}
+.courier-addr-domain {
+  display: flex;
+  align-items: center;
+  padding: 0 12px;
+  border-left: 1px solid var(--ma-border-hairline);
+  background: var(--ma-surface-sunken);
+  color: var(--ma-text-secondary);
+  white-space: nowrap;
+}
+/* On a phone the domain has its own line under the field, so the field never scrolls sideways. */
+.courier-addr-field[data-narrow] {
+  flex-direction: column;
+}
+.courier-addr-field[data-narrow] .courier-addr-domain {
+  min-height: 36px;
+  border-left: 0;
+  border-top: 1px solid var(--ma-border-hairline);
+  white-space: normal;
+  overflow-wrap: anywhere;
+}
+.courier-addr-line {
+  display: flex;
+  align-items: center;
+  gap: 6px;
+  min-height: 20px;
+  margin: 0;
+  color: var(--ma-text-secondary);
+  font-size: 13px;
+}
+.courier-addr-line.ok {
+  color: var(--ma-text-primary);
+  font-weight: 600;
+}
+.courier-addr-line.ok .courier-i {
+  color: var(--ma-accent);
+}
+.courier-disclose {
+  align-self: flex-start;
+  padding-left: 4px;
+}
+.courier-addr-btns {
+  display: flex;
+  justify-content: flex-end;
+  gap: 8px;
+  padding-top: 6px;
+}
+.courier-root[data-cols='1'] .courier-addr-btns {
+  flex-direction: column-reverse;
+}
+.courier-share-row {
+  display: flex;
+  flex-direction: column;
+  gap: 6px;
+}
+.courier-share-row h3,
+.courier-person h3 {
+  margin: 0;
+  font-size: 13px;
+  font-weight: 650;
+  color: var(--ma-text-secondary);
+}
+.courier-share-box {
+  display: flex;
+  align-items: center;
+  gap: 10px;
+  padding: 10px 12px;
+  border: 1px solid var(--ma-border);
+  border-radius: 10px;
+  background: var(--ma-surface-sunken);
+}
+.courier-share-box[data-narrow] {
+  flex-direction: column;
+  align-items: stretch;
+}
+.courier-share-value {
+  flex: 1;
+  min-width: 0;
+  font-weight: 600;
+  overflow-wrap: anywhere;
+}
+/* The link wraps after "#k=" on a phone; it never scrolls sideways. */
+.courier-share-url {
+  font-weight: 500;
+  word-break: break-all;
+}
+.courier-share-btns {
+  display: flex;
+  gap: 8px;
+  flex: none;
+}
+.courier-share-box[data-narrow] .courier-share-btns > .courier-btn {
+  flex: 1;
+}
+/* The fingerprint: tabular figures, letter-spaced, never a monospace font; text, never a button. */
+/* The link's own fingerprint, its 8 groups of 4 in two rows of four (the same code the invite link carries). */
+.courier-fp {
+  display: grid;
+  grid-template-columns: repeat(4, max-content);
+  gap: 4px 14px;
+  margin: 0;
+  font-size: 17px;
+  font-weight: 650;
+  font-variant-numeric: tabular-nums;
+  letter-spacing: 0.12em;
+}
+.courier-share-done {
+  display: flex;
+  justify-content: flex-end;
+  padding-top: 8px;
+}
+
+/* ---------------------------------------------------------------- one person across channels (flow 11) */
+.courier-suggest {
+  display: flex;
+  align-items: flex-start;
+  gap: 10px;
+  margin: 0 0 14px;
+  padding: 12px 14px;
+  border: 1px solid var(--ma-border);
+  border-radius: 12px;
+  background: var(--ma-surface-window);
+}
+.courier-suggest.in-card {
+  margin: 8px 0 0;
+  background: var(--ma-surface-sunken);
+}
+.courier-suggest > .courier-i {
+  margin-top: 2px;
+  color: var(--ma-text-secondary);
+}
+.courier-suggest-main {
+  display: flex;
+  flex-direction: column;
+  gap: 4px;
+  min-width: 0;
+}
+.courier-suggest-main > span {
+  color: var(--ma-text-secondary);
+  font-size: 13px;
+}
+.courier-suggest-main .courier-decide-btns {
+  margin-top: 6px;
+}
+.courier-linknote {
+  display: flex;
+  align-items: flex-start;
+  gap: 10px;
+  margin: 4px 0 8px;
+  padding: 12px;
+  border: 1px solid var(--ma-border);
+  border-radius: 12px;
+  background: var(--ma-surface-sunken);
+}
+.courier-linknote > .courier-i {
+  margin-top: 2px;
+  color: var(--ma-text-secondary);
+}
+.courier-linknote p {
+  margin: 0 0 8px;
+  font-size: 13px;
+}
+.courier-review-rows,
+.courier-ways,
+.courier-pick {
+  display: flex;
+  flex-direction: column;
+  gap: 8px;
+  margin: 0;
+  padding: 0;
+  list-style: none;
+}
+.courier-review-row {
+  display: flex;
+  flex-direction: column;
+  gap: 6px;
+  padding: 12px 14px;
+  border: 1px solid var(--ma-border);
+  border-radius: 12px;
+}
+.courier-review-pair {
+  display: flex;
+  align-items: center;
+  flex-wrap: wrap;
+  gap: 6px;
+  min-width: 0;
+}
+.courier-review-ep {
+  font-weight: 600;
+  overflow-wrap: anywhere;
+}
+.courier-ways {
+  gap: 0;
+  border: 1px solid var(--ma-border);
+  border-radius: 12px;
+}
+.courier-way {
+  display: flex;
+  align-items: center;
+  gap: 10px;
+  padding: 10px 12px;
+}
+.courier-way + .courier-way {
+  border-top: 1px solid var(--ma-border-hairline);
+}
+.courier-way > .courier-i {
+  color: var(--ma-text-secondary);
+}
+.courier-way-main {
+  flex: 1;
+  min-width: 0;
+  display: flex;
+  flex-direction: column;
+  gap: 2px;
+}
+.courier-way-value {
+  font-weight: 600;
+  overflow-wrap: anywhere;
+}
+.courier-way-add {
+  display: flex;
+  flex-direction: column;
+  gap: 6px;
+}
+.courier-way-add > label {
+  color: var(--ma-text-secondary);
+  font-size: 13px;
+  font-weight: 650;
+}
+.courier-way-add-row {
+  display: flex;
+  gap: 8px;
+}
+.courier-way-add-row input {
+  flex: 1;
+  min-width: 0;
+  height: 36px;
+  padding: 0 10px;
+  border: 1px solid var(--ma-border-strong);
+  border-radius: 8px;
+  background: var(--ma-surface-window);
+}
+.courier-way-add-line {
+  min-height: 18px;
+}
+.courier-menu-two {
+  display: flex;
+  flex-direction: column;
+  gap: 2px;
+  padding: 6px 0;
+}
+.courier-menu-two .courier-quiet {
+  font-size: 12px;
+  white-space: normal;
+}
+.courier-name-btn,
+.courier-link-btn {
+  padding: 0;
+  border: 0;
+  background: transparent;
+  font: inherit;
+  text-align: left;
+}
+.courier-name-btn:hover {
+  text-decoration: underline;
+  text-underline-offset: 3px;
+}
+.courier-link-btn {
+  color: var(--ma-text-link);
+}
+/* A drag over a person: the accent ring and "Drop to link to {name}" (17). */
+.courier-row[data-drop],
+.courier-thread-head[data-drop] {
+  outline: 2px solid var(--ma-accent);
+  outline-offset: -2px;
+  background: var(--ma-accent-subtle);
+}
+.courier-drop-line {
+  display: block;
+  margin: 0 0 2px;
+  color: var(--ma-text-link);
+  font-size: 12px;
+  font-weight: 600;
+}
+.courier-linksheet {
+  display: flex;
+  flex-direction: column;
+  gap: 12px;
+  width: min(420px, 100%);
+  max-height: min(560px, 100%);
+}
+.courier-pick {
+  gap: 2px;
+  min-height: 0;
+  overflow-y: auto;
+}
+.courier-pick-row {
+  display: grid;
+  grid-template-columns: minmax(0, 1fr) auto;
+  align-items: center;
+  gap: 2px 8px;
+  width: 100%;
+  min-height: 44px;
+  padding: 6px 10px;
+  border: 0;
+  border-radius: 8px;
+  background: transparent;
+  text-align: left;
+}
+.courier-pick-row:hover,
+.courier-pick-row[aria-pressed='true'] {
+  background: var(--ma-surface-fill);
+}
+.courier-pick-row > .courier-i {
+  grid-row: 1 / span 2;
+  grid-column: 2;
+  color: var(--ma-accent);
+}
+.courier-pick-name {
+  font-weight: 600;
+}
+.courier-linksheet-btns {
+  display: flex;
+  justify-content: flex-end;
+  gap: 8px;
+}
+/* On a phone the sheet comes up from the bottom (p14). */
+.courier-scrim.sheet {
+  place-items: end stretch;
+  padding: 0;
+}
+.courier-linksheet.sheet {
+  width: 100%;
+  max-height: 85%;
+  border-radius: 16px 16px 0 0;
+}
+.courier-linksheet.sheet .courier-linksheet-btns > .courier-btn.primary {
+  flex: 1;
+}
+
+/* A phone's targets for the new pieces: 44 px (the brand review). */
+.courier-root[data-cols='1'] .courier-way-add-row input,
+.courier-root[data-cols='1'] .courier-pick-row {
+  min-height: 44px;
+}
+.courier-root[data-cols='1'] .courier-name-btn,
+.courier-root[data-cols='1'] .courier-link-btn {
+  display: inline-flex;
+  align-items: center;
+  min-height: 44px;
+}
+
+/* Spam and safety (Wave 3.2): a sender warning is a neutral note; a warned row a quiet shield beside its medium. */
+.courier-row-warned {
+  display: inline-flex;
+  flex: none;
+  color: var(--ma-text-secondary);
+}
+.courier-filtered {
+  margin: 0 0 8px;
+}
+.courier-card-body > .courier-note + .courier-note,
+.courier-bubble > .courier-note {
+  margin-top: 8px;
+}
+/* Save to Files beside an attachment, its ask in place for a dangerous type. */
+/* An attachment's presses sit together at the row's end; what Show and Show files open takes the row's whole width. */
+.courier-att-acts {
+  display: flex;
+  flex-wrap: wrap;
+  gap: 4px;
+  margin-left: auto;
+}
+.courier-root[data-cols='1'] .courier-att-acts .courier-btn,
+.courier-root[data-cols='1'] .courier-raw-download {
+  min-height: 44px;
+}
+.courier-att-more {
+  flex-basis: 100%;
+  margin: 4px 0 2px;
+}
+/* The redrawn picture: never wider than the card, never taller than the pane allows, on the sunken surface. */
+.courier-att-preview {
+  padding: 8px;
+  border-radius: 6px;
+  background: var(--ma-surface-sunken);
+}
+.courier-att-preview img {
+  display: block;
+  max-width: 100%;
+  max-height: 60vh;
+  height: auto;
+  width: auto;
+  margin: 0 auto;
+}
+.courier-archive ul {
+  max-height: 240px;
+  overflow: auto;
+  margin: 4px 0 0;
+  padding: 0;
+  list-style: none;
+}
+.courier-archive li {
+  display: flex;
+  flex-wrap: wrap;
+  gap: 2px 10px;
+  padding: 3px 0;
+  border-top: 1px solid var(--ma-border-hairline);
+  font-size: 13px;
+}
+.courier-archive-name {
+  overflow-wrap: anywhere;
+}
+.courier-raw-download {
+  align-self: flex-start;
+  margin-top: 6px;
+}
+/* Requests: a member's desk not yet added carries the sealed mark and its line under the address (flow 7). */
+.courier-request-member {
+  display: flex;
+  align-items: center;
+  gap: 6px;
+  color: var(--ma-text-secondary);
+  font-size: 12px;
+}
+
+/* Members' keys (flows 4 to 6): the safety number is text in 12 groups, 3 rows of 4, tabular figures and spaced, on the sunken
+   surface; a changed key is a bordered card with two equal answers; held is a quiet line with the lock. No colour says it. */
+.courier-sn {
+  display: grid;
+  grid-template-columns: repeat(4, max-content);
+  gap: 6px 20px;
+  margin: 0;
+  padding: 12px 14px;
+  border: 1px solid var(--ma-border-hairline);
+  border-radius: 10px;
+  background: var(--ma-surface-sunken);
+  color: var(--ma-text-primary);
+  font-size: 16px;
+  font-variant-numeric: tabular-nums;
+  letter-spacing: 0.08em;
+}
+.courier-keycard {
+  display: flex;
+  align-items: flex-start;
+  gap: 10px;
+  margin: 12px 0 0;
+  padding: 14px 16px;
+  border: 1px solid var(--ma-border);
+  border-radius: 12px;
+  background: var(--ma-surface-window);
+  color: var(--ma-text-primary);
+}
+.courier-keycard > .courier-i {
+  margin-top: 2px;
+}
+.courier-keycard-main {
+  display: flex;
+  flex-direction: column;
+  gap: 10px;
+  min-width: 0;
+}
+.courier-keycard h3 {
+  margin: 0;
+  font-size: 14px;
+  font-weight: 650;
+  color: var(--ma-text-primary);
+}
+.courier-keycard p {
+  margin: 0;
+  font-size: 13px;
+  color: var(--ma-text-secondary);
+}
+.courier-keycard .courier-sn {
+  color: var(--ma-text-primary);
+}
+.courier-keycard-btns {
+  display: flex;
+  flex-wrap: wrap;
+  align-items: center;
+  gap: 8px;
+}
+.courier-held {
+  display: flex;
+  align-items: center;
+  justify-content: center;
+  gap: 6px;
+  margin: 8px 0 0;
+  color: var(--ma-text-secondary);
+  font-size: 12px;
+}
+.courier-keyline {
+  display: flex;
+  align-items: center;
+  gap: 4px;
+}
+.courier-keyline > .courier-i {
+  flex: none;
+  width: 14px;
+  height: 14px;
+}
+.courier-keyline > span {
+  overflow: hidden;
+  text-overflow: ellipsis;
+}
+.courier-safety {
+  display: flex;
+  flex-direction: column;
+  gap: 8px;
+}
+.courier-safety > p {
+  margin: 0;
+}
+.courier-sn-paste {
+  width: 100%;
+  box-sizing: border-box;
+  padding: 8px 10px;
+  border: 1px solid var(--ma-border);
+  border-radius: 8px;
+  background: var(--ma-surface-window);
+  color: var(--ma-text-primary);
+  font: inherit;
+  font-size: 13px;
+  font-variant-numeric: tabular-nums;
+  resize: vertical;
+}
+.courier-sn-paste:focus-visible {
+  outline: 2px solid var(--ma-focus-ring);
+  outline-offset: 1px;
+}
+.courier-sn-verdict {
+  display: flex;
+  align-items: center;
+  gap: 6px;
+  min-height: 20px;
+  margin: 0;
+  font-size: 13px;
+  font-weight: 600;
+  color: var(--ma-text-primary);
+}
+.courier-sn-verdict:empty {
+  display: none;
+}
+/* On a phone the state under the name wraps: it's the point of the line (the brand review). */
+.courier-root[data-cols='1'] .courier-keyline {
+  align-items: flex-start;
+  white-space: normal;
+}
+.courier-root[data-cols='1'] .courier-keyline > span {
+  overflow: visible;
+  text-overflow: clip;
+}
+.courier-root[data-cols='1'] .courier-sn {
+  gap: 6px 12px;
+  font-size: 15px;
+  letter-spacing: 0.04em;
+}
+/* The invite card's address sits alone at the top of its column: it doesn't take the column's free height. */
+.courier-setup-scroll > .courier-share-value {
+  flex: none;
+  margin: 0;
+}
+
+/* MA Connector for Mac: the code the Mac shows, typed in two groups of four. */
+.courier-mac-steps {
+  margin: 0 0 4px;
+  padding-left: 20px;
+  display: grid;
+  gap: 4px;
+}
+.courier-field input.courier-mac-code {
+  font-family: ui-monospace, SFMono-Regular, Menlo, Consolas, monospace;
+  font-size: 18px;
+  letter-spacing: 0.14em;
+  text-transform: uppercase;
+  max-width: 220px;
+}

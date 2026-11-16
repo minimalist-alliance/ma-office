@@ -5,6 +5,7 @@ import type { AgentClient } from '../client/agentClient';
 import type { Agent, AuditEntry, AuditPage, KeyMeta, LimitScope, Provider } from '../client/types';
 import { errorText } from '../model/agents';
 import { askedWord, doingWord, doneWord, levelOf, READ_TOOLS, shown, type Level } from '../model/approvals';
+import { ACTIVITY_UNASKED, undoActivity } from '../model/auto';
 import { usd, when } from '../model/format';
 import { SCOPE_LABEL } from '../model/limits';
 import { Icon } from './icons';
@@ -122,13 +123,20 @@ export function rowAgent(e: Pick<AuditEntry, 'actor' | 'target' | 'detail'>): st
 export function foldAsks<T extends Pick<AuditEntry, 'action' | 'target'>>(entries: readonly T[]): T[] {
   const calls = new Set<string>();
   const answered = new Set<string>();
+  // A call done without asking has two rows (draft ADR section 15): its `tool.call` (`auto:<group>`, no approval) and its
+  // `approval.auto`. The call's row says it, so the other goes while one of that run's unasked calls of that tool is on the page.
+  const unasked = new Set<string>();
+  const callKey = (target: string): string => `${part(target, 'tool')} ${part(target, 'run')}`;
   for (const e of entries) {
+    if (e.action === 'tool.call' && part(e.target, 'auto') !== null) unasked.add(callKey(e.target));
     const id = part(e.target, 'approval');
     if (!id) continue;
     if (e.action === 'tool.call') calls.add(id);
     if (e.action !== 'approval.ask') answered.add(id);
   }
   return entries.filter((e) => {
+    if (e.action === 'approval.auto') return !unasked.has(callKey(e.target));
+    if (e.action === 'approval.undo') return true;
     const id = part(e.target, 'approval');
     if (!id || e.action === 'tool.call') return true;
     if (e.action === 'approval.ask') return !answered.has(id);
@@ -167,17 +175,22 @@ export function toolRow(e: AuditEntry, agents: readonly Pick<Agent, 'id' | 'name
     case 'tool.call': {
       const viaApproval = part(e.target, 'approval') !== null || d?.approvedBy === 'member';
       if (e.decision === 'ok') {
+        // desk-agent's row for a call done without asking under the member's setting for the agent names `auto:<group>`
+        // (draft ADR §15); the spec's `detail.approvedBy: 'rule'` keeps its own words.
+        const unasked = part(e.target, 'auto') !== null;
         const letBy: LetBy | null = viaApproval
           ? approved
-          : d?.approvedBy === 'rule'
-            ? { text: 'Allowed by your rule', by: 'rule' }
-            : risk === 'read'
-              ? { text: 'No approval needed: it only reads', by: 'none' }
-              : risk === 'own' || tool === 'memory_save'
-                ? { text: 'No approval needed: you can delete it', by: 'none' }
-                : d?.undoable
-                  ? { text: 'No approval needed: you can undo it', by: 'none' }
-                  : null;
+          : unasked
+            ? { text: ACTIVITY_UNASKED, by: 'rule' }
+            : d?.approvedBy === 'rule'
+              ? { text: 'Allowed by your rule', by: 'rule' }
+              : risk === 'read'
+                ? { text: 'No approval needed: it only reads', by: 'none' }
+                : risk === 'own' || tool === 'memory_save'
+                  ? { text: 'No approval needed: you can delete it', by: 'none' }
+                  : d?.undoable
+                    ? { text: 'No approval needed: you can undo it', by: 'none' }
+                    : null;
         return { what: d?.done ?? doneWord(tool), level: level, onWhat, who, letBy };
       }
       if (e.decision === 'refused:declined') return { what: `Declined: ${asked}`, level: level, onWhat, who, letBy: { text: 'Declined by you', by: 'declined' } };
@@ -199,6 +212,12 @@ export function toolRow(e: AuditEntry, agents: readonly Pick<Agent, 'id' | 'name
       const why = e.decision === 'stopped' ? 'You stopped the task, so not done' : e.decision === 'restart' ? 'The desk team restarted, so not done' : 'Not answered in time, so not done';
       return { what: `Wanted to ${asked}`, level: level, onWhat, who, letBy: { text: why, by: 'unanswered' } };
     }
+    case 'approval.auto':
+      return { what: d?.done ?? doneWord(tool), level, onWhat, who, letBy: { text: ACTIVITY_UNASKED, by: 'rule' } };
+    case 'approval.undo': {
+      const u = undoActivity(e.decision, d?.done ?? doneWord(tool));
+      return { what: u.what, level, onWhat, who: 'You', letBy: u.why ? { text: u.why, by: 'none' } : null };
+    }
     case 'approval.interrupt':
       return { what: `Didn’t finish: ${asked}`, level: level, onWhat, who, letBy: { text: 'The desk team restarted while doing it', by: 'none' } };
     case 'browser.session.grant':
@@ -217,6 +236,17 @@ export function toolRow(e: AuditEntry, agents: readonly Pick<Agent, 'id' | 'name
     }
     case 'thread.compact':
       return { what: 'Summarized a long thread', level: null, onWhat: agentName(part(e.target, 'agent')), who, letBy: null };
+    // The setup screen and its settings (draft ADR section 16): which apps changed is in the row, never a place or a desk's name.
+    case 'access.set':
+      return { what: e.decision === 'setup' ? 'Set up what it can use' : 'Changed what it can use', level: null, onWhat: agentName(part(e.target, 'agent')), who: 'You', letBy: null };
+    case 'access.confirm':
+      return { what: 'Waits for you to confirm what it can use', level: null, onWhat: agentName(part(e.target, 'agent')), who: 'Your desk', letBy: null };
+    case 'access.tampered':
+      return { what: 'Its choices couldn’t be checked, so it waits for you', level: null, onWhat: agentName(part(e.target, 'agent')), who: 'Your desk', letBy: null };
+    case 'desks.offer':
+      return { what: 'Let it message another of your desks', level: null, onWhat: agentName(part(e.target, 'agent')), who: 'You', letBy: null };
+    case 'desks.revoke':
+      return { what: e.decision === 'deleted' ? 'Stopped its messages to another desk when it was deleted' : 'Stopped messages to another desk', level: null, onWhat: agentName(part(e.target, 'agent')), who: e.decision === 'deleted' ? 'Your desk' : 'You', letBy: null };
     default:
       return null;
   }

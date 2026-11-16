@@ -1,0 +1,90 @@
+{
+  "id": "notebook-037",
+  "area": "notebook",
+  "title": "Trash a page found in a tab's list",
+  "prompt": "In my Harness tab, trash the page named Scratch.",
+  "setup": {
+    "notebook": [
+      {
+        "tab": "Harness",
+        "title": "Scratch",
+        "markdown": "# Scratch\n\ntemp\n"
+      },
+      {
+        "tab": "Harness",
+        "title": "Keep",
+        "markdown": "# Keep\n\nkeep\n"
+      }
+    ]
+  },
+  "approve": "all",
+  "checks": [
+    {
+      "kind": "noPage",
+      "tab": "Harness",
+      "title": "Scratch"
+    },
+    {
+      "kind": "page",
+      "tab": "Harness",
+      "title": "Keep"
+    },
+    {
+      "kind": "cards",
+      "tools": [
+        "notebook_trash"
+      ]
+    }
+  ],
+  "policy": {
+    "tools": [
+      "notebook_list",
+      "notebook_trash"
+    ]
+  },
+  "standIn": [
+    {
+      "calls": [
+        {
+          "name": "notebook_list",
+          "input": {}
+        }
+      ]
+    },
+    {
+      "calls": [
+        {
+          "name": "notebook_list",
+          "input": {
+            "tabId": {
+              "$re": {
+                "step": 0,
+                "call": 0,
+                "pattern": "\"tabId\":\"([^\"]+)\",\"title\":\"Harness\""
+              }
+            }
+          }
+        }
+      ]
+    },
+    {
+      "calls": [
+        {
+          "name": "notebook_trash",
+          "input": {
+            "pageId": {
+              "$re": {
+                "step": 1,
+                "call": 0,
+                "pattern": "\"pageId\":\"([^\"]+)\",\"title\":\"Scratch\""
+              }
+            }
+          }
+        }
+      ]
+    },
+    {
+      "text": "Trashed Scratch."
+    }
+  ]
+}

@@ -1,0 +1,278 @@
+/* The office tour (ADR 0056, `TourLayer.tsx`; the Product Designer's spec section 2, from its prototype `tour.css`). Its own
+   file, fetched with the tour's chunk, so the app's one stylesheet gains only the spotlight token. Every colour is a theme
+   token, so Light, Zen and Dark follow; `--ma-surface-spotlight` is the one new one (`theme/tokens.ts`). */
+
+/* ------------------------------------------------------------ the layer */
+/* Over everything in the office, like a modal: the top bar's menus are 60s, Account settings 70. A press anywhere on it does
+   nothing; once it's leaving, presses go through to the office again. A menu open anyway steps it back (`.yield`). */
+.tour {
+  position: fixed;
+  inset: 0;
+  z-index: 72;
+  pointer-events: auto;
+  font-family: var(--ma-font-ui);
+  color: var(--ma-text-primary);
+  touch-action: none;
+}
+.tour.leaving {
+  pointer-events: none;
+}
+/* Stepped back for a menu the member has open (`TourLayer.tsx`): none of it shows or takes a press until the menu shuts,
+   then it's back on the same step. */
+.tour.yield {
+  visibility: hidden;
+  pointer-events: none;
+}
+
+/* The spotlight: one box whose shadow is the scrim, so its inside is the hole; its first shadow is the 2 px ring. It glides
+   from step to step (280 ms), and a resize or a target that moves places it at once (`.still`). */
+.tour-hole {
+  position: fixed;
+  top: 0;
+  left: 0;
+  box-shadow: 0 0 0 2px transparent, 0 0 0 200vmax var(--ma-surface-spotlight);
+  pointer-events: none;
+  transition-property: transform, width, height, border-radius, box-shadow;
+  transition-duration: 280ms;
+  transition-timing-function: cubic-bezier(0.2, 0, 0, 1);
+}
+.tour-hole.ring {
+  box-shadow: 0 0 0 2px var(--ma-accent), 0 0 0 200vmax var(--ma-surface-spotlight);
+}
+.tour-hole.still {
+  transition: none;
+}
+
+/* ------------------------------------------------------------ the card: the office's popover surface, as the menus are */
+.tour-tip {
+  position: fixed;
+  width: 320px;
+  max-width: calc(100vw - 32px);
+  box-sizing: border-box;
+  border: 1px solid var(--ma-border);
+  border-radius: 16px;
+  background: var(--ma-surface-overlay);
+  box-shadow: var(--ma-elevation-menu);
+  font-size: 14px;
+  line-height: 20px;
+  overscroll-behavior: contain;
+  touch-action: pan-y;
+}
+/* The intro (the owner, Nov 13: the first card was "lazy and uninspired"): wider, the Alliance's mark over a larger title,
+   and its close button in the corner beside the mark. */
+.tour-tip.intro {
+  width: 400px;
+}
+.tour-tip.intro .tour-body {
+  padding: 22px 22px 16px;
+}
+.tour-mark {
+  margin: 0 0 16px;
+}
+.tour-tip.intro .tour-x {
+  position: absolute;
+  top: 14px;
+  right: 14px;
+  margin: 0;
+}
+.tour-tip.intro .tour-title {
+  font-size: 20px;
+  line-height: 28px;
+}
+.tour-tip.intro .tour-line {
+  margin-top: 8px;
+  font-size: 15px;
+  line-height: 22px;
+}
+.tour-tip:focus {
+  outline: none;
+}
+.tour-tip:focus-visible {
+  outline: 2px solid var(--ma-focus-ring);
+  outline-offset: 2px;
+}
+.tour-body {
+  padding: 16px 16px 14px;
+}
+.tour-head {
+  display: flex;
+  align-items: flex-start;
+  gap: 8px;
+}
+.tour-title {
+  flex: 1;
+  margin: 2px 0 0;
+  font-size: 16px;
+  line-height: 24px;
+  font-weight: 600;
+  color: var(--ma-text-primary);
+}
+.tour-x {
+  display: inline-grid;
+  flex: none;
+  place-items: center;
+  width: 32px;
+  height: 32px;
+  margin: -2px -6px 0 0;
+  padding: 0;
+  border: 0;
+  border-radius: 10px;
+  background: transparent;
+  color: var(--ma-text-secondary);
+  cursor: pointer;
+}
+.tour-x svg {
+  width: 16px;
+  height: 16px;
+  fill: none;
+  stroke: currentColor;
+  stroke-width: 1.6;
+  stroke-linecap: round;
+}
+.tour-line {
+  margin: 4px 0 0;
+  color: var(--ma-text-secondary);
+  text-wrap: pretty;
+}
+.tour-foot {
+  display: flex;
+  align-items: center;
+  gap: 8px;
+  margin-top: 16px;
+}
+.tour-count {
+  flex: 1;
+  font-size: 13px;
+  line-height: 18px;
+  color: var(--ma-text-secondary);
+  font-variant-numeric: tabular-nums;
+}
+.tour-quiet,
+.tour-next {
+  height: 36px;
+  padding: 0 14px;
+  border-radius: 10px;
+  font: inherit;
+  font-size: 14px;
+  font-weight: 500;
+  white-space: nowrap;
+  cursor: pointer;
+}
+.tour-quiet {
+  border: 0;
+  background: transparent;
+  color: var(--ma-text-primary);
+}
+.tour-quiet:hover,
+.tour-x:hover {
+  background: var(--ma-surface-sunken);
+}
+.tour-next {
+  min-width: 72px;
+  border: 1px solid var(--ma-accent);
+  background: var(--ma-accent);
+  color: var(--ma-text-on-accent);
+}
+.tour-next:hover {
+  border-color: var(--ma-accent-hover);
+  background: var(--ma-accent-hover);
+}
+.tour-tip button:focus {
+  outline: none;
+}
+.tour-tip button:focus-visible {
+  outline: 2px solid var(--ma-focus-ring);
+  outline-offset: 2px;
+}
+/* "Don't show this again": a quiet link in the card's own foot, under a hairline. */
+.tour-off {
+  padding: 9px 16px 11px;
+  border-top: 1px solid var(--ma-border-hairline);
+}
+.tour-link {
+  padding: 0;
+  border: 0;
+  background: none;
+  font: inherit;
+  font-size: 13px;
+  line-height: 18px;
+  color: var(--ma-text-secondary);
+  text-decoration: underline;
+  text-decoration-color: var(--ma-border-strong);
+  text-underline-offset: 3px;
+  cursor: pointer;
+}
+
+/* The caret: a 14 px square turned 45 degrees, 8 px out of the card, with the card's fill and its border on its two outer sides. */
+.tour-caret {
+  position: absolute;
+  width: 14px;
+  height: 14px;
+  box-sizing: border-box;
+  border: 1px solid var(--ma-border);
+  background: var(--ma-surface-overlay);
+  transform: rotate(45deg);
+}
+.tour-caret[data-side='below'] {
+  top: -8px;
+  border-right: 0;
+  border-bottom: 0;
+  border-top-left-radius: 3px;
+}
+.tour-caret[data-side='above'] {
+  bottom: -8px;
+  border-top: 0;
+  border-left: 0;
+  border-bottom-right-radius: 3px;
+}
+.tour-caret[data-side='right'] {
+  left: -8px;
+  border-top: 0;
+  border-right: 0;
+  border-bottom-left-radius: 3px;
+}
+.tour-caret[data-side='left'] {
+  right: -8px;
+  border-bottom: 0;
+  border-left: 0;
+  border-top-right-radius: 3px;
+}
+
+/* ------------------------------------------------------------ a phone (under 600 px) */
+/* Docked to the bottom, or to the top when the hole's bottom comes within 24 px of it; no caret; 44 px targets. */
+.tour.phone .tour-tip {
+  top: auto;
+  right: 12px;
+  bottom: calc(12px + env(safe-area-inset-bottom, 0px));
+  left: 12px;
+  width: auto;
+  max-width: none;
+  max-height: calc(100dvh - 24px);
+  overflow-y: auto;
+}
+.tour.phone .tour-tip.top {
+  top: calc(12px + env(safe-area-inset-top, 0px));
+  bottom: auto;
+}
+.tour.phone .tour-quiet,
+.tour.phone .tour-next {
+  height: 44px;
+}
+.tour.phone .tour-x {
+  width: 44px;
+  height: 44px;
+  margin: -8px -10px -4px 0;
+}
+.tour.phone .tour-off {
+  padding: 0 16px;
+}
+.tour.phone .tour-link {
+  min-height: 44px;
+}
+
+/* ------------------------------------------------------------ reduced motion: nothing glides or fades */
+@media (prefers-reduced-motion: reduce) {
+  .tour-hole {
+    transition: none;
+  }
+}

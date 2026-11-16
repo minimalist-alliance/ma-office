@@ -1,0 +1,52 @@
+{
+  "id": "notebook-001",
+  "area": "notebook",
+  "title": "List the tabs",
+  "prompt": "What tabs do I have in my Notebook?",
+  "setup": {
+    "notebook": [
+      {
+        "tab": "Harness",
+        "title": "Inbox",
+        "markdown": "# Inbox\n\nThings to sort later.\n"
+      },
+      {
+        "tab": "Harness Work",
+        "title": "Standup",
+        "markdown": "# Standup\n\nDaily notes.\n"
+      }
+    ]
+  },
+  "approve": "all",
+  "checks": [
+    {
+      "kind": "reply",
+      "contains": [
+        "Harness Work"
+      ],
+      "state": "done"
+    },
+    {
+      "kind": "cards",
+      "tools": []
+    }
+  ],
+  "policy": {
+    "tools": [
+      "notebook_list"
+    ]
+  },
+  "standIn": [
+    {
+      "calls": [
+        {
+          "name": "notebook_list",
+          "input": {}
+        }
+      ]
+    },
+    {
+      "text": "Your tabs include Harness and Harness Work."
+    }
+  ]
+}

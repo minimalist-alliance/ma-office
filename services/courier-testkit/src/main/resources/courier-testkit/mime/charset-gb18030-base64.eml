@@ -1,0 +1,11 @@
+From: =?gb18030?B?19yyvw==?= <hq@example.com>
+To: me@desk.example
+Date: Fri, 13 Nov 2026 10:00:00 +0000
+Subject: =?gb18030?B?xOq2yNfcveEglDm9NQ==?=
+Message-ID: <charset-gb18030-base64@corpus.example>
+MIME-Version: 1.0
+X-Corpus-Note: text/plain in gb18030, base64, subject and sender name as encoded words in the same charset
+Content-Type: text/plain; charset="gb18030"
+Content-Transfer-Encoding: base64
+
+xOq2yNfcveHS0b6tzeqzyZQ5vTWjrLjQ0Lu087zStcTFrMGmoaMNCg==

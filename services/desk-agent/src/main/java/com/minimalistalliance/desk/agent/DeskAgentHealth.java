@@ -1,6 +1,7 @@
 package com.minimalistalliance.desk.agent;
 
 import com.minimalistalliance.desk.agent.admin.AdminServer;
+import com.minimalistalliance.desk.agent.attach.Parsers;
 import com.minimalistalliance.desk.agent.audit.AuditLog;
 import com.minimalistalliance.desk.agent.key.KeyRing;
 import com.minimalistalliance.desk.agent.limits.UsageLedger;
@@ -14,7 +15,8 @@ import java.util.Map;
  * What GET /health reports. It fails only when desk-agent can't keep its records: the data directory, the ledger,
  * the audit log or the agent store. With those down it refuses every model call, so a rollout should roll it back.
  * The manager's state, the key count and whether deskd is connected are informational: a desk with no key bound, or
- * a deskd that hasn't connected yet, is healthy.
+ * a deskd that hasn't connected yet, is healthy. So is {@code parse} ({@code sidecar} or {@code child}, ADR 0097), which
+ * the image's smoke test reads: where the sidecar's marker exists it must say {@code sidecar}.
  */
 final class DeskAgentHealth implements AdminServer.Health {
 
@@ -25,6 +27,7 @@ final class DeskAgentHealth implements AdminServer.Health {
     private final ManagerAgent manager;
     private final KeyRing keys;
     private final AgentSocketServer socket;
+    private final Parsers parsers;
     private final String version;
 
     DeskAgentHealth(
@@ -35,6 +38,7 @@ final class DeskAgentHealth implements AdminServer.Health {
             ManagerAgent manager,
             KeyRing keys,
             AgentSocketServer socket,
+            Parsers parsers,
             String version) {
         this.data = data;
         this.audit = audit;
@@ -43,6 +47,7 @@ final class DeskAgentHealth implements AdminServer.Health {
         this.manager = manager;
         this.keys = keys;
         this.socket = socket;
+        this.parsers = parsers;
         this.version = version;
     }
 
@@ -66,6 +71,7 @@ final class DeskAgentHealth implements AdminServer.Health {
         details.put("deskd", socket.connected() ? "connected" : "waiting");
         details.put("manager", manager.status().wireName());
         details.put("keys", keys.size());
+        details.put("parse", parsers.mode());
         return details;
     }
 }

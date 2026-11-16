@@ -1,0 +1,101 @@
+/* The office's loading overlay, /_loader/loading.css (ma-desk ADR 0058). The Product Designer's design and CSS
+   (design-drafts/loading-overlay/, Nov 12), with two changes the ADR gives: the overlay takes no input at any time
+   (the UI/UX brief), and a CSS-only safety for a page whose loader.js never runs.
+   A file, not inline: the office's CSP (default-src 'self', no style-src) refuses <style> and style="". Colours are the
+   Desk app's tokens (web/src/theme/tokens.ts), named beside each value; theme.js sets html[data-theme] before paint.
+   Only opacity and transform move, so the compositor runs every frame while the bundle is busy on the main thread. */
+
+/* Shown only once theme.js has run: no JS means no overlay, and the <noscript> line shows as before. The markup carries
+   `hidden`, so without this file it never shows; the rule below (an author rule beats the browser's [hidden]) shows it. */
+#ma-ld { display: none; }
+[data-theme] #ma-ld {
+  position: fixed; inset: 0; z-index: 2147483647;
+  display: flex; align-items: center; justify-content: center;
+  pointer-events: none;                      /* takes no input: clicks and taps reach the office under it (ADR 0058) */
+  /* A safety for a page whose loader.js never runs: gone by 20 s anyway. loader.js's own is 15 s, and the office's ready
+     comes long before. Replaced by .ma-ld-out or .ma-ld-fast below; its own keyframes, since a rule that kept the name
+     would only retime this one animation, already 20 s old, rather than start the fade. */
+  animation: ma-ld-gone 200ms linear 20s both;
+  background: #E9EBEF;                       /* light surface.worldBase, theme.js's own ground */
+  --ma-ld-track: rgba(16, 24, 40, 0.12);     /* light border.default */
+  --ma-ld-glint: #3D6FA8;                    /* light accent.default */
+  --ma-ld-text: #666970;                     /* light text.tertiary */
+}
+[data-theme="dusk"] #ma-ld {                 /* Zen */
+  background: #4D5463;                       /* dusk surface.worldBase */
+  --ma-ld-track: rgba(241, 243, 247, 0.14);  /* dusk border.default */
+  --ma-ld-glint: #A9C4E4;                    /* dusk accent.default */
+  --ma-ld-text: #D3D8E0;                     /* dusk text.tertiary */
+}
+[data-theme="dark"] #ma-ld {
+  background: #1A1D21;                       /* dark surface.worldBase */
+  --ma-ld-track: rgba(236, 237, 239, 0.12);  /* dark border.default */
+  --ma-ld-glint: #7FA7DD;                    /* dark accent.default */
+  --ma-ld-text: #9FA4AC;                     /* dark text.tertiary */
+}
+
+/* The group sits a little above centre (optical centre); the 10 s line hangs below it without moving it. */
+.ma-ld-c { position: relative; margin-top: -4vh; }
+.ma-ld-in {
+  display: flex; flex-direction: column; align-items: center; gap: 24px;
+  animation: ma-ld-in 500ms cubic-bezier(0, 0, 0.2, 1) 500ms both;          /* appear: waits 500 ms, then 500 ms */
+}
+
+/* The mark: the theme's shipped file, whole, at 88 x 54.6 px (72 x 44.7 on a phone). */
+.ma-ld-m { display: none; width: 88px; height: 54.6px; }
+[data-theme="light"] .ma-ld-l, [data-theme="dusk"] .ma-ld-z, [data-theme="dark"] .ma-ld-d { display: block; }
+
+/* The loop: a 2 px slate track under the mark with a blue glint passing along it, left to right, every 1800 ms. */
+.ma-ld-t {
+  position: relative; display: block; width: 56px; height: 2px; border-radius: 1px; overflow: hidden;
+  background: var(--ma-ld-track);
+}
+.ma-ld-g {
+  position: absolute; top: 0; left: 0; width: 42.857%; height: 100%;      /* 3/7 of the track: 24 px, 20.6 on a phone */
+  background: linear-gradient(90deg, transparent, var(--ma-ld-glint) 40% 60%, transparent);
+  transform: translateX(-100%);
+  animation: ma-ld-sweep 1800ms cubic-bezier(0.37, 0, 0.63, 1) 500ms infinite;
+}
+
+/* After 10 s: one quiet line (Sales' words; draft). System font: the loader has no web fonts. */
+.ma-ld-s {
+  position: absolute; top: 100%; left: 50%; transform: translateX(-50%);
+  margin: 20px 0 0; white-space: nowrap;
+  font: 400 13px/18px system-ui, -apple-system, "Segoe UI", Roboto, sans-serif; letter-spacing: 0.01em;
+  color: var(--ma-ld-text);
+  animation: ma-ld-show 800ms cubic-bezier(0, 0, 0.2, 1) 10s both;
+}
+.ma-ld-sr { position: absolute; width: 1px; height: 1px; overflow: hidden; clip-path: inset(50%); white-space: nowrap; }
+
+/* Ready: the mark and line go first (280 ms), then the ground (480 ms from 120 ms). 600 ms in all. */
+#ma-ld.ma-ld-out { animation: ma-ld-out 480ms cubic-bezier(0.45, 0, 0.25, 1) 120ms both; }
+.ma-ld-out .ma-ld-c { animation: ma-ld-out 280ms cubic-bezier(0.33, 0, 0.67, 1) both; }
+/* Ready before the mark began to show (under 500 ms): the bare ground goes in 200 ms. */
+#ma-ld.ma-ld-fast { animation: ma-ld-out 200ms cubic-bezier(0, 0, 0.2, 1) both; }
+
+@keyframes ma-ld-in { from { opacity: 0; transform: scale(0.97); } }
+@keyframes ma-ld-show { from { opacity: 0; } }
+@keyframes ma-ld-out { to { opacity: 0; } }
+@keyframes ma-ld-gone { to { opacity: 0; } }
+/* 0-20 %: the glint waits before the track (360 ms), so the mark arrives first; 20-100 %: it crosses (1440 ms, eased).
+   Centred at 60 % (1080 ms). */
+@keyframes ma-ld-sweep {
+  0%, 20% { transform: translateX(-100%); }
+  100% { transform: translateX(233.333%); }
+}
+
+/* A phone: a smaller mark and track, the same motion. */
+@media (max-width: 599px) {
+  .ma-ld-m { width: 72px; height: 44.7px; }
+  .ma-ld-in { gap: 20px; }
+  .ma-ld-t { width: 48px; }
+}
+
+/* Reduced motion: a still. The loop's 1080 ms frame (glint centred), opacity-only changes of 200 ms. */
+@media (prefers-reduced-motion: reduce) {
+  .ma-ld-in { animation: ma-ld-show 200ms linear 500ms both; }
+  .ma-ld-g { animation: none; transform: translateX(66.667%); }
+  .ma-ld-s { animation-duration: 200ms; animation-timing-function: linear; }
+  #ma-ld.ma-ld-out, #ma-ld.ma-ld-fast { animation: ma-ld-out 200ms linear both; }
+  .ma-ld-out .ma-ld-c { animation: none; }
+}

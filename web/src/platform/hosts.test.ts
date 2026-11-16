@@ -1,5 +1,5 @@
 import { describe, expect, it } from 'vitest';
-import { apiBaseFor, siblingUrl } from './hosts';
+import { apiBaseFor, siblingUrl, ssoOrigin } from './hosts';
 
 describe('apiBaseFor', () => {
   it.each([
@@ -58,5 +58,77 @@ describe('siblingUrl', () => {
     expect(siblingUrl('https://test.office.staging.minimalistalliance.com/account', 'office.staging.minimalistalliance.com')).toBeNull();
     expect(siblingUrl('https://platform.minimalistalliance.com/account', 'evil.example')).toBeNull();
     expect(siblingUrl('https://platform.minimalistalliance.com/account', '127.0.0.1')).toBeNull();
+  });
+});
+
+describe('ssoOrigin: the shared sign-in, on only for an object with an https origin at id. on this site (ma-platform contract auth.md §2.8)', () => {
+  const cfg = (sso: unknown) => ({ auth: { sso } });
+
+  it.each([
+    ['https://id.minimalistalliance.com', 'office.minimalistalliance.com'],
+    ['https://id.staging.minimalistalliance.com', 'office.staging.minimalistalliance.com'],
+    ['https://id.staging.minimalistalliance.com', 'test.office.staging.minimalistalliance.com'],
+    ['https://id.localhost', 'localhost'],
+  ])('%s from %s', (origin, host) => {
+    expect(ssoOrigin(cfg({ origin }), host)).toBe(origin);
+  });
+
+  it('takes the object as Platform sends it, with whatever else it may carry one day', () => {
+    expect(ssoOrigin(cfg({ origin: 'https://id.minimalistalliance.com', more: 1 }), 'office.minimalistalliance.com')).toBe('https://id.minimalistalliance.com');
+  });
+
+  it.each([
+    ['absent', undefined],
+    ['null', null],
+    ['true, a boolean', true],
+    ['a string', 'https://id.minimalistalliance.com'],
+    ['an array', ['https://id.minimalistalliance.com']],
+    ['an empty object', {}],
+    ['an origin that is not a string', { origin: 42 }],
+    ['an empty origin', { origin: '' }],
+    ['a trailing slash', { origin: 'https://id.minimalistalliance.com/' }],
+    ['a path', { origin: 'https://id.minimalistalliance.com/v1' }],
+    ['a query', { origin: 'https://id.minimalistalliance.com?x=1' }],
+    ['upper case, which is not what the URL says', { origin: 'https://ID.minimalistalliance.com' }],
+    ['http', { origin: 'http://id.minimalistalliance.com' }],
+    ['a port', { origin: 'https://id.minimalistalliance.com:8443' }],
+    ['credentials', { origin: 'https://u:p@id.minimalistalliance.com' }],
+    ['this app itself', { origin: 'https://office.minimalistalliance.com' }],
+    ['the apex', { origin: 'https://minimalistalliance.com' }],
+    ['a deeper host', { origin: 'https://id.evil.minimalistalliance.com' }],
+    ['a look-alike', { origin: 'https://id.minimalistalliance.com.evil.example' }],
+    ['another site', { origin: 'https://id.evil.example' }],
+    ["staging's, from prod", { origin: 'https://id.staging.minimalistalliance.com' }],
+  ])('is off for %s', (_, sso) => {
+    expect(ssoOrigin(cfg(sso), 'office.minimalistalliance.com')).toBeNull();
+  });
+
+  // Security's SSO-L4: the first label is exactly `id`, so client-config can't point this browser's credentialed calls at any
+  // other host of the site, however like it the name.
+  it.each([
+    'https://platform.minimalistalliance.com',
+    'https://guild.minimalistalliance.com',
+    'https://forums.minimalistalliance.com',
+    'https://api.minimalistalliance.com',
+    'https://auth.minimalistalliance.com',
+    'https://signin.minimalistalliance.com',
+    'https://ids.minimalistalliance.com',
+    'https://xid.minimalistalliance.com',
+    'https://id-staging.minimalistalliance.com',
+    'https://i.minimalistalliance.com',
+  ])('is off for %s, another host of the site', (origin) => {
+    expect(ssoOrigin(cfg({ origin }), 'office.minimalistalliance.com')).toBeNull();
+  });
+
+  it('is off for any first label but id on staging and the harness too', () => {
+    expect(ssoOrigin(cfg({ origin: 'https://platform.staging.minimalistalliance.com' }), 'test.office.staging.minimalistalliance.com')).toBeNull();
+    expect(ssoOrigin(cfg({ origin: 'https://login.localhost' }), 'localhost')).toBeNull();
+  });
+
+  it("is off for prod's from staging, on a host that is not this app's, and with no config", () => {
+    expect(ssoOrigin(cfg({ origin: 'https://id.minimalistalliance.com' }), 'office.staging.minimalistalliance.com')).toBeNull();
+    expect(ssoOrigin(cfg({ origin: 'https://id.minimalistalliance.com' }), 'evil.example')).toBeNull();
+    expect(ssoOrigin(null, 'office.minimalistalliance.com')).toBeNull();
+    expect(ssoOrigin({}, 'office.minimalistalliance.com')).toBeNull();
   });
 });

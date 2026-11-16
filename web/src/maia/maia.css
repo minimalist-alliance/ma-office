@@ -46,7 +46,9 @@
   outline: 2px solid var(--ma-focus-ring);
   outline-offset: 3px;
 }
-/* Her canvas's positioned parent: the package puts her sleeping strip beside the canvas, inside this. */
+/* Her canvas's positioned parent: the package puts her sleeping strip beside the canvas, inside this. In the app tiles' glass
+   (the owner, Nov 16: "Maia's circle needs the same effect"): the office's one recipe, `styles/glass.css`, which lists the
+   bubble; she's drawn over its light, as a tile's glyph is. Under reduced transparency or more contrast it's the bubble it was. */
 .maia-bubble {
   position: relative;
   display: block;
@@ -54,8 +56,8 @@
   height: 64px;
   overflow: hidden;
   border-radius: 50%;
-  background: var(--ma-surface-overlay);
-  box-shadow: 0 0 0 1px var(--ma-border), var(--ma-elevation-menu);
+  --ma-glass-solid-bg: var(--ma-surface-overlay);
+  --ma-glass-solid-shadow: 0 0 0 1px var(--ma-border), var(--ma-elevation-menu);
 }
 .maia-canvas {
   display: block;
@@ -764,5 +766,86 @@
   .maia-panel,
   .maia-dots i {
     animation: none;
+  }
+}
+
+/* Web search (ma-platform ADR 0137): one card for a reply's batch, the auto line, and the sources. Tokens only. */
+.maia-web-queries {
+  margin: 6px 0 0;
+  padding-left: 18px;
+  font-size: 13px;
+  line-height: 18px;
+  color: var(--ma-text-primary);
+  overflow-wrap: anywhere;
+}
+.maia-web-queries li + li {
+  margin-top: 2px;
+}
+.maia-web-always,
+.maia-web-askfirst {
+  align-self: center;
+  padding: 0 2px;
+  border: 0;
+  background: none;
+  font: inherit;
+  font-size: 13px;
+  color: var(--ma-text-link);
+  text-decoration: underline;
+  text-underline-offset: 2px;
+  cursor: pointer;
+}
+.maia-web-always[aria-disabled='true'] {
+  cursor: default;
+  opacity: 0.6;
+}
+.maia-web-always:focus-visible,
+.maia-web-askfirst:focus-visible,
+.maia-sources a:focus-visible {
+  outline: 2px solid var(--ma-focus-ring);
+  outline-offset: 2px;
+  border-radius: 2px;
+}
+.maia-web-hint {
+  margin-top: 6px;
+  font-size: 12px;
+  line-height: 16px;
+  color: var(--ma-text-tertiary);
+}
+.maia-web-searched {
+  margin-bottom: 6px;
+  font-size: 12px;
+  line-height: 17px;
+  color: var(--ma-text-tertiary);
+  overflow-wrap: anywhere;
+}
+.maia-sources {
+  margin-top: 8px;
+  padding-top: 8px;
+  border-top: 1px solid var(--ma-border);
+  font-size: 12px;
+  line-height: 17px;
+}
+.maia-sources-title {
+  margin-bottom: 2px;
+  color: var(--ma-text-tertiary);
+}
+.maia-sources ol {
+  margin: 0;
+  padding-left: 18px;
+  color: var(--ma-text-tertiary);
+}
+.maia-sources a {
+  color: var(--ma-text-link);
+  text-decoration: underline;
+  text-underline-offset: 2px;
+  overflow-wrap: anywhere;
+}
+.maia-sources-domain {
+  color: var(--ma-text-tertiary);
+}
+@media (pointer: coarse) {
+  .maia-web-always,
+  .maia-web-askfirst {
+    min-height: 44px;
   }
 }

@@ -19,6 +19,8 @@ How the parts on one desk EC2 fit together. "Image 0.x.y" is the desk image of t
 | `desk-egress` (§9, ADR 0036) | root, `CAP_NET_ADMIN` only | Python, release artifact baked from the recipe, systemd | System Engineer |
 | `deskd` | `desk` (1100) | Spring Boot image in Docker, host network | Desk Engineer |
 | `desk-agent` (baked from image 0.2.7) | `agent` (1103) | Spring Boot image in Docker, host network | Desk Engineer |
+| `desk-parse` (the Agent's attachment reader, ADR 0097; not baked yet, `sub/desk-parse-sys`) | `parse` (1113): no network (`--network none --ipc none`), no `/data`, no capabilities, no new privileges, a read-only root, 160 MiB, 64 tasks, `oom_score_adj` +500 | desk-agent's own image (`/opt/ma/desk-agent/current/image-id`) in Docker, one long-lived container under `desk-parse.service` (`/usr/local/lib/ma/desk-parse-run`), `PartOf=desk-agent.service`. Process 1 is `desk-svc -accept` (static Go, `image/host/desk-svc`), which forks one worker JVM (`java @/app/parse.options`) per connection. In a slot, a runc sandbox of its own on the slot's desk-agent release (ADR 0072 section 2), switched with desk-agent (§13) | System Engineer (the sandbox, `desk-svc`); Desk Engineer (the worker and `parse.options`) |
+| `desk-parse-courier` (Courier's mail reader for `deskd`; `docs/sub-status/mm-courier-parse.md`; from image 0.3.9) | `parse` (1113), every limit of `desk-parse`'s: no network or IPC, no `/data`, no capabilities, no new privileges, a read-only root, 160 MiB, 64 tasks, +500 | desk-agent's own image in Docker, a second long-lived container under `desk-parse-courier.service` (`/usr/local/lib/ma/desk-parse-courier-run`), `PartOf=desk-agent.service`, wanted by `deskd` and desk-agent. `desk-svc -accept` serves uid 1100 (`deskd`) alone, one message at a time, killing the worker (`java @/app/courier-parse.options`) at 15 s. In a slot, an eighth sandbox (§15) | System Engineer (the sandbox); Desk Engineer (the worker and `courier-parse.options`) |
 | `desk-notebook` (S-13, unit and release baked from image 0.2.8) | `notebook` (1105) | Node 24 and Hocuspocus image in Docker, **no network** (`--network none`) | Desk Engineer |
 | `desk-agent-filter` (§9.1, ADR 0070, from 0.2.9) | `agent-filter` (1106), no capabilities | Go binary, baked from the recipe to `releases.pin`'s hash, systemd | System Engineer |
 | `desk-kind` (§3.1, task 48) | root, no capabilities, IMDS only, once a boot | Python script in the image | System Engineer |
@@ -54,13 +56,15 @@ How the parts on one desk EC2 fit together. "Image 0.x.y" is the desk image of t
 | `/data/desk/age-band` | The desk owner's band, exactly `teen\n` or `adult\n`, written atomically (§8.3). From image 0.2.8, `desk-browser-policy` reads it as root before every start of Chromium, and treats it as hostile. Anything else, or no file, means locked | `desk` writes it, root reads it |
 | `/data/desk/adblock-off` | The sites where the member turned the Browser's ad blocker off (§8.9): one lowercase ASCII hostname a line, LF after each, written atomically, `0640` (the Desk Engineer's half of `T47S-3`). `desk-adblock` reads it as root before every start of Chromium and on `start desk-adblock`, and treats it as hostile. No file means blocking everywhere. A clear of history empties it. In the member's export, under "Desk settings and Chat" | `desk` writes it, root reads it |
 | `/data/rtc` | DTLS identity, key mode `0600` | `rtc` |
-| `/data/browser` | Chromium profile and tab snapshots. `desk-datadirs` makes `/data/browser` as root, and `profile` (`0700`), `downloads` (`0750`) and `home` (`0700`) inside it **as `kiosk`** (EXP-7, from the bake after image 0.3.4): as root, GNU `install -d` followed a link the Browser's user put at one of those names, and gave it whatever the link named. One it can't fix is logged, and never fails the unit. On a shared host the slot's `desk-init` (the desk's root in its slot) makes the three as `kiosk` the same way (`slot-datadirs`, host image 0.1.11.2 and main's first host bake with it: its `os.makedirs`, `chown` and `chmod` by name followed such a link and gave `kiosk` a directory of the desk's root) | `kiosk` |
+| `/data/browser` | Chromium profile and tab snapshots. `desk-datadirs` makes `/data/browser` as root, and `profile` (`0700`), `downloads` (`0750`) and `home` (`0700`) inside it **as `kiosk`** (EXP-7, from the bake after image 0.3.4): as root, GNU `install -d` followed a link the Browser's user put at one of those names, and gave it whatever the link named. One it can't fix is logged, and never fails the unit. On a shared host the slot's `desk-init` (the desk's root in its slot) makes the three as `kiosk` the same way (`slot-datadirs`, host image 0.1.11.2 and main's first host bake with it: its `os.makedirs`, `chown` and `chmod` by name followed such a link and gave `kiosk` a directory of the desk's root). On a shared host (from the host bake with `sub/browser-metrics-tmpfs`) the profile's `BrowserMetrics/` is a 32 MiB tmpfs of `kiosk`'s, 0700, from the host before the desk starts (ISS-96): Chromium's histograms only, gone at each stop, the volume's copy under it untouched | `kiosk` |
 | `/run/ma/desk-kind` | **The desk's kind for this boot, and the one source of it** (§3.1): exactly `guild\n` or `member\n`, from the `DeskKind` tag. Directory `0755 root`, file `0644 root`. `deskd` reads it, never IMDS | root (`desk-kind`) |
 | `/run/ma/guild` | There only on a Guild Desk, `DeskKind=guild\n`. What the units' conditions and `desk-units` test | root (`desk-kind`) |
 | `/run/commons-server.address` | A Guild Desk with a `commons-server` release: the desk's public IPv4, one line, for `commons-server`'s `-advertise`. `commons-server-address.service` writes it as root from IMDS before `commons-server` starts, since `commons-server` is denied IMDS (Security's `GDS-4`) | root, `0644` |
 | `/run/desk-commons/commons.sock` | `commons-server`'s relay socket for `deskd`. Directory `2750 commons:desk` on every desk (`desk-commons.conf`), socket `0660`; `commons-server` also checks `SO_PEERCRED` for uid 1100 | `commons` |
 | `/data/guild/commons` | `commons-server`'s boards, chat threads, settings and audit log (`MA_APP_DATA`). `/data/guild` is `0755 root`, `commons` `0700 commons`, both made by `commons-data.service` on a Guild Desk only; `commons-server` sees nothing else of `/data` | `commons` |
 | `/data/files` | The Files app's tree (ADR 0048): the member's files, `.uploads/` (partials, swept after a day) and `.trash/` (30 days). Directory `0700`, owner `desk` (uid 1100), made by `desk-datadirs` from image 0.3.2; mounted into `deskd`'s container as `-v /data/files:/data/files`. On a shared host (from host image 0.1.11, free walk H5) the volume's `files` directory is moved into `deskd`'s sandbox as `/data/desk` is (`mounts.py`); up to 0.1.10 it wasn't, so no shared desk had Files. A volume from before has it from its second start there: the desk's `desk-init` makes it at the first. `deskd` is the only writer and reader: no root helper, and no other service or app sees it. Personal desks only | `desk` |
+| `/data/courier` | Courier's store (draft ADR "Courier's store"): its database, raw messages and `keys/`, the vault of linked mailboxes' sealed sign-ins and the key that opens them. Directory `0700`, owner `desk` (uid 1100), made by `desk-datadirs` from image 0.3.9; `deskd`'s `run` mounts it where it exists, and without it Courier is inert on the desk. `desk-data` leaves `courier/keys` out of every download and move (Security CP-L3). On a shared host, §15 | `desk` |
+| `/data/keys` | The desk's Courier identity and box keys (draft ADR "Courier's envelopes"): Ed25519 and X25519, files `0600` that `deskd` makes and alone reads. Directory `0700`, owner `desk`, made by `desk-datadirs` from image 0.3.9; `deskd`'s `run` mounts it where it exists. A machine part: never in `desk-data`'s parts or a move. On a shared host, §15 | `desk` |
 | `/run/ma-selfhost-dtls/dtls.json` | A self-hosted desk: desk-rtc's DTLS fingerprint, `{"fingerprintsSha256": [...]}`, for `ma-selfhost` to sign (`selfhost/README.md`). Written as root by `ma-selfhost-dtls`, at `ma-selfhost`'s start and after each desk-rtc start, into a directory only root can write (`0755 root`, checked before each write); it reads desk-rtc's `/data/rtc/dtls-identity.pem` with `O_NOFOLLOW` from an `O_NOFOLLOW` directory fd, a regular file of at most 64 KiB. Before EXP-7 it was `/run/ma-selfhost/dtls.json`, in `ma-selfhost`'s own directory | root writes it, `selfhost` reads it |
 | `/run/ma-selfhost-net/home.nft` | A self-hosted desk: the elements of the firewall's `home4` and `home6` sets (§9.1), written by `ma-selfhost-net` at every route change and included by `nftables.conf`. Directory `0755 root` (the unit's `RuntimeDirectory`, kept across its restarts), file `0644`. Beside it `load`, the same with `ipv6_ok`'s renewal, which is what each fill loads and the include never reads | root |
 | `/data/selfhost` | A self-hosted desk's own key and pairing (`selfhost/README.md`): `key.pem` (Ed25519, `0600`) and `desk.json`. Directory `0700`, owner `selfhost` (uid 1110), not root: `ma-selfhost-prep` makes it at each start of `ma-selfhost`, which runs as that user. Self-hosted desks, and a shared host's desks where ADR 0072 runs the same `ma-selfhost`; never in the export or a move. `ma-platform`'s `selfhost.md` step 1 and its ADR 0107 say "root only": it's this user's, not root's (audit Z31) | `selfhost` |
@@ -69,8 +73,8 @@ How the parts on one desk EC2 fit together. "Image 0.x.y" is the desk image of t
 | `/data/desk-egress/state.json` | `desk-egress`'s budgets (§9). Directory `0700` | root |
 | `/etc/ma/egress.conf` | `desk-egress`'s rates and budgets. The image's file, not a release's | root |
 | `/etc/ma/guild.conf` | A Guild Desk's sizes: members by instance type, the voice class, `desk-rtc`'s class and the guild's day line a member, with its temporary 120 GB cap (§3.1, §9). Read only with `/run/ma/guild`. The image's file, mode `0644` | root |
-| `/etc/ma/agent-egress.conf` | The names `desk-agent` may reach, exact, one a line (§9.1): `api.anthropic.com`, `api.openai.com`, `api.x.ai`, and from image 0.3.5 `openrouter.ai`. The image's file, not a release's (a shared host's slots read their template's, the same file). Mode `0644` | root writes it, `agent-filter` reads it |
-| `/etc/chromium/policies/managed/ma.json` | Chromium's managed policy on every desk, every band. Its `URLBlocklist` keeps a desk's Browser off the office itself: `office.`, `desk.`, `api.`, `auth.` and `gw.` at `minimalistalliance.com` and, from image 0.3.7, at `staging.minimalistalliance.com` (a host filter matches subdomains, and `office.staging.…` isn't one of `office.…`). A blocked navigation answers `net::ERR_BLOCKED_BY_ADMINISTRATOR`; `portal.` is not listed. Self-hosted desks install the same file. Checked by `verify-chromium.sh blocklist` | root, `0644` |
+| `/etc/ma/agent-egress.conf` | The names `desk-agent` may reach, exact, one a line (§9.1): `api.anthropic.com`, `api.openai.com`, `api.x.ai`, from image 0.3.5 `openrouter.ai`, and from the next bake after 2026-11-15 `generativelanguage.googleapis.com` and `api.moonshot.ai`. The image's file, not a release's (a shared host's slots read their template's, the same file). Mode `0644` | root writes it, `agent-filter` reads it |
+| `/etc/chromium/policies/managed/ma.json` | Chromium's managed policy on every desk, every band. Its `URLBlocklist` keeps a desk's Browser off the office itself: `office.`, `desk.`, `api.`, `auth.` and `gw.` at `minimalistalliance.com` and, from image 0.3.7, at `staging.minimalistalliance.com` (a host filter matches subdomains, and `office.staging.…` isn't one of `office.…`). A blocked navigation answers `net::ERR_BLOCKED_BY_ADMINISTRATOR`; `portal.` is not listed. Self-hosted desks install the same file. Checked by `verify-chromium.sh blocklist`. `deskd` turns that blocked page into the portal for an office host: `DESKD_PORTAL_URL` (`deskd.env`) unset follows the `Env` tag (prod `https://portal.minimalistalliance.com/`, staging `https://portal.staging.minimalistalliance.com/`), `off` turns the redirect off, a URL overrides it (never an office host); the block itself stays here | root, `0644` |
 | `/etc/ma/chromium-teen.json` | The teen lock's Chromium policies, sharing no key with `ma.json`. The image's file, from 0.2.8. From 0.3.5 its two extension keys are gone: `ExtensionInstallBlocklist` is `ma.json`'s, on every desk | root, `0644` |
 | `/etc/ma/chromium-adult.json` | From image 0.3.5: an adult's `ExtensionInstallAllowlist`, the three password managers (Bitwarden, 1Password, Proton Pass; image README, "Sign-in extensions"). Shares no key with the other three | root, `0644` |
 | `/etc/chromium/policies/managed/ma-adult.json` | From image 0.3.5: a copy of that file, in place only while the band is exactly `adult`, and never beside `ma-teen.json`. On the root; not in the AMI | root, `0644`, written only by `desk-browser-policy` |
@@ -86,7 +90,12 @@ How the parts on one desk EC2 fit together. "Image 0.x.y" is the desk image of t
 | `/run/desk-links/` | `links.sock` (§8.11), which `deskd` makes at `0660` and Chromium's `xdg-open` stand-in connects to. Directory `2750`, owner `desk`, group `kiosk`, so the socket's group is `kiosk` and no other user can enter; `deskd` also checks each peer's uid. From `/etc/tmpfiles.d/desk-links.conf` (deskd's `desk-links.tmpfiles`), from image 0.3.5, made at every boot before `deskd`. `deskd`'s `run` mounts it when it exists | `desk` |
 | `/run/desk-media/` | `stream.sock` (§8.2). Directory mode `0750`, owner `rtc`, group `stream` | `rtc` |
 | `/run/desk-notebook/` | `notebook.sock` (`0660`, group `desk`, by the directory's setgid bit). Directory mode `2750`, owner `notebook`, group `desk`, from image 0.2.8. `deskd` connects, and `kiosk` and `agent` can't enter | `notebook` |
+| `/run/desk-parse/` | The Agent's attachment reader (ADR 0097): `required` (the marker, `root:root 0444`, holding `1`: with it desk-agent never reads a file in its own child) and `sock/` (`parse:agent 2750`), where `desk-svc` binds `parse.sock` (`parse:agent 0660`, its group by the setgid bit) and serves uid 1103 alone. The directory is `root:agent 0750`, from `tmpfiles.d/desk-parse.conf`. desk-agent's `run` mounts it read-only; `desk-parse` mounts only `sock/` | root; `sock/` by `parse` (`desk-svc -clean` empties it but the socket after every parse) |
+| `/run/desk-parse-courier/` | Courier's mail reader (from image 0.3.9): `sock/` (`parse:desk 2750`), where `desk-svc` binds `parse.sock` (`parse:desk 0660`) and serves uid 1100 alone. The directory is `root:desk 0750`, from `tmpfiles.d/desk-parse-courier.conf`; no marker (`deskd` has no reader of its own: no socket means mail waits as `pending`, raw kept). `deskd`'s `run` mounts it read-only; `desk-parse-courier` mounts only `sock/` | root; `sock/` by `parse` |
+| `/usr/share/ma/adblock/courier-trackers.txt` | Courier's tracker list (from image 0.3.9): EasyPrivacy's whole-host and host-and-path block rules from the release `adblock/blocker.pin` names, one a line, built at bake by `courier-parse`'s `courier-trackers.py` (never committed: GPLv3 or CC BY-SA 3.0), its first line naming the release's version and sha256. Bound read-only over the release's empty `/app/courier/trackers.txt` in `desk-parse-courier` | root, `0644` |
+| `/usr/local/lib/ma/desk-svc`, `desk-svc.sha256` | `desk-parse`'s process 1 (ADR 0097), mounted read-only into its container, and its hash. A cloud desk's is built by `image/bake.sh` (arm64), a self-hosted desk's comes in its bundle (amd64) | root |
 | `/run/desk-xorg/auth` | Xorg's cookie (the Security Analyst's `DA-1`, image 0.3.0 on), made at each start of `desk-xorg`, `0600 kiosk`, never handed out. Root needs `XAUTHORITY=/run/desk-xorg/auth` (§8.1) | root writes it at `desk-xorg`'s start |
+| `/data/desk/browser-zoom.json` | The Browser's zoom (API.md §10, "Zoom"; deskd from S-156, in no release yet): `{"level": 50..200, "swept": bool}`, `0600`, written whole through a temporary file and a rename. deskd sets it as Chromium's default zoom on every connection, from a hidden `chrome://password-manager/settings` page of Chromium's own; Chromium keeps its own copy in its profile (`partition.default_zoom_level`), which deskd never writes (ADR 0035), and deskd's wins. A link or anything unreadable there is 100%. On `/data`, so it survives a root swap and a move | `desk` |
 | `/data/desk/no-prewarm` | The Browser prewarm's kill switch (§3.2, image 0.3.2 on): while it exists, a boot doesn't start the Browser early. On `/data`, so it survives a root swap | root or `desk` |
 
 ## 3. Boot order
@@ -214,7 +223,20 @@ exec docker run --rm --name deskd --network host --user 1100:1100 --read-only --
   --mount type=bind,src=/run/ma/desk-kind,dst=/run/ma/desk-kind,readonly \
   --env-file "$RELEASE_DIR/deskd.env" "$(cat "$RELEASE_DIR/image-id")"
 ```
-On a Guild Desk the memory is `400m` and the JVM takes the guild heap. The next `deskd` (S-97, the desk app contract's base, `8ca3e01c`) also binds `/data/apps`, `/run/ma-apps` and the app keys' directories read-only when they exist.
+On a Guild Desk the memory is `400m` and the JVM takes the guild heap. The next `deskd` (S-97, the desk app contract's base, `8ca3e01c`) also binds `/data/apps`, `/run/ma-apps` and the app keys' directories read-only when they exist. Courier's `deskd` (`mm-courier-parse`, `mm-courier-keys` on) binds `/data/courier` and `/data/keys` read-write and `/run/desk-parse-courier` read-only, each only where the image made it.
+
+**The Agent's attachment reader (ADR 0097).** desk-agent's `run` (Desk Engineer's, from release N) adds `--mount type=bind,src=/run/desk-parse,dst=/run/desk-parse,readonly` whenever the directory exists. `desk-parse-run` (System Engineer's) holds every flag of the reader's container, and reads only desk-agent's image id:
+```
+exec docker run --rm --name desk-parse --network none --ipc none --user 1113:1113 --read-only \
+  --cap-drop ALL --security-opt no-new-privileges --log-driver journald --log-opt tag=desk-parse \
+  --memory 160m --memory-swap 160m --pids-limit 64 --cpu-shares 256 --ulimit core=0 --oom-score-adj 500 \
+  -v /run/desk-parse/sock:/run/desk-parse/sock -v /usr/local/lib/ma/desk-svc:/desk-svc:ro \
+  --entrypoint /desk-svc "$id" -accept /run/desk-parse/sock/parse.sock -accept-mode 0660 -peer-uid 1103 \
+  -max-conn 1 -deadline-sec 35 -conn-stdio -clean -- /opt/java/openjdk/bin/java @/app/parse.options
+```
+**Courier's mail reader (from image 0.3.9).** `desk-parse-courier-run` is `desk-parse-run` with its own name and journal tag, its own socket directory, the tracker list (§2) bound read-only at `/app/courier/trackers.txt` when the image has it, and `desk-svc -accept /run/desk-parse-courier/sock/parse.sock -accept-mode 0660 -peer-uid 1100 -max-conn 1 -deadline-sec 15 -conn-stdio -clean -- /opt/java/openjdk/bin/java @/app/courier-parse.options`. The wire is `courier1 message | part <id> | image <id>|- | archive <id>` (deskd's API.md §21); `deskd` waits 20 s, past the 15 s kill (Security CP-L1). `verify-courier.sh` (`verify.sh` section 3c) checks it, Courier's directories and `deskd`'s way out to 993, 465 and 587 with MX lookups, each with a mutation.
+
+A request is one line, `parse1 <kind> <maxChars> <maxPages>\n` (kind `text pdf docx xlsx pptx`, `maxChars` 1 to 2000000, `maxPages` 1 to 500), the file's bytes and a half-close; the answer is the worker's, `OK[ <note>]` or `ERR <reason>`, a newline and the text. `desk-svc` itself answers `err denied` (a peer that isn't uid 1103), `err busy` (a worker is running) and `ERR unavailable` (a worker that couldn't start). ADR 0097 section 2 has the failure table. The image's smoke test parses one line as uid 1103 where the marker is and desk-agent's health names the sidecar (§6).
 
 ## 6. Updates and health
 
@@ -256,6 +278,7 @@ On a Guild Desk the memory is `400m` and the JVM takes the guild heap. The next 
 - `desk-egress`: the unit is active and its three classes are on `ens5`. While the shaper is off, an update of any component rolls back.
 - `desk-agent-filter`: the unit is active and holds its ports (§9.1). While it's down, an update of any component rolls back.
 - `desk-agent` and `desk-notebook`: each release's own `health` (`services/`), the Desk Engineer's. Image 0.3.3's smoke test runs 8 components on a member's desk.
+- `desk-parse` (ADR 0097, not baked yet): where `/run/desk-parse/required` is and desk-agent's `/health` names its reader (`parse`), it must say `sidecar`, and a one-line text parse as uid 1103 through `parse.sock` must answer `OK`, so an update that breaks the reader rolls back. A desk-agent from before ADR 0097 names none and passes with a line saying so: it reads in its own child, and the sidecar waits. An update of desk-agent restarts `desk-parse` on the new image (`PartOf=`), so `ma-update` needs no change.
 - `commons-server` (a release is on every desk once pinned): on a Guild Desk, `/healthz` answers `ok` on `127.0.0.1:8790` and `/run/desk-commons/commons.sock` is a socket. On a member's desk (no `/run/ma/guild`) its unit is skipped and `health` exits 0 at once.
 - `deskd`: it's serving and its databases are open. Its links to `desk-rtc` and Platform are reported but don't fail health, so a Platform outage during a rollout can't trigger a rollback. Its `health` calls `GET /health` on `/run/desk/deskd-admin.sock`, never a TCP port. deskd has no databases of its own, so `/health` is 200 while it serves with its data directory writable. **Every heartbeat carries the same answer** (ADR 0078 DE-2, `services/deskd/docs/API.md` §20): `deskd: {version, status}`, its version and `ok` or `failing`, for a release switched in where this smoke test can't run, as in a shared host's slot, whose canary the Platform promotes on it.
 
@@ -652,6 +675,12 @@ The same classes and budgets, run by the host for each slot (`image/host/README.
   `/run/desk-egress/profile`; `desk-init` restarts a running `desk-stream` when it changes, in place of `systemctl try-restart`.
 - **The host's report** carries each running slot's classes, their counters and the budget's state (`shaper`); `deskd` still reads
   none of it.
+- **`deskd`'s way out for linked mailboxes (Courier; checked for the next host bake, `docs/sub-status/courier-slot.md`):** `deskd`'s sandbox
+  joins the desk's network namespace, whose ruleset (the template's `nftables.conf`) accepts uid 1100's output but IMDS's and CDP's rules,
+  and whose `deskhost` table drops only uid 1105 and port 19222; the host's `slot_<k>` chain lets the resolver (169.254.169.253, TCP and UDP
+  53, the template's `/etc/resolv.conf`, bound read-only into `deskd`'s sandbox) and every public address out, dropping only the VPC's and
+  link-local ranges and IPv6. So a slot's `deskd` reaches TCP 993, 465 and 587 and looks MX records up, as on a desk of its own; nothing in
+  the image or the host closes 25. `verify-courier.sh` (host `verify.sh` section 12) proves it from the slot's namespace as uid 1100.
 
 ## 10. On a shared host: the container's size class (ADR 0072 section 16)
 
@@ -675,6 +704,17 @@ desk reads it and can't change it. Nothing in the desk reads it yet. The tier's 
 idle stop, Files' size) are the Desk Engineer's and Platform's, from Platform's settings, not this file. On a desk of its own
 there is no `/run/desk-host`.
 
+**Known issue, `free` (host 0.1.16, `docs/sub-status/first-minute-stream.md`; ISS-96), fixed by `sub/browser-metrics-tmpfs`, pending the
+host bake (main's next, 0.1.17 or later, and 0.1.11.4 on the 0.1.11 line; `docs/sub-status/browser-metrics-tmpfs.md`):** about 70 s after
+Chromium's first start on a new profile its component updater writes about 85 MB; at free's volume write limit (1 MB/s) and memory
+(1002 MiB) the kernel's dirty throttle held Chromium's browser UI thread for 53 to 91 s (it stores to its histogram file, a shared mapping
+in the profile), so keys, clicks and CDP calls waited while the page and the stream stayed live. `standard` and a desk of its own don't
+stall. The fix: the host's `mounts.py` puts a 32 MiB tmpfs, `kiosk`'s, 0700, `nosuid,nodev,noexec`, over the profile's `BrowserMetrics/`
+in every slot of every class before any desk process runs (descriptors only, never following a link; anything that doesn't check out is
+no mount and the desk starts as before). In the lab (that `mounts.py` over a 0.1.16 host, finished on `sub/lsub-browser-metrics-tmpfs`)
+the free slot's first run took every key on 4 fresh hosts and the UI thread never waited in the throttle. Until a host has that bake,
+the issue stands on it.
+
 
 ## 11. Restarts and memory pressure (reliability audit S1 and S2, from image 0.3.3)
 
@@ -686,7 +726,7 @@ so a bad release across a fleet was a hello flood.
 
 | Units | Cap | Steps |
 |---|---|---|
-| `deskd`, `desk-agent`, `desk-notebook`, `desk-rtc`, `desk-stream`, `commons-server`, `desk-agent-filter`, `desk-egress` | 5 minutes | 8 |
+| `deskd`, `desk-agent`, `desk-parse` (ADR 0097), `desk-parse-courier` (image 0.3.9), `desk-notebook`, `desk-rtc`, `desk-stream`, `commons-server`, `desk-agent-filter`, `desk-egress` | 5 minutes | 8 |
 | `desk-browser`, `desk-xorg`, `desk-audio` (they make no hello, and a member waits on the Browser) | 30 s | 4 |
 
 - **No start limit.** Every one of these has `StartLimitIntervalSec=0`, so systemd never gives up on a loop and leaves a desk down
@@ -706,6 +746,7 @@ plus `oom_score_adj`. Every desk service now has an `oom_score_adj`, so the orde
 
 | # | Process | `oom_score_adj` | What is lost |
 |---|---|---|---|
+| 0 | `desk-parse`'s worker and `desk-svc` (ADR 0097, from image 0.3.8), and `desk-parse-courier`'s (image 0.3.9) | +500 | the file being read: desk-agent says `too_complex` and the member can send it again; a message being read: `deskd` keeps it `pending` and asks again |
 | 1 | Chromium's renderers (and its GPU and network helpers at 200) | 300 (Chromium sets it; kept) | a tab reloads |
 | 2 | `desk-agent` | +200 | an Agent run fails and is reported |
 | 3 | `desk-stream` | +100 | the picture stops, restarts and resumes |
@@ -788,7 +829,8 @@ image, fetches what its store lacks, unpacks it there as a `candidate`, and appl
 
 **A failure** rolls the slot back (the failed service, then the switched ones in reverse), the `seq` is never tried there again, and the
 batch is halted on the host. `deskd` and `desk-agent` stay expand-then-contract (§6), so the previous release starts on data the new
-one migrated. A switch restarts `desk-agent`, which loses an in-RAM LLM key as a stop does.
+one migrated. A switch restarts `desk-agent`, which loses an in-RAM LLM key as a stop does, and makes `desk-parse` and `desk-parse-courier`
+(§15) again on its release, since both run desk-agent's code.
 
 **What the platform sees** (PB-1): per slot `batch` `{seq, state}` (`current`, `behind`, `copying`, `switching`, `rolled-back`,
 `failed`), `releases` and `update.holdUntil` (15 minutes ahead while a switch runs); per host `batches` (current, previous, candidate,
@@ -797,3 +839,22 @@ halted, floor), `batchFetch`, `templatePending`, `imagePending`. The canary's pr
 
 ## 14. Kernel settings (ISS-20, from image 0.3.6)
 The image sets, in `/etc/sysctl.d/90-ma.conf` and `91-ma-hardening.conf`: the UDP buffers desk-rtc asks for (`net.core.rmem_max` and `wmem_max` 4 MiB) and the shared host's hardening lines: `kernel.yama.ptrace_scope = 2`, `fs.suid_dumpable = 0`, `kernel.core_pattern = |/bin/false`, `kernel.unprivileged_bpf_disabled = 1`, `kernel.dmesg_restrict = 1`, `kernel.kptr_restrict = 2`, `dev.tty.ldisc_autoload = 0`. `ptrace_scope = 2` is what lets `deskd` and `desk-agent` hold keys in `String`s they can't zero: only root can attach to a process, so a process of the same uid can't read the heap. Nothing on a desk needs ptrace; Chromium's crash handler logs `no ptrace` and writes no dump, and Chromium still restarts after a crash. A shared host sets the same lines on itself (`image/host/`, `desk-host-check`); a self-hosted desk gets the file from `install.sh`. `verify.sh` section 3s reads each value, with a mutation.
+
+## 15. On a shared host: Courier's reader and folders (not baked yet; `docs/sub-status/courier-slot.md`)
+The counterpart in a slot of the desk image's `desk-parse-courier.service` and `desk-datadirs` lines (`docs/sub-status/mm-courier-parse.md`,
+"The image change"); a slot runs no systemd, so `svc-spec.py`, `mounts.py` and `desk-init.py` do it:
+- **`desk-parse-courier`**, an eighth sandbox per slot: `desk-parse`'s exactly (desk-agent's release copy as its read-only root, `parse`
+  1113, no capabilities, its own empty network and IPC namespace, no `/data`, `/tmp` or `/dev/shm`, 160 MiB, 64 tasks, `oomScoreAdj` +500),
+  but `deskd`'s: `desk-svc -accept /run/desk-parse-courier/sock/parse.sock -accept-mode 0660 -peer-uid 1100 -max-conn 1 -deadline-sec 15
+  -conn-stdio -clean -- java @/app/courier-parse.options`. The template's `/usr/share/ma/adblock/courier-trackers.txt` is bound read-only at
+  `/app/courier/trackers.txt` only when the template has it and the release has its placeholder; otherwise the placeholder stays.
+- **Its share:** the host makes `/run/desk-parse-courier` (the slot root's, group `desk`, 0750) and `sock` in it (`parse:desk` 2750) on the
+  slot's tmpfs before any desk process; `deskd`'s sandbox has the first read-only at `/run/desk-parse-courier`
+  (`DESKD_COURIER_PARSE_SOCKET`'s default path), the reader's only `sock`, and the desk's own container neither. No marker: no socket is
+  mail kept `pending`.
+- **`/data/courier` and `/data/keys`** (`desk:desk` 0700): the volume's own directories moved into `deskd`'s sandbox where the volume has
+  them (`mounts.py`, as `/data/files`; a blank volume gets both); a volume from before gets them from the desk's `desk-init` at its first
+  start there and mounts them from the next. Until then that start's `deskd` has an empty placeholder: Courier answers `unavailable` and its
+  keys are unavailable for that run.
+- `desk-host-check courier-parse` and `courier-dirs` read all of it from the host's side; `verify-courier.sh` (host `verify.sh` section 12)
+  sends a message through the reader as uid 1100 and checks the list against `blocker.pin`.

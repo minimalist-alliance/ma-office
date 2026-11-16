@@ -11,9 +11,10 @@
 // token in tokenStore's place, so the next page load just refreshes. Google still comes back to
 // /auth/callback here.
 import { getClientConfig, type ClientConfig } from './clientConfig';
+import { ssoOrigin } from './hosts';
 import { codeChallenge, decodeJwtPayload, randomString } from './pkce';
 import { onSignInPage, signInAddress, type Here } from './signInAddress';
-import { clearRefreshToken, clearRefreshTokenIf, HOLD_MS, outlivedChoice, readChoice, readRefreshToken, readSignedInAt, writeRefreshToken, writeSignedInAt } from './tokenStore';
+import { clearRefreshToken, clearRefreshTokenIf, HOLD_MS, outlivedChoice, pastThirtyDays, readChoice, readRefreshToken, readSignedInAt, writeRefreshToken, writeSignedInAt } from './tokenStore';
 import { endSignedIn, keepSignedIn } from './signedInCookie';
 
 const PENDING_KEY = 'ma.auth.pending';
@@ -31,11 +32,6 @@ const MAX_TOKENS_PER_REFRESH = 3;
  * `keepalive`, so leaving sooner doesn't cancel them.
  */
 export const SIGN_OUT_WAIT_MS = 3_000;
-/**
- * How long "Sign out everywhere" waits for `POST /v1/me/sign-out` to say yes, as Platform's `/account` does. It has to
- * hear it: going on without would tell the member every device is signed out when that may not be so.
- */
-export const EVERYWHERE_WAIT_MS = 15_000;
 
 interface Pending {
   state: string;
@@ -50,8 +46,12 @@ interface TokenResponse {
   expires_in: number;
 }
 
-let access: { token: string; expiresAt: number; claims: Record<string, unknown> | null } | null = null;
-/** This tab sent the stored token, was told the session is over (`isSessionOver`), and cleared it. Nothing else ends a session this way. */
+/** `refresh`: the refresh token stored with this access token, which a lasting `session_revoked` revokes (`endRevoked`). */
+let access: { token: string; expiresAt: number; claims: Record<string, unknown> | null; refresh: string | null } | null = null;
+/**
+ * This tab sent the stored token, was told the session is over (`isSessionOver`, a lasting `session_revoked` where the
+ * shared sign-in is on), or outlived it, and cleared it. Nothing else ends a session this way.
+ */
 let refusedHere = false;
 /** Whose tokens this tab last had: their `sub`. Another tab's sign-in can store someone else's refresh token. */
 let member: string | null = null;
@@ -142,13 +142,14 @@ async function noteSignedIn(res: TokenResponse, signedIn: boolean): Promise<void
   if (signedIn || readSignedInAt() === null) writeSignedInAt((res.id_token ? decodeJwtPayload(res.id_token) : null)?.['auth_time']);
 }
 
-function keep(res: TokenResponse): void {
+function keep(res: TokenResponse, refresh: string | null): void {
   refusedHere = false;
   const claims = res.id_token ? decodeJwtPayload(res.id_token) : null;
   access = {
     token: res.access_token,
     expiresAt: Date.now() + res.expires_in * 1000,
     claims: claims ?? access?.claims ?? null,
+    refresh,
   };
   // The access token's own `sub` first: a refresh needn't bring an ID token, and the old one's claims are someone's.
   const sub = decodeJwtPayload(res.access_token)?.['sub'] ?? claims?.['sub'];
@@ -171,8 +172,11 @@ async function underRefreshLock<T>(fn: () => Promise<T>): Promise<T> {
   return navigator.locks ? (navigator.locks.request('ma-refresh', fn) as Promise<T>) : fn();
 }
 
-/** Handles /auth/callback. Throws with a calm message for the sign-in screen. */
-export async function finishSignIn(search: string): Promise<void> {
+/**
+ * Handles /auth/callback. Throws with a calm message for the sign-in screen. Gives the sign-in's first access token, for
+ * the shared sign-in's step 1 (contract auth.md §2.8), which only that token can start.
+ */
+export async function finishSignIn(search: string): Promise<string> {
   const params = new URLSearchParams(search);
   const raw = sessionStorage.getItem(PENDING_KEY);
   sessionStorage.removeItem(PENDING_KEY);
@@ -197,7 +201,7 @@ export async function finishSignIn(search: string): Promise<void> {
   // Under the lock, so another tab's refresh on its way can't land after this and bring the old session back.
   const replaced = await underRefreshLock(async () => {
     const old = await readRefreshToken();
-    keep(tokens);
+    keep(tokens, tokens.refresh_token ?? null);
     await noteSignedIn(tokens, true);
     // What this sign-in replaced, once the new token is what's stored (a write the browser refuses throws, above). If
     // Cognito handed back the same token, or brought none, there's nothing old.
@@ -208,6 +212,7 @@ export async function finishSignIn(search: string): Promise<void> {
   if (replaced) void revokeRefreshToken(cfg, replaced);
   // The landing's signed-in cookie, for the member's "Stay signed in" (signedInCookie.ts).
   keepSignedIn(readChoice().staySignedIn, cfg);
+  return tokens.access_token;
 }
 
 /**
@@ -249,6 +254,15 @@ async function postRefresh(cfg: ClientConfig, refreshToken: string): Promise<{ o
 }
 
 let endedBy: string | null = null;
+/** `endRevoked` ended this session: another app's Sign out in this browser (§2.8). Read once, for the card's words. */
+let revokedHere = false;
+
+/** Whether a lasting `session_revoked` ended this session, once (`sessionOver`'s card says so). */
+export function takeRevoked(): boolean {
+  const was = revokedHere;
+  revokedHere = false;
+  return was;
+}
 
 /** The choice that ended this browser's session, once, for the sign-in screen's line (§3.3 item 4). */
 export function takeEndedChoice(): 'ended-7d' | 'ended-1d' | 'ended-browser' | null {
@@ -276,8 +290,9 @@ async function refreshLocked(cfg: ClientConfig): Promise<void> {
     const refreshToken = await readRefreshToken();
     if (!refreshToken) throw new SignInRequired();
     // The member's own session length (§3.3 item 2): past it, this browser's session is over, as if the server had said so.
+    // With the shared sign-in, also 30 days from `signedInAt` whatever the choice (§2.8), with the plain line.
     const outlived = outlivedChoice();
-    if (outlived) {
+    if (outlived || (ssoOrigin(cfg) && pastThirtyDays())) {
       await endHere(cfg, refreshToken, outlived);
       continue; // rotated away by another tab meanwhile: its newer token gets its own check
     }
@@ -288,7 +303,7 @@ async function refreshLocked(cfg: ClientConfig): Promise<void> {
       // Stored while this was out, by a sign-in or a sign-out that didn't wait for the lock: that's newer than this
       // answer, so it mustn't be overwritten. Read again, and use what's there.
       if ((await readRefreshToken()) !== refreshToken) continue;
-      keep(tokens);
+      keep(tokens, tokens.refresh_token ?? refreshToken);
       // This tab has its access token whether or not the write works.
       await noteSignedIn(tokens, false).catch(() => undefined);
       keepSignedIn(readChoice().staySignedIn, cfg); // a refresh renews the landing's signed-in cookie too
@@ -375,6 +390,25 @@ export async function getAccessToken(forceRefresh = false): Promise<string> {
 }
 
 /**
+ * A `401 session_revoked` that a refresh didn't mend, where the shared sign-in is on (contract auth.md §2.8): this session
+ * was signed out, as by Sign out in another app in this browser. The refresh token behind `sent` is revoked at
+ * `/oauth2/revoke` and cleared, as for `ma_session_ended`, so this tab goes to sign in (`sessionWasRefused`), with the plain
+ * line. Not when this tab's token has changed since `sent`, or another tab's sign-in has stored a newer one. Never throws.
+ */
+export async function endRevoked(sent: string): Promise<void> {
+  try {
+    const cfg = await getClientConfig();
+    await underRefreshLock(async () => {
+      const refresh = access?.token === sent ? access.refresh : null;
+      if (refresh) await endHere(cfg, refresh, null);
+    });
+  } catch (err) {
+    // Ended (endHere's SignInRequired), or left as it was.
+    if (err instanceof SignInRequired) revokedHere = true;
+  }
+}
+
+/**
  * Whether a SignInRequired means this session is really dead: this tab's own refresh had its token refused.
  * False for one with no token to send, as after a sign-out in another tab, and for a second 401 from the API. A
  * link can be the first to hear it, so the flag outlasts that call, until a refresh works.
@@ -397,19 +431,6 @@ export async function forAtMost(call: Promise<unknown>): Promise<void> {
   clearTimeout(timer);
 }
 
-/** `call` until it settles, or `ms`, whichever is first. True only if it settled without throwing. Never throws. */
-export async function answeredWithin(call: Promise<unknown>, ms: number): Promise<boolean> {
-  let timer: ReturnType<typeof setTimeout> | undefined;
-  const waited = new Promise<boolean>((done) => {
-    timer = setTimeout(() => done(false), ms);
-  });
-  try {
-    return await Promise.race([call.then(() => true, () => false), waited]);
-  } finally {
-    clearTimeout(timer);
-  }
-}
-
 /**
  * Revoke the refresh token at Cognito, and wait for its answer to arrive in full. `fetch` resolves on the headers, so
  * leaving then cut off the rest, and the revoke ended as cancelled (Platform's sign-out had the same, fixed in its
@@ -429,7 +450,7 @@ async function revokeRefreshToken(cfg: ClientConfig, token: string): Promise<voi
 export async function endSession(cfg: ClientConfig | null): Promise<void> {
   const refreshToken = await readRefreshToken();
   await clearRefreshToken();
-  endSignedIn(cfg); // before the logout, everywhere or here
+  endSignedIn(cfg); // before the logout
   access = null;
   if (!cfg) {
     window.location.assign('/signed-out');

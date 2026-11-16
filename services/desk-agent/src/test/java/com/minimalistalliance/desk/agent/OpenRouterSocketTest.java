@@ -97,6 +97,7 @@ class OpenRouterSocketTest {
 
         result(desk.call("agent.bind", Map.of("agentId", "manager", "keyId", keyId,
                 "model", "nvidia/nemotron-3.5-super-vl:free")));
+        result(desk.call("agent.access.set", com.minimalistalliance.desk.agent.testing.Setups.defaults("manager")));
         desk.subscribe(2, "agent.conversation:manager");
         desk.event(2, "snapshot");
 

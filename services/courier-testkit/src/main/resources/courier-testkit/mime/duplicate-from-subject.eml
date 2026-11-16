@@ -1,0 +1,12 @@
+From: Office <office@example.com>
+To: me@desk.example
+Subject: Quarterly figures
+From: Spoof <spoof@evil.example>
+Date: Fri, 13 Nov 2026 10:00:00 +0000
+Subject: URGENT wire transfer
+Message-ID: <duplicate-from-subject@corpus.example>
+MIME-Version: 1.0
+X-Corpus-Note: two From and two Subject fields: refused, as which From a sender check covered can't be told
+Content-Type: text/plain; charset=utf-8
+
+The figures are attached to the shared folder.

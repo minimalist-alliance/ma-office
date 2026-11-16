@@ -18,12 +18,26 @@ export interface ClientConfig {
     googleSignIn?: boolean;
     /** Our own sign-in pages on this host, such as "/_signin/" (ma-platform web/signin). Absent: managed login, which is also the rollback. */
     signInPath?: string;
+    /**
+     * One sign-in for every app (ma-platform contract auth.md §2.8, 0.3.118 draft): `{origin: "https://id.<suffix>"}` where
+     * it's advertised. Read only through `ssoOrigin` in `hosts.ts`: an object with an https origin on this site, else off.
+     */
+    sso?: unknown;
   };
   links?: Record<string, string>;
   /** Support Maia's member routes (ma-platform contract maia.md). Absent, as in prod today: no widget and no Maia request at all (`maia/gate.ts`). */
   maia?: { url: string };
   /** The Files app's kill switch (draft ADR "Files app", decision 11). Absent or `enabled: true` is on; `false` hides the tile. */
   files?: { enabled?: boolean };
+  /** To-do's kill switch: absent or `enabled: true` is on (prelaunch, on by default). */
+  todo?: { enabled?: boolean };
+  /** Documents' kill switch (deskd API.md §24; the office's Documents window): absent or `enabled: true` is on, as it ships. */
+  documents?: { enabled?: boolean };
+  /**
+   * Courier's switch (`apps/courier/door.ts`): `false` is the kill switch (its tile "Coming later" again), `true` on. Absent is
+   * `COURIER_READY`: off until linked mailboxes reach main, then on.
+   */
+  courier?: { enabled?: boolean };
   /** The export page and the move (ma-platform draft ADR "data export and transfer", section 7). Absent is off. */
   export?: { enabled?: boolean; moves?: boolean };
   /**
@@ -56,6 +70,24 @@ export interface ClientConfig {
   siteSignIns?: { enabled?: boolean };
   /** Open tiles (ADR 0053): an app enlarged on its desk is the live app there. A kill switch: absent is on (`opentile/door.ts`). */
   openTiles?: { enabled?: boolean };
+  /**
+   * The mark's menu of the Alliance's other pages (the owner's ask, Nov 12; `chrome/TopBar.tsx` `HomeMark`). A kill switch:
+   * absent is on, `{ enabled: false }` is the mark as it was, a button to all desks only where there's an overview to go to.
+   * Its rows read `links`: `forums`, `help`, `privacy`, `terms` and `guidelines` (asked of Platform), and `account`,
+   * `billing` and `support` (`chrome/MarkPanel.tsx`).
+   */
+  markMenu?: { enabled?: boolean };
+  /**
+   * Maia Mode (`maiamode/door.ts`, CONCEPT.md §12): dark by default, so absent or anything but `{ enabled: true }` is off. Platform
+   * turns it on for the owner's account first, then members on his word.
+   */
+  /**
+   * Maia Mode's flag (ma-platform contract desks.md "Maia Mode"): `enabled` is on for everyone (a later tier mode; false in
+   * Phase 1) and `listed` that the access list is on with someone on it. Both false is off for all, whatever `/v1/me` says.
+   */
+  maiaMode?: { enabled?: boolean; listed?: boolean };
+  /** The office tour (ADR 0056, `tour/door.ts`). A kill switch: absent is on, `{ enabled: false }` is no tour, no "Take the tour" and no setting. */
+  walkthrough?: { enabled?: boolean };
   /** `{name, domain}`, in prod only (ma-platform contract auth.md section 3.4): the landing's signed-in cookie (`signedInCookie.ts`). Absent: none set or cleared. */
   signedInCookie?: unknown;
 }

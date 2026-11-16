@@ -1,0 +1,11 @@
+From: Dana Smith <dana@example.com>
+To: me@desk.example
+Subject: Case 2
+Date: Fri, 13 Nov 2026 11:05:00 +0000
+Message-ID: <x@example.com>
+In-Reply-To: <abc@example.com>
+References: <abc@example.com>
+MIME-Version: 1.0
+Content-Type: text/plain; charset=utf-8
+
+Hello.

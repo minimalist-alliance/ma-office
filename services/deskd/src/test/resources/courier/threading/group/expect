@@ -1,0 +1,6 @@
+known dana@example.com bob@example.org
+channel 01 02
+thread 01 02
+channels-apart 01 03
+kind 01 group
+kind 03 direct

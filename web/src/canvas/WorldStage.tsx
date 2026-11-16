@@ -7,6 +7,7 @@ import 'konva/lib/shapes/Text.js';
 import 'konva/lib/shapes/Circle.js';
 import { Group, Layer, Stage } from 'react-konva/lib/ReactKonvaCore.js';
 import { clamp, onContrastChange } from '../lib/util';
+import { onTransparencyChange } from '../theme/tileGlass';
 import { onBackdropChange } from '../theme/backdropMirror';
 import { onThemeApplied } from '../theme/themeStore';
 import { useFree } from '../free/door';
@@ -23,7 +24,7 @@ import { listenForPinches } from './pinch';
 import { isPhone, useIsPhone, useIsTouch } from './phone';
 import { awayOnPhone } from './awayOnPhone';
 import { desksOpacity, useDesksStopped } from './stopped';
-import { invalidateSprites, syncHalo } from './sprites';
+import { invalidateSprites, onGlassBackdrop, syncHalo } from './sprites';
 
 Konva.dragDistance = 4; // small jitter is a click, not a drag
 
@@ -108,9 +109,10 @@ export function WorldStage({ onFirstPaint }: { onFirstPaint?: () => void }) {
     return () => mq?.removeEventListener('change', onChange);
   }, []);
 
-  // Theme: drop the chrome bitmaps and redraw synchronously, inside the view transition's update.
-  useEffect(() => onThemeApplied(() => {
-    invalidateSprites();
+  // Theme: drop the chrome bitmaps and redraw synchronously, inside the view transition's update. A theme slider moving keeps
+  // the tiles' raster until it rests (`invalidateSprites`).
+  useEffect(() => onThemeApplied((why) => {
+    invalidateSprites(why);
     layerRef.current?.draw();
   }), []);
 
@@ -119,6 +121,8 @@ export function WorldStage({ onFirstPaint }: { onFirstPaint?: () => void }) {
   // A desk style's texture arrived: the desks wearing it draw it on the next frame, in a new bitmap each.
   useEffect(() => onTextureReady(() => layerRef.current?.batchDraw()), []);
   useEffect(() => onContrastChange(() => layerRef.current?.batchDraw()), []);
+  useEffect(() => onTransparencyChange(() => layerRef.current?.batchDraw()), []);
+  useEffect(() => onGlassBackdrop(() => layerRef.current?.batchDraw()), []);
   // A background came or went: the active desk's ring gains or loses its halo (ADR 0094), at rest, so a zoom under way
   // rasters nothing for it; the camera's settle then draws it once.
   useEffect(() => {

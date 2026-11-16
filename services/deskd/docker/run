@@ -67,6 +67,20 @@ app_keys_dropin=${MA_APP_KEYS_DROPIN:-/etc/ma/app-keys.d}
 links_dir=${MA_LINKS_DIR:-/run/desk-links}
 [ -d "$links_dir" ] && set -- "$@" --mount "type=bind,src=$links_dir,dst=/run/desk-links"
 
+# Courier (API.md section 21): its store, which desk-datadirs makes (1100:1100, 0700), and the socket of desk-parse's
+# Courier sandbox (ADR 0097, draft ADR "Courier's store" section 4), read-only, as connecting writes only the socket. Each is
+# mounted only where the image made it: without the store courier.* answers unavailable (reason store), and without the
+# sandbox mail waits as pending. MA_COURIER_DIR and MA_COURIER_PARSE_DIR are for tests.
+courier_dir=${MA_COURIER_DIR:-/data/courier}
+courier_parse=${MA_COURIER_PARSE_DIR:-/run/desk-parse-courier}
+[ -d "$courier_dir" ] && set -- "$@" -v "$courier_dir:/data/courier"
+[ -d "$courier_parse" ] && set -- "$@" --mount "type=bind,src=$courier_parse,dst=/run/desk-parse-courier,readonly"
+# The desk's Courier keys (draft ADR "Courier's envelopes"; design 10.4's /data/keys): its identity and box keys, which
+# desk-datadirs makes (1100:1100, 0700). Mounted only where the image made it: without it, member messages and the mail
+# door are unavailable (courier.keys: unavailable, reason keys). MA_KEYS_DIR is for tests.
+keys_dir=${MA_KEYS_DIR:-/data/keys}
+[ -d "$keys_dir" ] && set -- "$@" -v "$keys_dir:/data/keys"
+
 exec docker run --rm --name deskd --network host --user 1100:1100 --read-only --tmpfs /tmp \
   --cap-drop=ALL --security-opt=no-new-privileges --log-driver=journald --log-opt tag=deskd \
   --memory="$memory" --memory-swap="$memory" --cpu-shares=512 --pids-limit=256 --stop-timeout=60 --ulimit core=0 \

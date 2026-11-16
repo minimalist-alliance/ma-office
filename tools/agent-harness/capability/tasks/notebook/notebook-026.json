@@ -1,0 +1,72 @@
+{
+  "id": "notebook-026",
+  "area": "notebook",
+  "title": "Append bold text",
+  "prompt": "Add a bold reminder to bring passports to my Trip plan page.",
+  "setup": {
+    "notebook": [
+      {
+        "tab": "Harness",
+        "title": "Trip plan",
+        "markdown": "# Trip plan\n\n- Renew passport\n- Book a hotel\n"
+      }
+    ]
+  },
+  "approve": "all",
+  "checks": [
+    {
+      "kind": "page",
+      "tab": "Harness",
+      "title": "Trip plan",
+      "contains": [
+        "bring passports",
+        "Book a hotel"
+      ]
+    },
+    {
+      "kind": "cards",
+      "tools": [
+        "notebook_write"
+      ]
+    }
+  ],
+  "policy": {
+    "tools": [
+      "notebook_search",
+      "notebook_write"
+    ]
+  },
+  "standIn": [
+    {
+      "calls": [
+        {
+          "name": "notebook_search",
+          "input": {
+            "query": "Trip plan"
+          }
+        }
+      ]
+    },
+    {
+      "calls": [
+        {
+          "name": "notebook_write",
+          "input": {
+            "pageId": {
+              "$re": {
+                "step": 0,
+                "call": 0,
+                "pattern": "\"pageId\":\"([^\"]+)\",\"title\":\"Trip plan\""
+              }
+            },
+            "op": "append",
+            "markdown": "**Reminder:** bring passports"
+          }
+        }
+      ]
+    },
+    {
+      "text": "Added the reminder to your Trip plan."
+    }
+  ]
+}

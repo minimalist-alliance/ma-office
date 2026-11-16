@@ -25,7 +25,7 @@ describe('the open level', () => {
 
   it('takes an app\'s own minimum: the Browser at 7 x 5, the rest the default', () => {
     expect(openMin('browser')).toEqual({ w: 7, h: 5 });
-    for (const app of ['notebook', 'chat', 'files', 'agent', 'commons', 'agent:ag-0123456789ab'] as const) expect(openMin(app)).toEqual({ w: 6, h: 5 });
+    for (const app of ['notebook', 'courier', 'files', 'agent', 'commons', 'agent:ag-0123456789ab'] as const) expect(openMin(app)).toEqual({ w: 6, h: 5 });
     expect(detailLevel(span(6), span(5), 'browser')).toBe('large');
     expect(detailLevel(span(7), span(5), 'browser')).toBe('open');
     // An agent's own app is an Agent, with its size.
@@ -43,7 +43,7 @@ describe('the open level', () => {
   it('on the phone grid an open tile is large, and fits down from there', () => {
     expect(fittedLevel('open', G.phoneCols)).toBe('large');
     expect(fittedLevel('open', 2)).toBe('small');
-    const d = desk([item('a', 'notebook', 24, 24, 900, 900), item('b', 'chat', 24, 24, 76, 76)]);
+    const d = desk([item('a', 'notebook', 24, 24, 900, 900), item('b', 'courier', 24, 24, 76, 76)]);
     const phone = deskGeometry(d, true);
     expect(phone.slots['a']).toMatchObject({ level: 'large', w: span(4), h: span(4) });
     expect(packItems([{ id: 'x', level: 'open' }], 4).slots['x']).toMatchObject({ level: 'large' });
@@ -65,7 +65,7 @@ describe('which open tiles are live', () => {
   });
 
   it('only at open, and only while it is at least 480 x 320 on screen', () => {
-    const d = desk([item('n', 'notebook', 24, 24, OPEN.w, OPEN.h), item('c', 'chat', 700, 24, 352, 352)]);
+    const d = desk([item('n', 'notebook', 24, 24, OPEN.w, OPEN.h), item('c', 'courier', 700, 24, 352, 352)]);
     expect(liveTiles(d, cam1, vp, none)).toEqual(['n']);
     // Zoomed out, 536 x 444 units is 482 x 400 px at 0.9, and 429 x 355 at 0.8: the widget then.
     expect(liveTiles(d, { x: 0, y: 0, s: 0.9 }, vp, none)).toEqual(['n']);
@@ -87,7 +87,7 @@ describe('which open tiles are live', () => {
   });
 
   it('at most four, the largest on screen first', () => {
-    const apps: AppId[] = ['notebook', 'chat', 'files', 'agent', 'commons'];
+    const apps: AppId[] = ['notebook', 'courier', 'files', 'agent', 'commons'];
     const items = apps.map((a, n) => item(a, a, 24 + n * 700, 24, OPEN.w + n * 10, OPEN.h));
     const live = liveTiles(desk(items), cam1, vp, none);
     expect(MAX_LIVE).toBe(4);
@@ -95,12 +95,12 @@ describe('which open tiles are live', () => {
     expect(live).not.toContain('notebook'); // the smallest
     // What's on screen decides "largest": the biggest one, mostly off screen, gives way.
     const off = liveTiles(desk(items), cam1, { w: 24 + 4 * 700 + 60, h: 2000 }, none);
-    expect(off.sort()).toEqual(['agent', 'chat', 'files', 'notebook']);
+    expect(off.sort()).toEqual(['agent', 'courier', 'files', 'notebook']);
   });
 
   it('not with anything above it over it: the canvas stacks that, so it stays a drawing', () => {
     const n = item('n', 'notebook', 24, 24, OPEN.w, OPEN.h);
-    const c = item('c', 'chat', 100, 100, 76, 76);
+    const c = item('c', 'courier', 100, 100, 76, 76);
     expect(liveTiles(desk([n, c], ['n', 'c']), cam1, vp, none)).toEqual([]);
     // Brought to the front, it's live, and the icon is under it.
     expect(liveTiles(desk([n, c], ['c', 'n']), cam1, vp, none)).toEqual(['n']);

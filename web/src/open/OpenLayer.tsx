@@ -6,6 +6,7 @@ import { useCallback, useEffect, useId, useRef, useState, type KeyboardEvent as 
 import { displayText } from '../browser/address';
 import { LinkBox } from '../chrome/CalmScreen';
 import { Icon } from '../chrome/icons';
+import { onMemberChange } from '../platform/auth';
 import { deskClosed, getLive, linkOf, useLiveStore, wakeDesk } from '../desk/liveStore';
 import { openItem } from '../shell/actions';
 import { announce } from '../shell/announce';
@@ -15,8 +16,14 @@ import { ownDesks, useDeskStore, type DeskInfo } from '../state/deskStore';
 import { useLayoutStore } from '../state/layoutStore';
 import { mutate } from '../browser/mutate';
 import { closeIncoming, useOpen } from './intent';
-import { deskStateWords, DONE_SHOWN_MS, endSend, firstChoice, retrySend, sendableDesks, startSend, useSends, wakeWords, type Send, type SendDeps } from './sendToDesk';
+import { deskStateWords, DONE_SHOWN_MS, endSend, firstChoice, resetSends, retrySend, sendableDesks, startSend, useSends, wakeWords, type Send, type SendDeps } from './sendToDesk';
 import './open.css';
+
+// This tab's tokens became another account's (ISS-89's follow-up): a link the last member was sending to one of their desks,
+// and its line in the notices ("Opened … on …"), were theirs. Each run ends without a word. The first token is nobody's change.
+onMemberChange((_sub, before) => {
+  if (before !== null) resetSends();
+});
 
 /** The layout pref for the desk chosen last (design 9.4), so the sheet starts there. */
 const LAST_KEY = 'sendToDeskLast';
@@ -279,7 +286,7 @@ function SendLine({ s }: { s: Send }) {
   }, [s.phase, s.id, held]);
   return (
     <div
-      className="notice op-notice"
+      className="notice op-notice ma-glass"
       role="group"
       aria-label={words}
       data-testid="open-notice"

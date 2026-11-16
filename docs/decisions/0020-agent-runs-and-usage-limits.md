@@ -3,7 +3,7 @@
 **Status:** Proposed, amended 
 by [0026](0026-idle-24-hour-rule.md) and [0043](0043-agent-limits-local-time-and-platform-prices.md); enforced by `desk-agent`, Java, per [0040](0040-desk-services-spring-boot-docker.md). Pending the owner's approval of design v1
 **Date:** 2026-11-04
-**Amended:** 2026-11-04 by [0026](0026-idle-24-hour-rule.md) (keep-awake); 2026-11-07 by [0043](0043-agent-limits-local-time-and-platform-prices.md) (local time, desk over account, Platform prices; noted 2026-11-09); 2026-11-05 by [0040](0040-desk-services-spring-boot-docker.md) (enforced in `desk-agent`, Java; noted 2026-11-11)
+**Amended:** 2026-11-13 by durable runs (Maia Mode Phase 0, Design 1; the draft ADR "the Agent's tools and approvals" §3, "Restarts": the states and checkpoints as built, below); 2026-11-04 by [0026](0026-idle-24-hour-rule.md) (keep-awake); 2026-11-07 by [0043](0043-agent-limits-local-time-and-platform-prices.md) (local time, desk over account, Platform prices; noted 2026-11-09); 2026-11-05 by [0040](0040-desk-services-spring-boot-docker.md) (enforced in `desk-agent`, Java; noted 2026-11-11)
 
 ## Context
 - Members want token and dollar caps per agent, desk and period on their own keys. Agents run long tasks that must survive crashes and stops.
@@ -14,6 +14,25 @@ by [0026](0026-idle-24-hour-rule.md) and [0043](0043-agent-limits-local-time-and
 - **Limits:** scopes per agent (day/week/month), per desk (month), per run (default $2 or 50 steps) and per key per desk. An LLM gateway (AI SDK middleware plus an image wrapper) reserves a conservative maximum before each call and settles from provider-reported usage, in one SQLite transaction. Prices come from a signed `pricing.json` per release.
 - **Account-wide per-key limits:** deskd reports usage totals (tokens, estimated $, per key and feature, never content) every 5 min; Platform aggregates and returns `limitsRemaining` (Platform ADR 0018).
 - **Memory:** compacted thread summaries plus explicit, user-editable memories recalled with FTS5; no embeddings in v1.
+
+### Amendment, 2026-11-13: durable runs as built (Maia Mode Phase 0)
+The owner's focused Maia Mode session put durable runs in Phase 0 on Nov 13, as the durable runs sizing's Design 1
+(`sub/mm-durable-seam`, then `sub/mm-durable-resume`; the draft ADR "the Agent's tools and approvals" §3, "Restarts").
+- **States** (`runs.state` in `agent.db`): `running`; `waiting_approval` (a card pending), `waiting_<kind>` (a wait on
+  something outside the run, `waiting_desk` for another desk's answer); `paused` (SIGTERM: a rollout or the desk's stop;
+  `detail: "restart"`); and the ends `done`, `failed`, `stopped`, `interrupted`. Design §9.10's `queued`,
+  `paused_limit` and `cancelled` aren't used: a run refused for a limit ends `failed`, `limit_reached`. A reply stays
+  `streaming` while its run is anything but ended, so a run paused or killed picks up at the next start.
+- **Checkpoints,** each an `agent.db` transaction with `synchronous=FULL`: the start context once; each step's plan
+  before anything of it is asked or runs (its text, its calls with their reasoning items, their classes, payloads and
+  contexts as judged); the gate's verdicts; each call's result with its record. The run's taint and gate counts go
+  with each and never reset. Bounded at 2 MiB a run (past it the run goes on and can't resume), gone when the run ends.
+- **Idempotency keys:** every `tcall` carries its record's UUIDv7 as `key`, and deskd keeps the reply 10 minutes in
+  RAM. A call a restart left in flight is asked again by its key: deskd's kept reply, exactly once, or `interrupted`
+  when deskd no longer holds it. Nothing that may have changed something is run twice.
+- **Stops checkpoint and pause runs,** as this ADR said. Waiting (`waiting_*`) doesn't keep the desk awake.
+- **A kill switch,** `/data/agent/resume-switch` saying `off`: runs keep no checkpoint, and a restart ends them
+  `interrupted`, as before.
 
 ## Consequences
 - Overshoot is bounded by one call; dollar figures are estimates, so the UI pushes provider-side spend limits as the backstop.

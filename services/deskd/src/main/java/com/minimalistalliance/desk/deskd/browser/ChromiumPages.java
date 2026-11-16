@@ -9,23 +9,30 @@ import java.util.Map;
 
 /**
  * One of Chromium's own pages, opened hidden for one call and closed after it: its Password Manager, its bookmarks or
- * its extensions page. Hidden means no tab, nothing in the Browser a member sees, nothing session restore brings back
+ * its extensions page, or kept a short while for the Browser's zoom ({@link BrowserZoom}). Hidden means no tab, nothing in the Browser a member sees, nothing session restore brings back
  * and no history ({@code Target.createTarget}'s {@code hidden}, which Chromium 156 has and which {@code desk-adblock}
  * uses for {@code chrome://policy}), and Chromium closes it by itself if deskd's connection goes.
  *
  * <p><b>What runs in it.</b> Only the constant functions of {@link SignIns}, in the page's own world, where Chromium's
- * {@code chrome.passwordsPrivate}, {@code chrome.bookmarks} and {@code chrome.developerPrivate} are. What a member gave,
+ * {@code chrome.passwordsPrivate}, {@code chrome.bookmarks} and {@code chrome.developerPrivate} are, and of
+ * {@link BrowserZoom}, with {@code chrome.settingsPrivate}'s default zoom. What a member gave,
  * such as the rows of a passwords file, goes in as {@code Runtime.callFunctionOn}'s arguments, values and never source,
  * and only small results come back. These pages show no web content, so nothing in them is a page's. An exception's
  * words are never read or logged: one can quote an argument.
  */
 final class ChromiumPages {
 
-    /** The three pages, each with the API it waits for. */
+    /** The pages, each with the API it waits for. */
     enum Kind {
         PASSWORDS("chrome://password-manager/passwords", "passwordsPrivate"),
         BOOKMARKS("chrome://bookmarks/", "bookmarks"),
-        EXTENSIONS("chrome://extensions/", "developerPrivate");
+        EXTENSIONS("chrome://extensions/", "developerPrivate"),
+        /**
+         * The Password Manager's settings, for {@code chrome.settingsPrivate}'s default zoom. {@code chrome://settings}
+         * has it too, but opened hidden it crashes Chromium's browser process (SIGSEGV, Chrome for Testing 156 and 158,
+         * docs/sub-status/browser-zoom.md), and of Chromium's pages tried, only these two have the API.
+         */
+        ZOOM("chrome://password-manager/settings", "settingsPrivate");
 
         final String url;
         final String api;
@@ -50,12 +57,21 @@ final class ChromiumPages {
         }
     }
 
+    /** What a page needs of the connection. */
+    interface Calls {
+        /** One command, on the browser itself (session null) or on a hidden page this opened. */
+        Map<String, Object> call(String sessionId, String method, Map<String, Object> params, Duration timeout)
+                throws CdpException, InterruptedException;
+
+        Duration request();
+    }
+
     private static final Duration POLL = Duration.ofMillis(100);
 
-    private final SignIns.Chromium chromium;
+    private final Calls chromium;
     private final Duration load;
 
-    ChromiumPages(SignIns.Chromium chromium, Duration load) {
+    ChromiumPages(Calls chromium, Duration load) {
         this.chromium = chromium;
         this.load = load;
     }

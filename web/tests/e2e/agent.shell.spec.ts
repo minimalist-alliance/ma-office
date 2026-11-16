@@ -871,12 +871,13 @@ test.describe('every agent is its own app', () => {
     await expect(page.getByRole('dialog', { name: /Writer/ }).locator('.ag-head-name')).toHaveText('Writer');
   });
 
-  // The spec's "done means" for the Desk app: two staff agents, each with the icon and tone chosen for it, each its own
-  // tile and its own window; the solo one is the one whose settings say it messages no other agent.
-  test('two agents with their own icons and tones: each its own tile and window, and the solo one marked by its settings', async ({ page }) => {
+  // The spec's "done means" for the Desk app: two staff agents, each with the icon and colour chosen for it (the hat by
+  // default, the owner, Nov 15), each its own tile and its own window; the solo one is the one whose settings say it messages
+  // no other agent.
+  test('two agents with their own icons and colours: each its own tile and window, and the solo one marked by its settings', async ({ page }) => {
     const errors = watchConsole(page);
     await arrive(page, '&agentFixture=ready');
-    // Researcher (compass, teal, solo) is the fixture's; Writer (pen, plum) may message Researcher under a written rule.
+    // Researcher (the hat, blue, solo) is the fixture's; Writer (pen, sage) may message Researcher under a written rule.
     await page.evaluate(async () => {
       const desk = Object.values(window.__maDeskMock.agent.desks)[0] as unknown as {
         client: {
@@ -884,14 +885,14 @@ test.describe('every agent is its own app', () => {
           setLinks(id: string, c: { solo: boolean; links: { to: string; rules: string }[] }, m: { idem: string }): Promise<unknown>;
         };
       };
-      const writer = await desk.client.createAgent({ name: 'Writer', icon: 'pen', tone: 'plum' }, { idem: 'e2e-writer' });
+      const writer = await desk.client.createAgent({ name: 'Writer', icon: 'pen', color: 'sage' }, { idem: 'e2e-writer' });
       await desk.client.setLinks(writer.id, { solo: false, links: [{ to: 'researcher', rules: 'Ask only for sources.' }] }, { idem: 'e2e-links' });
     });
     await expect(tileOf(page, /^Researcher/)).toHaveCount(1);
     await expect(tileOf(page, /^Writer/)).toHaveCount(1);
     await expect(tileOf(page, /^Agent/)).toHaveCount(1);
 
-    const check = async (name: RegExp, icon: string, tone: string, messages: boolean): Promise<string> => {
+    const check = async (name: RegExp, icon: string, color: string, messages: boolean): Promise<string> => {
       await tileOf(page, name).evaluate((el) => (el as HTMLButtonElement).click());
       const dialog = page.getByRole('dialog', { name });
       await expect(dialog).toBeVisible();
@@ -901,20 +902,61 @@ test.describe('every agent is its own app', () => {
       await expect(dialog.getByTestId('agent-app')).toHaveAttribute('data-focus', app.slice('agent:'.length));
       await dialog.getByTestId('tab-settings').click();
       await expect(dialog.getByRole('radiogroup', { name: 'Icon' }).getByRole('radio', { checked: true })).toHaveAccessibleName(icon);
-      await expect(dialog.getByRole('radiogroup', { name: 'Color' }).getByRole('radio', { checked: true })).toHaveAccessibleName(tone);
+      await expect(dialog.getByRole('radiogroup', { name: 'Color' }).getByRole('radio', { checked: true })).toHaveAccessibleName(color);
       const toggle = dialog.getByRole('switch', { name: 'Messages other agents' });
       if (messages) await expect(toggle).toBeChecked();
       else await expect(toggle).not.toBeChecked();
       return app;
     };
-    const researcher = await check(/^Researcher/, 'Compass', 'Teal', false);
-    const writer = await check(/^Writer/, 'Pen', 'Plum', true);
+    const researcher = await check(/^Researcher/, 'Agent', 'Blue', false);
+    const writer = await check(/^Writer/, 'Pen', 'Sage', true);
     expect(researcher).not.toBe(writer);
     await expect(page.getByRole('dialog', { name: /Researcher/ })).toBeVisible();
     await expect(page.getByRole('dialog', { name: /Writer/ })).toBeVisible();
     await shot(page, 'two-agents');
     expect(errors).toEqual([]);
   });
+
+  // The owner, Nov 15: every agent wears the Agent app's own icon, the guy with the hat, in a colour of its own; a new one takes
+  // the next free colour on its desk, the lead keeps the Agent's own, and the colour is a small choice in its settings.
+  for (const theme of THEMES) {
+    test(`${theme}: agents wear the hat in their own colours, and a colour picked in settings is the agent's`, async ({ page }) => {
+      const errors = watchConsole(page);
+      await setTheme(page, theme);
+      await arrive(page, '&agentFixture=ready');
+      // Researcher is the fixture's (blue); two more made with no colour take the next free ones.
+      const made = await page.evaluate(async () => {
+        const desk = Object.values(window.__maDeskMock.agent.desks)[0] as unknown as { client: { createAgent(i: Record<string, unknown>, m: { idem: string }): Promise<{ look: { icon: string; color?: string } }> } };
+        const a = await desk.client.createAgent({ name: 'Writer' }, { idem: 'e2e-c1' });
+        const b = await desk.client.createAgent({ name: 'Planner' }, { idem: 'e2e-c2' });
+        return [a.look, b.look];
+      });
+      expect(made).toEqual([expect.objectContaining({ icon: 'hat', color: 'sage' }), expect.objectContaining({ icon: 'hat', color: 'amber' })]);
+      await expect(tileOf(page, /^Writer/)).toHaveCount(1);
+      await expect(tileOf(page, /^Planner/)).toHaveCount(1);
+      await page.waitForTimeout(400);
+      await shot(page, `hat-tiles-${theme}`);
+      await tileOf(page, /^Writer/).evaluate((el) => (el as HTMLButtonElement).click());
+      const dialog = page.getByRole('dialog', { name: /Writer/ });
+      await dialog.getByTestId('tab-settings').click();
+      const colors = dialog.getByRole('radiogroup', { name: 'Color' });
+      await expect(colors.getByRole('radio')).toHaveCount(7);
+      await expect(colors.getByRole('radio', { checked: true })).toHaveAccessibleName('Sage');
+      await expect(dialog.getByRole('radiogroup', { name: 'Icon' }).getByRole('radio', { checked: true })).toHaveAccessibleName('Agent');
+      await colors.getByRole('radio', { name: 'Rose' }).click();
+      await expect(colors.getByRole('radio', { checked: true })).toHaveAccessibleName('Rose');
+      await expect
+        .poll(() => page.evaluate(async () => {
+          const desk = Object.values(window.__maDeskMock.agent.desks)[0] as unknown as { client: { listAgents(): Promise<{ name: string; look?: { color?: string } }[]> } };
+          return (await desk.client.listAgents()).find((a) => a.name === 'Writer')?.look?.color;
+        }))
+        .toBe('rose');
+      await expect(dialog.locator('.ag-look-mark.hat').first()).toHaveAttribute('data-color', 'rose');
+      expect(await axe(page)).toEqual([]);
+      await shot(page, `color-choice-${theme}`);
+      expect(errors).toEqual([]);
+    });
+  }
 });
 
 interface LayoutDoc { layout?: { prefs?: { showProviderBadges?: boolean } } | null }

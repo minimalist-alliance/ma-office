@@ -15,6 +15,7 @@ import type { ImportedPage } from './notebookFile.ts';
 import type { PMNode } from './schema.ts';
 import type {
   ActivityRow,
+  AgentEdit,
   NotebookRec,
   PageRec,
   SearchHit,
@@ -89,6 +90,13 @@ export interface NotebookBackend {
   restoreVersion(pageId: string, versionId: string): Promise<void>;
   /** The page as it stood at the end of that local day: the last version written that day or before, or null. */
   versionAsOf(pageId: string, day: string): Promise<Version | null>;
+
+  // The Agent's edits (a desk's; draft ADR "the Agent's tools and approvals" section 15). A backend without agents leaves
+  // these out, and "Edited by" and its Undo don't show.
+  /** The page's agent edits, newest first, the last 30 days. */
+  agentEdits?(pageId: string): Promise<AgentEdit[]>;
+  /** Takes out exactly what that edit put there, while it's as the agent left it; rejects with the desk's reason if not. */
+  undoAgentEdit?(editId: string): Promise<void>;
 
   // Temporal view and search.
   /** Activity rows for days in [fromDay, toDay], inclusive. */

@@ -18,6 +18,8 @@ export function wordTarget(t: ApprovalTarget | null | undefined): string | null 
       return shown(`“${t.label}” on ${hostOf(t.origin)}`);
     case 'site':
       return shown(t.site ?? (t.origin ? hostOf(t.origin) : ''));
+    case 'todo':
+      return t.mergeInto?.title ? shown(`“${t.mergeInto.title}”`) : t.title ? shown(`“${t.title}”`) : null;
     case 'memory':
       return null;
     case 'timer':
@@ -71,7 +73,12 @@ export interface ChipView {
   result: 'done' | 'failed' | 'stopped';
   /** The desk's reason, for a failed one: in its title and accessible name. */
   why: string | null;
+  /** A call a restart cut off (`interrupted`) that has no card to say so: its `why`, as a line under the chips. Absent otherwise. */
+  note?: string;
 }
+
+/** An interrupted call's line: it may have happened, so check what it acted on (its target, else "it") before asking again. */
+export const interruptedText = (target: string | null): string => `Didn’t finish: the desk restarted. It may have happened: check ${target || 'it'} before you ask again.`;
 
 /**
  * A reply's chip for one call (spec 2.5). A call that asked and was declined or expired has none: its card says so. Null for those.
@@ -80,18 +87,25 @@ export function chipOf(chip: ToolChip): ChipView | null {
   const decision = chip.approval?.decision;
   if (decision === 'declined' || decision === 'expired') return null;
   const level = levelOf(chip.risk ?? 'read');
-  const result: ChipView['result'] = chip.stopped ? 'stopped' : chip.ok ? 'done' : 'failed';
+  // Cut off by a restart: unknown whether it happened, so never done. One that asked has its card, which says so.
+  const cut = chip.interrupted === true && !chip.stopped;
+  const result: ChipView['result'] = chip.stopped ? 'stopped' : chip.ok && !cut ? 'done' : 'failed';
   const known = doneWord(chip.name);
-  const word = result === 'failed' ? 'Didn’t finish' : result === 'stopped' ? 'Stopped' : known === 'Used a tool' ? shown(chip.summary || known) : known;
-  const target = wordTarget(chip.target) ?? (chip.path ? shown(chip.path) : null);
+  // A tool this app doesn't know, and To-do's (§22's chips name what the call did: a merge, an item already there, a
+  // suggestion in place of a close), take the desk's few words.
+  const desks = known === 'Used a tool' || chip.name.startsWith('todo_');
+  const word = result === 'failed' ? 'Didn’t finish' : result === 'stopped' ? 'Stopped' : desks ? shown(chip.summary || known) : known;
+  const raw = wordTarget(chip.target) ?? (chip.path ? shown(chip.path) : null);
+  const target = raw && /^[a-z][a-z0-9+.-]*:\/\//i.test(raw) ? shortAddress(raw) : raw;
   return {
     level,
     warn: isWarnLevel(level),
     word,
-    target: target && /^[a-z][a-z0-9+.-]*:\/\//i.test(target) ? shortAddress(target) : target,
+    target,
     // A call under a second still took time: it reads 0:01, never 0:00.
     time: typeof chip.durationMs === 'number' ? elapsed(Math.max(1000, chip.durationMs)) : null,
     result,
-    why: result === 'failed' ? shown(chip.reason ?? chip.summary ?? '') || null : null,
+    why: cut ? interruptedText(target) : result === 'failed' ? shown(chip.reason ?? chip.summary ?? '') || null : null,
+    ...(cut && !chip.approval ? { note: interruptedText(target) } : {}),
   };
 }

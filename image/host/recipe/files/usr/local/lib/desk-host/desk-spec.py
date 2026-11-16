@@ -62,6 +62,8 @@ mounts += [
 if wallspec.test_mode():   # a test host's tools (the CDP forward, the probes); never on a member's host (WR2-01)
     mounts.append(wallspec.bind("/var/lib/desk-host/test", "/desk-host-test", ro=True))
 for name, (inside, *_rest) in wallspec.shares(k).items():   # RC-01: host-owned sources only, made fresh before any desk process
+    if name in wallspec.SANDBOX_ONLY:   # desk-parse's (ADR 0097) and desk-parse-courier's: only their readers' and clients' sandboxes, never the desk's own
+        continue
     mounts.append(wallspec.bind(f"/run/desk-host/share/{k}/{name}", inside, extra=("noexec",)))
 for m in mounts:  # mqueue and devpts inside a user namespace: no gid= option that maps outside it
     if m["destination"] == "/dev/pts":

@@ -170,10 +170,10 @@ describe('only apps the member has', () => {
   const paused = meter(30 * GB, { state: 'limit', limitedBy: 'week', paused: true, resumesAt: '2026-11-09T00:00:00.000Z' });
   const warned = meter(25 * GB, { state: 'warn' });
 
-  it("never names Chat, which isn't built, for any age", () => {
+  it("never names Courier, which isn't built, for any age", () => {
     for (const band of [null, 'adult', 'teen'] as const) {
       setCurrentBand(band);
-      for (const line of [stateLine(paused, c), stateLine(warned, c), headsUp(paused, c)?.text, pausedCopy(paused, 'Browser', c).body]) expect(line).not.toContain('Chat');
+      for (const line of [stateLine(paused, c), stateLine(warned, c), headsUp(paused, c)?.text, pausedCopy(paused, 'Browser', c).body]) expect(line).not.toContain('Courier');
     }
   });
 });

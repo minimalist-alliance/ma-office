@@ -26,6 +26,7 @@ HOSTUNITS = IMAGE / "host/recipe/files/etc/systemd/system"
 
 # unit -> (RestartMaxDelaySec, OOMScoreAdjust or None)
 TABLE = {"deskd": (300, -500), "desk-rtc": (300, -500), "desk-notebook": (300, -200), "desk-agent": (300, 200), "desk-stream": (300, 100),
+         "desk-parse": (300, 500), "desk-parse-courier": (300, 500),   # ADR 0097: a parse goes first under memory pressure (its container's 500 is --oom-score-adj's)
          "commons-server": (300, -200), "desk-agent-filter": (300, None), "desk-egress": (300, None),
          "desk-browser": (30, 0), "desk-xorg": (30, None), "desk-audio": (30, None)}
 CONTAINERS = ("deskd", "desk-agent", "desk-notebook")
@@ -73,7 +74,7 @@ class DeskUnits(unittest.TestCase):
             self.assertEqual(got, None if want is None else [str(want)], n)
             if want is not None:
                 adj[n] = want
-        order = ["desk-agent", "desk-stream", "desk-browser", "desk-notebook", "desk-rtc"]
+        order = ["desk-parse", "desk-agent", "desk-stream", "desk-browser", "desk-notebook", "desk-rtc"]
         vals = [adj[n] for n in order]
         self.assertEqual(vals, sorted(vals, reverse=True), "first killed to last")
         self.assertEqual(len(set(vals)), len(vals))
@@ -203,10 +204,19 @@ class HostSupervisor(unittest.TestCase):
 class HostOrder(unittest.TestCase):
     def test_svc_spec_sets_the_order_per_sandbox(self):
         src = (HOSTLIB / "svc-spec.py").read_text()
-        want = {"deskd": -500, "desk-rtc": -500, "desk-notebook": -200, "desk-agent": 200, "desk-stream": 100}
+        want = {"deskd": -500, "desk-rtc": -500, "desk-notebook": -200, "desk-agent": 200, "desk-stream": 100,
+                "desk-parse": 500, "desk-parse-courier": 500}   # the readers first (ADR 0097; Courier's: courier-slot)
         for n, v in want.items():
             self.assertRegex(src, rf'"{n}": dict\(oom={v}, ')
         self.assertIn('p["oomScoreAdj"] = S["oom"]', src)
+
+    def test_desk_host_check_oom_has_every_sandbox(self):   # what verify.sh's oom check reads per slot: every sandbox svc-spec makes
+        src = (HOSTLIB / "desk-host-check").read_text()
+        oom = re.search(r"^OOM = (\{[^}]*\})", src, re.M | re.S).group(1)
+        svcs = re.search(r'^SERVICES = (\([^)]*\))', (HOSTLIB / "svc-spec.py").read_text(), re.M).group(1)
+        import ast
+        self.assertEqual(set(ast.literal_eval(oom)), set(ast.literal_eval(svcs)))
+        self.assertEqual(ast.literal_eval(oom)["desk-parse-courier"], 500)
 
     def test_the_hosts_own_units_are_far_below_any_desk(self):
         for n in ("desk-host-link", "desk-ice-demux", "desk-host-shutdown"):

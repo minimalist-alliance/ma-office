@@ -1,0 +1,92 @@
+{
+  "id": "notebook-008",
+  "area": "notebook",
+  "title": "An ambiguous replace, then a precise one",
+  "prompt": "On my Errands page, change the Monday call Sam to email Sam.",
+  "setup": {
+    "notebook": [
+      {
+        "tab": "Harness",
+        "title": "Errands",
+        "markdown": "# Errands\n\n- Monday: call Sam about the van\n- Friday: call Sam about dinner\n"
+      }
+    ]
+  },
+  "approve": "all",
+  "checks": [
+    {
+      "kind": "page",
+      "tab": "Harness",
+      "title": "Errands",
+      "contains": [
+        "Monday: email Sam",
+        "Friday: call Sam"
+      ]
+    },
+    {
+      "kind": "cards",
+      "tools": [
+        "notebook_write"
+      ]
+    }
+  ],
+  "policy": {
+    "tools": [
+      "notebook_search",
+      "notebook_write"
+    ]
+  },
+  "standIn": [
+    {
+      "calls": [
+        {
+          "name": "notebook_search",
+          "input": {
+            "query": "Errands"
+          }
+        }
+      ]
+    },
+    {
+      "calls": [
+        {
+          "name": "notebook_write",
+          "input": {
+            "pageId": {
+              "$re": {
+                "step": 0,
+                "call": 0,
+                "pattern": "\"pageId\":\"([^\"]+)\",\"title\":\"Errands\""
+              }
+            },
+            "op": "replace_text",
+            "find": "call Sam",
+            "markdown": "email Sam"
+          }
+        }
+      ]
+    },
+    {
+      "calls": [
+        {
+          "name": "notebook_write",
+          "input": {
+            "pageId": {
+              "$re": {
+                "step": 0,
+                "call": 0,
+                "pattern": "\"pageId\":\"([^\"]+)\",\"title\":\"Errands\""
+              }
+            },
+            "op": "replace_text",
+            "find": "Monday: call Sam",
+            "markdown": "Monday: email Sam"
+          }
+        }
+      ]
+    },
+    {
+      "text": "Changed Monday's call Sam to email Sam. Friday's is unchanged."
+    }
+  ]
+}

@@ -29,6 +29,12 @@ FROM eclipse-temurin:21-jre@sha256:0b99b3376fbb50dbf9c0af8535fdd5b8eb0d3fdfc8b1e
 WORKDIR /app
 COPY --from=build /extracted/ /app/
 COPY desk-agent/docker/jvm.options /app/jvm.options
+# The parse sidecar's worker (ADR 0097): its sandbox, on this image, runs java @/app/parse.options per attached file.
+COPY desk-agent/docker/parse.options /app/parse.options
+# desk-parse's Courier mode (ADR 0097, draft ADR "Courier's store" section 4): the Courier sandbox runs
+# java @/app/courier-parse.options per message for deskd. /app/courier/trackers.txt is an empty placeholder the sandbox
+# mounts the image's tracker list over (ADR 0076's pinned lists).
+COPY desk-agent/docker/courier-parse.options /app/courier-parse.options
 
 # The version comes first, then the AppCDS training, with the JVM, classpath and flags the entrypoint uses.
 # - The training run can't take jvm.options' SharedArchiveFile line: the JVM refuses to read and write one file.
@@ -37,14 +43,22 @@ COPY desk-agent/docker/jvm.options /app/jvm.options
 #   leaves only the archive, and fails if SQLite's library didn't load from /app/native. It's on this command line
 #   and nowhere else. If any step goes wrong it exits non-zero and the build fails.
 # - The second run proves the archive maps, and fails the build otherwise: -Xshare:on doesn't fall back.
+# - The last two read a line of text through /app/parse.options and a message through /app/courier-parse.options, as the
+#   sandboxes would, and fail the build without their text.
 ARG VERSION
 RUN set -eu; \
     printf 'desk.agent.version=%s\n' "${VERSION:?build with --build-arg VERSION=...}" > /app/desk-agent.properties; \
-    chmod 0644 /app/jvm.options /app/desk-agent.properties /app/native/libsqlitejdbc.so; \
+    mkdir -p /app/courier; : > /app/courier/trackers.txt; \
+    chmod 0755 /app/courier; \
+    chmod 0644 /app/jvm.options /app/parse.options /app/courier-parse.options /app/courier/trackers.txt /app/desk-agent.properties /app/native/libsqlitejdbc.so; \
     grep -v '^-XX:SharedArchiveFile=' /app/jvm.options > /tmp/train.options; \
     java @/tmp/train.options -XX:ArchiveClassesAtExit=/app/desk-agent.jsa -Dma.cds.train=true -jar /app/desk-agent.jar; \
     rm -f /tmp/train.options; \
-    java @/app/jvm.options -Xshare:on -Dspring.context.exit=onRefresh -jar /app/desk-agent.jar
+    java @/app/jvm.options -Xshare:on -Dspring.context.exit=onRefresh -jar /app/desk-agent.jar; \
+    printf 'parse1 text 1000 1\nthe parse sidecar reads\n' | env -i "$(command -v java)" @/app/parse.options | grep -qx 'the parse sidecar reads'; \
+    printf 'courier1 message\nFrom: build@example.com\nSubject: build\n\nthe courier mode reads\n' \
+      | env -i "$(command -v java)" @/app/courier-parse.options > /tmp/courier.out; \
+    head -n 1 /tmp/courier.out | grep -qx 'OK'; grep -q 'the courier mode reads' /tmp/courier.out; rm -f /tmp/courier.out
 
 USER 1103:1103
 

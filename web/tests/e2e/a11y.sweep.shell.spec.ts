@@ -95,6 +95,22 @@ for (const vp of VIEWPORTS) {
       expect(await sweep(page)).toEqual([]);
       expect(errors).toEqual([]);
     });
+
+    test('the account menu open, with the office tour on: no tour switch or "Take the tour" in it (ADR 0056), and no "Plain background"', async ({ page, request }) => {
+      const errors = watchConsole(page);
+      await harness(request, { walkthrough: null });
+      // A member who has had the tour: it doesn't start over the menu.
+      await page.addInitScript(() => {
+        if (window === window.top) localStorage.setItem('ma.tour.v1', JSON.stringify({ who: 'u-test', off: true }));
+      });
+      await signIn(page, '/?fixture=one');
+      await canvasPainted(page);
+      await openMenu(page);
+      await expect(page.getByRole('switch', { name: /office tour|Plain background/ })).toHaveCount(0);
+      await expect(page.getByRole('dialog', { name: 'Account' }).getByRole('button', { name: 'Take the tour' })).toHaveCount(0);
+      expect(await sweep(page)).toEqual([]);
+      expect(errors).toEqual([]);
+    });
   });
 }
 

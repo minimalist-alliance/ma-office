@@ -134,6 +134,18 @@ class AgentPurgesTest {
         assertThat(counts()).containsEntry("owed", 1).containsEntry("done", 0L);
         assertThat(Files.readString(dir.resolve("guild-purges.json"))).contains(B);
 
+        // deskd's own record of B's agent (whose id is B's), which the purge takes away with desk-agent's.
+        Caller memberB = new Caller(Caller.GUILD_MEMBER, B, Caller.MEMBER, List.of(), "B", null, false);
+        Map<String, Object> apps = Map.of("notebook", true, "files", false, "browser", false, "courier", false,
+                "todos", false);
+        Map<String, Object> auto = new LinkedHashMap<>();
+        auto.put("notebook", null);
+        auto.put("files", null);
+        auto.put("todos", false);
+        rig.module.accessRecord().recordSet(B, Map.of("agentId", B, "apps", apps, "auto", auto), Map.of("access",
+                Map.of("chosen", true, "apps", apps, "auto", auto, "desks", List.of())), memberB);
+        assertThat(rig.module.accessRecord().recorded()).containsExactly(B);
+
         try (FakeAgentSocket agent = new FakeAgentSocket(rig.agentSocket)) {
             Map<String, Object> req = nextPurge(agent);
             // deskd's own: the member to purge in p, and no caller, as no client's relayed request ever lacks one.
@@ -142,6 +154,7 @@ class AgentPurgesTest {
             agent.reply(((Number) req.get("id")).longValue(), Map.of("purged", true, "messages", 3, "files", 0, "usage", 1));
             await().until(() -> Long.valueOf(1).equals(counts().get("done")));
             assertThat(counts()).containsEntry("owed", 0);
+            assertThat(rig.module.accessRecord().recorded()).isEmpty();
             assertThat(Files.readString(dir.resolve("guild-purges.json"))).doesNotContain(B);
             assertThat(agent.requests.poll(200, TimeUnit.MILLISECONDS)).as("sent once").isNull();
             assertThat(agent.received).filteredOn(m -> AgentPurges.METHOD.equals(m.get("m"))).hasSize(1);

@@ -1,5 +1,6 @@
 import { describe, expect, it } from 'vitest';
-import { DEFAULT_LIMITS, guildIdOfPanel, guildPanelId, guildVm, isGuildPanel, limitProblem, limitsPatch, mayManageAgents, maySeeUsage, myGuilds, runs, share, usd, zoneName } from './panel';
+import { limitProblem, limitsPatch, share, usd, zoneName } from './limits';
+import { DEFAULT_LIMITS, guildIdOfPanel, guildPanelId, guildVm, isGuildPanel, mayManageAgents, maySeeUsage, myGuilds, runs } from './panel';
 import type { GuildMine } from './api';
 
 const g = (guildId: string, over: Partial<GuildMine> = {}): GuildMine => ({ guildId, name: `Guild ${guildId}`, role: 'member', ...over });

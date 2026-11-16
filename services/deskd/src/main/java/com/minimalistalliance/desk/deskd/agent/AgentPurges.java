@@ -60,6 +60,21 @@ final class AgentPurges implements AutoCloseable {
         this.backoff = retry;
     }
 
+    /** Told each member desk-agent purged: deskd's own access record forgets their agent (whose id is theirs). */
+    private volatile java.util.function.Consumer<String> purged = memberId -> {};
+
+    void onPurged(java.util.function.Consumer<String> then) {
+        this.purged = then;
+    }
+
+    private void forgotten(String memberId) {
+        try {
+            purged.accept(memberId);
+        } catch (RuntimeException e) {
+            log.warn("agent link: a purged member's access couldn't be forgotten: {}", e.getClass().getSimpleName());
+        }
+    }
+
     /** The list to drain: a guild desk's. Before it's set, nothing goes. */
     void queue(MemberPurges purges) {
         lock.lock();
@@ -155,6 +170,7 @@ final class AgentPurges implements AutoCloseable {
                 }
                 try {
                     Object answer = link.call(METHOD, Map.of("memberId", next.memberId()), wait);
+                    forgotten(next.memberId());
                     next.queue().done(next.memberId(), answerOf(answer));
                     lock.lock();
                     try {

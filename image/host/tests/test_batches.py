@@ -419,6 +419,34 @@ class StoreAndCanary(Base):
         self.assertEqual((d / "version.env").read_text(), "DESKD_IMAGE_VERSION=0.3.3\n")
         self.assertEqual(BT.rel_tree_hash(str(d)), (T0 / "srv/releases/deskd/1.0/tree.sha256").read_text().strip())
 
+    def test_the_copy_into_a_slots_rel_keeps_every_time(self):
+        # A switch's copy is templates.copy_tree: on 0.1.12 to 0.1.15 every file in rel/<svc> got the copy's time, so after a batch's
+        # switch deskd's and desk-agent's app jars no longer matched their AppCDS archives (refused without a word, a cold wake 7.5 to
+        # 12 s slower). The store's copy keeps its layers' times (test_every_file_keeps_its_layers_mtime); the slot's must keep the
+        # store's. Fails on 0.1.15's templates.py. The top and version.env are the copy's own (deskd's line written after it).
+        self.rec(1)
+        (T0 / "srv/templates/g1/etc").mkdir(parents=True)
+        (T0 / "srv/templates/g1/etc/ma-release").write_text("version=0.3.3\n")
+        src = T0 / "srv/releases/deskd/1.0"
+        BT.copy_release(1, "deskd", "1.0", "g1")
+        d = T0 / "srv/slots/1/rel/.new-deskd"
+
+        def times(top):
+            out = {}
+            for dp, dns, fns in os.walk(top):
+                for n in dns + fns:
+                    p = os.path.join(dp, n)
+                    out[os.path.relpath(p, top)] = os.lstat(p).st_mtime_ns
+            return out
+        want, got = times(src), times(d)
+        got.pop("version.env", None)
+        want.pop("version.env", None)
+        self.assertEqual(set(got), set(want))
+        self.assertGreater(len(want), 3)
+        self.assertEqual({p: (got[p], want[p]) for p in want if got[p] != want[p]}, {}, "every path keeps the store's time")
+        old = [p for p, t in want.items() if t < (time.time() - 86400) * 1e9]
+        self.assertTrue(any(p.startswith("rootfs/") for p in old), "the layers' files have their layers' times, not today's")
+
     def test_records_from_before_batches(self):
         self.rec(1)
         self.assertEqual(BT.rec_releases(BT.record(1)), {c: "1.0" for c in COMPS})

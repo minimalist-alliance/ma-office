@@ -3,17 +3,18 @@
 // runs the same code against real IndexedDB and Web Locks.
 import { afterEach, beforeEach, describe, expect, it, vi } from 'vitest';
 
-const { stored, config } = vi.hoisted(() => ({ stored: { value: null as string | null, onWrite: null as (() => void) | null, outlived: null as string | null, choice: null as string | null, signedInAt: null as number | null }, config: { reachable: true } }));
+const { stored, config } = vi.hoisted(() => ({ stored: { value: null as string | null, onWrite: null as (() => void) | null, outlived: null as string | null, choice: null as string | null, signedInAt: null as number | null, thirtyDays: false }, config: { reachable: true, sso: undefined as unknown } }));
 
 vi.mock('./clientConfig', () => ({
   loadedConfig: () => null,
   getClientConfig: () => (config.reachable
-    ? Promise.resolve({ api: 'https://api.test', auth: { domain: 'https://auth.test', clientId: 'c', redirectUri: '', logoutUri: '', scopes: [] } })
+    ? Promise.resolve({ api: 'https://api.test', auth: { domain: 'https://auth.test', clientId: 'c', redirectUri: '', logoutUri: '', scopes: [], ...(config.sso === undefined ? {} : { sso: config.sso }) } })
     : Promise.reject(new TypeError('Failed to fetch'))),
 }));
 vi.mock('./tokenStore', () => ({
   HOLD_MS: { '7d': 1, '1d': 1, browser: 1 },
   outlivedChoice: () => stored.outlived,
+  pastThirtyDays: () => stored.thirtyDays,
   readChoice: () => ({ staySignedIn: stored.choice, staySignedInSince: null }),
   readSignedInAt: () => stored.signedInAt,
   writeSignedInAt: (at: unknown) => {
@@ -64,8 +65,11 @@ beforeEach(async () => {
   stored.outlived = null;
   stored.choice = null;
   stored.signedInAt = null;
+  stored.thirtyDays = false;
   revoked = [];
   config.reachable = true;
+  config.sso = undefined;
+  vi.stubGlobal('location', { hostname: 'office.minimalistalliance.com' });
   replies = [];
   sent = [];
   lockNames = [];
@@ -309,6 +313,88 @@ describe('ma_session_ended: a refresh past the member\'s "Stay signed in" (contr
   });
 });
 
+/** Contract auth.md §2.8 (0.3.118 draft): only where client-config's `auth.sso` is an object with an https origin (`ssoOrigin`). */
+describe('the shared sign-in', () => {
+  const ON = { origin: 'https://id.minimalistalliance.com' };
+
+  describe('30 days from signedInAt, whatever the choice', () => {
+    it('ends the session with no request: the token revoked and cleared, and the plain line', async () => {
+      config.sso = ON;
+      stored.thirtyDays = true;
+      await expect(auth.getAccessToken()).rejects.toBeInstanceOf(auth.SignInRequired);
+      expect(sent).toEqual([]);
+      expect(revoked).toEqual(['r1']);
+      expect(stored.value).toBeNull();
+      expect(auth.sessionWasRefused()).toBe(true);
+      expect(auth.takeEndedChoice()).toBeNull();
+    });
+
+    it("a kept shorter choice that's also run out still says so", async () => {
+      config.sso = ON;
+      stored.thirtyDays = true;
+      stored.outlived = '7d';
+      await expect(auth.getAccessToken()).rejects.toBeInstanceOf(auth.SignInRequired);
+      expect(auth.takeEndedChoice()).toBe('ended-7d');
+    });
+
+    it.each<[string, unknown]>([['absent', undefined], ['an origin with a path', { origin: `${ON.origin}/v1` }], ['true, a boolean', true]])('changes nothing with auth.sso %s', async (_, sso) => {
+      config.sso = sso;
+      stored.thirtyDays = true;
+      replies = [tokens('r2')];
+      await expect(auth.getAccessToken()).resolves.toBe('access-for-r2');
+      expect([sent, revoked]).toEqual([['r1'], []]);
+    });
+  });
+
+  describe('endRevoked: a lasting session_revoked', () => {
+    const signedIn = async (): Promise<string> => {
+      replies = [tokens('r2')];
+      return auth.getAccessToken();
+    };
+
+    it('revokes and clears the refresh token behind the access token that was refused, and this tab goes to sign in', async () => {
+      config.sso = ON;
+      const access = await signedIn();
+      await auth.endRevoked(access);
+      expect(revoked).toEqual(['r2']);
+      expect(stored.value).toBeNull();
+      expect(auth.sessionWasRefused()).toBe(true);
+      expect(auth.takeEndedChoice()).toBeNull();
+      expect(auth.takeRevoked()).toBe(true); // the card's words, once
+      expect(auth.takeRevoked()).toBe(false);
+      await expect(auth.getAccessToken()).rejects.toBeInstanceOf(auth.SignInRequired);
+      expect(sent).toEqual(['r1']); // nothing more was sent
+    });
+
+    it("leaves a token another tab's sign-in stored since, and an access token that isn't this tab's now", async () => {
+      config.sso = ON;
+      const access = await signedIn();
+      stored.value = 'from-another-tab';
+      await auth.endRevoked(access);
+      await auth.endRevoked('some-older-access');
+      expect(revoked).toEqual([]);
+      expect(stored.value).toBe('from-another-tab');
+      expect(auth.sessionWasRefused()).toBe(false);
+      expect(auth.takeRevoked()).toBe(false);
+    });
+
+    it('never throws, and changes nothing when client-config can\'t be read', async () => {
+      config.sso = ON;
+      const access = await signedIn();
+      config.reachable = false;
+      await expect(auth.endRevoked(access)).resolves.toBeUndefined();
+      expect([revoked, stored.value]).toEqual([[], 'r2']);
+    });
+  });
+
+  it("finishSignIn gives the sign-in's first access token, for step 1", async () => {
+    const claims = btoa(JSON.stringify({ nonce: 'n' }));
+    vi.stubGlobal('sessionStorage', { getItem: () => JSON.stringify({ state: 's', nonce: 'n', verifier: 'v' }), removeItem: () => undefined });
+    replies = [json(200, { access_token: 'access-for-sign-in', id_token: `x.${claims}.y`, refresh_token: 'from-a-sign-in', expires_in: 3600 })];
+    await expect(auth.finishSignIn('?code=c&state=s')).resolves.toBe('access-for-sign-in');
+  });
+});
+
 describe('a token stored while a refresh was out', () => {
   it('is not overwritten by that answer: it reads again, and refreshes the newer one', async () => {
     replies = [() => {
@@ -433,7 +519,7 @@ describe('finishSignIn over a stored session', () => {
   ])('a revoke that fails (%s) changes nothing about the sign-in, and is not tried again', async (_name, reply) => {
     revokeReply = reply;
     replies = [exchange('r2')];
-    await expect(finish()).resolves.toBeUndefined();
+    await expect(finish()).resolves.toBe('access-for-sign-in');
     await vi.advanceTimersByTimeAsync(60_000);
     expect(atRevoke.map((r) => r.token)).toEqual(['r1']);
     expect(stored.value).toBe('r2');
@@ -445,7 +531,7 @@ describe('finishSignIn over a stored session', () => {
     revokeReply = () => new Promise<Response>(() => undefined);
     replies = [exchange('r2')];
     // No timer moves: the sign-in finishes without waiting for the revoke's SIGN_OUT_WAIT_MS.
-    await expect(finish()).resolves.toBeUndefined();
+    await expect(finish()).resolves.toBe('access-for-sign-in');
     expect(atRevoke.map((r) => r.token)).toEqual(['r1']);
     expect(stored.value).toBe('r2');
   });
@@ -730,20 +816,6 @@ describe('endSession: the revoke is read to the end, then the logout (Platform\'
     });
     await settle(auth.SIGN_OUT_WAIT_MS);
     expect(over).toBe(true);
-  });
-
-  // "Sign out everywhere" goes on only with a yes: a refusal and silence are both no, and it never throws.
-  it('answeredWithin is true only for a call that settles well in time', async () => {
-    await expect(auth.answeredWithin(Promise.resolve(), auth.EVERYWHERE_WAIT_MS)).resolves.toBe(true);
-    await expect(auth.answeredWithin(Promise.reject(new Error('503')), auth.EVERYWHERE_WAIT_MS)).resolves.toBe(false);
-    let answer: boolean | null = null;
-    void auth.answeredWithin(new Promise(() => {}), auth.EVERYWHERE_WAIT_MS).then((ok) => {
-      answer = ok;
-    });
-    await settle(auth.EVERYWHERE_WAIT_MS - 1_000);
-    expect(answer).toBeNull();
-    await settle(1_000);
-    expect(answer).toBe(false);
   });
 });
 

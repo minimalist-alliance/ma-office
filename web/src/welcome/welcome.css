@@ -1,0 +1,966 @@
+/* Maia's welcome, direction A "Lounge" (design-drafts/maia-welcome/CONCEPT.md §13 and the mocks' `src/mock.css`). Its own
+   stylesheet, fetched with the welcome's chunk. Tokens only (`npm run lint`'s colour check). The dimming over the office
+   picture is a navy multiply in Zen, never a fog, and the picture itself is shown as it is (the owner, Nov 15: Ocean cliff
+   stays exactly as approved). No green, brown or warm tints: "ready" is the accent blue and a check. */
+
+/* ------------------------------------------------------------ the office waits behind her */
+.ma-shell > :not(.ma-backdrop):not(.wl) {
+  transition: opacity 900ms cubic-bezier(0.2, 0, 0, 1);
+}
+.ma-shell.wl-on > :not(.ma-backdrop):not(.wl) {
+  opacity: 0;
+  visibility: hidden;
+  pointer-events: none;
+  transition: opacity 600ms, visibility 0s 600ms;
+}
+
+.wl {
+  position: fixed;
+  inset: 0;
+  z-index: 60;
+  display: flex;
+  flex-direction: column;
+  color: var(--ma-text-primary);
+  font: 400 16px/24px var(--ma-font-ui, system-ui, sans-serif);
+  letter-spacing: -0.003em;
+  -webkit-font-smoothing: antialiased;
+  overflow: hidden auto;
+}
+.wl-wait {
+  background: transparent;
+}
+.wl-dim {
+  position: fixed;
+  inset: 0;
+  background: var(--ma-maia-mode-veil);
+  mix-blend-mode: multiply;
+  pointer-events: none;
+  transition: opacity 1200ms cubic-bezier(0.2, 0, 0, 1);
+}
+.wl-lifted {
+  pointer-events: none;
+}
+.wl-lifted .wl-dim {
+  opacity: 0;
+}
+.wl-lifted .wl-card,
+.wl-lifted .wl-top {
+  pointer-events: auto;
+}
+.wl-sr {
+  position: absolute;
+  width: 1px;
+  height: 1px;
+  overflow: hidden;
+  clip: rect(0 0 0 0);
+  white-space: nowrap;
+}
+
+/* ------------------------------------------------------------ the top */
+.wl-top {
+  position: relative;
+  z-index: 2;
+  display: flex;
+  align-items: center;
+  justify-content: space-between;
+  padding: 18px 24px 0 28px;
+}
+.wl-mark {
+  display: flex;
+  height: 28px;
+}
+.wl-ctrls {
+  display: flex;
+  gap: 10px;
+  align-items: center;
+}
+.wl-pill {
+  position: relative;
+  display: flex;
+  align-items: center;
+  gap: 6px;
+  height: 40px;
+  padding: 0 6px;
+  border-radius: 20px;
+  background: var(--ma-surface-chrome);
+  border: 1px solid var(--ma-border);
+}
+.wl-icon,
+.wl-round {
+  display: grid;
+  place-items: center;
+  width: 32px;
+  height: 32px;
+  border: 0;
+  border-radius: 50%;
+  background: transparent;
+  color: var(--ma-text-secondary);
+  cursor: pointer;
+}
+.wl-round {
+  width: 40px;
+  height: 40px;
+  background: var(--ma-surface-chrome);
+  border: 1px solid var(--ma-border);
+}
+.wl-icon svg,
+.wl-round svg,
+.wl-still svg {
+  width: 18px;
+  height: 18px;
+  fill: none;
+  stroke: currentColor;
+  stroke-width: 1.8;
+  stroke-linecap: round;
+  stroke-linejoin: round;
+}
+.wl-icon:focus-visible,
+.wl-round:focus-visible,
+.wl-btn:focus-visible,
+.wl-chip:focus-visible,
+.wl-quiet:focus-visible,
+.wl-scene:focus-visible,
+.wl-row:focus-visible,
+.wl-still:focus-visible {
+  outline: 2px solid var(--ma-focus-ring);
+  outline-offset: 2px;
+}
+.wl-volume {
+  width: 72px;
+  accent-color: var(--ma-accent);
+}
+.wl-menu {
+  position: absolute;
+  top: 46px;
+  right: 0;
+  min-width: 220px;
+  padding: 12px 14px;
+  border-radius: 14px;
+  background: var(--ma-surface-overlay);
+  border: 1px solid var(--ma-border);
+  box-shadow: var(--ma-elevation-menu);
+  font-size: 14px;
+  color: var(--ma-text-primary);
+}
+.wl-menu label {
+  display: flex;
+  gap: 8px;
+  align-items: center;
+}
+.wl-menu p {
+  margin: 8px 0 0;
+  color: var(--ma-text-tertiary);
+  font-size: 13px;
+}
+
+/* ------------------------------------------------------------ Maia and her line */
+.wl-main {
+  position: relative;
+  z-index: 1;
+  flex: 1 0 auto;
+  display: flex;
+  flex-direction: column;
+  align-items: center;
+  padding: 24px 16px 200px;
+  text-align: center;
+}
+.wl-maia {
+  position: relative;
+  margin: 8px 0 18px;
+  transition: transform 700ms cubic-bezier(0.2, 0, 0, 1), opacity 700ms;
+}
+.wl-field {
+  display: grid;
+  place-items: center;
+  width: 160px;
+  height: 140px;
+  border-radius: 50%;
+  background: radial-gradient(closest-side, var(--ma-maia-mode-field), var(--ma-maia-mode-field-edge) 60%, transparent 100%);
+}
+.wl-maia:not(.small) .wl-field canvas {
+  width: 112px;
+  height: 112px;
+}
+.wl-still {
+  position: absolute;
+  right: -4px;
+  bottom: 6px;
+  display: grid;
+  place-items: center;
+  width: 28px;
+  height: 28px;
+  border-radius: 50%;
+  border: 1px solid var(--ma-border);
+  background: var(--ma-surface-chrome);
+  color: var(--ma-text-tertiary);
+  cursor: pointer;
+  opacity: 0;
+  transition: opacity 200ms;
+}
+.wl-maia:hover .wl-still,
+.wl-still:focus-visible,
+.wl-still[aria-pressed='true'] {
+  opacity: 1;
+}
+.wl-say {
+  margin: 0;
+  max-width: 21em;
+  font-size: 30px;
+  line-height: 38px;
+  font-weight: 520;
+  letter-spacing: -0.014em;
+  color: var(--ma-text-primary);
+  outline: none;
+  text-wrap: balance;
+}
+.wl-soft {
+  color: var(--ma-text-secondary);
+  font-weight: 450;
+  margin-top: 8px;
+}
+.wl-why,
+.wl-echo {
+  margin: 8px 0 0;
+  max-width: 34em;
+  font-size: 16px;
+  line-height: 23px;
+  color: var(--ma-text-secondary);
+}
+.wl-meta {
+  margin: 14px 0 0;
+  font-size: 14px;
+  line-height: 20px;
+  color: var(--ma-text-tertiary);
+}
+.wl-small {
+  margin: 10px 0 0;
+  max-width: 36em;
+  font-size: 13px;
+  line-height: 18px;
+  color: var(--ma-text-tertiary);
+}
+.wl-notice {
+  margin: 16px 0 0;
+  padding: 8px 14px;
+  border-radius: 12px;
+  background: var(--ma-surface-chrome);
+  border: 1px solid var(--ma-border);
+  font-size: 14px;
+  color: var(--ma-text-primary);
+}
+
+/* ------------------------------------------------------------ the threshold's beats (§2 beat 1): the ground alone for 1.2 s,
+   Maia rises 8 px and fades in, then T1 at 2.8 s, T2 at 3.6 s, and the meta line and the three answers at 4.4 s. */
+.wl-thr {
+  display: flex;
+  flex-direction: column;
+  align-items: center;
+}
+.wl.wl-threshold .wl-maia {
+  animation: wl-rise 1000ms cubic-bezier(0.2, 0, 0, 1) 1200ms both;
+}
+.wl.wl-threshold .wl-stage,
+.wl.wl-threshold .wl-top {
+  animation: wl-fade 600ms 1200ms both;
+}
+.wl-in1 {
+  animation: wl-fade 600ms 2800ms both;
+}
+.wl-in2 {
+  animation: wl-fade 600ms 3600ms both;
+}
+.wl-in3 {
+  animation: wl-fade 600ms 4400ms both;
+}
+@keyframes wl-rise {
+  from {
+    opacity: 0;
+    transform: translateY(8px);
+  }
+  to {
+    opacity: 1;
+    transform: none;
+  }
+}
+@keyframes wl-fade {
+  from {
+    opacity: 0;
+  }
+  to {
+    opacity: 1;
+  }
+}
+
+/* ------------------------------------------------------------ choices, the input, the buttons */
+.wl-q,
+.wl-fill {
+  display: flex;
+  flex-direction: column;
+  align-items: center;
+  width: min(720px, 100%);
+  margin-top: 24px;
+}
+.wl-chips {
+  display: flex;
+  flex-wrap: wrap;
+  justify-content: center;
+  gap: 10px;
+}
+.wl-chip {
+  display: inline-flex;
+  align-items: center;
+  gap: 8px;
+  min-height: 44px;
+  padding: 0 18px;
+  border-radius: 22px;
+  border: 1px solid var(--ma-border);
+  background: var(--ma-surface-chip);
+  color: var(--ma-text-primary);
+  font: inherit;
+  font-size: 16px;
+  font-weight: 500;
+  cursor: pointer;
+}
+.wl-chip svg {
+  width: 16px;
+  height: 16px;
+  fill: none;
+  stroke: var(--ma-accent);
+  stroke-width: 2.2;
+  stroke-linecap: round;
+  stroke-linejoin: round;
+}
+.wl-chip.on {
+  background: var(--ma-accent-subtle);
+  border-color: var(--ma-accent);
+}
+.wl-own {
+  display: flex;
+  align-items: center;
+  gap: 6px;
+  width: min(520px, 100%);
+  margin-top: 16px;
+  padding: 0 6px 0 16px;
+  min-height: 46px;
+  border-radius: 23px;
+  border: 1px solid var(--ma-border);
+  background: var(--ma-surface-chrome);
+}
+.wl-own:focus-within {
+  border-color: var(--ma-accent);
+}
+.wl-own-input {
+  flex: 1;
+  min-width: 0;
+  border: 0;
+  background: transparent;
+  color: var(--ma-text-primary);
+  font: inherit;
+  font-size: 16px;
+  outline: none;
+}
+.wl-own-input::placeholder {
+  color: var(--ma-text-tertiary);
+}
+.wl-send:not(:disabled) {
+  background: var(--ma-accent);
+  color: var(--ma-text-on-accent);
+}
+.wl-send:disabled {
+  opacity: 0.45;
+  cursor: default;
+}
+.wl-acts {
+  display: flex;
+  flex-wrap: wrap;
+  align-items: center;
+  justify-content: center;
+  gap: 14px 18px;
+  margin-top: 20px;
+}
+.wl-btn {
+  display: inline-flex;
+  align-items: center;
+  justify-content: center;
+  min-height: 46px;
+  padding: 0 24px;
+  border-radius: 23px;
+  border: 1px solid transparent;
+  font: inherit;
+  font-size: 16px;
+  font-weight: 600;
+  cursor: pointer;
+}
+.wl-btn.primary {
+  background: var(--ma-accent);
+  color: var(--ma-text-on-accent);
+}
+.wl-btn.primary:hover {
+  background: var(--ma-accent-hover);
+}
+.wl-btn.primary:disabled {
+  opacity: 0.5;
+  cursor: default;
+}
+.wl-btn.second {
+  background: var(--ma-surface-chip);
+  color: var(--ma-text-primary);
+  border-color: var(--ma-border);
+}
+.wl-quiet {
+  min-height: 44px;
+  padding: 0 8px;
+  border: 0;
+  background: transparent;
+  color: var(--ma-text-secondary);
+  font: inherit;
+  font-size: 15px;
+  font-weight: 500;
+  cursor: pointer;
+}
+.wl-dots {
+  display: flex;
+  gap: 6px;
+  align-items: center;
+  margin-top: 22px;
+}
+.wl-dots i {
+  width: 6px;
+  height: 6px;
+  border-radius: 3px;
+  background: var(--ma-border-strong);
+  opacity: 0.35;
+}
+.wl-dots i.d {
+  background: var(--ma-accent);
+  opacity: 0.7;
+}
+.wl-dots i.c {
+  width: 18px;
+  background: var(--ma-accent);
+  opacity: 1;
+}
+.wl-scenes {
+  display: flex;
+  flex-wrap: wrap;
+  justify-content: center;
+  gap: 10px;
+  margin-top: 16px;
+}
+.wl-scene {
+  position: relative;
+  width: 120px;
+  height: 68px;
+  border-radius: 12px;
+  border: 2px solid var(--ma-border);
+  background: var(--ma-surface-fill) center / cover no-repeat;
+  cursor: pointer;
+  overflow: hidden;
+}
+.wl-scene span {
+  position: absolute;
+  inset: auto 0 0;
+  padding: 2px 6px;
+  font-size: 12px;
+  font-weight: 600;
+  color: var(--ma-text-primary);
+  background: var(--ma-surface-chrome);
+}
+.wl-scene.on {
+  border-color: var(--ma-accent);
+}
+.wl-fill input[type='text'],
+.wl-field-row input {
+  width: min(420px, 100%);
+  min-height: 44px;
+  margin-top: 10px;
+  padding: 0 14px;
+  border-radius: 12px;
+  border: 1px solid var(--ma-border);
+  background: var(--ma-surface-chrome);
+  color: var(--ma-text-primary);
+  font: inherit;
+}
+.wl-field-row {
+  display: flex;
+  flex-direction: column;
+  align-items: center;
+  font-size: 13px;
+  color: var(--ma-text-tertiary);
+  margin-top: 6px;
+}
+.wl-breath {
+  display: flex;
+  flex-direction: column;
+  align-items: center;
+  margin-top: 24px;
+  color: var(--ma-text-secondary);
+}
+.wl-ring {
+  width: 96px;
+  height: 96px;
+  border-radius: 50%;
+  border: 2px solid var(--ma-accent);
+  transform: scale(0.7);
+  transition: transform 2000ms ease-in-out;
+}
+.wl-breath[data-step='1'] .wl-ring {
+  transform: scale(0.95);
+  transition-duration: 1000ms;
+}
+.wl-breath[data-step='2'] .wl-ring {
+  transform: scale(0.6);
+  transition-duration: 6000ms;
+}
+
+/* ------------------------------------------------------------ the desks along the bottom (§6) */
+.wl-stage {
+  position: fixed;
+  z-index: 1;
+  left: 0;
+  right: 0;
+  bottom: 24px;
+  display: flex;
+  justify-content: center;
+  gap: 28px;
+  padding: 0 16px;
+  pointer-events: none;
+}
+.wl-desk {
+  position: relative;
+  width: min(376px, 44vw);
+  min-height: 134px;
+  padding: 14px 20px 12px;
+  border-radius: 26px;
+  background: var(--ma-surface-panel);
+  border: 1.5px solid var(--ma-border-strong);
+  box-shadow: var(--ma-elevation-panel);
+  text-align: left;
+  transition: opacity 600ms, border-color 600ms;
+}
+.wl-desk.placing,
+.wl-desk.making {
+  background: transparent;
+  box-shadow: none;
+  border-style: dashed;
+  opacity: 0.6;
+}
+.wl-desk.starting {
+  opacity: 0.75;
+}
+.wl-desk.ready {
+  border-color: var(--ma-ring-active-desk, var(--ma-accent));
+}
+.wl-etch {
+  display: block;
+  font-size: 11px;
+  line-height: 14px;
+  letter-spacing: 0.14em;
+  font-weight: 650;
+  color: var(--ma-text-tertiary);
+}
+.wl-tiles {
+  display: flex;
+  align-items: center;
+  gap: 12px;
+  margin-top: 10px;
+}
+.wl-tile {
+  display: grid;
+  place-items: center;
+  width: 52px;
+  height: 52px;
+  border-radius: 14px;
+  background: var(--ma-surface-tile);
+  box-shadow: var(--ma-elevation-tile);
+  color: var(--ma-text-secondary);
+}
+.wl-tile svg {
+  width: 24px;
+  height: 24px;
+  fill: none;
+  stroke: currentColor;
+  stroke-width: 1.6;
+  stroke-linecap: round;
+  stroke-linejoin: round;
+}
+.wl-desk.placing .wl-tile,
+.wl-desk.making .wl-tile {
+  background: transparent;
+  box-shadow: none;
+  border: 1px dashed var(--ma-border);
+}
+.wl-pen {
+  display: grid;
+  place-items: center;
+  width: 30px;
+  height: 30px;
+  border-radius: 50%;
+  border: 1.5px dashed var(--ma-accent);
+  font-size: 13px;
+  font-weight: 650;
+  color: var(--ma-text-secondary);
+}
+.wl-pen-names {
+  display: block;
+  margin-top: 6px;
+  font-size: 12px;
+  color: var(--ma-text-secondary);
+}
+.wl-state {
+  display: flex;
+  align-items: center;
+  gap: 8px;
+  margin-top: 8px;
+  font-size: 13px;
+  font-weight: 500;
+  color: var(--ma-text-secondary);
+}
+.wl-state svg {
+  width: 14px;
+  height: 14px;
+  fill: none;
+  stroke: var(--ma-accent);
+  stroke-width: 2.4;
+}
+.wl-glint {
+  position: relative;
+  width: 28px;
+  height: 2px;
+  border-radius: 1px;
+  background: var(--ma-border);
+  overflow: hidden;
+}
+.wl-glint::after {
+  content: '';
+  position: absolute;
+  inset: 0 auto 0 0;
+  width: 40%;
+  background: linear-gradient(90deg, transparent, var(--ma-accent), transparent);
+  animation: wl-glint 1600ms linear infinite;
+}
+@keyframes wl-glint {
+  from {
+    transform: translateX(-100%);
+  }
+  to {
+    transform: translateX(260%);
+  }
+}
+
+/* ------------------------------------------------------------ cards: heard, consent, reveal, pause */
+.wl-card {
+  position: relative;
+  z-index: 3;
+  width: min(600px, 100%);
+  margin-top: 8px;
+  padding: 22px 26px;
+  border-radius: 22px;
+  background: var(--ma-surface-overlay);
+  border: 1px solid var(--ma-border-hairline);
+  box-shadow: var(--ma-elevation-window);
+  text-align: left;
+}
+.wl-card-head {
+  display: flex;
+  align-items: center;
+  gap: 14px;
+  margin-bottom: 8px;
+}
+.wl-card-title {
+  margin: 0;
+  font-size: 26px;
+  line-height: 32px;
+  font-weight: 520;
+  letter-spacing: -0.012em;
+  color: var(--ma-text-primary);
+  outline: none;
+}
+.wl-maia.small {
+  margin: 0;
+  flex: none;
+}
+.wl-maia.small .wl-field {
+  width: 56px;
+  height: 56px;
+}
+.wl-paused {
+  position: fixed;
+  left: 50%;
+  top: 50%;
+  transform: translate(-50%, -50%);
+  width: min(420px, calc(100vw - 32px));
+}
+.wl-carded .wl-main {
+  padding-bottom: 150px;
+}
+.wl-carded .wl-stage {
+  transform: scale(0.62);
+  transform-origin: bottom center;
+}
+.wl-h3 {
+  margin: 0 0 6px;
+  font-size: 13px;
+  line-height: 18px;
+  letter-spacing: 0.08em;
+  font-weight: 650;
+  text-transform: uppercase;
+  color: var(--ma-text-tertiary);
+  outline: none;
+}
+.wl-rows,
+.wl-list {
+  list-style: none;
+  margin: 0;
+  padding: 0;
+}
+.wl-row {
+  display: flex;
+  flex-direction: column;
+  gap: 2px;
+  width: 100%;
+  padding: 11px 0;
+  border: 0;
+  border-top: 1px solid var(--ma-border);
+  background: transparent;
+  color: inherit;
+  font: inherit;
+  text-align: left;
+}
+button.wl-row {
+  cursor: pointer;
+}
+.wl-rows li:first-child .wl-row {
+  border-top: 0;
+}
+.wl-t {
+  font-size: 16px;
+  line-height: 22px;
+  font-weight: 550;
+  color: var(--ma-text-primary);
+}
+.wl-s {
+  font-size: 14px;
+  line-height: 20px;
+  color: var(--ma-text-secondary);
+}
+.wl-heard .wl-acts,
+.wl-consent .wl-acts,
+.wl-reveal-card .wl-acts {
+  justify-content: flex-start;
+}
+.wl-consent {
+  max-height: calc(100vh - 120px);
+  overflow: auto;
+}
+.wl-sheet-title {
+  margin: 0 0 8px;
+  font-size: 20px;
+  line-height: 28px;
+  font-weight: 600;
+}
+.wl-consent p,
+.wl-section p {
+  margin: 4px 0 0;
+  font-size: 14px;
+  line-height: 20px;
+  color: var(--ma-text-secondary);
+}
+.wl-section h3 {
+  margin: 14px 0 0;
+  font-size: 15px;
+  font-weight: 600;
+}
+.wl-agree {
+  display: flex;
+  gap: 10px;
+  align-items: center;
+  margin-top: 16px;
+  font-weight: 500;
+}
+.wl-agree input {
+  width: 18px;
+  height: 18px;
+  accent-color: var(--ma-accent);
+}
+.wl-paused {
+  text-align: center;
+}
+.wl-paused .wl-acts {
+  justify-content: center;
+}
+
+/* ------------------------------------------------------------ the reveal: the dimming lifts, and her card sits near her corner */
+.wl-reveal-card {
+  position: fixed;
+  right: 24px;
+  bottom: 88px;
+  width: min(420px, calc(100vw - 32px));
+  margin: 0;
+  animation: wl-fade 300ms both;
+}
+.wl-reveal-card .wl-why {
+  margin: 0 0 6px;
+}
+.wl-farewell .wl-reveal-card {
+  animation: wl-fade 300ms reverse 1400ms both;
+}
+.wl-item {
+  display: flex;
+  flex-wrap: wrap;
+  align-items: center;
+  gap: 4px 10px;
+  padding: 6px 0;
+  font-size: 14px;
+  line-height: 20px;
+}
+.wl-item svg {
+  width: 16px;
+  height: 16px;
+  fill: none;
+  stroke: var(--ma-accent);
+  stroke-width: 2.2;
+  flex: none;
+}
+.wl-pen-dot {
+  width: 14px;
+  height: 14px;
+  border-radius: 50%;
+  border: 1.5px dashed var(--ma-accent);
+  flex: none;
+}
+.wl-w {
+  margin-left: auto;
+  font-size: 13px;
+  color: var(--ma-text-tertiary);
+}
+
+/* ------------------------------------------------------------ phone (§13: the same layout, desks as two small cards) */
+@media (max-width: 640px) {
+  .wl-top {
+    padding: 12px 14px 0 18px;
+  }
+  .wl-volume {
+    width: 44px;
+  }
+  .wl-main {
+    padding: 12px 16px 150px;
+  }
+  .wl-field {
+    width: 120px;
+    height: 104px;
+  }
+  .wl-maia:not(.small) .wl-field canvas {
+    width: 84px;
+    height: 84px;
+  }
+  .wl-say {
+    font-size: 23px;
+    line-height: 30px;
+  }
+  .wl-why,
+  .wl-echo {
+    font-size: 15px;
+    line-height: 21px;
+  }
+  .wl-chips {
+    gap: 8px;
+  }
+  .wl-chip {
+    padding: 0 14px;
+    font-size: 15px;
+  }
+  .wl-q .wl-acts .wl-btn.primary {
+    width: 100%;
+  }
+  .wl-stage {
+    gap: 10px;
+    bottom: 12px;
+  }
+  .wl-desk {
+    width: 50%;
+    min-height: 0;
+    padding: 8px 10px;
+    border-radius: 14px;
+  }
+  .wl-tile {
+    width: 26px;
+    height: 26px;
+    border-radius: 7px;
+  }
+  .wl-tile svg {
+    width: 14px;
+    height: 14px;
+  }
+  .wl-card {
+    padding: 18px 18px;
+  }
+  .wl-card-title {
+    font-size: 22px;
+    line-height: 28px;
+  }
+  .wl-tiles {
+    gap: 6px;
+    margin-top: 6px;
+  }
+  .wl-pen {
+    width: 22px;
+    height: 22px;
+    font-size: 11px;
+  }
+  .wl-state,
+  .wl-pen-names {
+    font-size: 11px;
+  }
+  .wl-reveal-card {
+    right: 16px;
+    bottom: 76px;
+  }
+}
+/* Below 360 px of height the stage is one line (§11). */
+@media (max-height: 360px) {
+  .wl-tiles,
+  .wl-etch,
+  .wl-pen-names {
+    display: none;
+  }
+  .wl-desk {
+    min-height: 0;
+    padding: 4px 10px;
+  }
+}
+
+/* ------------------------------------------------------------ settings the member's device asks for (§11) */
+@media (prefers-reduced-motion: reduce) {
+  .wl *,
+  .wl-dim,
+  .ma-shell > :not(.ma-backdrop):not(.wl) {
+    animation-duration: 1ms !important;
+    animation-delay: 0ms !important;
+    transition-duration: 200ms !important;
+  }
+  .wl-maia {
+    transition: opacity 200ms !important;
+  }
+  .wl-glint::after {
+    animation: none !important;
+  }
+}
+@media (prefers-reduced-transparency: reduce) {
+  .wl-card,
+  .wl-pill,
+  .wl-own,
+  .wl-notice {
+    background: var(--ma-surface-overlay);
+  }
+}
+@media (prefers-contrast: more) {
+  .wl-dim {
+    display: none;
+  }
+  .wl-chip,
+  .wl-own,
+  .wl-desk {
+    border-color: var(--ma-border-strong);
+  }
+}

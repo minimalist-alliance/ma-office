@@ -16,7 +16,7 @@ export function cannedReply(agentName: string, providerName: string, text: strin
   }
   if (/long|essay|stream/.test(t)) return LONG;
   if (/what can you|help|do for/.test(t)) {
-    return 'In this demo I can stream a reply, show its cost and stop when a limit says so. On a real desk, once tools arrive, I’ll work with this desk’s notebook, browser and chat, and ask before anything leaves the desk.';
+    return 'In this demo I can stream a reply, show its cost and stop when a limit says so. On a real desk, once tools arrive, I’ll work with this desk’s notebook, browser and Courier, and ask before anything leaves the desk.';
   }
   if (/usage|limit|spend|cost|budget/.test(t)) {
     return 'Each reply shows its estimated cost underneath. Your limits are under Usage: per day, week and month for me, a monthly cap for the whole desk, and a cap on each run. Set a spend limit in the provider’s console too: it’s the real backstop.';

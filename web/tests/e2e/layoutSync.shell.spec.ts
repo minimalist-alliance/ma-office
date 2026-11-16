@@ -1,7 +1,7 @@
 // The layout on Platform where it meets everything else on `main`: desks that never overlap, stacks, what's in progress
 // on the canvas, old defaults and who's signed in. shell.spec.ts has the sync's own rules; this has where they meet.
 import { expect, test, type APIRequestContext, type Browser, type Page } from '@playwright/test';
-import { canvasPainted, harness, signIn, watchConsole } from './helpers';
+import { asOldBuilds, canvasPainted, fromStored, harness, signIn, watchConsole } from './helpers';
 
 const A = 'd-personal00001';
 const B = 'd-work000000001';
@@ -22,7 +22,7 @@ interface Harness { layoutDocs: Record<string, Doc | undefined>; layoutPuts: Put
 const fleet = (ids: string[]): Record<string, string>[] => ids.map((deskId) => ({ deskId, name: NAMES[deskId]![0], kind: NAMES[deskId]![1], state: 'running' }));
 const box = (x: number, y: number, w = 400, h = 200): Box => ({ x, y, w, h });
 const item = (id: string, app: string, x: number, y: number, w = 76, h = 76): Item => ({ id, app, x, y, w, h });
-const apps = (deskId: string): Item[] => [item(`${deskId}:chat`, 'chat', 24, 24), item(`${deskId}:notebook`, 'notebook', 116, 24), item(`${deskId}:browser`, 'browser', 208, 24), item(`${deskId}:agent`, 'agent', 300, 24)];
+const apps = (deskId: string): Item[] => [item(`${deskId}:courier`, 'courier', 24, 24), item(`${deskId}:notebook`, 'notebook', 116, 24), item(`${deskId}:browser`, 'browser', 208, 24), item(`${deskId}:agent`, 'agent', 300, 24)];
 
 /** A document as Platform holds it. Desks that aren't given apps get the usual row, since a desk with none has nothing to focus. */
 const docOf = (version: number, desks: Record<string, Box & { items?: Item[]; stack?: string[] }>, z = Object.keys(desks)): Doc => ({
@@ -32,7 +32,8 @@ const docOf = (version: number, desks: Record<string, Box & { items?: Item[]; st
   layout: { schemaVersion: 2, desks: Object.fromEntries(Object.entries(desks).map(([id, { x, y, w, h, items, stack }]) => [id, { x, y, w, h, items: items ?? apps(id), ...(stack ? { stack } : {}) }])), z },
 });
 
-const server = async (request: APIRequestContext): Promise<Harness> => (await (await request.get('/__harness')).json()) as Harness;
+// What Platform holds, in memory's terms: Courier's stored `chat` read as `courier` (helpers.ts `fromStored`; `courierId.shell.spec.ts` has the bytes).
+const server = async (request: APIRequestContext): Promise<Harness> => fromStored((await (await request.get('/__harness')).json()) as Harness);
 const saved = async (request: APIRequestContext, who = ME): Promise<Doc | undefined> => (await server(request)).layoutDocs[who];
 const putsOf = async (request: APIRequestContext): Promise<Put[]> => (await server(request)).layoutPuts;
 /** The app's own console errors. A browser logs a failed request by itself, and no app code can stop that. */
@@ -71,7 +72,7 @@ const nodes = (page: Page): Promise<Record<string, { x: number; y: number }>> =>
 const cam = (page: Page): Promise<{ x: number; y: number; s: number }> => page.evaluate(() => ({ ...(window as unknown as Hook).__maDesk.camera.cam }));
 const proxy = (page: Page, id: string) => page.locator(`[id="proxy-${id}"]`);
 const proxied = (page: Page, id: string): Promise<Box> => proxy(page, id).evaluate((el: HTMLElement) => ({ x: parseFloat(el.style.left), y: parseFloat(el.style.top), w: parseFloat(el.style.width), h: parseFloat(el.style.height) }));
-const mirrorOf = (page: Page): Promise<{ desks: Record<string, SavedDesk & { id: string }>; z: string[] } | null> => page.evaluate(() => JSON.parse(localStorage.getItem('ma.layout.v2') ?? 'null'));
+const mirrorOf = (page: Page): Promise<{ desks: Record<string, SavedDesk & { id: string }>; z: string[] } | null> => page.evaluate(() => JSON.parse(localStorage.getItem('ma.layout.v2') ?? 'null')).then(fromStored);
 const syncRecord = (page: Page): Promise<{ dirty: string[]; member?: string | null } | null> => page.evaluate(() => JSON.parse(localStorage.getItem('ma.layout.sync.v1') ?? 'null'));
 const gapBetween = (a: Box, b: Box): number => Math.max(b.x - (a.x + a.w), a.x - (b.x + b.w), b.y - (a.y + a.h), a.y - (b.y + b.h));
 
@@ -211,12 +212,12 @@ test.describe('how apps are stacked follows the member, and the order of the des
       await canvasPainted(p);
       await p.waitForTimeout(600);
     }
-    const chat = `${A}:chat`;
-    await proxy(one, chat).focus(); // an app that takes keyboard focus comes to the front
+    const courier = `${A}:courier`;
+    await proxy(one, courier).focus(); // an app that takes keyboard focus comes to the front
     await expect.poll(() => putsOf(request).then((p) => p.length), { timeout: 6_000 }).toBe(1);
-    expect((await saved(request))!.layout!.desks[A]!.stack).toEqual([`${A}:notebook`, `${A}:browser`, `${A}:agent`, chat]);
+    expect((await saved(request))!.layout!.desks[A]!.stack).toEqual([`${A}:notebook`, `${A}:browser`, `${A}:agent`, courier]);
     await readNow(two, request);
-    await expect.poll(() => mirrorOf(two).then((m) => m?.desks[A]!.stack), { timeout: 3_000 }).toEqual([`${A}:notebook`, `${A}:browser`, `${A}:agent`, chat]);
+    await expect.poll(() => mirrorOf(two).then((m) => m?.desks[A]!.stack), { timeout: 3_000 }).toEqual([`${A}:notebook`, `${A}:browser`, `${A}:agent`, courier]);
 
     // A desk raised: the order of the desks changes, and nothing goes.
     await proxy(one, B).focus();
@@ -234,7 +235,7 @@ test.describe('how apps are stacked follows the member, and the order of the des
   });
 
   test('what goes up is byte for byte what came down, for a desk this browser didn\'t change, stack or none', async ({ page, request }) => {
-    const stacked = { ...box(700, 0, 584, 236), stack: [`${B}:agent`, `${B}:browser`, `${B}:notebook`, `${B}:chat`] };
+    const stacked = { ...box(700, 0, 584, 236), stack: [`${B}:agent`, `${B}:browser`, `${B}:notebook`, `${B}:courier`] };
     const plain = box(1400, 0, 584, 236);
     const start = docOf(1, { [A]: box(0, 0, 584, 236), [B]: stacked, [C]: plain });
     await open(page, request, [A, B, C], start);
@@ -258,7 +259,7 @@ test.describe('how apps are stacked follows the member, and the order of the des
       const { camera } = w.__maDesk as unknown as { camera: { onMove(fn: () => void): () => void } };
       camera.onMove(() => { w.__moves += 1; });
     });
-    const next = docOf(2, { [A]: { ...box(0, 0, 584, 236), stack: [`${A}:agent`, `${A}:browser`, `${A}:notebook`, `${A}:chat`] }, [B]: box(700, 0, 584, 236) });
+    const next = docOf(2, { [A]: { ...box(0, 0, 584, 236), stack: [`${A}:agent`, `${A}:browser`, `${A}:notebook`, `${A}:courier`] }, [B]: box(700, 0, 584, 236) });
     await harness(request, { layoutDocs: { [ME]: next } });
     await readNow(page, request);
     await expect.poll(() => mirrorOf(page).then((m) => m?.desks[A]!.stack?.[0]), { timeout: 3_000 }).toBe(`${A}:agent`);
@@ -331,8 +332,8 @@ test.describe('what arrives waits for what\'s in progress', () => {
 
   test('an app in hand: the same', async ({ page, request }) => {
     await open(page, request, [A, B], docOf(1, { [A]: box(0, 0, 584, 236), [B]: box(700, 0, 584, 236) }));
-    const chat = `${A}:chat`;
-    const at = (await proxy(page, chat).boundingBox())!;
+    const courier = `${A}:courier`;
+    const at = (await proxy(page, courier).boundingBox())!;
     await page.mouse.move(at.x + 20, at.y + 20);
     await page.mouse.down();
     await page.mouse.move(at.x + 60, at.y + 100, { steps: 6 });
@@ -343,7 +344,7 @@ test.describe('what arrives waits for what\'s in progress', () => {
     await page.mouse.up();
     await expect.poll(() => proxied(page, B), { timeout: 2_000 }).toMatchObject({ x: 700, y: 500 });
     await expect.poll(() => putsOf(request).then((p) => p.map((x) => x.status)), { timeout: 6_000 }).toEqual([200]);
-    expect((await saved(request))!.layout!.desks[A]!.items.find((i) => i.id === chat)!.y).toBeGreaterThan(24);
+    expect((await saved(request))!.layout!.desks[A]!.items.find((i) => i.id === courier)!.y).toBeGreaterThan(24);
   });
 
   test('a keyboard edit: what arrives waits, Esc restores from when it began, and then the whole document lands with nothing to save', async ({ page, request }) => {
@@ -383,7 +384,7 @@ test.describe('what arrives waits for what\'s in progress', () => {
   });
 
   test('an undo that leaves nothing changed saves nothing', async ({ page, request }) => {
-    const pile = { [A]: { ...box(0, 0, 800, 500), items: [item(`${A}:chat`, 'chat', 300, 200), item(`${A}:notebook`, 'notebook', 300, 200), item(`${A}:browser`, 'browser', 500, 200), item(`${A}:agent`, 'agent', 600, 300)] } };
+    const pile = { [A]: { ...box(0, 0, 800, 500), items: [item(`${A}:courier`, 'courier', 300, 200), item(`${A}:notebook`, 'notebook', 300, 200), item(`${A}:browser`, 'browser', 500, 200), item(`${A}:agent`, 'agent', 600, 300)] } };
     await open(page, request, [A], docOf(1, pile));
     const clean = page.getByRole('button', { name: 'Clean up Personal desk', exact: true });
     await clean.focus();
@@ -395,7 +396,7 @@ test.describe('what arrives waits for what\'s in progress', () => {
   });
 
   test('cleanup\'s glide: what arrives lands after it, wherever it comes from', async ({ page, request }) => {
-    const scattered = { [A]: { ...box(0, 0, 800, 500), items: [item(`${A}:chat`, 'chat', 300, 200, 200, 180), item(`${A}:notebook`, 'notebook', 40, 300), item(`${A}:browser`, 'browser', 600, 30, 90, 60), item(`${A}:agent`, 'agent', 420, 40)] }, [B]: box(900, 0, 584, 236) };
+    const scattered = { [A]: { ...box(0, 0, 800, 500), items: [item(`${A}:courier`, 'courier', 300, 200, 200, 180), item(`${A}:notebook`, 'notebook', 40, 300), item(`${A}:browser`, 'browser', 600, 30, 90, 60), item(`${A}:agent`, 'agent', 420, 40)] }, [B]: box(900, 0, 584, 236) };
     await open(page, request, [A, B], docOf(1, scattered));
     await page.waitForTimeout(400);
     const elapsed = await page.evaluate(({ a, b, mirror }) => new Promise<number>((done) => {
@@ -439,7 +440,7 @@ test.describe('what arrives waits for what\'s in progress', () => {
     await expect(page.getByRole('menu', { name: 'Desk' })).toBeVisible();
   });
 
-  const COVERED = [item(`${A}:chat`, 'chat', 40, 40), item(`${A}:notebook`, 'notebook', 40, 40), item(`${A}:browser`, 'browser', 300, 24), item(`${A}:agent`, 'agent', 450, 24)];
+  const COVERED = [item(`${A}:courier`, 'courier', 40, 40), item(`${A}:notebook`, 'notebook', 40, 40), item(`${A}:browser`, 'browser', 300, 24), item(`${A}:agent`, 'agent', 450, 24)];
   const hiddenList = (page: Page) => page.getByRole('menu', { name: 'Hidden apps on the Personal desk' });
   const openList = async (page: Page): Promise<void> => {
     await proxy(page, `hidden:${A}`).focus();
@@ -451,8 +452,8 @@ test.describe('what arrives waits for what\'s in progress', () => {
     const errors = watchConsole(page);
     await open(page, request, [A, B], docOf(1, { [A]: { ...box(0, 0, 800, 300), items: COVERED }, [B]: box(900, 0, 584, 236) }));
     await openList(page);
-    // Another browser moved Chat out from under: nothing's hidden any more, and the desk moved too.
-    const uncovered = COVERED.map((i) => (i.app === 'chat' ? { ...i, x: 150 } : i));
+    // Another browser moved Courier out from under: nothing's hidden any more, and the desk moved too.
+    const uncovered = COVERED.map((i) => (i.app === 'courier' ? { ...i, x: 150 } : i));
     await harness(request, { layoutDocs: { [ME]: docOf(2, { [A]: { ...box(0, 100, 800, 300), items: uncovered }, [B]: box(900, 0, 584, 236) }) } });
     await readNow(page, request);
     await page.waitForTimeout(600);
@@ -478,7 +479,7 @@ test.describe('what arrives waits for what\'s in progress', () => {
     await expect(page.locator('.hidden-ring')).toHaveCount(0, { timeout: 2_000 });
     await expect.poll(() => proxied(page, B), { timeout: 2_000 }).toMatchObject({ x: 900, y: 400 });
     await expect.poll(() => putsOf(request).then((p) => p.map((x) => [x.status, x.ifMatch])), { timeout: 6_000 }).toEqual([[200, '"2"']]);
-    expect((await saved(request))!.layout!.desks[A]!.stack).toEqual([`${A}:notebook`, `${A}:browser`, `${A}:agent`, `${A}:chat`]);
+    expect((await saved(request))!.layout!.desks[A]!.stack).toEqual([`${A}:notebook`, `${A}:browser`, `${A}:agent`, `${A}:courier`]);
     expect(ownErrors(errors)).toEqual([]);
   });
 
@@ -495,7 +496,7 @@ test.describe('what arrives waits for what\'s in progress', () => {
     expect(ownErrors(errors)).toEqual([]);
   });
 
-  const SCATTERED = [item(`${A}:chat`, 'chat', 300, 200, 200, 180), item(`${A}:notebook`, 'notebook', 40, 300), item(`${A}:browser`, 'browser', 600, 30, 90, 60), item(`${A}:agent`, 'agent', 420, 40)];
+  const SCATTERED = [item(`${A}:courier`, 'courier', 300, 200, 200, 180), item(`${A}:notebook`, 'notebook', 40, 300), item(`${A}:browser`, 'browser', 600, 30, 90, 60), item(`${A}:agent`, 'agent', 420, 40)];
   const cleanButton = (page: Page) => page.getByRole('button', { name: 'Clean up Personal desk', exact: true });
   const undoButton = (page: Page) => page.getByRole('button', { name: 'Undo clean up Personal desk', exact: true });
   const said = (page: Page) => page.getByRole('status').first();
@@ -517,12 +518,12 @@ test.describe('what arrives waits for what\'s in progress', () => {
     await undoButton(page).focus();
     await page.keyboard.press('Enter');
     await expect(said(page)).toHaveText('Clean up undone');
-    expect(await proxied(page, `${A}:chat`)).toMatchObject({ x: 300, y: 200, w: 200, h: 180 });
+    expect(await proxied(page, `${A}:courier`)).toMatchObject({ x: 300, y: 200, w: 200, h: 180 });
     expect(await proxied(page, B)).toMatchObject({ x: 900, y: 400 }); // not put back
     await expect.poll(() => saved(request).then((d) => d?.version), { timeout: 6_000 }).toBe(4);
     const up = (await saved(request))!.layout!.desks;
     expect(up[B]).toMatchObject({ x: 900, y: 400 });
-    expect(up[A]!.items.find((i) => i.app === 'chat')).toMatchObject({ x: 300, y: 200 });
+    expect(up[A]!.items.find((i) => i.app === 'courier')).toMatchObject({ x: 300, y: 200 });
     expect(ownErrors(errors)).toEqual([]);
   });
 
@@ -534,10 +535,10 @@ test.describe('what arrives waits for what\'s in progress', () => {
     await expect(undoButton(page)).toHaveCount(1);
     await expect.poll(() => saved(request).then((d) => d?.version), { timeout: 6_000 }).toBe(2);
     const tidied = (await saved(request))!.layout!.desks[A]!;
-    const moved = tidied.items.map((i) => (i.app === 'chat' ? { ...i, y: 240 } : i));
+    const moved = tidied.items.map((i) => (i.app === 'courier' ? { ...i, y: 240 } : i));
     await harness(request, { layoutDocs: { [ME]: { version: 3, updatedAt: null, layout: { schemaVersion: 2, desks: { [A]: { ...tidied, items: moved }, [B]: { ...box(900, 0, 584, 236), items: apps(B) } }, z: [A, B] } } } });
     await readNow(page, request);
-    await expect.poll(() => proxied(page, `${A}:chat`).then((p) => p.y), { timeout: 2_000 }).toBe(240);
+    await expect.poll(() => proxied(page, `${A}:courier`).then((p) => p.y), { timeout: 2_000 }).toBe(240);
     await expect(undoButton(page)).toHaveCount(0);
     // Nor does the menu offer it.
     await proxy(page, A).focus();
@@ -545,7 +546,7 @@ test.describe('what arrives waits for what\'s in progress', () => {
     await expect(page.getByRole('menu', { name: 'Desk' })).toBeVisible();
     await expect(page.getByRole('menuitem', { name: 'Undo clean up' })).toHaveCount(0);
     await page.keyboard.press('Escape');
-    expect((await proxied(page, `${A}:chat`)).y).toBe(240);
+    expect((await proxied(page, `${A}:courier`)).y).toBe(240);
     await page.waitForTimeout(2_400);
     expect((await saved(request))!.version).toBe(3); // nothing to send
     expect(ownErrors(errors)).toEqual([]);
@@ -563,7 +564,7 @@ test.describe('what arrives waits for what\'s in progress', () => {
     await expect(undoButton(page)).toHaveCount(1);
     await undoButton(page).focus();
     await page.keyboard.press('Enter');
-    expect(await proxied(page, `${A}:chat`)).toMatchObject({ x: 300, y: 200 });
+    expect(await proxied(page, `${A}:courier`)).toMatchObject({ x: 300, y: 200 });
     await page.waitForTimeout(2_600);
     expect(await putsOf(request)).toEqual([]); // back to what Platform has, so nothing to say
     expect(ownErrors(errors)).toEqual([]);
@@ -592,15 +593,15 @@ test.describe('what arrives waits for what\'s in progress', () => {
   });
 });
 
-// ----- 4. old defaults. These are what each build's own code wrote, from running it at that commit.
+// ----- 4. old defaults. These are what each build's own code wrote, from running it at that commit (Courier as `chat`).
 
 test.describe('a browser still at an older default', () => {
   const generations: [string, string][] = [
-    ['one row high, under the old label (1f75161)', JSON.stringify({ desks: { [A]: { id: A, x: 0, y: 36, w: 584, h: 144, items: apps(A) }, [B]: { id: B, x: 656, y: 36, w: 584, h: 144, items: apps(B) } }, z: [A, B] })],
-    ['one row high, at the top (b0de92f)', JSON.stringify({ desks: { [A]: { id: A, x: 0, y: 0, w: 584, h: 144, items: apps(A) }, [B]: { id: B, x: 656, y: 0, w: 584, h: 144, items: apps(B) } }, z: [A, B] })],
-    ['one old, and one a newer build added', JSON.stringify({ desks: { [A]: { id: A, x: 0, y: 0, w: 584, h: 144, items: apps(A) }, [B]: { id: B, x: 656, y: 0, w: 584, h: 236, items: apps(B) } }, z: [A, B] })],
+    ['one row high, under the old label (1f75161)', asOldBuilds(JSON.stringify({ desks: { [A]: { id: A, x: 0, y: 36, w: 584, h: 144, items: apps(A) }, [B]: { id: B, x: 656, y: 36, w: 584, h: 144, items: apps(B) } }, z: [A, B] }))],
+    ['one row high, at the top (b0de92f)', asOldBuilds(JSON.stringify({ desks: { [A]: { id: A, x: 0, y: 0, w: 584, h: 144, items: apps(A) }, [B]: { id: B, x: 656, y: 0, w: 584, h: 144, items: apps(B) } }, z: [A, B] }))],
+    ['one old, and one a newer build added', asOldBuilds(JSON.stringify({ desks: { [A]: { id: A, x: 0, y: 0, w: 584, h: 144, items: apps(A) }, [B]: { id: B, x: 656, y: 0, w: 584, h: 236, items: apps(B) } }, z: [A, B] }))],
   ];
-  const ARRANGED = docOf(1, { [A]: { ...box(50, 60, 800, 500), items: [item(`${A}:chat`, 'chat', 300, 200, 200, 180), ...apps(A).slice(1)] }, [B]: box(1000, 60, 584, 236) });
+  const ARRANGED = docOf(1, { [A]: { ...box(50, 60, 800, 500), items: [item(`${A}:courier`, 'courier', 300, 200, 200, 180), ...apps(A).slice(1)] }, [B]: box(1000, 60, 584, 236) });
 
   for (const [what, mirror] of generations) {
     test(`${what}: uploads nothing, even after a press, and takes the arrangement that comes`, async ({ page, request }) => {
@@ -608,15 +609,15 @@ test.describe('a browser still at an older default', () => {
       await page.waitForTimeout(2_200);
       expect(await putsOf(request)).toEqual([]);
       // Pressing an app raises it, and that's all. Still nothing to send.
-      await proxy(page, `${A}:chat`).focus();
-      await expect.poll(() => mirrorOf(page).then((m) => m?.desks[A]!.stack?.at(-1)), { timeout: 3_000 }).toBe(`${A}:chat`);
+      await proxy(page, `${A}:courier`).focus();
+      await expect.poll(() => mirrorOf(page).then((m) => m?.desks[A]!.stack?.at(-1)), { timeout: 3_000 }).toBe(`${A}:courier`);
       await page.waitForTimeout(2_600);
       expect(await putsOf(request)).toEqual([]);
       expect(await saved(request)).toBeUndefined();
       // Now the member's arranged browser gets its turn.
       await harness(request, { layoutDocs: { [ME]: ARRANGED } });
       await readNow(page, request);
-      await expect.poll(() => proxied(page, `${A}:chat`), { timeout: 2_000 }).toMatchObject({ x: 350, y: 260, w: 200, h: 180 });
+      await expect.poll(() => proxied(page, `${A}:courier`), { timeout: 2_000 }).toMatchObject({ x: 350, y: 260, w: 200, h: 180 });
       await page.waitForTimeout(2_600);
       expect(await putsOf(request)).toEqual([]);
     });
@@ -624,7 +625,7 @@ test.describe('a browser still at an older default', () => {
 
   test('the old-default browser opened first, then the arranged one: the arrangement survives, in both', async ({ browser, request }) => {
     const oldDefault = generations[1]![1];
-    const arranged = JSON.stringify({ desks: { [A]: { id: A, ...box(50, 60, 800, 500), items: [item(`${A}:chat`, 'chat', 300, 200, 200, 180), ...apps(A).slice(1)] }, [B]: { id: B, ...box(1000, 60, 584, 236), items: apps(B) } }, z: [A, B] });
+    const arranged = JSON.stringify({ desks: { [A]: { id: A, ...box(50, 60, 800, 500), items: [item(`${A}:courier`, 'courier', 300, 200, 200, 180), ...apps(A).slice(1)] }, [B]: { id: B, ...box(1000, 60, 584, 236), items: apps(B) } }, z: [A, B] });
     await harness(request, { fleet: fleet([A, B]) });
     const first = await secondBrowser(browser);
     await first.addInitScript((d) => {
@@ -675,13 +676,13 @@ test.describe('a browser still at an older default', () => {
 
   test('its first real change saves everything, stack and all', async ({ page, request }) => {
     await open(page, request, [A, B], undefined, generations[1]![1]);
-    await proxy(page, `${A}:chat`).focus();
+    await proxy(page, `${A}:courier`).focus();
     await page.waitForTimeout(2_600);
     expect(await putsOf(request)).toEqual([]);
     await keyEdit(page, B, 'Shift+ArrowDown', 1);
     await expect.poll(() => putsOf(request).then((p) => p.map((x) => x.ifMatch)), { timeout: 6_000 }).toEqual(['"0"']);
     const up = (await saved(request))!.layout!.desks;
-    expect(up[A]!.stack?.at(-1)).toBe(`${A}:chat`);
+    expect(up[A]!.stack?.at(-1)).toBe(`${A}:courier`);
     expect(up[B]).toMatchObject({ x: 656, y: 40, h: 144 });
   });
 });
@@ -842,8 +843,9 @@ test.describe('whose layout it is', () => {
     open_();
     await expect.poll(() => syncRecord(page).then((r) => [r?.member, r?.dirty]), { timeout: 4_000 }).toEqual(['u-other', []]);
     // The last member's arrangement went from this tab with the change of member (ISS-67): the desk the list still shows is
-    // at a new desk's place, not where the last member moved it (0, 40), and what the dropped answer said (5, 5) never landed.
-    expect(await proxied(page, A)).toMatchObject({ x: 0, y: 0, w: 584, h: 236 });
+    // at a new desk's place and size (860 x 480, ADR 0057), not where the last member moved it (0, 40), and what the dropped
+    // answer said (5, 5) never landed.
+    expect(await proxied(page, A)).toMatchObject({ x: 0, y: 0, w: 860, h: 480 });
     const seen = await server(request);
     expect(seen.layoutPuts).toEqual([]);
     expect(seen.layoutDocs[ME]!.version).toBe(2);

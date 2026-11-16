@@ -388,6 +388,10 @@ export const S = {
   beforeExit: null,
   afterClose: null,
   onGuardTrip: null,
+  /** When the office's layout document was first read (GET /v1/me/desk-layout answered, the stand-in's too), 0 before. */
+  layoutReadAt: 0,
+  /** Whether the office tour's chunk was asked for (`closeTour`). */
+  tourAsked: false,
 };
 
 async function tripGuard(what) {
@@ -508,6 +512,9 @@ function observeSocket(ws) {
   ws.on('close', () => log('ws close'));
 }
 
+/** The office tour's own chunk (`src/tour/door.ts`, ADR 0056): asked for only when the tour is to start by itself, or the logo's menu opens. */
+const TOUR_CHUNK = /\/TourLayer-[^/]*\.js$/;
+
 /** The second layer: sees every request in the context, wherever it came from. */
 export function observeRequests(context, { watch = false } = {}) {
   context.on('request', (r) => {
@@ -517,6 +524,7 @@ export function observeRequests(context, { watch = false } = {}) {
     } catch {
       return;
     }
+    if (TOUR_CHUNK.test(url.pathname)) S.tourAsked = true;
     if (!url.hostname.startsWith('api.')) return;
     const keep = (auth) => {
       if (!auth?.startsWith('Bearer ')) return;
@@ -638,6 +646,7 @@ export async function openSession({ browserKind = 'shell', watch = false, onLand
   S.context.on('response', (r) => {
     try {
       const url = new URL(r.url());
+      if (url.pathname === '/v1/me/desk-layout' && r.request().method() === 'GET' && !S.layoutReadAt) S.layoutReadAt = Date.now();
       if ((url.hostname.startsWith('api.') || url.pathname === '/oauth2/token') && r.request().method() !== 'OPTIONS') {
         // A watch has its own lines for the calls it follows, so only failures show here.
         if (!watch) log('http', r.status(), r.request().method(), url.pathname);
@@ -710,6 +719,34 @@ async function signIn(u, onLanding) {
 }
 
 export const testLabel = () => S.labels[ALLOWED] ?? '';
+
+/**
+ * The office tour (ADR 0056) starts by itself on a member's first visit, and again on each later one until Done or "Don't
+ * show this again". desk-1 is a shared account, so whether it starts depends on what earlier runs left, and while it shows
+ * the office is inert and the keyboard is the tour's. So this ends it as a member would, with its own close button, which
+ * writes nothing: desk-1's setting stays as it was found. Console problems it caused stay in `events`.
+ *
+ * The office decides once its desk list, first paint and layout document are in, and asks for the tour's chunk at once if
+ * the tour is to start; no ask within 5 s of the document means no tour in this page load. One that never finds 800 ms of
+ * quiet gives up by itself after 30 s. Call it after `openSession`, before the first keyboard step. Returns whether it closed one.
+ */
+export async function closeTour(timeoutMs = 60_000) {
+  const p = S.page;
+  const tour = p.getByTestId('tour');
+  const end = Date.now() + timeoutMs;
+  while (Date.now() < end) {
+    if (await tour.isVisible().catch(() => false)) {
+      await p.getByTestId('tour-close').click();
+      await tour.waitFor({ state: 'detached', timeout: 5000 });
+      log('the office tour started by itself: closed it with its close button');
+      return true;
+    }
+    if (S.layoutReadAt && !S.tourAsked && Date.now() - S.layoutReadAt > 5000) return false;
+    await wait(250);
+  }
+  log('the office tour: asked for but never showed (it gave up by itself)');
+  return false;
+}
 
 /** A desk that's connected: `online · …`, or where desk-agent answers `agent.state`, its agents' word in place of that. */
 export const CONNECTED = /online|no key|working|needs you|limit reached|agent error/;

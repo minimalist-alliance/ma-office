@@ -11,9 +11,15 @@ function walk(dir) {
   });
 }
 
+// The one exception: Courier's message frame is an opaque origin that can't read the office's tokens, so its stylesheet writes
+// out the papers of Dark and Zen. Only lines there marked with the token they copy pass, and `frame.test.ts` keeps them equal.
+const COPIES = { 'courier-frame.css': /\/\* token: mark\.disc (?:dusk|dark) \*\/\s*$/ };
+
 let bad = 0;
 for (const file of walk('src')) {
+  const copy = Object.entries(COPIES).find(([name]) => file.endsWith(name))?.[1];
   readFileSync(file, 'utf8').split('\n').forEach((line, i) => {
+    if (copy?.test(line)) return;
     if (COLOR.test(line.replace(/\/\*.*?\*\//g, ''))) {
       console.error(`${file}:${i + 1}: color literal: ${line.trim()}`);
       bad += 1;

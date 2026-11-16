@@ -1,0 +1,87 @@
+{
+  "id": "notebook-023",
+  "area": "notebook",
+  "title": "A create declined with a note",
+  "prompt": "Create a page Q1 hiring plan in my Harness tab with two roles: designer and support lead.",
+  "setup": {
+    "notebook": [
+      {
+        "tab": "Harness",
+        "title": "Inbox",
+        "markdown": "# Inbox\n\nThings to sort later.\n"
+      }
+    ]
+  },
+  "approve": {
+    "declineNote": "Put it in my Work tab instead."
+  },
+  "checks": [
+    {
+      "kind": "noPage",
+      "tab": "Harness",
+      "title": "Q1 hiring plan"
+    },
+    {
+      "kind": "reply",
+      "contains": [
+        "Work tab"
+      ],
+      "state": "done"
+    },
+    {
+      "kind": "cards",
+      "tools": [
+        "notebook_write"
+      ]
+    }
+  ],
+  "policy": {
+    "tools": [
+      "notebook_list",
+      "notebook_write"
+    ]
+  },
+  "standIn": [
+    {
+      "calls": [
+        {
+          "name": "notebook_list",
+          "input": {}
+        }
+      ]
+    },
+    {
+      "calls": [
+        {
+          "name": "notebook_write",
+          "input": {
+            "op": "create",
+            "new": {
+              "tabId": {
+                "$re": {
+                  "step": 0,
+                  "call": 0,
+                  "pattern": "\"tabId\":\"([^\"]+)\",\"title\":\"Harness\""
+                }
+              },
+              "title": "Q1 hiring plan"
+            },
+            "markdown": "- Designer\n- Support lead"
+          }
+        }
+      ]
+    },
+    {
+      "text": [
+        "I didn't create it. You said: ",
+        {
+          "$re": {
+            "step": 1,
+            "call": 0,
+            "pattern": "Their note:\\n\"((?:[^\"\\\\]|\\\\.)*)\""
+          }
+        }
+      ]
+    }
+  ]
+}

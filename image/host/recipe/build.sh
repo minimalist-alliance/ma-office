@@ -33,8 +33,9 @@ DESK_UNITS="desk-firstboot.service data.mount desk-units@.service desk-data@.ser
   desk-agent.service desk-agent-filter.service desk-notebook.service desk-egress.service desk-units.socket desk-data.socket
   desk-preread.service desk-xorg.service desk-audio.service desk-browser.service desk-stream.service desk-browser-thaw.service
   desk-adblock.service desk-kind.service desk-guild-net.service desk-guild-rtc.service commons-data.service
-  commons-server-address.service commons-server.service desk-restart-reset.service desk-restart-reset.timer docker.service docker.socket containerd.service zramswap.service"
-DESK_USERS="desk rtc kiosk agent stream notebook agent-filter commons"
+  commons-server-address.service commons-server.service desk-restart-reset.service desk-restart-reset.timer docker.service docker.socket containerd.service zramswap.service
+  desk-parse-courier.service desk-parse.service"
+DESK_USERS="desk rtc kiosk agent stream notebook agent-filter commons parse"
 
 step "the slot store: the second volume ($STORE_VOL), by its NVMe serial"
 dev=""
@@ -155,7 +156,7 @@ step "the host's own files: desk-host, desk-host-link, their units, ruleset, sys
 install -d -m 755 /etc/desk-host/template-keys   # ADR 0077 1.2: the template key's public half (PU-9), and nothing else
 install -d -m 755 /etc/desk-host/batch-keys      # ADR 0078 1.1: the batch key's public half (alias/ma-desk-batch, desks' own), and nothing else
 (cd "$HERE/files" && find . \( -type f -o -type l \) -print0 | tar --null --no-recursion --owner=0 --group=0 -T - -cf -) | tar -C / -xf -
-chmod 755 $LIB/desk-host $LIB/desk-host-check $LIB/desk-host-release $LIB/desk-host-boot $LIB/desk-host-link $LIB/desk-host-template $LIB/desk-host-batch $LIB/*.py $LIB/desk/*.py
+chmod 755 $LIB/desk-host $LIB/desk-host-check $LIB/desk-host-release $LIB/desk-host-boot $LIB/desk-host-link $LIB/desk-host-template $LIB/desk-host-batch $LIB/desk-host-warm $LIB/*.py $LIB/desk/*.py
 install -m 755 "$HERE/desk-svc" $LIB/desk/desk-svc
 [ "$(sha256sum $LIB/desk/desk-svc | cut -d' ' -f1)" = "$(cut -d' ' -f1 "$HERE/desk-svc.sha256")" ] || die "desk-svc isn't the binary bake.sh built"
 cut -d' ' -f1 "$HERE/desk-svc.sha256" > $LIB/desk-svc.sha256
@@ -240,7 +241,7 @@ PY
 
 step "units"
 systemctl daemon-reload
-systemctl enable nftables.service desk-host-boot.service desk-host-shutdown.service desk-host-link.service desk-ice-demux.service desk-host-apt.timer
+systemctl enable nftables.service desk-host-boot.service desk-host-shutdown.service desk-host-link.service desk-host-warm.service desk-ice-demux.service desk-host-apt.timer
 systemctl mask apt-daily.timer apt-daily-upgrade.timer   # the desk recipe masks them already; the host's apt is desk-host-apt.timer
 systemctl disable ssh.service ssh.socket 2>/dev/null || true
 
@@ -271,6 +272,8 @@ chk test "$(systemctl is-enabled ssh.service 2>/dev/null || true)" != enabled
 chk test "$(systemctl is-enabled desk-host-boot.service)" = enabled
 chk test "$(systemctl is-enabled desk-host-shutdown.service)" = enabled
 chk test "$(systemctl is-enabled desk-host-link.service)" = enabled
+chk test "$(systemctl is-enabled desk-host-warm.service)" = enabled   # a new host's store read once at its first boot (0.1.16)
+chk test ! -e /var/lib/desk-host/warmed   # never baked in: a new host reads its own store
 chk python3 -I -B -c "import sys; sys.path.insert(0, \"$LIB\"); import hostmeta, sigv4, standin"
 chk python3 -I -B -c "import sys; sys.path.insert(0, \"$LIB\"); import egress; d = egress.de(); assert d.CLASSES and d.Budget and d.Shaper"   # TD-223
 chk test -f /etc/systemd/system/desk-host-egress@.service

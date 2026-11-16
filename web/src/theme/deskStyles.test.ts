@@ -20,10 +20,10 @@ const isPowerOfTwo = (n: number): boolean => Number.isInteger(n) && n > 0 && (n 
 describe('the desk style registry', () => {
   const styles = deskStyles();
 
-  it('has the Designer\'s four in order with Light oak the default, then Plain last', () => {
+  it('has the Designer\'s five in order with Light oak the default, then Plain last', () => {
     expect(defaultDeskStyleId()).toBe('oak');
-    expect(styles.map((s) => s.id)).toEqual(['oak', 'ash', 'walnut', 'linoleum', 'plain']);
-    expect(styles.map((s) => s.name)).toEqual(['Light oak', 'White ash', 'Walnut', 'Linoleum', 'Plain']);
+    expect(styles.map((s) => s.id)).toEqual(['oak', 'white-oak', 'ash', 'walnut', 'linoleum', 'plain']);
+    expect(styles.map((s) => s.name)).toEqual(['Light oak', 'White oak', 'White ash', 'Walnut', 'Linoleum', 'Plain']);
   });
 
   it('has a 1024 px tile at density 2 for every textured style and theme, and none for plain', () => {
@@ -163,5 +163,39 @@ describe('the copy of a texture a raster uses', () => {
     expect(levelCount(2048, 1024)).toBe(6);
     expect(levelCount(32, 32)).toBe(1);
     expect(levelCount(16, 16)).toBe(1);
+  });
+});
+
+// The owner's rule for Zen's wood (ADR 0093, Ash grey addendum): the brown is taken out. HSV hue 15 to 75 degrees at a meaningful
+// saturation (a spread of 2 or more code values and S of 0.02 or more) reads warm. The tiles' pixels are read in zenWood.shell.spec.ts.
+function warmHue(hex: string): boolean {
+  const n = parseInt(hex.slice(1), 16);
+  const r = (n >> 16) & 255, g = (n >> 8) & 255, b = n & 255;
+  const max = Math.max(r, g, b), min = Math.min(r, g, b);
+  if (max - min < 2 || (max - min) / max < 0.02) return false;
+  const d = max - min;
+  const h = max === r ? ((g - b) / d) % 6 : max === g ? (b - r) / d + 2 : (r - g) / d + 4;
+  const deg = (h * 60 + 360) % 360;
+  return deg >= 15 && deg < 75;
+}
+
+describe('Zen\'s desk inks have no warm hue', () => {
+  it('sees a brown, and not a slate', () => {
+    expect(warmHue('#49453F')).toBe(true);
+    expect(warmHue('#64615B')).toBe(true);
+    expect(warmHue('#37312D')).toBe(true);
+    expect(warmHue('#3E4754')).toBe(false);
+    expect(warmHue('#DFE3EA')).toBe(false);
+  });
+
+  it('has none in any dusk base, etch fill, wall, highlight or desk text', () => {
+    for (const [id, inks] of Object.entries(DESK_STYLE_INKS)) {
+      if (id === 'plain') continue;
+      const dusk = inks.dusk;
+      for (const [part, c] of Object.entries({ base: dusk.base, fill: dusk.etch.fill, wall: dusk.etch.wall, highlight: dusk.etch.highlight, deskText: dusk.deskText })) {
+        if (c === null) continue;
+        expect(warmHue(c), `${id}.dusk.${part} ${c}`).toBe(false);
+      }
+    }
   });
 });

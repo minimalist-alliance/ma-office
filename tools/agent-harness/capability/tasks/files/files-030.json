@@ -1,0 +1,84 @@
+{
+  "id": "files-030",
+  "area": "files",
+  "title": "Two cards in one step, one declined",
+  "prompt": "Make a folder Harness/archive, move Harness/desk/report-final.md into it, and trash Harness/desk/report-draft.md.",
+  "setup": {
+    "files": {
+      "Harness/desk/report-final.md": "Final numbers.\n",
+      "Harness/desk/report-draft.md": "Draft numbers.\n"
+    }
+  },
+  "approve": {
+    "decline": [
+      "files_trash"
+    ]
+  },
+  "checks": [
+    {
+      "kind": "file",
+      "path": "Harness/archive/"
+    },
+    {
+      "kind": "file",
+      "path": "Harness/archive/report-final.md",
+      "equals": "Final numbers.\n"
+    },
+    {
+      "kind": "noFile",
+      "path": "Harness/desk/report-final.md"
+    },
+    {
+      "kind": "file",
+      "path": "Harness/desk/report-draft.md",
+      "equals": "Draft numbers.\n"
+    },
+    {
+      "kind": "cards",
+      "tools": [
+        "files_mkdir",
+        "files_move",
+        "files_trash"
+      ]
+    }
+  ],
+  "policy": {
+    "tools": [
+      "files_mkdir",
+      "files_move",
+      "files_trash"
+    ]
+  },
+  "standIn": [
+    {
+      "calls": [
+        {
+          "name": "files_mkdir",
+          "input": {
+            "path": "Harness/archive"
+          }
+        }
+      ]
+    },
+    {
+      "calls": [
+        {
+          "name": "files_move",
+          "input": {
+            "from": "Harness/desk/report-final.md",
+            "to": "Harness/archive/report-final.md"
+          }
+        },
+        {
+          "name": "files_trash",
+          "input": {
+            "path": "Harness/desk/report-draft.md"
+          }
+        }
+      ]
+    },
+    {
+      "text": "The final report is in Harness/archive. You declined the trash, so the draft stays in Harness/desk."
+    }
+  ]
+}

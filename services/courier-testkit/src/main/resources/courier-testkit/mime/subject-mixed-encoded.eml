@@ -1,0 +1,10 @@
+From: Ops <ops@example.net>
+To: me@desk.example
+Date: Fri, 13 Nov 2026 10:00:00 +0000
+Subject: Re: [ops] =?iso-8859-1?Q?caf=E9?= =?utf-8?Q?_cr=C3=A8me?= order (2)
+Message-ID: <subject-mixed-encoded@corpus.example>
+MIME-Version: 1.0
+X-Corpus-Note: plain words, two adjacent encoded words in different charsets, then plain again
+Content-Type: text/plain; charset=utf-8
+
+Order the coffee before noon.

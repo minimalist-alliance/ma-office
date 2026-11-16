@@ -14,6 +14,7 @@ import java.net.URI;
 import java.net.URISyntaxException;
 import java.time.Duration;
 import java.util.ArrayList;
+import java.util.Collections;
 import java.util.HashMap;
 import java.util.LinkedHashMap;
 import java.util.LinkedHashSet;
@@ -60,7 +61,7 @@ import org.slf4j.LoggerFactory;
  * and keeps that attach for its life (S-14).
  *
  * <p><b>Clicks and keys</b> are deskd's half's own, from deskd's isolated world, never trusted input (the action proxy's
- * Agent mode). Before one, where it would navigate is checked ({@link #navRefusal}): another site in a member-session
+ * Agent mode). After one, no fixed wait: a navigation it started is waited for by Chromium's own signs ({@link #settle}). Before one, where it would navigate is checked ({@link #navRefusal}): another site in a member-session
  * tab is {@code off_site}, a local host or a scheme but http, https and the page's own javascript is {@code blocked};
  * and a navigation the page starts anyway is cancelled at the request, as above.
  *
@@ -68,7 +69,9 @@ import org.slf4j.LoggerFactory;
  * included ({@link Access}), and only to the Agent's own sessions. Nothing clears or writes storage, cookies or history.
  *
  * <p><b>Work.</b> Each call thaws Chromium and holds the grace ({@link BrowserFreeze#use}), as a {@code browser.minified.*}
- * call does. Agent browsing is never Browser time on a free desk, and never asks the free tier.
+ * call does. A run's open tabs also hold off a freeze for {@link #HOLD} after its last call ({@link #holdsChromium}),
+ * since a freeze closes deskd's connection and every Agent tab with it. Agent browsing is never Browser time on a free
+ * desk, and never asks the free tier.
  *
  * <p>Nothing here logs a URL, a title, page text or typed text: counts and outcome words at most.
  */
@@ -88,11 +91,18 @@ public final class AgentBrowsing implements AgentBrowser, BrowserTabs.AgentTarge
     private static final int MAX_ID_CHARS = 128;
     private static final int MAX_FRAME_SESSIONS = 512;
     private static final int MAX_DOWNLOADS = 256;
-    /** How long an action's page gets to start a navigation before its result is taken. */
-    private static final Duration SETTLE = Duration.ofMillis(300);
+    /**
+     * How long an action deskd's half said navigates (a link, a form's submit, Back) gets to start its navigation before
+     * its result is taken. It ends at the first sign of one, in a few ms as a rule (the Browser bar's gap 5: no fixed wait).
+     */
+    static final Duration NAV_START = Duration.ofSeconds(1);
     /** A view still being made is looked at again this many times. */
     private static final int PENDING_TRIES = 6;
     private static final Duration PENDING_PAUSE = Duration.ofMillis(250);
+    /** How many of a run's tabs closed for memory it remembers, to answer a later call on one. */
+    static final int OVER_MEMORY_KEPT = 16;
+    /** How many ids that went {@link #went} keeps: far more than can be in flight at once. */
+    static final int WENT_KEPT = 4096;
     private static final Pattern SITE = Pattern.compile("[a-z0-9](?:[a-z0-9-]{0,61}[a-z0-9])?(?:\\.[a-z0-9](?:[a-z0-9-]{0,61}[a-z0-9])?)+");
     private static final Set<String> PUBLIC_SECOND =
             Set.of("co", "com", "net", "org", "gov", "edu", "ac", "or", "ne", "go", "gob", "nic", "mil", "sch", "ltd", "plc");
@@ -113,10 +123,22 @@ public final class AgentBrowsing implements AgentBrowser, BrowserTabs.AgentTarge
         String title = "";
         boolean loading;
         boolean gone;
+        /** Closed for its memory: a call on it then answers {@code too_large}, {@code memory}, never {@code not_found}. */
+        volatile boolean overMemory;
         /** Main-frame navigations off the granted site cancelled. */
         final AtomicLong offSite = new AtomicLong();
         /** Document requests to a local host refused. */
         final AtomicLong blocked = new AtomicLong();
+        /**
+         * Navigations of the main frame requested in this tab: Chromium's renderer says so as a script or a click asks,
+         * on the tab's session, so before the act's own reply.
+         */
+        final AtomicLong requested = new AtomicLong();
+        /**
+         * Navigations of the main frame begun: its load started, a move within the document, its document request
+         * refused here, or one requested for another tab (a pop-up, closed on sight), which leaves nothing to wait for.
+         */
+        final AtomicLong starts = new AtomicLong();
 
         AgentTab(String id, String runId, String site, String contextId) {
             this.id = id;
@@ -130,6 +152,8 @@ public final class AgentBrowsing implements AgentBrowser, BrowserTabs.AgentTarge
     /** One run's Browser. */
     private static final class RunState {
         final String runId;
+        /** When its last Browser call began ({@link System#nanoTime}): its open tabs hold off a freeze for the hold from it. */
+        volatile long lastUse = System.nanoTime();
         /** Its off-the-record context, or null until its first own tab. */
         String contextId;
         final Map<String, AgentTab> tabs = new LinkedHashMap<>();
@@ -137,6 +161,8 @@ public final class AgentBrowsing implements AgentBrowser, BrowserTabs.AgentTarge
         final Set<String> sites = new LinkedHashSet<>();
         /** One make of a context or a session tab at a time. */
         final ReentrantLock making = new ReentrantLock();
+        /** Its tabs closed for their memory, the last {@link #OVER_MEMORY_KEPT}: a later call on one says why it's gone. */
+        final Set<String> overMemory = new LinkedHashSet<>();
 
         RunState(String runId) {
             this.runId = runId;
@@ -158,10 +184,31 @@ public final class AgentBrowsing implements AgentBrowser, BrowserTabs.AgentTarge
     /** Targets an Agent tab or context opened, being closed. */
     private final Set<String> closing = ConcurrentHashMap.newKeySet();
     private final Set<String> downloads = ConcurrentHashMap.newKeySet();
+    /**
+     * Sessions, targets and contexts that were the Agent's and went, the last {@link #WENT_KEPT} ({@link AgentCdp.Scope#went}):
+     * each is added before it leaves the maps above, so a command racing its end is always one or the other.
+     */
+    private final Set<String> went = Collections.synchronizedSet(Collections.newSetFromMap(new LinkedHashMap<String, Boolean>() {
+        private static final long serialVersionUID = 1L;
+
+        @Override
+        protected boolean removeEldestEntry(Map.Entry<String, Boolean> eldest) {
+            return size() > WENT_KEPT;
+        }
+    }));
     private final AgentCdp cdp;
     private final AgentView view;
+    /** How long a run's open tabs hold off a freeze after its last Browser call ({@link #HOLD}; tests shorten it). */
+    private volatile Duration hold = HOLD;
+    /** The cap on a tab's memory and how often it's looked at between calls ({@link #TAB_MEMORY_BYTES}; tests change them). */
+    private volatile long memoryCap = TAB_MEMORY_BYTES;
+    private volatile Duration memoryEvery = MEMORY_EVERY;
+    /** The watch on open tabs' memory between calls, alive only while there are Agent tabs. Under {@code lock}. */
+    private Thread memoryWatch;
     private volatile TabEvents walker;
-    /** Own-context tabs being made, which count against the cap already. */
+    /** Chromium's default zoom as the Browser's zoom last set it, which an Agent tab's viewport is sized by. */
+    private volatile double zoom = 1;
+    /** Tabs being made, which count against the cap already. */
     private int making;
     private volatile boolean closed;
 
@@ -196,6 +243,11 @@ public final class AgentBrowsing implements AgentBrowser, BrowserTabs.AgentTarge
             public boolean script(String source) {
                 AgentView own = view;
                 return own != null && own.ownScript(source);
+            }
+
+            @Override
+            public boolean went(String id) {
+                return id != null && went.contains(id);
             }
         });
         this.view = AgentView.create(new Access(), flags, viewTiming, member);
@@ -242,7 +294,7 @@ public final class AgentBrowsing implements AgentBrowser, BrowserTabs.AgentTarge
     public int agentTabs() {
         lock.lock();
         try {
-            return ownTabsLocked() + making;
+            return tabsLocked() + making;
         } finally {
             lock.unlock();
         }
@@ -268,6 +320,7 @@ public final class AgentBrowsing implements AgentBrowser, BrowserTabs.AgentTarge
     public Navigated open(String runId, String url) throws RpcException, InterruptedException {
         String target = checkUrl(url);
         requireAvailable();
+        used(runId);
         try (BrowserFreeze.Use use = freeze.use()) {
             requireReady();
             reserve();
@@ -275,20 +328,21 @@ public final class AgentBrowsing implements AgentBrowser, BrowserTabs.AgentTarge
             try {
                 tab = create(runId, ownContext(runId), null);
             } finally {
-                lock.lock();
-                try {
-                    making--;
-                } finally {
-                    lock.unlock();
-                }
+                reserved();
             }
+            Navigated navigated;
             try {
-                return go(tab, target);
+                navigated = go(tab, target);
             } catch (RpcException | CdpException e) {
                 // A first page that didn't come leaves no tab holding a place.
                 closeTab(tab);
+                if (tab.overMemory) {
+                    throw memoryGone();
+                }
                 throw e;
             }
+            requireWithinMemory(tab);
+            return navigated;
         } catch (CdpException e) {
             throw unavailable();
         }
@@ -303,9 +357,13 @@ public final class AgentBrowsing implements AgentBrowser, BrowserTabs.AgentTarge
         }
         try (BrowserFreeze.Use use = freeze.use()) {
             requireReady();
-            return go(tab, target);
+            Navigated navigated = go(tab, target);
+            requireWithinMemory(tab);
+            return navigated;
+        } catch (RpcException e) {
+            throw gone(tab, e);
         } catch (CdpException e) {
-            throw unavailable();
+            throw gone(tab, unavailable());
         }
     }
 
@@ -335,13 +393,18 @@ public final class AgentBrowsing implements AgentBrowser, BrowserTabs.AgentTarge
             }
             long offSite = tab.offSite.get();
             long blocked = tab.blocked.get();
+            long requested = tab.requested.get();
+            long starts = tab.starts.get();
             send(tab, "Page.navigateToHistoryEntry", Map.of("entryId", entryId), timing().request());
-            settle(tab);
+            settle(tab, requested, starts, true);
             refuseCancelled(tab, offSite, blocked);
+            requireWithinMemory(tab);
             return new Navigated(tab.id, null);
+        } catch (RpcException e) {
+            throw gone(tab, e);
         } catch (CdpException e) {
-            throw e.kind() == CdpException.Kind.REMOTE ? new RpcException(RpcException.NOT_FOUND, "Gone", Map.of("reason", "gone"))
-                    : unavailable();
+            throw gone(tab, e.kind() == CdpException.Kind.REMOTE ? new RpcException(RpcException.NOT_FOUND, "Gone", Map.of("reason", "gone"))
+                    : unavailable());
         }
     }
 
@@ -361,6 +424,7 @@ public final class AgentBrowsing implements AgentBrowser, BrowserTabs.AgentTarge
         }
         requireAvailable();
         RunState run = run(runId);
+        used(runId);
         run.making.lockInterruptibly();
         try {
             lock.lock();
@@ -378,7 +442,14 @@ public final class AgentBrowsing implements AgentBrowser, BrowserTabs.AgentTarge
             }
             try (BrowserFreeze.Use use = freeze.use()) {
                 requireReady();
-                AgentTab tab = create(runId, null, site);
+                // A session tab is an Agent tab like any other: under the desk's cap (gap 4).
+                reserve();
+                AgentTab tab;
+                try {
+                    tab = create(runId, null, site);
+                } finally {
+                    reserved();
+                }
                 lock.lock();
                 try {
                     run.sites.add(site);
@@ -386,7 +457,15 @@ public final class AgentBrowsing implements AgentBrowser, BrowserTabs.AgentTarge
                     lock.unlock();
                 }
                 log.info("agent browser: a site of the member's session granted for a run");
-                return go(tab, "https://" + site + "/");
+                try {
+                    Navigated navigated = go(tab, "https://" + site + "/");
+                    requireWithinMemory(tab);
+                    return navigated;
+                } catch (RpcException e) {
+                    throw gone(tab, e);
+                } catch (CdpException e) {
+                    throw gone(tab, unavailable());
+                }
             } catch (CdpException e) {
                 throw unavailable();
             }
@@ -408,7 +487,10 @@ public final class AgentBrowsing implements AgentBrowser, BrowserTabs.AgentTarge
                 readTitle(tab);
                 reply = view.read(tab.id);
             }
+            requireWithinMemory(tab);
             return reply;
+        } catch (RpcException e) {
+            throw gone(tab, e);
         }
     }
 
@@ -434,17 +516,41 @@ public final class AgentBrowsing implements AgentBrowser, BrowserTabs.AgentTarge
 
     @Override
     public Map<String, Object> act(String runId, String tabId, String nodeId, String action, Object value, String fp, String block, long rev,
-            boolean spend) throws RpcException, InterruptedException {
+            boolean spend, boolean submit) throws RpcException, InterruptedException {
         AgentTab tab = require(runId, tabId);
         requireAvailable();
         long offSite = tab.offSite.get();
         long blocked = tab.blocked.get();
-        Map<String, Object> done = view.act(tab.id, nodeId, action, value, fp, block, rev, url -> navRefusal(tab, url), spend);
-        try (BrowserFreeze.Use use = freeze.use()) {
-            settle(tab);
+        long requested = tab.requested.get();
+        long starts = tab.starts.get();
+        // Where deskd's half said the act goes, if anywhere: then it waits for that navigation to start.
+        String[] goes = new String[1];
+        Map<String, Object> done;
+        try {
+            done = view.act(tab.id, nodeId, action, value, fp, block, rev, url -> {
+                goes[0] = url;
+                return navRefusal(tab, url);
+            }, spend, submit);
+        } catch (RpcException e) {
+            // Not done: a tab closed for its memory before the act says so.
+            throw gone(tab, e);
         }
-        refuseCancelled(tab, offSite, blocked);
-        return done;
+        boolean navigates = goes[0] != null && (goes[0].startsWith("http:") || goes[0].startsWith("https:"));
+        // The act is done from here: what followed it goes in its answer, never as a failure, so an approved send or
+        // spend never reads as not done and is never asked for again (Security's BB-L5).
+        Map<String, Object> answer = new LinkedHashMap<>(done);
+        try (BrowserFreeze.Use use = freeze.use()) {
+            settle(tab, requested, starts, navigates || Boolean.TRUE.equals(done.get("submitted")));
+            if (tab.offSite.get() != offSite) {
+                answer.put("stopped", "off_site");
+            } else if (tab.blocked.get() != blocked) {
+                answer.put("stopped", "blocked");
+            }
+            if (tab.overMemory || overMemoryNow(tab)) {
+                answer.put("closed", "memory");
+            }
+        }
+        return answer;
     }
 
     /**
@@ -463,6 +569,18 @@ public final class AgentBrowsing implements AgentBrowser, BrowserTabs.AgentTarge
             return "blocked";
         }
         return tab.site != null && !tab.site.equals(AgentView.site(host)) ? "off_site" : null;
+    }
+
+    @Override
+    public Map<String, Object> actLook(String runId, String tabId, String nodeId, String fp, String key)
+            throws RpcException, InterruptedException {
+        AgentTab tab = require(runId, tabId);
+        requireAvailable();
+        try {
+            return view.actLook(tab.id, nodeId, fp, key);
+        } catch (RpcException e) {
+            throw gone(tab, e);
+        }
     }
 
     @Override
@@ -588,13 +706,326 @@ public final class AgentBrowsing implements AgentBrowser, BrowserTabs.AgentTarge
     /** How long deskd's stop waits for the Agent's tabs and contexts to go. */
     static final Duration CLOSE_WAIT = Duration.ofSeconds(2);
 
+    /**
+     * The most an Agent tab's page may hold (the draft ADR's §17 Browser row; the Browser bar's gap 7): its V8 heap as
+     * committed, Blink's own heap and its array buffers' backing stores, in its own process and every out-of-process frame
+     * of it, by Chromium's {@code Runtime.getHeapUsage}. A tab past it is closed, and the call answers {@code too_large},
+     * {@code memory}. It leaves out what Chromium doesn't count there (the GPU's tiles, decoded images' caches, the
+     * process's own code), which the corpus run measures beside it.
+     */
+    static final long TAB_MEMORY_BYTES = 300L * 1024 * 1024;
+    /** How often open Agent tabs are looked at between calls, while Chromium isn't frozen. */
+    static final Duration MEMORY_EVERY = Duration.ofSeconds(30);
+
+    /**
+     * How long a run's open tabs hold off a freeze after its last Browser call (the Browser bar's gap 6; ADR 0045): a
+     * freeze closes deskd's connection to Chromium, and every Agent tab with it, so a card the member answers a few
+     * minutes later would find its page gone, typed text and all. Past this, the freeze may come as before, and a later
+     * call on a tab it closed answers {@code not_found}. A run's end closes its tabs at once, so only a run still going,
+     * most often one waiting on the member's yes, holds anything.
+     */
+    static final Duration HOLD = Duration.ofMinutes(10);
+
+    /** For tests: a shorter hold. */
+    void holdFor(Duration hold) {
+        this.hold = hold;
+    }
+
+    /**
+     * Whether a run holds Chromium from a freeze: one with a tab open whose last Browser call began under {@link #HOLD}
+     * ago. Asked by the freeze's worker; never blocks on Chromium.
+     */
+    boolean holdsChromium() {
+        long now = System.nanoTime();
+        long within = hold.toNanos();
+        lock.lock();
+        try {
+            for (RunState run : runs.values()) {
+                if (now - run.lastUse >= within) {
+                    continue;
+                }
+                for (AgentTab tab : run.tabs.values()) {
+                    if (!tab.gone) {
+                        return true;
+                    }
+                }
+            }
+            return false;
+        } finally {
+            lock.unlock();
+        }
+    }
+
+    /** For tests: another cap on a tab's memory, and another pace for the watch between calls. */
+    void memoryCap(long bytes, Duration every) {
+        this.memoryCap = bytes;
+        this.memoryEvery = every;
+    }
+
+    /**
+     * What a tab's page holds now, in bytes, by Chromium's {@code Runtime.getHeapUsage} on the tab's own session and each
+     * of its out-of-process frames' ({@link #TAB_MEMORY_BYTES}): the V8 heap committed, Blink's heap and array buffers'
+     * stores. A session that doesn't answer counts nothing. Never thaws Chromium: a caller that may not reach it asks
+     * nothing.
+     */
+    long memoryOf(AgentTab tab) throws InterruptedException {
+        return heaps(tab, null).total();
+    }
+
+    /**
+     * Past the cap by what its page holds: a first look over it is taken again after a full collection in each of the
+     * tab's renderers, as V8 keeps what earlier pages left until it collects (the bench read a heavy tab at 1,375 MB that
+     * held 22 to 28 MB once collected). The collection costs the page a pause, only when the first look is over. A
+     * process the second look can't read keeps its first look's figure (Security's BB-L6): a heap too big to collect in
+     * time is never let off for it.
+     */
+    private boolean pastCap(AgentTab tab) throws InterruptedException {
+        Heaps first = heaps(tab, null);
+        return first.total() > memoryCap && heaps(tab, first).total() > memoryCap;
+    }
+
+    /**
+     * Each renderer process's figure in a look at a tab, by its isolate's id, or by the session's when that can't be
+     * read, and which key each session's figure went under.
+     */
+    private record Heaps(Map<String, Long> byKey, Map<String, String> keyOfSession) {
+        long total() {
+            long sum = 0;
+            for (long held : byKey.values()) {
+                sum += held;
+            }
+            return sum;
+        }
+    }
+
+    /**
+     * @param first null for a look as it is; else the first look, after which each process is collected before it's
+     *     read, with the load's wait for both, and one that can't be read again keeps its figure from there
+     */
+    private Heaps heaps(AgentTab tab, Heaps first) throws InterruptedException {
+        List<String> sessions = new ArrayList<>();
+        String own = tab.sessionId;
+        if (own != null) {
+            sessions.add(own);
+        }
+        for (Map.Entry<String, String> frame : frameSessions.entrySet()) {
+            if (tab.id.equals(frame.getValue())) {
+                sessions.add(frame.getKey());
+            }
+        }
+        Map<String, Long> byKey = new LinkedHashMap<>();
+        Map<String, String> keyOfSession = new HashMap<>();
+        // A collection and the read behind it can take as long as the heap is big; neither is ever on the read path.
+        Duration wait = first == null ? timing().request() : timing().navigate();
+        for (String session : sessions) {
+            // One renderer process's isolate can hold several of the tab's frames: each counted once (BB-I4). An id
+            // that can't be read counts the session as an isolate of its own, never as nothing.
+            String isolate = null;
+            try {
+                isolate = Json.string(cdp.send(session, "Runtime.getIsolateId", Map.of(), timing().request()), "id");
+            } catch (CdpException e) {
+                log.debug("agent browser: a frame's isolate wasn't read: {}", e.kind());
+            } catch (AgentCdp.NotAllowed e) {
+                log.debug("agent browser: a frame went before its isolate was read");
+            }
+            String key = isolate != null ? isolate
+                    : first != null && first.keyOfSession().get(session) != null ? first.keyOfSession().get(session)
+                    : "session:" + session;
+            keyOfSession.put(session, key);
+            if (byKey.containsKey(key)) {
+                continue;
+            }
+            try {
+                if (first != null) {
+                    try {
+                        cdp.send(session, "HeapProfiler.collectGarbage", Map.of(), wait);
+                    } catch (CdpException e) {
+                        // Not collected: the heap is read as it is.
+                        log.debug("agent browser: a frame's heap wasn't collected: {}", e.kind());
+                    }
+                }
+                Map<String, Object> usage = cdp.send(session, "Runtime.getHeapUsage", Map.of(), wait);
+                byKey.put(key, bytes(usage, "totalSize") + bytes(usage, "embedderHeapUsedSize") + bytes(usage, "backingStorageSize"));
+            } catch (CdpException e) {
+                log.debug("agent browser: a tab's memory wasn't read: {}", e.kind());
+                // A process that's slow to collect or answer keeps its figure; a frame that went holds nothing now.
+                if (e.kind() != CdpException.Kind.REMOTE || e.code() != CdpException.SESSION_NOT_FOUND) {
+                    keepFirst(first, key, session, byKey);
+                }
+            } catch (AgentCdp.NotAllowed e) {
+                // A frame's session that went between the list and the ask (Security's BB-L4): nothing to count.
+                log.debug("agent browser: a frame went before its memory was read");
+            }
+        }
+        return new Heaps(byKey, keyOfSession);
+    }
+
+    /**
+     * A process the second look couldn't read keeps its first look's figure: under its key now, or under the key its
+     * session had then (an isolate id that couldn't be read in the first look and could in the second).
+     */
+    private static void keepFirst(Heaps first, String key, String session, Map<String, Long> byKey) {
+        if (first == null) {
+            return;
+        }
+        Long before = first.byKey().get(key);
+        if (before == null && first.keyOfSession().get(session) != null) {
+            before = first.byKey().get(first.keyOfSession().get(session));
+        }
+        if (before != null) {
+            byKey.put(key, before);
+        }
+    }
+
+    private static long bytes(Map<String, Object> usage, String key) {
+        return usage != null && usage.get(key) instanceof Number n && n.doubleValue() > 0 ? n.longValue() : 0;
+    }
+
+    /**
+     * A tab past the cap is closed, and the call that found it answers {@code too_large}, {@code memory}: as does a call
+     * whose tab the watch closed under it.
+     */
+    private void requireWithinMemory(AgentTab tab) throws RpcException, InterruptedException {
+        // Closed by the watch while the call waited (a page that grew as it loaded), or past the cap now.
+        if (tab.overMemory || overMemoryNow(tab)) {
+            throw memoryGone();
+        }
+    }
+
+    private RpcException memoryGone() {
+        return new RpcException(RpcException.TOO_LARGE, "The page held more memory than an agent tab may",
+                Map.of("reason", "memory", "limit", memoryCap / (1024 * 1024)));
+    }
+
+    /**
+     * What a call answers when its tab went under it: {@code too_large}, {@code memory} if the cap closed it (between
+     * calls, by the watch, or by another call), so a model never takes a page too big for a tab as one to open again.
+     */
+    private RpcException gone(AgentTab tab, RpcException e) {
+        return tab.overMemory ? memoryGone() : e;
+    }
+
+    /** Whether the tab was past the cap just now, and so closed. */
+    private boolean overMemoryNow(AgentTab tab) throws InterruptedException {
+        if (tab.gone || !cdp.connected() || !freeze.cdpAllowed()) {
+            return false;
+        }
+        if (pastCap(tab)) {
+            overMemory(tab);
+            return true;
+        }
+        return false;
+    }
+
+    private void overMemory(AgentTab tab) throws InterruptedException {
+        if (byTarget.get(tab.id) != tab) {
+            return;
+        }
+        tab.overMemory = true;
+        lock.lock();
+        try {
+            RunState run = runs.get(tab.runId);
+            if (run != null) {
+                run.overMemory.add(tab.id);
+                if (run.overMemory.size() > OVER_MEMORY_KEPT) {
+                    run.overMemory.remove(run.overMemory.iterator().next());
+                }
+            }
+        } finally {
+            lock.unlock();
+        }
+        // A count, never which page.
+        log.info("agent browser: a tab past its memory was closed");
+        closeTab(tab);
+    }
+
+    /** Under {@code lock}: the watch on open tabs' memory, started with the first tab and ending with the last. */
+    private void watchMemoryLocked() {
+        if (memoryWatch == null && !closed) {
+            memoryWatch = Thread.ofVirtual().name("agent-browser-memory").start(this::memoryLoop);
+        }
+    }
+
+    /**
+     * Every {@link #MEMORY_EVERY} while there are Agent tabs: a tab whose page grew past the cap between calls is closed (a
+     * run waiting on the member's yes keeps its tabs thawed for up to {@link #HOLD}). Skipped while Chromium is frozen or
+     * away, when nothing in it runs; it never thaws Chromium or holds off a freeze.
+     */
+    private void memoryLoop() {
+        try {
+            memoryLoopUntilDone();
+        } finally {
+            // However it ended, the next tab starts a watch again (Security's BB-L4).
+            lock.lock();
+            try {
+                if (memoryWatch == Thread.currentThread()) {
+                    memoryWatch = null;
+                }
+            } finally {
+                lock.unlock();
+            }
+        }
+    }
+
+    private void memoryLoopUntilDone() {
+        try {
+            while (true) {
+                Thread.sleep(memoryEvery);
+                List<AgentTab> open = new ArrayList<>();
+                lock.lock();
+                try {
+                    for (AgentTab tab : byTarget.values()) {
+                        if (!tab.gone) {
+                            open.add(tab);
+                        }
+                    }
+                    if (open.isEmpty() || closed) {
+                        memoryWatch = null;
+                        return;
+                    }
+                } finally {
+                    lock.unlock();
+                }
+                if (!cdp.connected() || !freeze.cdpAllowed()) {
+                    continue;
+                }
+                for (AgentTab tab : open) {
+                    try {
+                        if (!tab.gone && byTarget.get(tab.id) == tab && pastCap(tab)) {
+                            overMemory(tab);
+                        }
+                    } catch (RuntimeException e) {
+                        // One tab's trouble (a target gone between the list and its close) never ends the watch.
+                        log.debug("agent browser: a tab's memory look failed: {}", e.getClass().getSimpleName());
+                    }
+                }
+            }
+        } catch (InterruptedException e) {
+            Thread.currentThread().interrupt();
+        }
+    }
+
+    /** A Browser call of this run's begins: its tabs hold off a freeze for {@link #hold} from now. */
+    private void used(String runId) {
+        lock.lock();
+        try {
+            RunState run = runs.get(runId);
+            if (run != null) {
+                run.lastUse = System.nanoTime();
+            }
+        } finally {
+            lock.unlock();
+        }
+    }
+
     // ---- making tabs
 
+    /** A place under the cap for a tab about to be made, its own context's or the member's session's (gap 4). */
     private void reserve() throws RpcException {
         lock.lock();
         try {
             int cap = tabCap();
-            if (ownTabsLocked() + making >= cap) {
+            if (tabsLocked() + making >= cap) {
                 throw new RpcException(RpcException.FORBIDDEN, "Too many agent tabs", Map.of("reason", "tab_cap", "limit", cap));
             }
             making++;
@@ -603,10 +1034,20 @@ public final class AgentBrowsing implements AgentBrowser, BrowserTabs.AgentTarge
         }
     }
 
-    private int ownTabsLocked() {
+    private void reserved() {
+        lock.lock();
+        try {
+            making--;
+        } finally {
+            lock.unlock();
+        }
+    }
+
+    /** Every Agent tab on the desk, in its own contexts and in the member's session alike: each is a tab's memory. */
+    private int tabsLocked() {
         int count = 0;
         for (AgentTab tab : byTarget.values()) {
-            count += tab.site == null && !tab.gone ? 1 : 0;
+            count += tab.gone ? 0 : 1;
         }
         return count;
     }
@@ -679,6 +1120,10 @@ public final class AgentBrowsing implements AgentBrowser, BrowserTabs.AgentTarge
             attach(tab);
         } catch (CdpException | RpcException | RuntimeException e) {
             closeTab(tab);
+            // The watch closed it as it was made: a page can't be over the cap yet, but a blank one in a full process can.
+            if (tab.overMemory) {
+                throw memoryGone();
+            }
             throw e;
         }
         return tab;
@@ -720,9 +1165,9 @@ public final class AgentBrowsing implements AgentBrowser, BrowserTabs.AgentTarge
         bySession.put(session, tab);
         Duration request = timing().request();
         cdp.send(session, "Page.enable", Map.of(), request);
-        // A hidden target's viewport is 0x0, where nothing is visible and nothing can be hit: the walker needs a page.
-        cdp.send(session, "Emulation.setDeviceMetricsOverride",
-                Map.of("width", WIDTH, "height", HEIGHT, "deviceScaleFactor", 1, "mobile", false), request);
+        // A hidden target's viewport is 0x0, where nothing is visible and nothing can be hit: the walker needs a page. Sized
+        // by the Browser's zoom, which Chromium applies to the Agent's tabs too, so the page is 1280x800 at a ratio of 1.
+        cdp.send(session, "Emulation.setDeviceMetricsOverride", viewport(zoom), request);
         // A hidden target never has the page's focus, so a field's focus event, where a page may turn it into a password
         // one, would never fire for the Agent's click or key: the page is told it has focus, as a member's tab on screen
         // has (S-14). Only this page's own idea of focus; nothing on screen moves.
@@ -733,12 +1178,51 @@ public final class AgentBrowsing implements AgentBrowser, BrowserTabs.AgentTarge
         cdp.send(session, "Target.setAutoAttach", FRAMES, request);
     }
 
+    /**
+     * The viewport an Agent tab gets, at Chromium's default zoom {@code zoom}: Chromium's page zoom covers the Agent's
+     * contexts and the member's alike (Chrome for Testing 156 and 158), so the device's pixels are the zoom times 1280x800
+     * and its scale factor one over it. The page then lays out at 1280x800 CSS pixels with a {@code devicePixelRatio} of 1,
+     * as at 100%, whatever the member's level.
+     */
+    static Map<String, Object> viewport(double zoom) {
+        if (!(zoom > 0) || Math.abs(zoom - 1) < BrowserZoom.SAME) {
+            return Map.of("width", WIDTH, "height", HEIGHT, "deviceScaleFactor", 1, "mobile", false);
+        }
+        return Map.of(
+                "width", (int) Math.round(WIDTH * zoom), "height", (int) Math.round(HEIGHT * zoom), "deviceScaleFactor", 1 / zoom,
+                "mobile", false);
+    }
+
+    /**
+     * Chromium's default zoom is now {@code factor} ({@link BrowserZoom}): every Agent tab's viewport is set for it again, so
+     * it stays at 100%. A tab that doesn't take it is left; its next page is still the Agent's. Must not be called under
+     * {@code lock}.
+     */
+    void zoomChanged(double factor) {
+        zoom = factor;
+        if (closed) {
+            return;
+        }
+        Map<String, Object> metrics = viewport(factor);
+        for (AgentTab tab : bySession.values()) {
+            try {
+                send(tab, "Emulation.setDeviceMetricsOverride", metrics, timing().request());
+            } catch (CdpException e) {
+                log.debug("agent browser: a tab's viewport wasn't set for the zoom: {}", e.kind());
+            } catch (InterruptedException e) {
+                Thread.currentThread().interrupt();
+                return;
+            }
+        }
+    }
+
     private void register(AgentTab tab) {
         byTarget.put(tab.id, tab);
         lock.lock();
         try {
             RunState run = runs.computeIfAbsent(tab.runId, RunState::new);
             run.tabs.put(tab.id, tab);
+            watchMemoryLocked();
         } finally {
             lock.unlock();
         }
@@ -768,10 +1252,42 @@ public final class AgentBrowsing implements AgentBrowser, BrowserTabs.AgentTarge
         return new Navigated(tab.id, error == null || error.isEmpty() ? null : TabText.clean(error, 128));
     }
 
-    /** A navigation the page or a click started gets a moment to start, then until it's loaded, within the load wait. */
-    private void settle(AgentTab tab) throws InterruptedException {
-        Thread.sleep(SETTLE);
+    /**
+     * After an act or Back: no fixed wait (the Browser bar's gap 5). A navigation a script or the act itself asked for in
+     * this tab was requested before the act's reply came, on the same session, so it's known here already; that one, and
+     * one deskd's half said the act starts (a link, a submit, Back), get up to {@link #NAV_START} to begin (its load
+     * starts, it moves within the document, or its request is refused here); then whatever loads is waited for, within
+     * the load wait. A navigation the page starts later, on a timer, isn't waited for: its requests stop here as every one
+     * does, and the next read shows where it went.
+     *
+     * @param requestedBefore the tab's requested count as the act began
+     * @param startsBefore the tab's starts count as the act began
+     * @param expected deskd's half said the act navigates
+     */
+    private void settle(AgentTab tab, long requestedBefore, long startsBefore, boolean expected) throws InterruptedException {
+        if (expected || tab.requested.get() != requestedBefore) {
+            long left = NAV_START.toNanos();
+            lock.lockInterruptibly();
+            try {
+                while (tab.starts.get() == startsBefore && !tab.gone && left > 0) {
+                    left = changed.awaitNanos(left);
+                }
+            } finally {
+                lock.unlock();
+            }
+        }
         awaitLoaded(tab);
+    }
+
+    /** A navigation of the tab's main frame began. It signals the waiters. */
+    private void started(AgentTab tab) {
+        lock.lock();
+        try {
+            tab.starts.incrementAndGet();
+            changed.signalAll();
+        } finally {
+            lock.unlock();
+        }
     }
 
     private void awaitLoaded(AgentTab tab) throws InterruptedException {
@@ -824,6 +1340,9 @@ public final class AgentBrowsing implements AgentBrowser, BrowserTabs.AgentTarge
                 cdp.send(null, "Target.closeTarget", Map.of("targetId", tab.id), timing().request());
             } catch (CdpException e) {
                 log.debug("agent browser: a tab's close failed: {}", e.kind());
+            } catch (AgentCdp.NotAllowed e) {
+                // Forgotten already (it went, or another close came first): nothing of the Agent's to close.
+                log.debug("agent browser: a tab was gone before its close");
             }
         }
         forget(tab);
@@ -860,12 +1379,22 @@ public final class AgentBrowsing implements AgentBrowser, BrowserTabs.AgentTarge
                 log.debug("agent browser: a context's dispose failed: {}", e.kind());
             }
         }
+        went.add(contextId);
         contexts.remove(contextId);
     }
 
     private void forget(AgentTab tab) {
-        byTarget.remove(tab.id, tab);
+        went.add(tab.id);
         String session = tab.sessionId;
+        if (session != null) {
+            went.add(session);
+        }
+        for (Map.Entry<String, String> frame : frameSessions.entrySet()) {
+            if (tab.id.equals(frame.getValue())) {
+                went.add(frame.getKey());
+            }
+        }
+        byTarget.remove(tab.id, tab);
         if (session != null) {
             bySession.remove(session, tab);
         }
@@ -924,7 +1453,8 @@ public final class AgentBrowsing implements AgentBrowser, BrowserTabs.AgentTarge
                 }
             } else if ("Target.detachedFromTarget".equals(method)) {
                 String child = Json.string(params, "sessionId");
-                if (child != null) {
+                if (child != null && frameSessions.containsKey(child)) {
+                    went.add(child);
                     frameSessions.remove(child);
                 }
             }
@@ -950,7 +1480,9 @@ public final class AgentBrowsing implements AgentBrowser, BrowserTabs.AgentTarge
             }
             case "Target.targetDestroyed", "Target.targetCrashed" -> {
                 String id = Json.string(params, "targetId");
-                if (id != null && closing.remove(id)) {
+                if (id != null && closing.contains(id)) {
+                    went.add(id);
+                    closing.remove(id);
                     return true;
                 }
                 AgentTab tab = id == null ? null : byTarget.get(id);
@@ -1008,6 +1540,17 @@ public final class AgentBrowsing implements AgentBrowser, BrowserTabs.AgentTarge
     private void onTabEvent(AgentTab tab, String sessionId, String method, Map<String, Object> params) {
         switch (method) {
             case "Fetch.requestPaused" -> onRequestPaused(tab, sessionId, params, false);
+            case "Page.frameRequestedNavigation" -> {
+                String frameId = Json.string(params, "frameId");
+                if (frameId != null && (frameId.equals(tab.mainFrameId) || frameId.equals(tab.id))) {
+                    if ("currentTab".equals(Json.string(params, "disposition"))) {
+                        tab.requested.incrementAndGet();
+                    } else {
+                        // A pop-up or a download: nothing loads here for it.
+                        started(tab);
+                    }
+                }
+            }
             case "Page.frameNavigated" -> {
                 Map<String, Object> frame = Json.object(params, "frame");
                 if (frame != null && frame.get("parentId") == null) {
@@ -1033,6 +1576,8 @@ public final class AgentBrowsing implements AgentBrowser, BrowserTabs.AgentTarge
                 try {
                     if (url != null && tab.mainFrameId.equals(Json.string(params, "frameId"))) {
                         tab.url = TabText.clean(url, BrowserTabs.URL_CHARS);
+                        tab.starts.incrementAndGet();
+                        changed.signalAll();
                     }
                 } finally {
                     lock.unlock();
@@ -1043,6 +1588,9 @@ public final class AgentBrowsing implements AgentBrowser, BrowserTabs.AgentTarge
                 try {
                     if (tab.mainFrameId.equals(Json.string(params, "frameId"))) {
                         tab.loading = method.endsWith("StartedLoading");
+                        if (tab.loading) {
+                            tab.starts.incrementAndGet();
+                        }
                         changed.signalAll();
                     }
                 } finally {
@@ -1098,6 +1646,10 @@ public final class AgentBrowsing implements AgentBrowser, BrowserTabs.AgentTarge
             tab.offSite.incrementAndGet();
         }
         boolean refuse = local || offSite || tab == null;
+        if (main && refuse) {
+            // Counted first, so a waiter it wakes finds the refusal (refuseCancelled).
+            started(tab);
+        }
         Thread.ofVirtual().name("agent-browser-request").start(() -> {
             try {
                 if (refuse) {
@@ -1121,6 +1673,7 @@ public final class AgentBrowsing implements AgentBrowser, BrowserTabs.AgentTarge
             }
         } catch (CdpException e) {
             log.debug("agent browser: a stray's close failed: {}", e.kind());
+            went.add(targetId);
             closing.remove(targetId);
         } catch (InterruptedException e) {
             Thread.currentThread().interrupt();
@@ -1144,6 +1697,11 @@ public final class AgentBrowsing implements AgentBrowser, BrowserTabs.AgentTarge
         } finally {
             lock.unlock();
         }
+        went.addAll(byTarget.keySet());
+        went.addAll(bySession.keySet());
+        went.addAll(frameSessions.keySet());
+        went.addAll(contexts);
+        went.addAll(closing);
         byTarget.clear();
         bySession.clear();
         frameSessions.clear();
@@ -1314,8 +1872,17 @@ public final class AgentBrowsing implements AgentBrowser, BrowserTabs.AgentTarge
         AgentTab tab = tabId == null ? null : byTarget.get(tabId);
         lock.lock();
         try {
+            RunState run = runs.get(runId);
             if (tab == null || tab.gone || !tab.runId.equals(runId)) {
+                // Only this run's own tab closed for its memory says so; any other id is just not there.
+                if (tabId != null && (tab != null && tab.overMemory && tab.runId.equals(runId)
+                        || run != null && run.overMemory.contains(tabId))) {
+                    throw memoryGone();
+                }
                 throw notFound();
+            }
+            if (run != null) {
+                run.lastUse = System.nanoTime();
             }
             return tab;
         } finally {

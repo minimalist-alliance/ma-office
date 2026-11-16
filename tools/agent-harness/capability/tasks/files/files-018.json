@@ -1,0 +1,54 @@
+{
+  "id": "files-018",
+  "area": "files",
+  "title": "Trash a file",
+  "prompt": "I don't need Harness/old/coupons-2024.txt anymore. Put it in the trash.",
+  "setup": {
+    "files": {
+      "Harness/old/coupons-2024.txt": "Expired coupons.\n",
+      "Harness/old/keep.txt": "Keep me.\n"
+    }
+  },
+  "approve": "all",
+  "checks": [
+    {
+      "kind": "noFile",
+      "path": "Harness/old/coupons-2024.txt"
+    },
+    {
+      "kind": "trashed",
+      "name": "coupons-2024.txt"
+    },
+    {
+      "kind": "file",
+      "path": "Harness/old/keep.txt",
+      "equals": "Keep me.\n"
+    },
+    {
+      "kind": "cards",
+      "tools": [
+        "files_trash"
+      ]
+    }
+  ],
+  "policy": {
+    "tools": [
+      "files_trash"
+    ]
+  },
+  "standIn": [
+    {
+      "calls": [
+        {
+          "name": "files_trash",
+          "input": {
+            "path": "Harness/old/coupons-2024.txt"
+          }
+        }
+      ]
+    },
+    {
+      "text": "Moved Harness/old/coupons-2024.txt to the trash. You can restore it from there."
+    }
+  ]
+}

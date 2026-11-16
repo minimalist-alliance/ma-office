@@ -1,0 +1,1475 @@
+/* Maia Mode's room (CONCEPT.md Part 1 "What you see", Part 2 §2; the owner's pick A2, the Product Designer's `src/mock.css`
+   `.dA2`): a file of its own, fetched with the room's chunk (`chunk.ts`), so the app's one stylesheet stays as it was. Every colour is a token: the office's own, and `--ma-maia-mode-*` (tokens.ts `MAIA_MODE`). No green,
+   brown or warm tint anywhere: "Now" is the accent blue and weight. Only opacity and transform move. */
+
+/* ------------------------------------------------------------ the office steps aside, and comes back */
+.ma-shell.mm-on > :not(.mm-layer):not(.ma-backdrop) {
+  opacity: 0;
+  visibility: hidden;
+  pointer-events: none;
+  /* The loading overlay's reveal, run backwards: 600 ms. */
+  transition: opacity 600ms cubic-bezier(0.45, 0, 0.25, 1), visibility 0s linear 600ms;
+}
+.ma-shell:has(> .mm-layer):not(.mm-on) > :not(.mm-layer):not(.ma-backdrop) {
+  transition: opacity 600ms cubic-bezier(0.45, 0, 0.25, 1);
+}
+@media (prefers-reduced-motion: reduce) {
+  .ma-shell.mm-on > :not(.mm-layer):not(.ma-backdrop) {
+    transition: opacity 200ms linear, visibility 0s linear 200ms;
+  }
+  .ma-shell:has(> .mm-layer):not(.mm-on) > :not(.mm-layer):not(.ma-backdrop) {
+    transition: opacity 200ms linear;
+  }
+}
+
+/* ------------------------------------------------------------ the layer and the room */
+.mm-layer {
+  /* Fixed, so a focus inside it never scrolls the office under it (its overflow is hidden, not clipped). */
+  position: fixed;
+  inset: 0;
+  z-index: 50; /* over windows (20) and Maia's panel (25); under the account menu's own (60s), Account settings (70) and the tour */
+  pointer-events: none;
+}
+.mm-layer > * {
+  pointer-events: auto;
+}
+.mm-room {
+  position: absolute;
+  inset: 0;
+  overflow: clip; /* never scrolled by a focus */
+  color: var(--ma-text-primary);
+  /* In Zen the member's office picture stays under the room, with a quiet veil so her words never sit on bare ground. */
+  background: var(--ma-maia-mode-veil);
+  animation: mm-in 600ms cubic-bezier(0, 0, 0.2, 1) both;
+}
+.mm-layer.leaving .mm-room {
+  animation: mm-out 600ms cubic-bezier(0.45, 0, 0.25, 1) both;
+  pointer-events: none;
+}
+.mm-layer.in .mm-room,
+.mm-layer.disclosure .mm-room {
+  animation: none; /* the room asked for the disclosure again stays as it is under it */
+}
+@keyframes mm-in {
+  from {
+    opacity: 0;
+  }
+}
+@keyframes mm-out {
+  to {
+    opacity: 0;
+  }
+}
+@media (prefers-reduced-motion: reduce) {
+  .mm-room {
+    animation-duration: 200ms;
+    animation-timing-function: linear;
+  }
+  .mm-layer.leaving .mm-room {
+    animation-duration: 200ms;
+  }
+}
+
+.mm-ico {
+  width: 18px;
+  height: 18px;
+  fill: none;
+  stroke: currentColor;
+  stroke-width: 1.8;
+  stroke-linecap: round;
+  stroke-linejoin: round;
+  flex: none;
+}
+
+/* The top: the mark on the left; "Show my desks" and the member's avatar on the right. */
+.mm-top {
+  position: absolute;
+  top: 0;
+  left: 0;
+  right: 0;
+  height: 72px;
+  display: flex;
+  align-items: center;
+  justify-content: space-between;
+  padding: 0 28px;
+  z-index: 6;
+}
+.mm-h1 {
+  margin: 0;
+  line-height: 0;
+}
+.mm-mark {
+  display: inline-block;
+}
+.mm-top-right {
+  display: flex;
+  align-items: center;
+  gap: 10px;
+}
+.mm-chip {
+  display: inline-flex;
+  align-items: center;
+  gap: 8px;
+  height: 38px;
+  padding: 0 14px 0 12px;
+  border: 1px solid var(--ma-border);
+  border-radius: 999px;
+  background: var(--ma-surface-chrome);
+  color: var(--ma-text-primary);
+  font: inherit;
+  font-size: 14px;
+  font-weight: 500;
+  cursor: pointer;
+}
+.mm-chip:hover {
+  background: var(--ma-surface-fill);
+}
+.mm-chip .mm-ico {
+  color: var(--ma-glyph);
+}
+
+/* The centre: everything left of the column. A stack at most 640 px wide: Maia's field over the chat, which runs up under her. */
+.mm-center {
+  position: absolute;
+  left: 0;
+  right: 380px;
+  top: 72px;
+  bottom: 28px;
+  display: flex;
+  justify-content: center;
+  padding: 0 40px;
+  transition: right 320ms cubic-bezier(0.2, 0, 0, 1), width 320ms cubic-bezier(0.2, 0, 0, 1);
+}
+.mm-room.collapsed .mm-center {
+  right: 44px;
+}
+.mm-stack {
+  position: relative;
+  width: 100%;
+  max-width: 640px;
+}
+.mm-hover {
+  position: absolute;
+  left: 0;
+  right: 0;
+  top: 0;
+  z-index: 2;
+  display: flex;
+  justify-content: center;
+  pointer-events: none;
+}
+
+/* Maia's field: about 250 x 214, a soft glow of the accent behind her, drifting slowly. */
+.mm-field {
+  position: relative;
+  width: 250px;
+  height: 214px;
+  display: grid;
+  place-items: center;
+}
+.mm-field::before {
+  content: '';
+  position: absolute;
+  inset: -10% -6%;
+  border-radius: 50%;
+  background: radial-gradient(closest-side, var(--ma-maia-mode-field), var(--ma-maia-mode-field-edge) 60%, transparent 100%);
+}
+.mm-drift {
+  position: relative;
+  display: grid;
+  place-items: center;
+  transform-origin: 50% 50%;
+  transition: transform 320ms cubic-bezier(0.2, 0, 0, 1);
+}
+.mm-maia {
+  display: block;
+  animation: mm-drift 11s ease-in-out infinite alternate;
+}
+.mm-field.still .mm-maia {
+  animation: none;
+}
+@keyframes mm-drift {
+  0% {
+    transform: translate(-6px, 2px);
+  }
+  50% {
+    transform: translate(4px, -5px);
+  }
+  100% {
+    transform: translate(7px, 3px);
+  }
+}
+@media (prefers-reduced-motion: reduce) {
+  .mm-maia {
+    animation: none;
+  }
+}
+.mm-pause {
+  position: absolute;
+  right: 18px;
+  bottom: 18px;
+  width: 30px;
+  height: 30px;
+  display: grid;
+  place-items: center;
+  border: 0;
+  border-radius: 999px;
+  background: transparent;
+  color: var(--ma-text-secondary); /* 3:1 on her glow in Light, as her panel's own pause */
+  pointer-events: auto;
+  cursor: pointer;
+  opacity: 0;
+  transition: opacity 160ms;
+}
+.mm-pause svg {
+  width: 16px;
+  height: 16px;
+  fill: currentColor;
+  stroke: currentColor;
+  stroke-width: 2;
+  stroke-linecap: round;
+}
+.mm-field:hover .mm-pause,
+.mm-pause:focus-visible,
+.mm-pause[aria-pressed='true'] {
+  opacity: 1;
+}
+@media (hover: none) {
+  .mm-pause {
+    opacity: 1;
+  }
+}
+
+/* ------------------------------------------------------------ the chat, fading into her */
+.mm-chat {
+  position: absolute;
+  left: 0;
+  right: 0;
+  top: 60px;
+  bottom: 0;
+  display: flex;
+  flex-direction: column;
+  min-height: 0;
+}
+.mm-msgs {
+  flex: 1;
+  min-height: 0;
+  overflow-y: auto;
+  overscroll-behavior: contain;
+  padding: 40px 4px 16px;
+  scrollbar-width: thin;
+}
+/* The fade (§2): clear for the first 40 px, 14 % at 120, 60 % at 200, solid from 280. Only while the newest lines are in view. */
+.mm-msgs.faded {
+  -webkit-mask-image: linear-gradient(to bottom, transparent 0, transparent 40px, color-mix(in srgb, black 14%, transparent) 120px, color-mix(in srgb, black 60%, transparent) 200px, black 280px);
+  mask-image: linear-gradient(to bottom, transparent 0, transparent 40px, color-mix(in srgb, black 14%, transparent) 120px, color-mix(in srgb, black 60%, transparent) 200px, black 280px);
+}
+@media (prefers-contrast: more) {
+  .mm-msgs.faded {
+    -webkit-mask-image: none;
+    mask-image: none;
+  }
+}
+.mm-log {
+  list-style: none;
+  margin: 0;
+  padding: 0;
+  display: flex;
+  flex-direction: column;
+  justify-content: flex-end;
+  gap: 16px;
+  min-height: 100%;
+  font-size: 15px;
+  line-height: 22px;
+}
+.mm-her {
+  max-width: 92%;
+}
+.mm-her p {
+  margin: 0;
+}
+
+/* Her words glide in (`glide.ts`, the owner, Nov 15: "glide in, fade in and write naturally"). Each word fades and rises a
+   little on its own delay; the space the reply takes opens over the same moment, and a line's gap with it, so nothing above it
+   jumps. Only opacity and transform move on the words; the opening is one short grid row. Reduced motion: none of it. */
+.mm-say p + p {
+  margin-top: 10px;
+}
+/* Its height follows its words (set from Say.tsx as they lay out), always by this one transition. The 6 px below give the last
+   line's rising words room, and are taken back so the reply sits where it would. */
+.mm-say.glide {
+  overflow: hidden;
+  margin-bottom: -6px;
+  transition: height 520ms cubic-bezier(0.45, 0, 0.25, 1);
+}
+.mm-say.glide > .mm-say-in {
+  padding-bottom: 6px;
+}
+@keyframes mm-unfold {
+  from {
+    grid-template-rows: 0fr;
+  }
+}
+.mm-w {
+  display: inline-block;
+  max-width: 100%;
+  overflow-wrap: anywhere;
+  animation: mm-word 460ms cubic-bezier(0.25, 0.6, 0.3, 1) both;
+}
+@keyframes mm-word {
+  from {
+    opacity: 0;
+    transform: translateY(0.3em);
+  }
+}
+.mm-her.mm-arrive {
+  animation: mm-gap 520ms cubic-bezier(0.45, 0, 0.25, 1) both;
+}
+@keyframes mm-gap {
+  from {
+    margin-top: -16px;
+  }
+}
+/* The member's own line: its height (read before it paints) and its gap open from nothing as it fades in. */
+.mm-me.mm-arrive {
+  animation: mm-me-in 520ms cubic-bezier(0.45, 0, 0.25, 1) both;
+}
+@keyframes mm-me-in {
+  from {
+    margin-top: calc(-16px - var(--mm-h, 40px));
+    opacity: 0;
+  }
+}
+
+/* Her longer part (the owner, Nov 15): folded under a quiet "More", and unfolding from under her short reply. */
+.mm-more {
+  display: grid;
+  grid-template-rows: 0fr;
+  opacity: 0;
+  transition: grid-template-rows 520ms cubic-bezier(0.45, 0, 0.25, 1), opacity 400ms ease;
+}
+.mm-more.open {
+  grid-template-rows: 1fr;
+  opacity: 1;
+}
+.mm-more-in {
+  min-height: 0;
+  overflow: hidden;
+}
+.mm-more-in p {
+  margin: 10px 0 0;
+}
+.mm-more-btn {
+  display: inline-flex;
+  align-items: center;
+  gap: 2px;
+  min-height: 32px;
+  margin: 2px 0 -6px -8px;
+  padding: 0 6px 0 8px;
+  border: 0;
+  border-radius: 8px;
+  background: transparent;
+  color: var(--ma-text-secondary);
+  font: inherit;
+  font-size: 13px;
+  line-height: 18px;
+  cursor: pointer;
+}
+.mm-more-btn.arrive {
+  animation: mm-fade 420ms ease both;
+}
+.mm-more-btn:hover {
+  color: var(--ma-text-primary);
+  background: var(--ma-surface-fill);
+}
+.mm-more-btn:focus-visible {
+  outline: 2px solid var(--ma-accent);
+  outline-offset: 1px;
+}
+.mm-more-ico {
+  width: 16px;
+  height: 16px;
+  fill: none;
+  stroke: currentColor;
+  stroke-width: 2;
+  stroke-linecap: round;
+  stroke-linejoin: round;
+  transition: transform 320ms cubic-bezier(0.2, 0.7, 0.2, 1);
+}
+.mm-more-btn.open .mm-more-ico {
+  transform: rotate(180deg);
+}
+@keyframes mm-fade {
+  from {
+    opacity: 0;
+  }
+}
+@media (prefers-reduced-motion: reduce) {
+  .mm-w,
+  .mm-her.mm-arrive,
+  .mm-me.mm-arrive,
+  .mm-more-btn.arrive {
+    animation: none;
+  }
+  .mm-more,
+  .mm-more-ico,
+  .mm-say.glide {
+    transition: none;
+  }
+}
+.mm-me {
+  align-self: flex-end;
+  max-width: 82%;
+  padding: 9px 14px;
+  border-radius: 16px 16px 4px 16px;
+  background: var(--ma-maia-mode-me);
+  white-space: pre-wrap;
+  overflow-wrap: anywhere;
+}
+.mm-notes {
+  display: flex;
+  flex-wrap: wrap;
+  gap: 8px;
+  margin-top: 8px;
+}
+.mm-note {
+  display: inline-flex;
+  align-items: center;
+  gap: 6px;
+  min-height: 28px;
+  padding: 0 4px 0 10px;
+  border: 1px solid var(--ma-border);
+  border-radius: 999px;
+  background: var(--ma-surface-chrome);
+  font-size: 12.5px;
+  color: var(--ma-text-secondary);
+}
+.mm-note .mm-ico {
+  width: 14px;
+  height: 14px;
+  color: var(--ma-accent);
+}
+.mm-note-undone {
+  padding: 0 8px 0 2px;
+  color: var(--ma-text-tertiary);
+}
+.mm-link {
+  min-height: 28px;
+  padding: 0 8px 0 2px;
+  border: 0;
+  background: none;
+  color: var(--ma-text-link);
+  font: inherit;
+  font-weight: 500;
+  cursor: pointer;
+}
+.mm-link:hover {
+  text-decoration: underline;
+}
+.mm-card {
+  margin-top: 10px;
+  padding: 12px 14px;
+  border: 1px solid var(--ma-border);
+  border-radius: 12px;
+  background: var(--ma-surface-chrome);
+}
+.mm-card p {
+  margin: 0;
+}
+.mm-card-lvl {
+  display: inline-flex;
+  align-items: center;
+  gap: 6px;
+  font-size: 12px;
+  font-weight: 600;
+  color: var(--ma-accent);
+}
+.mm-card-lvl .mm-ico {
+  width: 14px;
+  height: 14px;
+}
+.mm-card-title {
+  margin-top: 4px !important;
+  font-weight: 500;
+  font-size: 14.5px;
+}
+.mm-card-meta {
+  font-size: 13px;
+  color: var(--ma-text-secondary);
+}
+.mm-doc-note {
+  display: flex;
+  align-items: baseline;
+  gap: 7px;
+  margin-top: 6px !important;
+  font-size: 13px;
+  color: var(--ma-text-secondary);
+}
+/* Her small mark before her line (the documents concept §13.2): a quiet accent dot, never a star or sparkle. */
+.mm-doc-mark {
+  flex: none;
+  width: 6px;
+  height: 6px;
+  border-radius: 50%;
+  background: var(--ma-accent);
+  transform: translateY(-1px);
+}
+.mm-acts {
+  display: flex;
+  flex-wrap: wrap;
+  gap: 8px;
+  margin-top: 10px;
+}
+.mm-btn {
+  min-height: 32px;
+  padding: 0 12px;
+  border: 1px solid var(--ma-border);
+  border-radius: 8px;
+  background: var(--ma-surface-tile);
+  color: var(--ma-text-primary);
+  font: inherit;
+  font-size: 13px;
+  font-weight: 500;
+  cursor: pointer;
+}
+.mm-btn:hover {
+  background: var(--ma-surface-fill);
+}
+.mm-btn.primary {
+  border-color: var(--ma-accent);
+  background: var(--ma-accent);
+  color: var(--ma-text-on-accent);
+}
+.mm-btn.primary:hover {
+  background: var(--ma-accent-hover);
+}
+.mm-btn.primary[aria-disabled='true'] {
+  opacity: 0.55;
+}
+.mm-btn.quiet {
+  border-color: transparent;
+  background: transparent;
+  color: var(--ma-text-link);
+  padding: 0 6px;
+}
+.mm-busy {
+  height: 0;
+  margin: 0;
+  overflow: hidden;
+  opacity: 0;
+  transition: height 520ms cubic-bezier(0.45, 0, 0.25, 1), margin-top 520ms cubic-bezier(0.45, 0, 0.25, 1), opacity 300ms ease;
+}
+/* Open while she thinks; her dots close their space as her words open theirs. */
+.mm-busy.open {
+  height: 22px;
+  margin-top: 12px;
+  opacity: 1;
+}
+
+.mm-dots {
+  display: inline-flex;
+  gap: 5px;
+  padding-top: 8px;
+}
+.mm-dots i {
+  width: 6px;
+  height: 6px;
+  border-radius: 50%;
+  background: var(--ma-glyph-soft);
+  animation: mm-dot 1.2s ease-in-out infinite;
+}
+.mm-dots i:nth-child(2) {
+  animation-delay: 160ms;
+}
+.mm-dots i:nth-child(3) {
+  animation-delay: 320ms;
+}
+@keyframes mm-dot {
+  50% {
+    opacity: 0.3;
+  }
+}
+@media (prefers-reduced-motion: reduce) {
+  .mm-dots i {
+    animation: none;
+  }
+}
+.mm-failed {
+  margin: 6px 0 0 !important;
+  font-size: 13px;
+  color: var(--ma-text-secondary);
+}
+/* Code's card for a held brief: the estimate under her question, quiet, in the kit's neutral border (never a warning colour). */
+.mm-cost {
+  display: inline-block;
+  margin: 8px 0 0 !important;
+  padding: 3px 10px;
+  border: 1px solid var(--ma-border);
+  border-radius: 999px;
+  font-size: 12.5px;
+  line-height: 18px;
+  font-variant-numeric: tabular-nums;
+  color: var(--ma-text-secondary);
+}
+.mm-problem {
+  margin-top: 12px;
+  padding: 12px 14px;
+  border: 1px solid var(--ma-border);
+  border-radius: 12px;
+  background: var(--ma-surface-chrome);
+  font-size: 14px;
+}
+.mm-problem p {
+  margin: 0 0 8px;
+}
+.mm-link-line {
+  margin: 12px 0 0;
+  font-size: 13px;
+  color: var(--ma-text-secondary);
+}
+
+/* Her choices: 2 to 4 answers, her pick first, then "Other". In thumb reach, just over the composer. They open after her words
+   are all shown, and fold away once answered, so the chat above them glides instead of jumping. */
+.mm-choices-wrap {
+  display: grid;
+  grid-template-rows: 1fr;
+  transition: grid-template-rows 520ms cubic-bezier(0.45, 0, 0.25, 1), opacity 300ms ease;
+}
+.mm-choices-clip {
+  min-height: 0;
+}
+.mm-choices-wrap.unfold {
+  animation: mm-unfold 520ms cubic-bezier(0.45, 0, 0.25, 1) both;
+}
+.mm-choices-wrap.unfold > .mm-choices-clip {
+  overflow: hidden;
+}
+.mm-choices-wrap.unfold .mm-choices {
+  animation: mm-rise 460ms 60ms cubic-bezier(0.25, 0.6, 0.3, 1) both;
+}
+.mm-choices-wrap.leaving {
+  grid-template-rows: 0fr;
+  opacity: 0;
+}
+.mm-choices-wrap.leaving > .mm-choices-clip {
+  overflow: hidden;
+}
+@keyframes mm-rise {
+  from {
+    opacity: 0;
+    transform: translateY(6px);
+  }
+}
+@media (prefers-reduced-motion: reduce) {
+  .mm-choices-wrap,
+  .mm-choices-wrap.unfold,
+  .mm-choices-wrap.unfold .mm-choices,
+  .mm-busy {
+    animation: none;
+    transition: none;
+  }
+}
+.mm-choices {
+  display: flex;
+  flex-wrap: wrap;
+  gap: 8px;
+  padding: 2px 0 12px;
+}
+.mm-choice {
+  min-height: 40px;
+  padding: 0 16px;
+  border: 1px solid var(--ma-border-strong);
+  border-radius: 999px;
+  background: var(--ma-surface-chrome);
+  color: var(--ma-text-primary);
+  font: inherit;
+  font-size: 14px;
+  font-weight: 500;
+  cursor: pointer;
+}
+.mm-choice:hover:not(:disabled) {
+  background: var(--ma-surface-fill);
+}
+/* Her pick: the accent edge and weight, never a warning colour. */
+.mm-choice.pick {
+  border: 2px solid var(--ma-accent);
+  padding: 0 15px;
+  font-weight: 600;
+}
+.mm-choice.other {
+  border-style: dashed;
+  color: var(--ma-text-secondary);
+}
+.mm-choice.other.on {
+  border-style: solid;
+  border-color: var(--ma-accent);
+  color: var(--ma-text-primary);
+}
+.mm-choice:disabled {
+  opacity: 0.5;
+  cursor: default;
+}
+
+.mm-composer {
+  display: flex;
+  align-items: flex-end;
+  gap: 10px;
+  min-height: 52px;
+  padding: 8px 8px 8px 18px;
+  border: 1px solid var(--ma-border);
+  border-radius: 26px;
+  background: var(--ma-surface-chrome);
+  box-shadow: var(--ma-elevation-tile);
+}
+.mm-composer:focus-within {
+  border-color: var(--ma-accent);
+}
+.mm-composer textarea {
+  flex: 1;
+  min-height: 34px;
+  max-height: 132px;
+  padding: 6px 0;
+  border: 0;
+  outline: none;
+  resize: none;
+  background: transparent;
+  color: var(--ma-text-primary);
+  font: inherit;
+  font-size: 15px;
+  line-height: 22px;
+}
+.mm-composer textarea::placeholder {
+  color: var(--ma-text-tertiary);
+}
+.mm-send {
+  flex: none;
+  width: 36px;
+  height: 36px;
+  display: grid;
+  place-items: center;
+  border: 0;
+  border-radius: 50%;
+  background: var(--ma-accent);
+  color: var(--ma-text-on-accent);
+  cursor: pointer;
+}
+.mm-send[aria-disabled='true'] {
+  opacity: 0.45;
+  cursor: default;
+}
+.mm-send svg {
+  width: 18px;
+  height: 18px;
+  fill: none;
+  stroke: currentColor;
+  stroke-width: 2;
+  stroke-linecap: round;
+  stroke-linejoin: round;
+}
+
+/* ------------------------------------------------------------ the To-do column */
+.mm-col {
+  position: absolute;
+  right: 0;
+  top: 72px;
+  bottom: 0;
+  width: 380px;
+  padding: 12px 36px 28px 16px;
+  display: flex;
+  flex-direction: column;
+  gap: 14px;
+}
+.mm-status {
+  margin: 0;
+  padding: 2px 0;
+  font-size: 13px;
+  line-height: 18px;
+  color: var(--ma-text-secondary);
+}
+.mm-status b {
+  font-weight: 500;
+  color: var(--ma-text-primary);
+}
+.mm-col-head {
+  display: flex;
+  align-items: center;
+  gap: 8px;
+}
+.mm-col-title {
+  margin: 0;
+  font-size: 13px;
+  line-height: 18px;
+  font-weight: 600;
+  letter-spacing: 0.04em;
+  text-transform: uppercase;
+  color: var(--ma-text-secondary);
+}
+.mm-col-counts {
+  font-size: 13px;
+  color: var(--ma-text-tertiary);
+}
+.mm-icon-btn {
+  width: 32px;
+  height: 32px;
+  display: grid;
+  place-items: center;
+  border: 0;
+  border-radius: 8px;
+  background: transparent;
+  color: var(--ma-glyph);
+  cursor: pointer;
+}
+.mm-icon-btn:hover {
+  background: var(--ma-surface-fill);
+}
+.mm-collapse {
+  margin-left: auto;
+}
+.mm-col-list {
+  display: flex;
+  flex-direction: column;
+  gap: 10px;
+  min-height: 0;
+  overflow-y: auto;
+}
+.mm-items {
+  list-style: none;
+  margin: 0;
+  padding: 0;
+  display: flex;
+  flex-direction: column;
+  gap: 10px;
+}
+.mm-item {
+  position: relative;
+  padding: 12px 14px 12px 16px;
+  border: 1px solid var(--ma-border-hairline);
+  border-radius: 14px;
+  background: var(--ma-surface-chrome);
+  box-shadow: var(--ma-elevation-tile);
+}
+.mm-item p {
+  margin: 0;
+}
+.mm-item.now {
+  border-color: var(--ma-border);
+}
+.mm-item.now::before {
+  content: '';
+  position: absolute;
+  left: 0;
+  top: 12px;
+  bottom: 12px;
+  width: 3px;
+  border-radius: 0 3px 3px 0;
+  background: var(--ma-accent);
+}
+.mm-item-row {
+  display: flex;
+  align-items: center;
+  gap: 8px;
+  font-size: 12px;
+  line-height: 16px;
+  color: var(--ma-text-secondary);
+}
+/* "Now" and "Next" in the accent blue and weight, as the Designer's mock has them (Zen's link ink is near white). */
+.mm-when {
+  font-weight: 600;
+  color: var(--ma-accent);
+  letter-spacing: 0.02em;
+}
+.mm-desk {
+  display: inline-flex;
+  align-items: center;
+  height: 20px;
+  padding: 0 8px;
+  border-radius: 999px;
+  background: var(--ma-surface-fill);
+  color: var(--ma-text-secondary);
+  font-size: 12px;
+  font-weight: 500;
+}
+.mm-item-title {
+  margin-top: 4px !important;
+  font-size: 14.5px;
+  line-height: 20px;
+  font-weight: 500;
+  overflow-wrap: anywhere;
+}
+.mm-item-meta {
+  margin-top: 2px !important;
+  font-size: 13px;
+  line-height: 18px;
+  color: var(--ma-text-secondary);
+}
+.mm-item.compact {
+  display: grid;
+  grid-template-columns: 1fr auto;
+  column-gap: 10px;
+  align-items: center;
+}
+.mm-item.compact .mm-item-row {
+  grid-column: 1;
+}
+.mm-item.compact .mm-item-title {
+  grid-column: 1;
+  font-size: 14px;
+  line-height: 19px;
+}
+.mm-item.compact .mm-acts {
+  grid-column: 2;
+  grid-row: 1 / span 2;
+  margin-top: 0;
+}
+.mm-later {
+  margin: 0;
+  padding: 2px 4px 0;
+  font-size: 13px;
+  color: var(--ma-text-secondary);
+}
+.mm-later b {
+  font-weight: 500;
+  color: var(--ma-text-primary);
+}
+.mm-empty {
+  margin: 0;
+  padding: 10px 4px;
+  font-size: 14px;
+  color: var(--ma-text-secondary);
+}
+.mm-foot {
+  margin: auto 0 0;
+  display: flex;
+  flex-wrap: wrap;
+  gap: 6px 14px;
+  font-size: 12.5px;
+  line-height: 18px;
+  color: var(--ma-text-secondary);
+}
+.mm-foot b {
+  font-weight: 500;
+  color: var(--ma-text-primary);
+}
+.mm-foot-wrap {
+  margin: auto 0 0;
+}
+.mm-foot-wrap .mm-foot {
+  margin: 0;
+}
+/* Her briefs' line opens their cost per desk: it reads as the foot's text, with the kit's focus ring. */
+.mm-foot-briefs {
+  min-height: 24px;
+  padding: 0;
+  border: 0;
+  background: none;
+  font: inherit;
+  color: inherit;
+  text-align: left;
+  font-variant-numeric: tabular-nums;
+  cursor: pointer;
+}
+.mm-foot-briefs:hover {
+  color: var(--ma-text-primary);
+}
+.mm-foot-briefs:focus-visible {
+  outline: 2px solid var(--ma-focus-ring);
+  outline-offset: 2px;
+  border-radius: 4px;
+}
+.mm-foot-desks {
+  margin: 8px 0 0;
+  padding: 0;
+  list-style: none;
+  font-size: 12.5px;
+  line-height: 18px;
+  color: var(--ma-text-secondary);
+  font-variant-numeric: tabular-nums;
+}
+.mm-foot-desks li {
+  display: flex;
+  justify-content: space-between;
+  gap: 12px;
+}
+.mm-foot-desks b {
+  font-weight: 500;
+  color: var(--ma-text-primary);
+}
+.mm-foot-desk {
+  overflow: hidden;
+  text-overflow: ellipsis;
+  white-space: nowrap;
+}
+/* Her credits under the foot: the same quiet slate, no warning colour when they're low or she's on the lighter model. */
+.mm-credits {
+  margin: 4px 0 0;
+  display: flex;
+  flex-direction: column;
+  gap: 2px;
+  font-size: 12.5px;
+  line-height: 18px;
+  color: var(--ma-text-secondary);
+}
+.mm-dot {
+  display: inline-block;
+  width: 6px;
+  height: 6px;
+  margin-right: 6px;
+  border-radius: 50%;
+  background: var(--ma-accent);
+  vertical-align: 2px;
+}
+
+/* Collapsed: a slim edge, 44 px wide and full height, with the count and the "Now" dot. */
+.mm-edge {
+  position: absolute;
+  right: 0;
+  top: 72px;
+  bottom: 0;
+  width: 44px;
+  display: flex;
+  flex-direction: column;
+  align-items: center;
+  gap: 10px;
+  padding: 14px 0;
+  border: 0;
+  border-left: 1px solid var(--ma-border-hairline);
+  background: var(--ma-surface-chrome);
+  color: var(--ma-text-primary);
+  font: inherit;
+  cursor: pointer;
+}
+.mm-edge:hover {
+  background: var(--ma-surface-fill);
+}
+.mm-edge .mm-ico {
+  color: var(--ma-glyph);
+}
+.mm-edge-n {
+  font-size: 13px;
+  font-weight: 600;
+  font-variant-numeric: tabular-nums;
+}
+.mm-now-dot {
+  display: inline-block;
+  width: 9px;
+  height: 9px;
+  border-radius: 50%;
+  background: var(--ma-accent);
+  box-shadow: 0 0 0 3px var(--ma-accent-subtle);
+}
+/* One soft pulse when a Now arrives (keyed by the item), none under reduced motion. */
+.mm-now-dot.pulse {
+  animation: mm-pulse 1.2s cubic-bezier(0.2, 0, 0, 1) 1;
+}
+@keyframes mm-pulse {
+  0% {
+    transform: scale(0.6);
+    opacity: 0.4;
+  }
+  45% {
+    transform: scale(1.35);
+    opacity: 1;
+  }
+  100% {
+    transform: scale(1);
+  }
+}
+@media (prefers-reduced-motion: reduce) {
+  .mm-now-dot.pulse {
+    animation: none;
+  }
+}
+
+/* ------------------------------------------------------------ the viewport over the right side */
+.mm-room.viewing .mm-center {
+  right: auto;
+  width: 540px;
+  padding: 0 24px 0 36px;
+}
+.mm-pills {
+  position: absolute;
+  left: 556px;
+  right: 28px;
+  top: 76px;
+  display: flex;
+  align-items: center;
+  gap: 8px;
+  min-width: 0;
+  animation: mm-slide 320ms cubic-bezier(0.2, 0, 0, 1) both;
+}
+.mm-pill {
+  display: inline-flex;
+  align-items: center;
+  gap: 8px;
+  min-width: 0;
+  height: 34px;
+  padding: 0 14px;
+  border: 1px solid var(--ma-border-hairline);
+  border-radius: 999px;
+  background: var(--ma-surface-chrome);
+  color: var(--ma-text-secondary);
+  font: inherit;
+  font-size: 13px;
+  cursor: pointer;
+}
+.mm-pill.now {
+  border-color: var(--ma-accent);
+  color: var(--ma-text-primary);
+  font-weight: 500;
+}
+.mm-pill .mm-when {
+  font-size: 12px;
+}
+.mm-pill-t {
+  overflow: hidden;
+  text-overflow: ellipsis;
+  white-space: nowrap;
+}
+.mm-pills-later {
+  margin-left: auto;
+  flex: none;
+  font-size: 13px;
+  color: var(--ma-text-secondary);
+}
+.mm-vp-wrap {
+  position: absolute;
+  left: 556px;
+  right: 28px;
+  top: 122px;
+  bottom: 28px;
+  display: flex;
+  animation: mm-slide 420ms cubic-bezier(0.2, 0, 0, 1) both;
+}
+@keyframes mm-slide {
+  from {
+    opacity: 0;
+    transform: translateX(48px);
+  }
+}
+@media (prefers-reduced-motion: reduce) {
+  .mm-vp-wrap,
+  .mm-pills {
+    animation: mm-in 200ms linear both;
+  }
+}
+.mm-vp {
+  flex: 1;
+  display: flex;
+  flex-direction: column;
+  min-width: 0;
+  min-height: 0;
+  border: 1px solid var(--ma-border);
+  border-radius: 16px;
+  background: var(--ma-surface-window);
+  box-shadow: var(--ma-window-lift-active);
+  overflow: hidden;
+}
+.mm-vp-head {
+  flex: none;
+  display: flex;
+  align-items: center;
+  gap: 10px;
+  height: 52px;
+  padding: 0 10px 0 16px;
+  border-bottom: 1px solid var(--ma-border-hairline);
+}
+.mm-vp-app {
+  font-weight: 600;
+}
+.mm-vp-sp {
+  flex: 1;
+}
+.mm-vp-by {
+  font-size: 12.5px;
+  color: var(--ma-text-tertiary);
+}
+.mm-vp-body.ma-window {
+  position: relative;
+  flex: 1;
+  min-height: 0;
+  display: flex;
+  flex-direction: column;
+  border: 0;
+  border-radius: 0;
+  box-shadow: none;
+}
+.mm-vp-body .window-body {
+  flex: 1;
+  min-height: 0;
+}
+
+/* Under 1200 px the viewport covers the width, with Maia as a small peek at the top left (§2). */
+.mm-room.narrow.viewing .mm-center {
+  width: 260px;
+  padding: 0 0 0 20px;
+}
+.mm-room.narrow.viewing .mm-chat {
+  display: none;
+}
+.mm-room.narrow.viewing .mm-hover {
+  justify-content: flex-start;
+}
+.mm-room.narrow.viewing .mm-field {
+  width: 120px;
+  height: 104px;
+}
+.mm-room.narrow.viewing .mm-pause {
+  display: none;
+}
+.mm-room.narrow.viewing .mm-pills {
+  left: 156px;
+}
+.mm-room.narrow.viewing .mm-vp-wrap {
+  left: 20px;
+  right: 20px;
+}
+.mm-room.narrow:not(.viewing) .mm-col {
+  width: 320px;
+  padding-right: 24px;
+}
+.mm-room.narrow:not(.viewing):not(.collapsed) .mm-center {
+  right: 320px;
+  padding: 0 24px;
+}
+
+/* ------------------------------------------------------------ the phone */
+.mm-room.phone .mm-top {
+  height: 56px;
+  padding: 0 12px 0 16px;
+}
+.mm-room.phone .mm-top-right {
+  gap: 6px;
+}
+.mm-room.phone .mm-chip {
+  height: 36px;
+  padding: 0 12px;
+  font-size: 13.5px;
+}
+.mm-todo-pill {
+  gap: 6px;
+}
+.mm-todo-pill .mm-now-dot {
+  width: 7px;
+  height: 7px;
+  box-shadow: none;
+}
+.mm-phone-status {
+  position: absolute;
+  left: 16px;
+  right: 16px;
+  top: 56px;
+  text-align: center;
+}
+.mm-room.phone .mm-center {
+  left: 0;
+  right: 0;
+  top: 74px;
+  bottom: calc(12px + env(safe-area-inset-bottom));
+  padding: 0 16px;
+}
+.mm-room.phone .mm-field {
+  width: 170px;
+  height: 150px;
+}
+.mm-room.phone .mm-chat {
+  top: 76px;
+}
+.mm-room.phone .mm-msgs {
+  padding-top: 20px;
+}
+.mm-room.phone .mm-msgs.faded {
+  -webkit-mask-image: linear-gradient(to bottom, transparent 0, transparent 40px, color-mix(in srgb, black 22%, transparent) 100px, color-mix(in srgb, black 70%, transparent) 160px, black 220px);
+  mask-image: linear-gradient(to bottom, transparent 0, transparent 40px, color-mix(in srgb, black 22%, transparent) 100px, color-mix(in srgb, black 70%, transparent) 160px, black 220px);
+}
+@media (prefers-contrast: more) {
+  .mm-room.phone .mm-msgs.faded {
+    -webkit-mask-image: none;
+    mask-image: none;
+  }
+}
+/* A phone's choices are rows a thumb can reach: full width, 48 px. */
+.mm-room.phone .mm-choices {
+  flex-direction: column;
+  gap: 8px;
+}
+/* A phone's choices stand taller, one a row: they open a little slower, so the chat above glides at the same gentle speed. */
+.mm-room.phone .mm-choices-wrap.unfold {
+  animation-duration: 680ms;
+}
+.mm-room.phone .mm-choices-wrap {
+  transition-duration: 680ms, 300ms;
+}
+/* "More" in thumb reach on a phone. */
+.mm-room.phone .mm-more-btn {
+  min-height: 40px;
+  font-size: 14px;
+}
+.mm-room.phone .mm-choice {
+  width: 100%;
+  min-height: 48px;
+  text-align: left;
+  border-radius: 14px;
+}
+.mm-scrim {
+  position: absolute;
+  inset: 0;
+  background: var(--ma-surface-scrim);
+  animation: mm-in 200ms linear both;
+}
+.mm-sheet,
+.mm-vp-sheet {
+  position: absolute;
+  left: 0;
+  right: 0;
+  bottom: 0;
+  border-radius: 20px 20px 0 0;
+  background: var(--ma-surface-overlay);
+  box-shadow: var(--ma-elevation-menu);
+  animation: mm-up 320ms cubic-bezier(0.2, 0, 0, 1) both;
+  z-index: 8;
+}
+.mm-sheet {
+  max-height: 80%;
+  overflow-y: auto;
+  padding: 12px 16px calc(20px + env(safe-area-inset-bottom));
+  display: flex;
+  flex-direction: column;
+  gap: 12px;
+}
+.mm-sheet-head {
+  display: flex;
+  align-items: center;
+  justify-content: space-between;
+}
+.mm-vp-sheet {
+  height: 88%;
+  display: flex;
+  padding-bottom: env(safe-area-inset-bottom);
+}
+.mm-vp-sheet .mm-vp {
+  border-radius: 20px 20px 0 0;
+  border-bottom: 0;
+}
+@keyframes mm-up {
+  from {
+    transform: translateY(40px);
+    opacity: 0;
+  }
+}
+@media (prefers-reduced-motion: reduce) {
+  .mm-sheet,
+  .mm-vp-sheet {
+    animation: mm-in 200ms linear both;
+  }
+}
+
+/* ------------------------------------------------------------ the disclosure */
+.mm-discl-wrap {
+  position: absolute;
+  inset: 0;
+  display: grid;
+  place-items: center;
+  padding: 16px;
+}
+.mm-discl {
+  position: relative;
+  width: min(600px, 100%);
+  max-height: calc(100dvh - 32px);
+  overflow-y: auto;
+  padding: 28px 30px 24px;
+  border: 1px solid var(--ma-border);
+  border-radius: 22px;
+  background: var(--ma-surface-overlay);
+  color: var(--ma-text-primary);
+  box-shadow: var(--ma-elevation-panel);
+  animation: mm-up 240ms cubic-bezier(0.2, 0, 0, 1) both;
+}
+.mm-discl-hd {
+  display: flex;
+  gap: 16px;
+  align-items: flex-start;
+  margin-bottom: 16px;
+}
+.mm-discl-maia {
+  width: 56px;
+  height: 56px;
+  flex: none;
+}
+.mm-discl h2 {
+  margin: 4px 0 4px;
+  font-size: 20px;
+  line-height: 28px;
+  font-weight: 600;
+}
+.mm-discl h2:focus {
+  outline: none;
+}
+.mm-discl-lead {
+  margin: 0;
+  font-size: 14px;
+  line-height: 21px;
+  color: var(--ma-text-secondary);
+}
+.mm-discl-body section {
+  padding: 10px 0;
+  border-top: 1px solid var(--ma-border-hairline);
+}
+.mm-discl-body h3 {
+  margin: 0 0 2px;
+  font-size: 14px;
+  line-height: 20px;
+  font-weight: 600;
+}
+.mm-discl-body p {
+  margin: 0;
+  font-size: 13.5px;
+  line-height: 20px;
+  color: var(--ma-text-secondary);
+}
+.mm-discl-agree {
+  display: flex;
+  align-items: center;
+  gap: 10px;
+  min-height: 44px;
+  margin-top: 8px;
+  font-size: 14px;
+  font-weight: 500;
+  cursor: pointer;
+}
+.mm-discl-agree input {
+  width: 18px;
+  height: 18px;
+  accent-color: var(--ma-accent);
+}
+.mm-discl-nudge {
+  margin: 0;
+  font-size: 13px;
+  color: var(--ma-text-secondary);
+}
+.mm-discl-acts {
+  display: flex;
+  justify-content: flex-end;
+  gap: 10px;
+  margin-top: 12px;
+}
+.mm-discl-acts .mm-btn {
+  min-height: 40px;
+  padding: 0 16px;
+  font-size: 14px;
+}
+@media (max-width: 599.98px) {
+  .mm-discl-wrap {
+    place-items: end stretch;
+    padding: 0;
+  }
+  .mm-discl {
+    width: 100%;
+    max-height: 92dvh;
+    border-radius: 20px 20px 0 0;
+    padding: 20px 18px calc(18px + env(safe-area-inset-bottom));
+  }
+  .mm-discl-acts .mm-btn {
+    flex: 1;
+    min-height: 48px;
+  }
+}

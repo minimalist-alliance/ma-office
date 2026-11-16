@@ -15,6 +15,7 @@ import com.minimalistalliance.desk.agent.llm.LlmGateway;
 import com.minimalistalliance.desk.agent.manager.ManagerAgent;
 import com.minimalistalliance.desk.agent.provider.ProviderRegistry;
 import com.minimalistalliance.desk.agent.provider.anthropic.AnthropicProvider;
+import com.minimalistalliance.desk.agent.provider.chat.ChatCompletionsProvider;
 import com.minimalistalliance.desk.agent.provider.http.HttpTransport;
 import com.minimalistalliance.desk.agent.provider.openai.OpenAiResponsesProvider;
 import com.minimalistalliance.desk.agent.provider.openrouter.OpenRouterProvider;
@@ -37,7 +38,8 @@ import org.springframework.core.env.Environment;
  * Wires desk-agent by hand. What varies is read from desk-agent.env (root-owned) when the beans are made: paths
  * (DESK_AGENT_DATA_DIR, DESK_AGENT_ADMIN_SOCKET, DESK_AGENT_SOCKET), deskd's uid (DESK_AGENT_PEER_UID), the
  * providers' base URLs (DESK_AGENT_ANTHROPIC_URL, DESK_AGENT_OPENAI_URL, DESK_AGENT_XAI_URL,
- * DESK_AGENT_OPENROUTER_URL; https, or http to loopback for a stand-in) and deskd's egress proxy (DESK_AGENT_EGRESS_PROXY). DESK_AGENT_VERSION comes from the
+ * DESK_AGENT_OPENROUTER_URL, DESK_AGENT_GOOGLE_URL, DESK_AGENT_MOONSHOT_URL; https, or http to loopback for a stand-in;
+ * {@code off} for Google or Moonshot leaves that provider out) and deskd's egress proxy (DESK_AGENT_EGRESS_PROXY). DESK_AGENT_VERSION comes from the
  * image. Beans that hold files or sockets are opened and closed by {@link DeskAgentLifecycle}.
  */
 @Configuration(proxyBeanMethods = false)
@@ -47,6 +49,8 @@ class AgentConfiguration {
     static final String DEFAULT_ADMIN_SOCKET = "/run/desk-agent/agent-admin.sock";
     static final String DEFAULT_AGENT_SOCKET = "/run/desk-agent/agent.sock";
     static final int DESKD_UID = 1100;
+    /** A provider URL that leaves the provider out. */
+    static final String OFF = "off";
 
     @Bean
     Clock clock() {
@@ -102,7 +106,10 @@ class AgentConfiguration {
         return new HttpTransport(HttpTransport.Timeouts.DEFAULT, address);
     }
 
-    /** Anthropic, OpenAI, xAI and OpenRouter, in the order agent.providers lists them. */
+    /**
+     * Anthropic, OpenAI, xAI, OpenRouter, Google and Moonshot AI, in the order agent.providers lists them. Google's and
+     * Moonshot's URL set to {@code off} leaves that provider out (a kill switch; their keys then can't be added or used).
+     */
     @Bean
     ProviderRegistry providerRegistry(HttpTransport http, Environment environment) {
         ProviderRegistry registry = new ProviderRegistry();
@@ -114,6 +121,15 @@ class AgentConfiguration {
                 environment.getProperty("desk.agent.xai.url", "https://api.x.ai"))));
         registry.register(new OpenRouterProvider(http, HttpTransport.baseUri(
                 environment.getProperty("desk.agent.openrouter.url", "https://openrouter.ai"))));
+        String google = environment.getProperty("desk.agent.google.url",
+                "https://generativelanguage.googleapis.com/v1beta/openai");
+        if (!OFF.equals(google)) {
+            registry.register(ChatCompletionsProvider.google(http, HttpTransport.baseUri(google)));
+        }
+        String moonshot = environment.getProperty("desk.agent.moonshot.url", "https://api.moonshot.ai/v1");
+        if (!OFF.equals(moonshot)) {
+            registry.register(ChatCompletionsProvider.moonshot(http, HttpTransport.baseUri(moonshot)));
+        }
         return registry;
     }
 
@@ -133,18 +149,26 @@ class AgentConfiguration {
         return new Staging(clock, AgentService.STAGING_BYTES);
     }
 
-    /** Reads a file in a child JVM (ADR 0049). */
+    /**
+     * Reads a file in a process of its own (ADR 0049, ADR 0097): the parse sidecar once its marker or socket under
+     * {@code desk.agent.parse.dir} ({@code DESK_AGENT_PARSE_DIR}) has been seen, and the in-container child only on an
+     * image that has neither.
+     */
     @Bean
-    Parsers attachParsers() {
-        return new Parsers(AgentService.PARSE_SECONDS);
+    Parsers attachParsers(Environment environment) {
+        return new Parsers(AgentService.PARSE_SECONDS,
+                Path.of(environment.getProperty("desk.agent.parse.dir", Parsers.DEFAULT_DIR)));
     }
 
     @Bean
     AgentService agentService(AgentStore store, ManagerAgent manager, KeyRing keys, KeyVault vault,
             ProviderRegistry providers, PriceTable prices, LimitSettings limits, UsageLedger ledger, AuditLog audit,
-            TopicHub topics, Clock clock, Team team, Staging staging, Parsers parsers) {
-        return new AgentService(store, manager, keys, vault, providers, prices, limits, ledger, audit, topics, clock,
-                team, staging, new Preparer(parsers));
+            TopicHub topics, Clock clock, Team team, Staging staging, Parsers parsers, DataDirectory data) {
+        AgentService service = new AgentService(store, manager, keys, vault, providers, prices, limits, ledger, audit,
+                topics, clock, team, staging, new Preparer(parsers));
+        // Durable runs' kill switch: runs resume after a restart unless this file says off (read once, at start).
+        service.resumeRuns(!AgentService.switchedOff(data.resolve("resume-switch")));
+        return service;
     }
 
     /** Task 49's agents (ADR 0047): their workspaces under {@code workspaces/}, uploaded icons under {@code icons/}. */
@@ -190,8 +214,8 @@ class AgentConfiguration {
     @Bean
     DeskAgentHealth deskAgentHealth(
             DataDirectory data, AuditLog audit, UsageLedger ledger, AgentStore store, ManagerAgent manager,
-            KeyRing keys, AgentSocketServer socket, Environment environment) {
-        return new DeskAgentHealth(data, audit, ledger, store, manager, keys, socket, version(environment));
+            KeyRing keys, AgentSocketServer socket, Parsers parsers, Environment environment) {
+        return new DeskAgentHealth(data, audit, ledger, store, manager, keys, socket, parsers, version(environment));
     }
 
     @Bean(destroyMethod = "")

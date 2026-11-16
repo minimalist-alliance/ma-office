@@ -1,0 +1,55 @@
+{
+  "id": "files-029",
+  "area": "files",
+  "title": "Trash a folder",
+  "prompt": "Delete the folder Harness/old-project, it's all obsolete.",
+  "setup": {
+    "files": {
+      "Harness/old-project/main.txt": "old\n",
+      "Harness/old-project/notes.txt": "older\n",
+      "Harness/current/plan.txt": "now\n"
+    }
+  },
+  "approve": "all",
+  "checks": [
+    {
+      "kind": "noFile",
+      "path": "Harness/old-project/"
+    },
+    {
+      "kind": "trashed",
+      "name": "old-project"
+    },
+    {
+      "kind": "file",
+      "path": "Harness/current/plan.txt",
+      "equals": "now\n"
+    },
+    {
+      "kind": "cards",
+      "tools": [
+        "files_trash"
+      ]
+    }
+  ],
+  "policy": {
+    "tools": [
+      "files_trash"
+    ]
+  },
+  "standIn": [
+    {
+      "calls": [
+        {
+          "name": "files_trash",
+          "input": {
+            "path": "Harness/old-project"
+          }
+        }
+      ]
+    },
+    {
+      "text": "Moved Harness/old-project to the trash; you can restore it from there."
+    }
+  ]
+}

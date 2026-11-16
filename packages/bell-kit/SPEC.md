@@ -6,7 +6,7 @@ The Product Designer's spec (`~/ma-coord/design-drafts/notifications-brand-revie
 - `role="dialog"`, labelled "Notifications"; `min(360px, 100vw - 32px)` wide, panel radius 16 px, padding 8 px, the app's overlay surface, 1 px border, menu elevation.
 - **Header**, only when something is unread: "Notifications" (14 px, 600, text primary) left; "Mark all read" as a text link right.
 - **Rows**, newest change first, each a link to `item.link` (read first, then go). Row radius 10 px, padding 10 px 8 px, hover sunken surface.
-  - **Left:** a 28 px round chip, sunken surface, holding the 16 px kind icon (`family`: `thread`, `card`, `desk`, `account`, `note`; stroke icons, no stars).
+  - **Left:** a 28 px round chip, sunken surface, holding the 16 px kind icon (`family`: `thread` (Forums and Courier), `card`, `desk`, `account`, `note`; stroke icons, no stars).
   - **Title:** who first, 14 px, 500, wraps to two lines.
   - **Second line:** the thing, 13 px, text secondary, one line, truncated.
   - **Right column:** the time (12 px, text tertiary) on top, an 8 px accent dot under it when unread. Never red.
@@ -22,6 +22,7 @@ The Product Designer's spec (`~/ma-coord/design-drafts/notifications-brand-revie
 | `forums.thread` | "{actor} replied in {thread}"; group: "{actor} and N others replied in {thread}" | "Community Forums" |
 | `forums.mention` | "{actor} mentioned you" | the thread title |
 | `forums.notice` | "A notice from Community Forums" | the rule (`item.body`) |
+| `courier.waiting` | "New messages on your {Desk} desk" (`item.title` only in that shape, else "New messages on your desk") | nothing: counts only, never a sender or a subject |
 | anything else | `item.title` | `item.body` |
 
 `N` is `item.count - 1`. With no actor the server's title stands. The time is `timeLabel(updatedAt, now)`: "now" under a minute, "5 min", "1 h", "2 d", then "Nov 1" (the month's short name and the day; the year is added when it isn't this year). Never "ago", "hr" or "5m".

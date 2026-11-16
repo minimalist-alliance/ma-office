@@ -7,7 +7,7 @@ import { SUPPORT_ADDRESS } from '../platform/clientConfig';
 const PART_LABELS: Record<string, string> = {
   browser: 'Browser',
   'browser-readable': 'Browser, readable',
-  desk: 'Desk settings and Chat',
+  desk: 'Desk settings and Courier',
   notebook: 'Notebook',
   agent: 'Agent',
   apps: 'Apps',
@@ -136,7 +136,7 @@ export function readme({ madeAt, desks, notCopied, incomplete = [], accountNames
     'desks/<desk name>/       One folder for each desk.',
     "  browser/               The Browser's whole profile, exactly as Chromium keeps it.",
     '  browser-readable/      Your bookmarks and history, in files any computer can open.',
-    '  desk/                  Desk settings and Chat.',
+    '  desk/                  Desk settings and Courier.',
     '  notebook/              Your Notebook.',
     ...(teen ? [] : ['  agent/                 The Agent.']),
     "  apps/                  Each app's own data.",

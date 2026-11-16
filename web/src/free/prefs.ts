@@ -1,6 +1,6 @@
 // What the free tier remembers for the account, in the layout document's `prefs` (design 9.4, Platform's, one document
-// per member), so it follows the member to any browser: Maia's "Not now", and the day the office last
-// spoke up. Each is mirrored in this browser too, under the member's id, so a reload never shows again what the document
+// per member), so it follows the member to any browser: Maia's "Not now", the day the office last
+// spoke up, and the move to Free whose "You're on {Free} now" card was closed (`freeNow.tsx`). Each is mirrored in this browser too, under the member's id, so a reload never shows again what the document
 // hasn't brought back yet. Nothing else: no counts, nothing about what the member did on a desk.
 import { readJson, writeJson } from '../lib/util';
 import { useSession } from '../platform/session';
@@ -11,7 +11,9 @@ import { layoutMirrorWritable } from '../state/layoutStore';
 /** The keys, as Platform stores them (proposed in STATUS.md, "For Platform"). */
 export const SAID_ON = 'freeSaidOn';
 export const MAIA_NOT_NOW = 'maiaTrialNotNow';
-export type PrefKey = typeof SAID_ON | typeof MAIA_NOT_NOW;
+/** The `steppedDown.at` of the move to Free whose card the member closed: that card doesn't come back for that move. */
+export const FREE_NOW_SEEN = 'freeNowSeen';
+export type PrefKey = typeof SAID_ON | typeof MAIA_NOT_NOW | typeof FREE_NOW_SEEN;
 
 export const MIRROR = 'ma.free.prefs.v1';
 

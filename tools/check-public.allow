@@ -26,3 +26,23 @@ private-ip	image/host/desk-ice-demux/gate_test.go	made-up private address in a u
 public-ip	image/tests/test_host_svc_dns.py	made-up public addresses in a unit test
 public-ip	image/host/tests/test_templates.py	a Chromium version number that looks like an address, in a unit test
 email	web/public/backgrounds/*/*.webp	compressed image data that happens to hold an address-like byte pattern
+email	connectors/mac/Tests/ConnectorCoreTests/*	made-up user names at the company's own mail domain, in test vectors
+email	connectors/mac/scripts/build-app.sh	file names with an @2x suffix that look like addresses
+email	services/courier-envelope/src/test/*	made-up user names at the company's own mail domain, in test vectors
+email	services/courier-testkit/src/main/resources/courier-testkit/mime/*	made-up message IDs on public mail provider domains, in test mail
+email	services/desk-agent/src/main/java/com/minimalistalliance/desk/agent/maia/Tray.java	a made-up hostile address in a comment, for a link-safety rule
+email	services/desk-agent/src/test/java/com/minimalistalliance/desk/agent/maia/*	made-up hostile addresses in unit tests of link-safety rules
+email	services/deskd/src/test/*	made-up addresses and message IDs on public provider and look-alike domains, in unit tests of mail handling and link safety
+email	web/src/apps/courier/address.test.ts	a made-up user name at the company's own mail domain, in a unit test
+email	web/src/chrome/markPanel.test.ts	a made-up userinfo URL in a unit test
+private-ip	services/desk-agent/src/test/*	made-up private addresses in unit tests
+aws-account	services/deskd/src/test/java/com/minimalistalliance/desk/deskd/tools/ToolHostKeysTest.java	a made-up twelve-digit suffix in a unit test
+aws-account	web/src/apps/courier/links.test.ts	a made-up phone number in a unit test
+public-ip	web/src/browser/typedAddress.ts	a worked example of how URL parses a short address, in a comment
+home-path	tools/agent-harness/capability/*	relative paths that contain a folder named home, in made-up task files
+business	services/desk-agent/docs/maia-evals.md	a member-facing agent budget default, a product setting
+business	services/desk-agent/src/test/java/com/minimalistalliance/desk/agent/maia/WalletTest.java	a member-facing agent budget default, in a unit test
+business	services/deskd/docs/API.md	member-facing agent budget defaults and a sample message, a product setting
+business	web/src/maiamode/deskSource.test.ts	a member-facing agent budget message, in a unit test
+business	web/src/maiamode/mockSource.ts	made-up shopping prices in mock chat text
+key	web/tests/real-desk/agent-tools/probe.test.mjs	a made-up key string in a unit test of key handling

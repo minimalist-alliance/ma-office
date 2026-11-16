@@ -18,7 +18,7 @@ vi.mock('../shell/announce', () => ({ announce: () => undefined }));
 const { backToDesk, toggleCarousel, stepCarousel, watchCarouselWindows } = await import('./actions');
 
 const item = (app: LayoutItem['app'], x: number): LayoutItem => ({ id: `d1:${app}`, app, x, y: 24, w: 76, h: 76 });
-const DESK: LayoutDesk = { id: 'd1', x: 0, y: 0, w: 584, h: 236, items: [item('chat', 24), item('notebook', 124), item('browser', 224), item('agent', 316)] };
+const DESK: LayoutDesk = { id: 'd1', x: 0, y: 0, w: 584, h: 236, items: [item('courier', 24), item('notebook', 124), item('browser', 224), item('agent', 316)] };
 const OTHER: LayoutDesk = { ...DESK, id: 'd2', x: 700, items: DESK.items.map((i) => ({ ...i, id: i.id.replace('d1', 'd2') })) };
 
 function windowOf(width: number): void {
@@ -57,17 +57,17 @@ describe('the switch', () => {
   it('turns the desk to carousel on its top window\'s app, and its windows go into it', () => {
     openWindow('d1', 'notebook', 'd1:notebook');
     openWindow('d1', 'browser', 'd1:browser');
-    openWindow('d2', 'chat', 'd2:chat');
+    openWindow('d2', 'courier', 'd2:courier');
     toggleCarousel('d1');
     expect(desk().carousel).toEqual({ on: true, app: 'browser' });
-    expect(open()).toEqual([windowKey('d2', 'chat')]); // only this desk's
+    expect(open()).toEqual([windowKey('d2', 'courier')]); // only this desk's
     expect(desk('d2').carousel).toBeUndefined(); // and nothing reaches the other desk
     expect(shell.focused).toEqual(['d1']);
   });
 
   it('with no window open, shows the app it showed last, or the first; and back to the desk keeps that one', () => {
     toggleCarousel('d1');
-    expect(desk().carousel).toEqual({ on: true, app: 'chat' });
+    expect(desk().carousel).toEqual({ on: true, app: 'courier' });
     stepCarousel('d1', 1);
     toggleCarousel('d1');
     expect(desk().carousel).toEqual({ on: false, app: 'notebook' });
@@ -108,13 +108,13 @@ describe('on a phone (the thumb row): the phone\'s own carousel, never saved', (
   });
 
   it('back to the desk is the phone\'s alone, and gives the keyboard to the app\'s tile', () => {
-    openWindow('d1', 'chat', 'd1:chat');
+    openWindow('d1', 'courier', 'd1:courier');
     backToDesk('d1');
     expect(phoneApp(desk())).toBeNull();
     expect(desk().carousel).toBeUndefined();
-    expect(shell.proxies).toEqual(['d1:chat']);
+    expect(shell.proxies).toEqual(['d1:courier']);
     backToDesk('d1'); // already at the desk: nothing more
-    expect(shell.proxies).toEqual(['d1:chat']);
+    expect(shell.proxies).toEqual(['d1:courier']);
   });
 
   it('reads a larger screen\'s carousel as a convenience, and never writes it', () => {

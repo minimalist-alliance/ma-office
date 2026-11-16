@@ -25,7 +25,7 @@ So a shared-host desk gets OS and Chromium fixes only when the host image is reb
 
 **Numbers used below** (measured unless marked as an estimate):
 - **The slot store.** The template is 2.3 GB and the release store 1.0 GB. Each slot has a 2.3 GB root copy (quota 3.3 GB) and 1.0 GB of release copies. The store is sized ⌈(6.7 + SlotsPerHost × 4.4) ÷ 0.92⌉ GB, 36 GB at 6 slots. That leaves about 8% free at full quota with one prepare in flight (`docs/sub-status/shared-host-wall-3.md`, `host-size-classes.md`). The host's own 16 GB root had 9.6 GB used, the 8 GB swap file included (same source).
-- **A prepare:** 21 to 24 s on a quiet `c7g.xlarge` and 44 to 49 s beside running desks (a 3.0 GB root then; `spikes/shared-host-wall/README.md`). 50 to 55 s for a freshly launched host's first prepare (3 `verify.sh` runs, `image/host/evidence/`). 11 s warm, 80 s with the page cache dropped, and 6.5 minutes for a fresh host's first copy while its volume loads (`image/host/RELEASES.md`, 0.1.8).
+- **A prepare:** 21 to 24 s on a quiet `c7g.xlarge` and 44 to 49 s beside running desks (a 3.0 GB root then; `spikes/shared-host-wall/README.md`). 50 to 55 s for a freshly launched host's first prepare (3 `verify.sh` runs, `image/host/evidence/`). 11 s warm, 80 s with the page cache dropped, and 6.5 minutes for a fresh host's first copy while its volume loads (`image/host/RELEASES.md`, 0.1.8). Added 2026-11-12: 76 to 297 s for a fresh host's first prepare (6 fresh `m7g.xlarge` hosts, median 142 s, the store's snapshot loaded one read at a time; Platform's soak saw 177 and 455 s), and 35 to 37 s from host 0.1.16, which reads a new host's store with 16 readers at its first boot (`desk-host-warm`, `docs/sub-status/host-0116-fixes.md`).
 - **Disk shares** on an `m7g.xlarge` at 6 desks (EBS baseline 156.25 MB/s and 6,000 IOPS): the desks' `io.max` caps sum to 0.8 of it, and the six roots' 2,400 IOPS sit inside the slot store's 3,000. The pre-read's cgroup takes 0.2: 31.25 MB/s, measured 31.23 (ADR 0072 sections 3 and 10; `host-wake-counters`).
 - **A cold wake with the pre-read:** a standard desk's hello in 19.1 to 19.4 s and its Browser in 34.9 to 35.8 s; a free desk's in 23.5 to 23.8 s and 42.1 to 42.3 s (3 samples each; ADR 0072 section 10).
 - **A stop with Chromium running:** 4 s, `quit=cdp`, `exit_type Normal`, with a cookie set 8 s before kept (`RC-05`, run 2). The worst case is 31 s for CDP, then 30 s after SIGTERM.
@@ -175,7 +175,9 @@ A member host only fetches and checks. No apt, no `dpkg`, no maintainer script a
    - a device file;
    - a member the manifest doesn't list.
 
-   Each file is hashed as it's written, so nothing is read back.
+   Each file is hashed as it's written, so nothing is read back. Each file, directory and link keeps the archive's time (added
+   2026-11-12, host 0.1.16, `sub/host-0116-fixes`; 0.1.12 to 0.1.15 wrote the unpack's, which leaves every Python source newer than its
+   `.pyc` and every font directory newer than fontconfig's cache). No manifest or check has a time in it.
 6. **Walk the tree:** every path in it is in the manifest, with the right type, mode, owner, size, hash, link target and capability, and every manifest entry is in the tree. Then `desk-host-check template` runs on it, and Chromium must go forward against the host's current generation.
 7. **Seal:**
    - `chown 0:0`;
@@ -188,7 +190,8 @@ A new host builds nothing. At its first hello it fetches the fleet's current art
 
 #### 1.5 How a slot moves: a re-root
 A re-root is a prepare for the same desk:
-- a fresh tree from the target generation, built beside the old root;
+- a fresh tree from the target generation, built beside the old root, every path with the generation's time, as a prepare's `tar -p`
+  copies it (added 2026-11-12, host 0.1.16; 0.1.12 to 0.1.15's `copy_tree` wrote the copy's);
 - the slot's `rel/` moved in, once its tree hash matches the store's;
 - then, under the slot's lock: the record removed, the new tree swapped in by rename, the record written (`desk`, the same desk ID, the new `template`), and the old root deleted without following links.
 

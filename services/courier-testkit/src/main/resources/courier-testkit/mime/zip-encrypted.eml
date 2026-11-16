@@ -1,0 +1,25 @@
+From: Billing <billing@example.com>
+To: me@desk.example
+Date: Fri, 13 Nov 2026 10:00:00 +0000
+Subject: Protected statement
+Message-ID: <zip-encrypted@corpus.example>
+MIME-Version: 1.0
+X-Corpus-Note: a zip with one entry encrypted (PKWARE traditional encryption, password in the body)
+Content-Type: multipart/mixed; boundary="att-1"
+
+--att-1
+Content-Type: text/plain; charset=utf-8
+
+The statement is protected; the password is infected.
+--att-1
+Content-Type: application/zip; name="statement.zip"
+Content-Disposition: attachment; filename="statement.zip"
+Content-Transfer-Encoding: base64
+
+UEsDBBQAAAAAAABQbV3JpFyzFgAAABYAAAALAAAAaW52b2ljZS50eHRJbnZvaWNlIDIyMTE6IDE0
+MC4wMA0KUEsDBBQAAQAIAABQbV2piyWVVAAAAE0AAAAUAAAAc2VjcmV0L3N0YXRlbWVudC5wZGam
+NPLl6fX5eqNVt6xgc9ORU2CyF6+XEcKP6azP691fAgsIgfmrzKZebdl/r7MKJpWHexefP0jGKNm4
+EAbQganf1KuxrS9mIks9DSgZP0bmL3wGUdJQSwECFAAUAAAAAAAAUG1dyaRcsxYAAAAWAAAACwAA
+AAAAAAAAAAAAAAAAAAAAaW52b2ljZS50eHRQSwECFAAUAAEACAAAUG1dqYsllVQAAABNAAAAFAAA
+AAAAAAAAAAAAAAA/AAAAc2VjcmV0L3N0YXRlbWVudC5wZGZQSwUGAAAAAAIAAgB7AAAAxQAAAAAA
+--att-1--

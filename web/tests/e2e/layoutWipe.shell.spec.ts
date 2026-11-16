@@ -17,6 +17,8 @@ const fleet = (ids: string[]): Record<string, string>[] =>
 const KEYS = ['ma.layout.v2', 'ma.layout.v1', 'ma.layout.sync.v1', 'ma.free.prefs.v1', 'ma.setup.prefs.v1', 'ma.prefs.background', 'ma.layout.owner.v1'];
 const NONE = Object.fromEntries(KEYS.map((k) => [k, null]));
 const SCOPES = ['personal', 'work', 'guild', 'all'] as const;
+/** The desk the view is on once the office has framed that scope: its first desk (Personal for All). */
+const VIEW_DESK = { personal: A, work: B, guild: C, all: A } as const;
 
 /** What this browser holds of the mirror, read from a page on the same site. */
 const mirror = (page: Page): Promise<Record<string, string | null>> =>
@@ -36,8 +38,11 @@ async function keyEdit(page: Page, id: string): Promise<void> {
 
 /** Signed in with Personal, Work and Guild desks, the view on `scope`, and every key of the mirror there. */
 async function arrive(page: Page, request: APIRequestContext, scope: (typeof SCOPES)[number] = 'all'): Promise<void> {
+  // On the first load that's signed in: a start with nobody signed in leaves any kept view stamped as left at a sign-out,
+  // and the member's arrival would drop it (ADR 0057), so a view seeded before it never reaches the office.
   await page.addInitScript((s) => {
-    if (!localStorage.getItem('ma.view.v1')) localStorage.setItem('ma.view.v1', JSON.stringify({ scope: s, activeDesk: null, mode: 'overview' }));
+    if (localStorage.getItem('ma.view.v1') || !(location.pathname === '/auth/callback' || localStorage.getItem('ma-desk-web-refresh') || sessionStorage.getItem('ma-desk-web-refresh'))) return;
+    localStorage.setItem('ma.view.v1', JSON.stringify({ scope: s, activeDesk: null, mode: 'overview' }));
   }, scope);
   await harness(request, { fleet: fleet(DESKS) });
   await signIn(page);
@@ -77,8 +82,9 @@ for (const scope of SCOPES) {
     await signOut(page);
     await expect(page.getByTestId('sign-in')).toContainText("You're signed out.");
     expect(await mirror(page)).toEqual(NONE);
-    // The device's own view state isn't the account's layout (ADR 0005), and stays.
-    expect(await page.evaluate(() => localStorage.getItem('ma.view.v1'))).toContain(scope);
+    // The device's own view isn't the account's layout (ADR 0005), and stays, but with no member in it: stamped `false`,
+    // left at a sign-out, so the next arrival, whoever's, starts as a first visit does (ADR 0057, `state/deviceOwner.ts`).
+    expect(JSON.parse((await page.evaluate(() => localStorage.getItem('ma.view.v1')))!)).toEqual({ scope, activeDesk: VIEW_DESK[scope], mode: 'overview', owner: false });
   });
 }
 

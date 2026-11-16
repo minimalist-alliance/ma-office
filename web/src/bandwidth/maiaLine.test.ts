@@ -1,6 +1,6 @@
 import { describe, expect, it } from 'vitest';
 import type { MaiaState } from '../maia/gate';
-import { readState } from '../maia/gate';
+import { readState } from '../maia/state';
 import { maiaLine } from './maiaLine';
 
 const c = { now: Date.parse('2026-11-09T12:00:00Z'), locale: 'en-US', timeZone: 'America/Denver' };

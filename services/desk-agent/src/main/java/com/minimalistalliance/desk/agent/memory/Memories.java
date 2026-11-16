@@ -139,19 +139,30 @@ public final class Memories {
      */
     public ManagerAgent.RunSetup withMemory(ManagerAgent.RunSetup setup, String agentId, Set<Taint> read)
             throws SQLException {
+        return withMemory(setup, agentId, read, 0);
+    }
+
+    /**
+     * {@link #withMemory(ManagerAgent.RunSetup, String, Set)} for a run picked up after a restart (durable runs), which
+     * already saved {@code savedBefore} lines: its {@link #SAVES_PER_RUN} counts on from there, never from 0.
+     */
+    public ManagerAgent.RunSetup withMemory(ManagerAgent.RunSetup setup, String agentId, Set<Taint> read,
+            int savedBefore) throws SQLException {
         ManagerAgent.Tools base = setup.tools();
-        List<ToolSpec> specs = new ArrayList<>(base.specs());
-        specs.add(spec());
-        specs.add(forgetSpec());
-        List<ToolSpec> fixed = List.copyOf(specs);
-        AtomicInteger saves = new AtomicInteger();
+        List<ToolSpec> own = List.of(spec(), forgetSpec());
+        AtomicInteger saves = new AtomicInteger(Math.max(0, savedBefore));
         Set<Taint> taint = setup.taint();
         taint.addAll(read);
         taint.addAll(seed(agentId));
+        boolean maia = maia(agentId);
         ManagerAgent.Tools tools = new ManagerAgent.Tools() {
             @Override
             public List<ToolSpec> specs() {
-                return fixed;
+                // The base's are read again each step: an app the member switches off for the agent goes from the
+                // very next one (the tools and approvals draft, section 16).
+                List<ToolSpec> now = new ArrayList<>(base.specs());
+                now.addAll(own);
+                return now;
             }
 
             @Override
@@ -190,9 +201,16 @@ public final class Memories {
                 }
                 return result.error() ? done + " (refused)" : done;
             }
+
+            @Override
+            public String endsRun(ToolCall call, ToolResult result) {
+                return TOOL.equals(call.name()) || FORGET.equals(call.name()) ? null : base.endsRun(call, result);
+            }
         };
-        String instructions = setup.instructions() + "\n\n" + PROMPT + "\n\n" + block(agentId);
-        return new ManagerAgent.RunSetup(instructions, tools, setup.maxMicroUsd(), taint);
+        // Desk Maia's memory goes with every run to Minimalist Alliance's service: her own rules, never anything private.
+        String instructions = setup.instructions() + "\n\n" + (maia ? MaiaMemory.PROMPT : PROMPT) + "\n\n"
+                + block(agentId);
+        return new ManagerAgent.RunSetup(instructions, tools, setup.maxMicroUsd(), taint).withNote(setup.note());
     }
 
     /**
@@ -202,7 +220,7 @@ public final class Memories {
      */
     public Set<Taint> seed(String agentId) throws SQLException {
         Set<Taint> seed = EnumSet.noneOf(Taint.class);
-        for (MemoryStore.Item item : store.list(agentId)) {
+        for (MemoryStore.Item item : pinned(agentId)) {
             seed.add(Taint.S);
             if (item.untrusted()) {
                 seed.add(Taint.U);
@@ -218,14 +236,38 @@ public final class Memories {
     public static List<ToolDecl> declarations() {
         return List.of(
                 new ToolDecl(TOOL, "Remember {text}", spec().inputSchema(), "memory:self", Risk.OWN, Set.of(),
-                        ToolDecl.Host.DESK_AGENT),
+                        ToolDecl.Host.DESK_AGENT, com.minimalistalliance.desk.agent.tool.Restart.INTERRUPT),
                 new ToolDecl(FORGET, "Forget the memory {id}", forgetSpec().inputSchema(), "memory:self", Risk.OWN,
-                        Set.of(), ToolDecl.Host.DESK_AGENT));
+                        Set.of(), ToolDecl.Host.DESK_AGENT, com.minimalistalliance.desk.agent.tool.Restart.INTERRUPT));
+    }
+
+    /** Whether this is Desk Maia, whose memory has her own rules ({@link MaiaMemory}). */
+    static boolean maia(String agentId) {
+        return com.minimalistalliance.desk.agent.maia.MaiaAgent.is(agentId);
+    }
+
+    /**
+     * The lines pinned into the agent's runs, newest first: every line, but for Desk Maia only those her check passes, so a
+     * line she saved before her rules (Nov 14) that holds something private never goes to her service. The member still
+     * sees and deletes every line.
+     */
+    List<MemoryStore.Item> pinned(String agentId) throws SQLException {
+        List<MemoryStore.Item> items = store.list(agentId);
+        if (!maia(agentId)) {
+            return items;
+        }
+        List<MemoryStore.Item> kept = new ArrayList<>();
+        for (MemoryStore.Item item : items) {
+            if (MaiaMemory.privateReason(item.text()) == null) {
+                kept.add(item);
+            }
+        }
+        return kept;
     }
 
     /** The lines as the model reads them, oldest first, each with its id. */
     String block(String agentId) throws SQLException {
-        List<MemoryStore.Item> items = store.list(agentId);
+        List<MemoryStore.Item> items = pinned(agentId);
         StringBuilder block = new StringBuilder(HEADER);
         if (items.isEmpty()) {
             block.append("\n- nothing yet");
@@ -294,6 +336,11 @@ public final class Memories {
         } catch (Refused e) {
             reason = e.reason;
         }
+        if (reason == null && maia(agentId)) {
+            // Desk Maia: how the member likes answers, how to help, what they've set up; nothing private (MaiaMemory).
+            String why = MaiaMemory.privateReason(text);
+            reason = why == null ? null : "too_long".equals(why) ? "too_long_maia" : "private";
+        }
         if (reason == null && !mayRemember.test(agentId)) {
             reason = "age_band";
         }
@@ -356,6 +403,10 @@ public final class Memories {
             case "full" -> "memory holds " + MAX_ITEMS + " lines and is full; the member can delete some under Memory"
                     + " in your settings";
             case "age_band" -> "memory is off on this desk now";
+            case "private" -> "it looks private (about their life, money, health, other people or what's on their"
+                    + " desks), which you never remember; if they asked, say kindly that their desk agents are the place"
+                    + " for private things";
+            case "too_long_maia" -> "keep it to one plain line of at most " + MaiaMemory.MAX_CHARS + " characters";
             case "untrusted" -> "this turn read untrusted content (a file, a page, another agent's message, or a line"
                     + " saved from one), so saving needs the member's yes, which wasn't given; tell them what you'd"
                     + " remember";
@@ -461,6 +512,27 @@ public final class Memories {
             }
         }
         return text;
+    }
+
+    /**
+     * A note Desk Maia's note-taker gave (Maia Mode, API.md §23) as it's kept: one line within {@code maxChars}, with the
+     * same refusals as a memory line (hidden characters, an instruction, anything shaped like a secret).
+     *
+     * @return the line, or null when it's refused
+     */
+    public static String cleanNote(Object raw, int maxChars) {
+        if (!(raw instanceof String given)) {
+            return null;
+        }
+        String text = given.replaceAll("\\s+", " ").strip();
+        if (text.isEmpty() || text.codePointCount(0, text.length()) > Math.min(maxChars, MAX_CHARS)) {
+            return null;
+        }
+        try {
+            return clean(text);
+        } catch (Refused e) {
+            return null;
+        }
     }
 
     /** The same line, ignoring case, spacing and end punctuation, so it isn't saved twice. */

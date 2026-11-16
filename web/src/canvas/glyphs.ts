@@ -1,10 +1,36 @@
-// App glyphs drawn straight onto a canvas context, from the prototype (crisp at every zoom,
-// no image decoding). Each draws into a 48x48 box at the origin. Colors are theme tokens.
-import { lookChunk, parseLook, type GlyphId } from '../agent/roster';
-import { THEME_IDS, THEMES, type Tokens } from '../theme/tokens';
+// App glyphs drawn straight onto a canvas context (crisp at every zoom, no image decoding), the one copy: the DOM's
+// `AppGlyph` (`chrome/icons.tsx`) draws through here too. Each draws into a 48x48 box at the origin. Colors are theme tokens;
+// the core apps' shapes and ramps are `draw3d.ts`.
+import { docsGlyphChunk, lookChunk, parseLook, todoGlyphChunk, type GlyphId } from '../agent/roster';
+import { accentTokens, AGENT_COLORS, APP_ACCENTS, APP_INKS, THEME_IDS, THEMES, type ThemeId, type Tokens } from '../theme/tokens';
 import { CANVAS_FONT } from './font';
 import { host } from '../deskapps/door';
-import type { CoreAppId } from './layout';
+import { drawGlyph3d } from './draw3d';
+import { drawHat } from '../../agent/src/look/hat';
+import { wearsHat } from '../../agent/src/look/icons';
+
+/** The theme a token set is (a set made from one, such as an app's accent, is that theme's), Light if none. */
+export const themeOf = (t: Tokens): ThemeId => THEME_IDS.find((id) => THEMES[id] === t || THEMES[id].surface.tile === t.surface.tile) ?? 'light';
+
+/** The installed apps whose own ink tints their tile, by their glyph (`dapp:<glyph>`): the Bible's Lapis. */
+const DAPP_INK: Record<string, string> = { bible: 'app:com.minimalistalliance.bible' };
+
+/**
+ * The accent an icon's tile is tinted by (APP-TILES, the owner, Nov 15: each tile takes its app's primary accent): an app's own
+ * (`APP_ACCENTS`), Files' Silver and the Bible's Lapis (their inks), an agent's colour, else the office blue (the Browser, an
+ * installed app with no ink of its own). Null for an agent its desk hasn't given a colour (grey, as asleep): the plain tile.
+ */
+export function tileAccent(app: GlyphId, t: Tokens): string | null {
+  const theme = themeOf(t);
+  const look = parseLook(app);
+  if (look) return look.color ? (AGENT_COLORS[look.color]?.[theme] ?? null) : null;
+  if (app.startsWith('dapp:')) {
+    const ink = DAPP_INK[app.slice(5)];
+    return (ink && APP_INKS[ink]?.[theme].accent) || THEMES[theme].accent.default;
+  }
+  const id = app.endsWith(':') ? app.slice(0, -1) : app; // To-do's and Documents' blanks, before their chunks are here
+  return APP_ACCENTS[id]?.[theme] ?? APP_INKS[id]?.[theme].accent ?? THEMES[theme].accent.default;
+}
 
 type Ctx = CanvasRenderingContext2D | OffscreenCanvasRenderingContext2D;
 
@@ -15,168 +41,6 @@ function line(ctx: Ctx, x1: number, y1: number, x2: number, y2: number): void {
   ctx.stroke();
 }
 
-function dot(ctx: Ctx, x: number, y: number, r: number): void {
-  ctx.beginPath();
-  ctx.arc(x, y, r, 0, Math.PI * 2);
-  ctx.fill();
-}
-
-const DRAW: Record<CoreAppId, (ctx: Ctx, t: Tokens) => void> = {
-  notebook(ctx, t) {
-    ctx.fillStyle = t.glyph.page;
-    ctx.beginPath();
-    ctx.moveTo(14, 5);
-    ctx.lineTo(29, 5);
-    ctx.lineTo(37, 13);
-    ctx.lineTo(37, 40);
-    ctx.quadraticCurveTo(37, 43, 34, 43);
-    ctx.lineTo(14, 43);
-    ctx.quadraticCurveTo(11, 43, 11, 40);
-    ctx.lineTo(11, 8);
-    ctx.quadraticCurveTo(11, 5, 14, 5);
-    ctx.closePath();
-    ctx.fill();
-    ctx.strokeStyle = t.glyph.soft;
-    ctx.globalAlpha = 0.5;
-    ctx.lineWidth = 1;
-    ctx.stroke();
-    ctx.globalAlpha = 1;
-    // folded corner
-    ctx.fillStyle = t.glyph.soft;
-    ctx.globalAlpha = 0.45;
-    ctx.beginPath();
-    ctx.moveTo(29, 5);
-    ctx.lineTo(29, 11);
-    ctx.quadraticCurveTo(29, 13, 31, 13);
-    ctx.lineTo(37, 13);
-    ctx.closePath();
-    ctx.fill();
-    ctx.globalAlpha = 1;
-    // heading block and text lines
-    ctx.fillStyle = t.glyph.default;
-    ctx.beginPath();
-    ctx.roundRect(16, 12, 8, 8, 1.5);
-    ctx.fill();
-    ctx.lineCap = 'round';
-    ctx.lineWidth = 2.6;
-    ctx.strokeStyle = t.glyph.soft;
-    line(ctx, 16, 27, 32, 27);
-    line(ctx, 16, 32, 32, 32);
-    ctx.strokeStyle = t.accent.default;
-    line(ctx, 16, 37, 26, 37);
-  },
-
-  // Files: a folder, the drive's own. Back leaf soft, front panel strong, one accent stroke as the notebook has.
-  files(ctx, t) {
-    ctx.fillStyle = t.glyph.soft;
-    ctx.beginPath();
-    ctx.roundRect(7, 11, 15, 12, 3);
-    ctx.roundRect(7, 15, 34, 25, 3);
-    ctx.fill();
-    ctx.fillStyle = t.glyph.default;
-    ctx.beginPath();
-    ctx.roundRect(7, 20, 34, 20, 3);
-    ctx.fill();
-    ctx.fillStyle = t.accent.default;
-    ctx.fillRect(14, 32, 12, 2.6);
-  },
-
-  chat(ctx, t) {
-    ctx.fillStyle = t.glyph.default;
-    ctx.beginPath();
-    ctx.ellipse(24, 22, 17, 15, 0, 0, Math.PI * 2);
-    ctx.fill();
-    ctx.beginPath();
-    ctx.moveTo(12.5, 29);
-    ctx.lineTo(9, 41);
-    ctx.lineTo(21, 35.5);
-    ctx.closePath();
-    ctx.fill();
-    ctx.fillStyle = t.surface.tile;
-    dot(ctx, 16.5, 22, 2.7);
-    dot(ctx, 24, 22, 2.7);
-    dot(ctx, 31.5, 22, 2.7);
-  },
-
-  browser(ctx, t) {
-    ctx.strokeStyle = t.glyph.globe;
-    ctx.lineWidth = 2.9;
-    ctx.lineCap = 'round';
-    ctx.beginPath();
-    ctx.arc(24, 24, 16, 0, Math.PI * 2);
-    ctx.stroke();
-    ctx.beginPath();
-    ctx.ellipse(24, 24, 7, 16, 0, 0, Math.PI * 2);
-    ctx.stroke();
-    line(ctx, 8.5, 24, 39.5, 24);
-    line(ctx, 10.6, 16, 37.4, 16);
-    line(ctx, 10.6, 32, 37.4, 32);
-  },
-
-  // A Guild Desk's Commons (task 48): a board that's always up, with the guild gathered under it.
-  commons(ctx, t) {
-    ctx.fillStyle = t.glyph.page;
-    ctx.beginPath();
-    ctx.roundRect(7, 7, 34, 24, 3.5);
-    ctx.fill();
-    ctx.strokeStyle = t.glyph.soft;
-    ctx.globalAlpha = 0.5;
-    ctx.lineWidth = 1;
-    ctx.stroke();
-    ctx.globalAlpha = 1;
-    ctx.lineCap = 'round';
-    ctx.lineJoin = 'round';
-    ctx.strokeStyle = t.accent.default;
-    ctx.lineWidth = 2.6;
-    ctx.beginPath();
-    ctx.moveTo(13, 23);
-    ctx.quadraticCurveTo(17, 13, 21, 19);
-    ctx.quadraticCurveTo(25, 25, 29, 15);
-    ctx.stroke();
-    ctx.fillStyle = t.glyph.soft;
-    ctx.beginPath();
-    ctx.roundRect(30, 12, 7, 7, 1.2);
-    ctx.fill();
-    // Three people, head and shoulders, light: at tile size, three heavy dots read as an ellipsis or a loading mark.
-    ctx.fillStyle = t.glyph.soft;
-    for (const x of [14, 24, 34]) {
-      dot(ctx, x, 35.6, 2.4);
-      ctx.beginPath();
-      ctx.ellipse(x, 44, 4, 4.4, 0, Math.PI, 0);
-      ctx.closePath();
-      ctx.fill();
-    }
-  },
-
-  agent(ctx, t) {
-    const nodes = [-90, -30, 30, 90, 150, 210].map((deg) => {
-      const a = (deg * Math.PI) / 180;
-      return { x: 24 + Math.cos(a) * 15, y: 24 + Math.sin(a) * 15, a };
-    });
-    ctx.strokeStyle = t.glyph.default;
-    ctx.lineWidth = 2.4;
-    ctx.lineCap = 'round';
-    for (const { a } of nodes) {
-      line(ctx, 24 + Math.cos(a) * 7, 24 + Math.sin(a) * 7, 24 + Math.cos(a) * 11.5, 24 + Math.sin(a) * 11.5);
-    }
-    ctx.globalAlpha = 0.35;
-    ctx.lineWidth = 1.4;
-    for (let i = 0; i < nodes.length; i += 2) {
-      const n1 = nodes[i]!;
-      const n2 = nodes[(i + 1) % nodes.length]!;
-      line(ctx, n1.x, n1.y, n2.x, n2.y);
-    }
-    ctx.globalAlpha = 1;
-    ctx.fillStyle = t.glyph.default;
-    nodes.forEach((n, i) => dot(ctx, n.x, n.y, i % 2 ? 3.4 : 4.2));
-    ctx.strokeStyle = t.accent.default;
-    ctx.lineWidth = 2.6;
-    ctx.beginPath();
-    ctx.arc(24, 24, 5.2, 0, Math.PI * 2);
-    ctx.stroke();
-  },
-};
-
 /** Draw app glyph `app` scaled to `size` px at the context's current origin. */
 export function drawGlyph(ctx: Ctx, app: GlyphId, t: Tokens, size: number): void {
   if (app.startsWith('dapp:')) {
@@ -186,19 +50,27 @@ export function drawGlyph(ctx: Ctx, app: GlyphId, t: Tokens, size: number): void
   }
   const look = parseLook(app);
   if (look) {
-    // An agent's own app (task 49): its mark, the tone square with its icon or upload in the one foreground color. Its drawing
-    // is a chunk of its own (`lookChunk`): until it's here the tile is blank, and its glyph key changes when it comes.
-    const draw = look.icon ? lookChunk() : null;
+    if (!look.icon) return;
+    const theme = themeOf(t);
+    // An agent's own app (task 49): the Agent app's own icon, the guy with the hat, in the agent's colour (the owner, Nov 15),
+    // drawn like the core apps' (`draw3d.ts`); no colour yet is grey, as asleep.
+    if (wearsHat(look.icon)) return void drawHat(ctx, look.color || null, theme, size, t);
+    // A library icon or an upload the member picked instead: its mark, the square in its colour with the icon in the one
+    // foreground color. That drawing is a chunk of its own (`lookChunk`): blank until it's here, and its glyph key changes then.
+    const draw = lookChunk();
     if (!draw) return;
-    const theme = THEME_IDS.find((id) => THEMES[id] === t) ?? 'light';
-    draw.drawAgentMark(ctx as CanvasRenderingContext2D, { icon: look.icon, tone: look.tone, theme, mask: look.mask?.bitmap ?? null, x: 0, y: 0, size, radius: size * draw.RADIUS_SHARE });
+    draw.drawAgentMark(ctx as CanvasRenderingContext2D, { icon: look.icon, color: look.color || null, tone: look.tone, theme, mask: look.mask?.bitmap ?? null, x: 0, y: 0, size, radius: size * draw.RADIUS_SHARE });
     return;
   }
-  const k = size / 48;
-  ctx.save();
-  ctx.scale(k, k);
-  DRAW[app as CoreAppId](ctx, t);
-  ctx.restore();
+  const th = Math.max(0, THEME_IDS.findIndex((id) => THEMES[id] === t));
+  // Six apps have an icon accent of their own (`APP_ACCENTS`); the rest keep the office blue.
+  t = accentTokens(app, t, THEME_IDS[th]!);
+  // To-do's, from its own chunk once it's here (`todo:` is the blank before).
+  if (app === 'todo') return void todoGlyphChunk()?.drawTodo3d(ctx, t, th, size);
+  // Documents', from its own chunk too (`documents:` is the blank before).
+  if (app === 'documents') return void docsGlyphChunk()?.drawDocs3d(ctx, t, th, size);
+  // A core app: the MA mark's 3D finish (variant B, the owner's pick, Nov 12), its 24 px cut at 30 px and under (`draw3d.ts`).
+  drawGlyph3d(ctx, app, t, th, size);
 }
 
 /** Two little arrows: outward (make small) or inward (make icon). Centred on the origin. */

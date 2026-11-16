@@ -871,12 +871,15 @@ def datadirs():
     user's own directory as that user (as_user), as the desk image's desk-datadirs does since EXP-7: as root, os.makedirs on a
     link the Browser's user put at /data/browser/home, then chown and chmod by name, gave kiosk whatever the link named (a
     directory of the desk's root, /data/logs say) at the slot's next start. One that can't be made is said, never fatal."""
-    for d in ("/data/desk", "/data/files", "/data/rtc", "/data/agent", "/data/notebook", "/data/browser", "/data/.ma-export-tmp"):
+    for d in ("/data/desk", "/data/files", "/data/courier", "/data/keys", "/data/rtc", "/data/agent", "/data/notebook", "/data/browser",
+              "/data/.ma-export-tmp"):
         if os.path.islink(d) or (os.path.lexists(d) and not os.path.isdir(d)):
             log(f"{d} isn't a directory (a link?): replaced by an empty one; the host refused to mount it")
             os.unlink(d)
     mkdir("/data/desk", "desk", "desk", 0o750)
     mkdir("/data/files", "desk", "desk", 0o700)   # deskd's Files tree (free walk H5): a volume from before 0.1.11 gets it here, mounted from the next start
+    mkdir("/data/courier", "desk", "desk", 0o700)   # Courier's store and vault, and deskd's sealed-message keys (the desk image's desk-datadirs):
+    mkdir("/data/keys", "desk", "desk", 0o700)      # a volume from before gets them here, mounted from the next start (mounts.py)
     mkdir("/data/rtc", "rtc", "rtc", 0o700)
     mkdir("/data/browser", "kiosk", "kiosk", 0o750)
     for name, mode in (("profile", "0700"), ("downloads", "0750"), ("home", "0700")):   # kiosk's own: made by kiosk, never root
@@ -891,8 +894,15 @@ def datadirs():
     if not os.path.exists("/data/.ma-volume"):
         with open("/data/.ma-volume", "w") as fh:
             fh.write('{"volumeId":null,"formattedAt":null,"firstSeenAt":"%s"}\n' % time.strftime("%FT%TZ", time.gmtime()))
-    # deskd's copy, in deskd's /data/desk, as desk: as root, install set the copy's owner and mode by name after making it
-    if as_user("desk", ["install", "-m", "0644", "/data/.ma-volume", "/data/desk/volume.json"]).returncode != 0:
+    # deskd's copy, in deskd's /data/desk, as desk: as root, install set the copy's owner and mode by name after making it.
+    # Written aside, then renamed over the last one (Region P2 run d47e0e): desk-host starts deskd's sandbox beside this init,
+    # not after it, and deskd reads the copy once, at its first heartbeat, and keeps what it read for the run. install onto
+    # the copy unlinks it and writes a new file, and on a slot with a capped or snapshot-restored volume that file sat empty
+    # for 1.8 s; deskd read it then ("volume record ignored: not a JSON object"), so the run's heartbeats carried no format
+    # record and the platform's move check couldn't see the drive. A rename shows deskd the old copy or the new one, whole.
+    new = "/data/desk/.volume.json.new"
+    if (as_user("desk", ["install", "-m", "0644", "/data/.ma-volume", new]).returncode != 0
+            or as_user("desk", ["mv", "-fT", new, "/data/desk/volume.json"]).returncode != 0):
         log("could not copy the volume record to /data/desk/volume.json as desk")
 
 

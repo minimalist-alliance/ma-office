@@ -781,9 +781,17 @@ class Pacer:
         self.n = 0
 
 
+# Times (host 0.1.16): a copy and an unpack keep every path's mtime, as tar -p does for a prepare (and the 0.1.11 line's extractall
+# did for releases). Host images 0.1.12 to 0.1.15 wrote each file and directory here at its copy's time, so: a re-rooted slot's root
+# and one on a fetched generation had every Python source newer than its timestamp-checked .pyc and every font directory newer than
+# fontconfig's cache (each compiled or scanned again where the process can't write the cache); and a service batch's switch
+# (batches.copy_release, the same copy_tree) gave deskd's and desk-agent's app jars a new time, so their AppCDS archives, which
+# record each jar's size and mtime, were refused without a word at every start after it (docs/sub-status/host-up-norecord.md: a
+# cold wake's hello 7.5 to 12 s later). No manifest or tree hash has a time in it, so every check reads the same either way.
 def copy_tree(src, dst):
     """A generation's tree copied into dst (a new, empty directory) as tar -p --numeric-owner copies it (modes, set-id bits, owners,
-    links and hard links; .complete left out), paced (Pacer), never following a link. A re-root's copy, in desk-host-upd."""
+    times, links and hard links; .complete left out), paced (Pacer), never following a link. A re-root's copy, in desk-host-upd,
+    and a batch's release copy (batches.copy_release)."""
     srcfd = os.open(src, os.O_PATH | os.O_DIRECTORY | os.O_NOFOLLOW | os.O_CLOEXEC)
     dstfd = os.open(dst, os.O_PATH | os.O_DIRECTORY | os.O_NOFOLLOW | os.O_CLOEXEC)
     fsfd = os.open(dst, os.O_RDONLY | os.O_DIRECTORY | os.O_CLOEXEC)
@@ -807,6 +815,7 @@ def copy_tree(src, dst):
                 elif stat.S_ISLNK(m):
                     os.symlink(os.readlink(os.path.join(src, rel)), name, dir_fd=pfd)
                     os.chown(name, st.st_uid, st.st_gid, dir_fd=pfd, follow_symlinks=False)
+                    os.utime(name, ns=(st.st_atime_ns, st.st_mtime_ns), dir_fd=pfd, follow_symlinks=False)
                 elif stat.S_ISREG(m):
                     if st.st_nlink > 1 and (st.st_dev, st.st_ino) in inodes:
                         first = inodes[(st.st_dev, st.st_ino)]
@@ -827,6 +836,7 @@ def copy_tree(src, dst):
                             pace.wrote(len(b))
                         os.fchown(ofd, st.st_uid, st.st_gid)
                         os.fchmod(ofd, stat.S_IMODE(m))
+                        os.utime(ofd, ns=(st.st_atime_ns, st.st_mtime_ns))
                     finally:
                         os.close(ifd)
                         os.close(ofd)
@@ -836,11 +846,12 @@ def copy_tree(src, dst):
             finally:
                 if pfd != dstfd:
                     os.close(pfd)
-        for rel, st in reversed(dirs):   # directories last, deepest first: their modes and owners once nothing more goes in
+        for rel, st in reversed(dirs):   # directories last, deepest first: their modes, owners and times once nothing more goes in
             fd = dstfd if rel == "." else openat2(dstfd, rel, os.O_PATH | os.O_DIRECTORY)
             try:
                 os.chown(f"/proc/self/fd/{fd}", st.st_uid, st.st_gid)
                 os.chmod(f"/proc/self/fd/{fd}", stat.S_IMODE(st.st_mode))
+                os.utime(f"/proc/self/fd/{fd}", ns=(st.st_atime_ns, st.st_mtime_ns))
             finally:
                 if fd != dstfd:
                     os.close(fd)
@@ -922,6 +933,7 @@ def unpack(archive, dest, manifest, stop_check=None):
     seen twice, set-id bits. Nothing is followed and nothing is read back."""
     hashes = {}
     seen = set()
+    dirs = []   # (rel, mtime) of each directory, its time set once nothing more is written in it (times: above copy_tree)
     rootfd = os.open(dest, os.O_PATH | os.O_DIRECTORY | os.O_NOFOLLOW | os.O_CLOEXEC)
     fsfd = os.open(dest, os.O_RDONLY | os.O_DIRECTORY | os.O_CLOEXEC)
     pace = Pacer(fs_fd=fsfd)
@@ -953,9 +965,11 @@ def unpack(archive, dest, manifest, stop_check=None):
                 if mode & 0o6000:
                     raise Refused(f"member {rel!r} has set-id bits")
                 uid, gid = m.uid, m.gid
+                mt = m.mtime
                 if rel == ".":
                     os.chown(dest, uid, gid)
                     os.chmod(dest, mode)
+                    dirs.append((".", mt))
                     continue
                 pfd = _parent_fd(rootfd, rel, cache)
                 name = os.path.basename(rel)
@@ -963,11 +977,13 @@ def unpack(archive, dest, manifest, stop_check=None):
                     os.mkdir(name, 0o700, dir_fd=pfd)
                     os.chown(name, uid, gid, dir_fd=pfd, follow_symlinks=False)
                     os.chmod(name, mode, dir_fd=pfd, follow_symlinks=False)
+                    dirs.append((rel, mt))
                 elif kind == "link":
                     if link_escapes(rel, m.linkname) or "\0" in m.linkname:
                         raise Refused(f"link {rel!r} points out of the tree ({m.linkname!r})")
                     os.symlink(m.linkname, name, dir_fd=pfd)
                     os.chown(name, uid, gid, dir_fd=pfd, follow_symlinks=False)
+                    os.utime(name, (mt, mt), dir_fd=pfd, follow_symlinks=False)
                 elif kind == "hard":
                     t = _norm(m.linkname)
                     if not good_name(t) or t == "." or t not in hashes:
@@ -995,9 +1011,16 @@ def unpack(archive, dest, manifest, stop_check=None):
                         cap = m.pax_headers.get("SCHILY.xattr.security.capability")
                         if cap is not None:
                             os.setxattr(fd, "security.capability", cap.encode("utf-8", "surrogateescape"))
+                        os.utime(fd, (mt, mt))
                     finally:
                         os.close(fd)
                     hashes[rel] = h.hexdigest()
+        # each directory's time, deepest first, once the whole tree is written (a member written into it moved its mtime)
+        for rel, mt in sorted(dirs, key=lambda d: d[0].count("/") + (d[0] != "."), reverse=True):
+            if rel == ".":
+                os.utime(f"/proc/self/fd/{rootfd}", (mt, mt))
+            else:
+                os.utime(os.path.basename(rel), (mt, mt), dir_fd=_parent_fd(rootfd, rel, cache), follow_symlinks=False)
         # what follows the tar's end (its record padding) must be zeros, and is read to zstd's end so it never sees a closed pipe
         tail = 0
         while True:
@@ -1953,7 +1976,8 @@ def trial_check(k, now=None):
     except OSError:
         return "not started"
     states = {}
-    for name in [f"dh-desk-{k}"] + [f"dh-svc-{k}-{s}" for s in ("desk-rtc", "deskd", "desk-agent", "desk-notebook", "desk-stream", "desk-data")]:
+    for name in [f"dh-desk-{k}"] + [f"dh-svc-{k}-{s}" for s in ("desk-rtc", "deskd", "desk-agent", "desk-notebook", "desk-stream", "desk-data",
+                                                           "desk-parse-courier", "desk-parse")]:
         r = subprocess.run(["runc", "state", name], capture_output=True, text=True, timeout=20)
         try:
             states[name] = json.loads(r.stdout).get("status") if r.returncode == 0 else None

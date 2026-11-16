@@ -1,0 +1,56 @@
+{
+  "id": "files-038",
+  "area": "files",
+  "title": "A move of a file that is not there",
+  "prompt": "Move Harness/inbox/w2-form.txt to Harness/taxes/w2-form.txt.",
+  "setup": {
+    "files": {
+      "Harness/inbox/w9-form.txt": "W-9 for the bank.\n",
+      "Harness/taxes/": null
+    }
+  },
+  "approve": "all",
+  "checks": [
+    {
+      "kind": "noFile",
+      "path": "Harness/taxes/w2-form.txt"
+    },
+    {
+      "kind": "file",
+      "path": "Harness/inbox/w9-form.txt",
+      "equals": "W-9 for the bank.\n"
+    },
+    {
+      "kind": "reply",
+      "contains": [
+        "w2-form"
+      ],
+      "state": "done"
+    },
+    {
+      "kind": "cards",
+      "tools": []
+    }
+  ],
+  "policy": {
+    "tools": [
+      "files_move"
+    ]
+  },
+  "standIn": [
+    {
+      "calls": [
+        {
+          "name": "files_move",
+          "input": {
+            "from": "Harness/inbox/w2-form.txt",
+            "to": "Harness/taxes/w2-form.txt"
+          }
+        }
+      ]
+    },
+    {
+      "text": "There's no Harness/inbox/w2-form.txt, so nothing moved. There is a w9-form.txt in your inbox if that's the one you meant."
+    }
+  ]
+}

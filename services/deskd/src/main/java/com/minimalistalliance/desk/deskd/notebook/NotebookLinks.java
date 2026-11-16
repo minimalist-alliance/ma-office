@@ -182,9 +182,24 @@ final class NotebookLinks {
             } catch (IllegalArgumentException e) {
                 log.warn("notebook link: dropped a tree event too large to send");
             }
+            Runnable heard = treeHeard;
+            if (heard != null) {
+                try {
+                    heard.run();
+                } catch (RuntimeException e) {
+                    // The listener's own trouble.
+                }
+            }
         } finally {
             treeLock.unlock();
         }
+    }
+
+    /** Told, without blocking, when a new tree {@code {rev}} is heard (Documents looks at Notebook's pages again). */
+    private volatile Runnable treeHeard;
+
+    void onTree(Runnable heard) {
+        this.treeHeard = heard;
     }
 
     /** The last {@code {rev}} a link heard, or null if no link is subscribed to keep it current. */

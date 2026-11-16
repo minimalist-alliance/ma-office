@@ -7,12 +7,15 @@ import { create } from 'zustand';
 import type { Agent } from '../../agent/src/client/types';
 import { agentIdOf, isAgentApp, isDeskApp, type AppId, type CoreAppId } from '../canvas/layout';
 import { host } from '../deskapps/door';
+import { wearsHat } from '../../agent/src/look/icons';
 
 export interface RosterAgent {
   id: string;
   name: string;
   lead: boolean;
   icon: string;
+  /** Its colour (`web/agent/src/look/colors.ts`): the lead's is the Agent app's own; null where its desk hasn't said one. */
+  color: string | null;
   tone: string;
   /** The upload's version, or null. */
   png: number | null;
@@ -29,9 +32,49 @@ interface RosterState {
   masks: Record<string, { bitmap: ImageBitmap | null; url: string }>;
   /** The look's drawing has loaded (`lookChunk`). */
   lookReady: boolean;
+  /** To-do's glyph has loaded (`todoGlyphChunk`). */
+  todoReady: boolean;
+  /** Documents' glyph has loaded (`docsGlyphChunk`). */
+  docsReady: boolean;
 }
 
-export const useRosterStore = create<RosterState>(() => ({ desks: {}, masks: {}, lookReady: false }));
+export const useRosterStore = create<RosterState>(() => ({ desks: {}, masks: {}, lookReady: false, todoReady: false, docsReady: false }));
+
+export type TodoGlyphChunk = typeof import('../apps/todo/glyph3d');
+let todoGlyph: TodoGlyphChunk | null = null;
+let todoLoading = false;
+/** To-do's glyph is a chunk of its own, as an agent's look is: the first To-do tile asks, and `todoReady` says when it's here. */
+export function todoGlyphChunk(): TodoGlyphChunk | null {
+  if (!todoGlyph && !todoLoading) {
+    todoLoading = true;
+    import('../apps/todo/glyph3d').then(
+      (m) => {
+        todoGlyph = m;
+        useRosterStore.setState({ todoReady: true });
+      },
+      () => (todoLoading = false),
+    );
+  }
+  return todoGlyph;
+}
+
+export type DocsGlyphChunk = typeof import('../apps/documents/glyph3d');
+let docsGlyph: DocsGlyphChunk | null = null;
+let docsLoading = false;
+/** Documents' glyph, a chunk of its own as To-do's is: the first Documents tile asks, and `docsReady` says when it's here. */
+export function docsGlyphChunk(): DocsGlyphChunk | null {
+  if (!docsGlyph && !docsLoading) {
+    docsLoading = true;
+    import('../apps/documents/glyph3d').then(
+      (m) => {
+        docsGlyph = m;
+        useRosterStore.setState({ docsReady: true });
+      },
+      () => (docsLoading = false),
+    );
+  }
+  return docsGlyph;
+}
 
 export type LookChunk = typeof import('./lookChunk');
 let chunk: LookChunk | null = null;
@@ -57,7 +100,8 @@ export function lookChunk(): LookChunk | null {
   return chunk;
 }
 
-const DEFAULT_LOOK = { icon: 'nodes', tone: 'graphite' } as const;
+// Until a desk says, an agent wears the hat in grey (no colour), as asleep.
+const DEFAULT_LOOK = { icon: 'hat', color: '', tone: 'graphite' } as const;
 const isLead = (a: Pick<Agent, 'lead' | 'role'>): boolean => a.lead === true || a.role === 'manager';
 
 export const maskKey = (deskId: string, agentId: string, version: number): string => `${deskId}|${agentId}|${version}`;
@@ -65,7 +109,7 @@ export const maskKey = (deskId: string, agentId: string, version: number): strin
 const same = (a: readonly RosterAgent[] | undefined, b: readonly RosterAgent[]): boolean =>
   !!a && a.length === b.length && a.every((x, i) => {
     const y = b[i]!;
-    return x.id === y.id && x.name === y.name && x.lead === y.lead && x.icon === y.icon && x.tone === y.tone && x.png === y.png && x.unseen === y.unseen && x.waiting === y.waiting;
+    return x.id === y.id && x.name === y.name && x.lead === y.lead && x.icon === y.icon && x.color === y.color && x.tone === y.tone && x.png === y.png && x.unseen === y.unseen && x.waiting === y.waiting;
   });
 
 /** What a desk's `agent.state` says. `fetchIcon` reads an upload over that desk's link, once per version. */
@@ -75,14 +119,18 @@ export function noteAgents(deskId: string, agents: readonly Agent[], fetchIcon?:
     name: a.name,
     lead: isLead(a),
     icon: a.look?.icon ?? DEFAULT_LOOK.icon,
+    // The lead keeps the Agent app's own accent (the owner, Nov 15); a desk-agent from before says no colour: grey.
+    color: isLead(a) ? 'indigo' : (a.look?.color ?? null),
     tone: a.look?.tone ?? DEFAULT_LOOK.tone,
     png: a.look?.icon === 'png' ? (a.look.png ?? null) : null,
-    // A request waiting (API.md section 18's `approvalsPending`) counts on the tile with the unseen replies (the S-14 spec, section 6).
-    unseen: (a.unseen ?? 0) + (a.approvalsPending ?? 0),
+    // A request waiting (API.md section 18's `approvalsPending`) counts on the tile with the unseen replies (the S-14 spec, section 6),
+    // and so does what a run the member didn't start did without asking, until it's seen (`autoUnseen`, draft ADR section 15).
+    unseen: (a.unseen ?? 0) + (a.approvalsPending ?? 0) + (a.autoUnseen ?? 0),
     waiting: a.approvalsPending ?? 0,
   }));
   const cur = useRosterStore.getState();
-  if (next.some((a) => !a.lead)) lookChunk();
+  // Only a library icon or an upload needs the look's chunk: the hat is the office's own drawing.
+  if (next.some((a) => !a.lead && !wearsHat(a.icon))) lookChunk();
   if (!same(cur.desks[deskId], next)) useRosterStore.setState({ desks: { ...cur.desks, [deskId]: next } });
   if (!fetchIcon) return;
   for (const a of next) if (a.png !== null) void loadMask(deskId, a.id, a.png, fetchIcon);
@@ -162,38 +210,44 @@ export function useRosterAgent(deskId: string, app: AppId): RosterAgent | null {
 export const agentAppName = (app: AppId, deskId?: string): string => rosterAgent(app, deskId)?.name ?? 'Agent';
 
 /**
- * What a tile's glyph is: a core app's own, or for an agent `look:<icon>:<tone>:<mask key>`. The sprite caches key on it, so a
- * new icon, tone or upload is a new bitmap and nothing else has to be told.
+ * What a tile's glyph is: a core app's own, or for an agent `look:<icon>:<color>:<tone>:<mask key>`. The sprite caches key on
+ * it, so a new icon, colour or upload is a new bitmap and nothing else has to be told.
  */
-export type GlyphId = CoreAppId | `look:${string}` | `dapp:${string}`;
+export type GlyphId = CoreAppId | 'todo:' | 'documents:' | `look:${string}` | `dapp:${string}`;
 
 export function glyphOf(deskId: string, app: AppId, state: RosterState = useRosterStore.getState()): GlyphId {
   // An installed app (ADR 0054): a first-party one's own glyph, or the generic app glyph.
   if (isDeskApp(app)) return `dapp:${host?.glyphFor(app.slice(4)) ?? ''}`;
+  // To-do's (a chunk of its own): blank, keyed `todo:`, until it's here, so the tile draws again when it is.
+  if (app === 'todo' && !state.todoReady) return todoGlyphChunk() ? 'todo' : 'todo:';
+  // Documents' the same way (`documents:` is the blank before).
+  if (app === 'documents' && !state.docsReady) return docsGlyphChunk() ? 'documents' : 'documents:';
   if (!isAgentApp(app)) return app;
-  // Until the drawing is here the tile is blank, and the key says so, so it draws again once it is.
+  const a = rosterAgent(app, deskId, state);
+  const look = a ?? { id: agentIdOf(app) ?? '', ...DEFAULT_LOOK, png: null as number | null };
+  // The hat (every agent's but a member's other pick) is the office's own 3D drawing: no chunk to wait for.
+  if (wearsHat(look.icon)) return `look:hat:${look.color ?? ''}:${look.tone}:`;
+  // A library icon or an upload: until its drawing is here the tile is blank, and the key says so, so it draws again once it is.
   if (!state.lookReady) {
     lookChunk();
     return 'look:';
   }
-  const a = rosterAgent(app, deskId, state);
-  const look = a ?? { id: agentIdOf(app) ?? '', ...DEFAULT_LOOK, png: null as number | null };
   const key = look.png !== null ? maskKey(deskId, look.id, look.png) : '';
   const ready = key && state.masks[key] ? key : '';
-  return `look:${look.icon}:${look.tone}:${ready}`;
+  return `look:${look.icon}:${look.color ?? ''}:${look.tone}:${ready}`;
 }
 
 export function useGlyph(deskId: string, app: AppId): GlyphId {
   return useRosterStore((s) => glyphOf(deskId, app, s));
 }
 
-/** A `look:` glyph's parts. */
-export function parseLook(glyph: string): { icon: string; tone: string; mask: { bitmap: ImageBitmap | null; url: string } | null } | null {
+/** A `look:` glyph's parts. `color` is '' for none (grey). */
+export function parseLook(glyph: string): { icon: string; color: string; tone: string; mask: { bitmap: ImageBitmap | null; url: string } | null } | null {
   if (!glyph.startsWith('look:')) return null;
-  if (glyph === 'look:') return { icon: '', tone: '', mask: null };
-  const [, icon = DEFAULT_LOOK.icon, tone = DEFAULT_LOOK.tone, ...rest] = glyph.split(':');
+  if (glyph === 'look:') return { icon: '', color: '', tone: '', mask: null };
+  const [, icon = DEFAULT_LOOK.icon, color = '', tone = DEFAULT_LOOK.tone, ...rest] = glyph.split(':');
   const key = rest.join(':');
-  return { icon, tone, mask: key ? (useRosterStore.getState().masks[key] ?? null) : null };
+  return { icon, color, tone, mask: key ? (useRosterStore.getState().masks[key] ?? null) : null };
 }
 
 /**

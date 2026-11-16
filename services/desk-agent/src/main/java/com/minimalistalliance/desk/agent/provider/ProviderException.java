@@ -27,20 +27,47 @@ public final class ProviderException extends Exception {
         /** No answer in time. */
         TIMEOUT,
         /** The run was stopped. */
-        CANCELLED
+        CANCELLED,
+        /**
+         * Desk Maia's allowance on Minimalist Alliance's AI service is used up ({@code 429 limit}): no call was made and
+         * nothing was spent. {@link #details} says which limit and when it resets.
+         */
+        LIMIT,
+        /** Too much to send at once ({@code 413 too_large}): the thread needs compacting first. */
+        TOO_LARGE,
+        /** The service refused this member or desk ({@code 403}): {@link #details} says why. */
+        FORBIDDEN
+    }
+
+    /**
+     * What a refusal said beyond its kind, every part optional and checked for its shape: a reason word, a limit's window
+     * ({@code day}, {@code week}, {@code month}, {@code memberTrial}), when it resets (ISO 8601 UTC) and a retry's wait.
+     */
+    public record Details(String reason, String window, String resetsAt, Long retryAfterSec) {
+        public static final Details NONE = new Details(null, null, null, null);
     }
 
     private final Kind kind;
     private final boolean mayHaveBilled;
+    private final Details details;
 
     public ProviderException(Kind kind, boolean mayHaveBilled) {
+        this(kind, mayHaveBilled, Details.NONE);
+    }
+
+    public ProviderException(Kind kind, boolean mayHaveBilled, Details details) {
         super(kind.name().toLowerCase(java.util.Locale.ROOT), null, false, false);
         this.kind = kind;
         this.mayHaveBilled = mayHaveBilled;
+        this.details = details == null ? Details.NONE : details;
     }
 
     public Kind kind() {
         return kind;
+    }
+
+    public Details details() {
+        return details;
     }
 
     public boolean mayHaveBilled() {

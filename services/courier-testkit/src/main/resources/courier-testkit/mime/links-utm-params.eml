@@ -1,0 +1,18 @@
+From: Shop <news@shop.example>
+To: me@desk.example
+Date: Fri, 13 Nov 2026 10:00:00 +0000
+Subject: Waterproof boots sale
+Message-ID: <links-utm-params@corpus.example>
+MIME-Version: 1.0
+X-Corpus-Note: links carrying utm_*, fbclid, gclid, mc_eid and other tracking parameters
+Content-Type: multipart/alternative; boundary="utm-1"
+
+--utm-1
+Content-Type: text/plain; charset=utf-8
+
+Waterproof boots are half price: https://shop.example.com/sale?utm_source=newsletter&utm_medium=email
+--utm-1
+Content-Type: text/html; charset=utf-8
+
+<p>Waterproof boots are half price.</p><a href="https://shop.example.com/sale?utm_source=newsletter&amp;utm_medium=email&amp;utm_campaign=autumn&amp;utm_term=boots&amp;utm_content=hero">Shop now</a> <a href="https://shop.example.com/boots?fbclid=IwAR0abc123">Boots</a> <a href="https://shop.example.com/coats?gclid=Cj0KCQiA&amp;mc_eid=4f2e1d&amp;mc_cid=99">Coats</a> <a href="https://shop.example.com/hats?_hsenc=p2ANqtz&amp;mkt_tok=eyJpIjo&amp;ref=mail">Hats</a>
+--utm-1--

@@ -829,7 +829,7 @@
   margin: 0 16px 10px;
   padding: 10px 12px 10px 14px;
   border-radius: 12px;
-  border: 1px solid var(--ma-status-warn);
+  border: 1px solid color-mix(in oklab, var(--ma-status-warn) 70%, var(--ma-surface-window));
   background: color-mix(in srgb, var(--ma-status-warn) 12%, var(--ma-surface-window));
   font-size: 13px;
   line-height: 18px;
@@ -1576,7 +1576,7 @@
 }
 .ag-proposal.foreign {
   border-style: dashed;
-  border-color: var(--ma-status-warn);
+  border-color: color-mix(in oklab, var(--ma-status-warn) 70%, var(--ma-surface-window));
 }
 .ag-proposal-stamp {
   margin: 2px 0 0;
@@ -1606,7 +1606,7 @@
 }
 .ag-lead-purpose {
   padding: 8px 10px;
-  border: 1px solid var(--ma-status-warn);
+  border: 1px solid color-mix(in oklab, var(--ma-status-warn) 70%, var(--ma-surface-window));
   border-radius: 10px;
 }
 .ag-diff del {
@@ -1795,10 +1795,13 @@
   border-radius: 14px;
   background: var(--ma-surface-window);
 }
-/* Send outside and Spend: a 4 px edge in warn, on a waiting card only (taste call 1, option B). */
+/* Send outside and Spend: a 4 px edge in warn, on a waiting card only (taste call 1, option B). Every warn edge and outline
+   (this edge, the banner's, a foreign proposal's, a lead's purpose) is warn 70 % over the window, a step softer than the dot
+   and the words (the Product Designer, Nov 14: Zen's and Dark's near-white warn was the brightest line in the window); still
+   3:1 or more on the window in every theme (Light #737883 4.4:1, Zen #ACB1BA 4.4:1, Dark #94989D 5.0:1). */
 .ag-approval[data-state="pending"]:is([data-level="send"], [data-level="spend"]) {
   padding-left: 20px;
-  box-shadow: inset 4px 0 0 var(--ma-status-warn);
+  box-shadow: inset 4px 0 0 color-mix(in oklab, var(--ma-status-warn) 70%, var(--ma-surface-window));
 }
 .ag-approval-top {
   display: flex;
@@ -2613,6 +2616,128 @@ h4.ag-setup-title {
   color: var(--ma-text-tertiary);
 }
 
+/* ------------------------------------------------------------ the setup screen and "What it can use" (draft ADR section 16)
+   One screen before an agent's first run, and the same rows in its settings. Calm and plain: neutral surfaces and the app's own
+   accent for switches that are on; no status colours, no warm or green tints. Every colour is a --ma-* token. */
+.ag-access-card {
+  max-width: 560px;
+}
+.ag-access {
+  display: grid;
+  gap: 18px;
+}
+.ag-access.settings {
+  gap: 14px;
+}
+.ag-access-head {
+  display: grid;
+  gap: 8px;
+}
+.ag-access-head h3 {
+  font-size: 18px;
+  line-height: 24px;
+  font-weight: 600;
+}
+.ag-access-reason {
+  padding: 10px 12px;
+  border: 1px solid var(--ma-border);
+  border-radius: 10px;
+  background: var(--ma-surface-fill);
+  color: var(--ma-text-primary);
+  font-size: 13px;
+  line-height: 19px;
+}
+.ag-access-section {
+  display: grid;
+  gap: 2px;
+  margin: 0;
+  padding: 14px 0 0;
+  border: 0;
+  border-top: 1px solid var(--ma-border-hairline);
+  min-inline-size: 0;
+}
+.ag-access.settings .ag-access-section:first-of-type {
+  padding-top: 0;
+  border-top: 0;
+}
+.ag-access-section legend {
+  float: left;
+  width: 100%;
+  /* Flush with the lead line under it and the screen's title, as the app's other section headings are. */
+  padding: 0;
+  margin-bottom: 4px;
+  font-size: 11.5px;
+  line-height: 16px;
+  font-weight: 600;
+  letter-spacing: 0.06em;
+  text-transform: uppercase;
+  color: var(--ma-text-tertiary);
+}
+.ag-access-section > p {
+  clear: both;
+  margin: 0 0 4px;
+}
+.ag-access-section .ag-switch-row {
+  align-items: flex-start;
+}
+.ag-access-section .ag-switch {
+  margin-top: 1px;
+}
+.ag-access-section .ag-switch-row input:disabled + .ag-switch {
+  opacity: 0.5;
+}
+.ag-access-section .ag-switch-row:has(input:disabled) {
+  cursor: default;
+}
+.ag-access-place,
+.ag-access-grant {
+  display: flex;
+  align-items: center;
+  gap: 10px;
+  margin: 0 0 8px 6px;
+}
+.ag-access-place select {
+  max-width: 100%;
+  min-height: 32px;
+  padding: 4px 8px;
+  border: 1px solid var(--ma-border-strong);
+  border-radius: 8px;
+  background: var(--ma-surface-window);
+  color: var(--ma-text-primary);
+  font: inherit;
+  font-size: 13px;
+}
+.ag-access-place select:focus-visible {
+  outline: 2px solid var(--ma-focus-ring);
+  outline-offset: 2px;
+}
+.ag-access-always {
+  margin: 6px 0 0;
+  padding: 10px 12px;
+  border-radius: 10px;
+  background: var(--ma-surface-fill);
+  color: var(--ma-text-secondary);
+  line-height: 18px;
+}
+.ag-access-actions {
+  gap: 12px;
+}
+@media (pointer: coarse) {
+  .ag-access-place select {
+    min-height: 44px;
+  }
+  .ag-access-actions .ag-btn,
+  .ag-access-actions .ag-text-btn,
+  .ag-access-grant .ag-text-btn {
+    min-height: 44px;
+  }
+}
+/* The thread's line while an agent waits for its screen, after Back: neutral, as it's the member's choice, not a warning. */
+.ag-banner.calm {
+  border-color: var(--ma-border);
+  background: var(--ma-surface-fill);
+}
+
 /* ------------------------------------------------------------ the Free and Chats only tags */
 .ag-free-tag {
   display: inline-flex;
@@ -2681,4 +2806,309 @@ h4.ag-setup-title {
   .ag-free-wait .ag-text-btn {
     min-height: 44px;
   }
+}
+
+/* ---- A reply's plan, taint notice and run summary (deskd API.md section 18: plan, untrusted, tools, egressCount). Neutral
+   tokens only: a state reads in its mark and its word, never in colour alone. */
+.ag-plan {
+  align-self: stretch;
+  margin: 4px 4px 0;
+  padding: 6px 10px;
+  list-style: none;
+  border: 1px solid var(--ma-border);
+  border-radius: 10px;
+  font-size: 13px;
+  line-height: 20px;
+  color: var(--ma-text-primary);
+}
+.ag-plan-step {
+  display: flex;
+  gap: 8px;
+  align-items: baseline;
+}
+.ag-plan-mark {
+  flex: none;
+  width: 14px;
+  text-align: center;
+  color: var(--ma-text-secondary);
+}
+.ag-plan-step[data-state='done'] .ag-plan-text,
+.ag-plan-step[data-state='skipped'] .ag-plan-text {
+  color: var(--ma-text-secondary);
+}
+.ag-plan-step[data-state='skipped'] .ag-plan-text {
+  text-decoration: line-through;
+}
+.ag-plan-step[data-state='doing'] .ag-plan-text {
+  font-weight: 600;
+}
+.ag-plan-text {
+  overflow-wrap: anywhere;
+}
+.ag-taint-note {
+  display: flex;
+  gap: 6px;
+  align-items: flex-start;
+  align-self: flex-start;
+  margin: 4px 4px 0;
+  padding: 4px 8px;
+  border: 1px solid var(--ma-border);
+  border-radius: 8px;
+  font-size: 12px;
+  line-height: 16px;
+  color: var(--ma-text-secondary);
+}
+.ag-taint-note svg {
+  flex: none;
+  margin-top: 1px;
+}
+.ag-run-summary {
+  margin: 2px 4px 0;
+  font-size: 12px;
+  line-height: 16px;
+  color: var(--ma-text-secondary);
+  font-variant-numeric: tabular-nums;
+}
+.ag-run-part {
+  white-space: nowrap;
+}
+
+/* ------------------------------------------------------------ messages between the member's desks (W6)
+   The offer card in the desk team's window, "Answers your other desks" on the setup screen and in settings, and the thread's rows
+   from another desk. Calm, as the setup screen: neutral surfaces, the app's accent only on Allow; no status colours, no warm or
+   green tints. Every colour is a --ma-* token. */
+.ag-offers {
+  display: grid;
+  gap: 10px;
+  margin: 12px 16px 0;
+}
+.ag-offer {
+  display: grid;
+  gap: 10px;
+  padding: 14px 16px;
+  border: 1px solid var(--ma-border);
+  border-radius: 12px;
+  background: var(--ma-surface-fill);
+  font-size: 13px;
+  line-height: 19px;
+}
+.ag-offer-lead {
+  margin: 0;
+  font-weight: 600;
+  color: var(--ma-text-primary);
+}
+.ag-offer-trust {
+  margin: 0;
+  color: var(--ma-text-secondary);
+}
+.ag-offer-pick {
+  display: flex;
+  flex-wrap: wrap;
+  align-items: center;
+  gap: 8px 10px;
+  color: var(--ma-text-primary);
+}
+.ag-offer-pick select {
+  max-width: 100%;
+  min-height: 32px;
+  padding: 4px 8px;
+  border: 1px solid var(--ma-border-strong);
+  border-radius: 8px;
+  background: var(--ma-surface-window);
+  color: var(--ma-text-primary);
+  font: inherit;
+  font-size: 13px;
+}
+.ag-offer-pick select:focus-visible {
+  outline: 2px solid var(--ma-focus-ring);
+  outline-offset: 2px;
+}
+.ag-offer-actions {
+  gap: 12px;
+}
+.ag-answer-row {
+  display: flex;
+  align-items: flex-start;
+  gap: 10px;
+  margin: 2px 0 8px;
+}
+.ag-answer-text {
+  display: grid;
+  flex: 1;
+  gap: 2px;
+  min-width: 0;
+  font-size: 13px;
+  line-height: 18px;
+  color: var(--ma-text-primary);
+  overflow-wrap: anywhere;
+}
+.ag-answer-text small {
+  font-size: 12px;
+  line-height: 16px;
+  color: var(--ma-text-secondary);
+}
+.ag-answer-actions {
+  display: flex;
+  flex: none;
+  align-items: center;
+  gap: 8px;
+}
+/* `ag-` prefixed: the office's own `.desk-notice` (its calm card) shares the one stylesheet. */
+.ag-msg-desk .ag-bubble {
+  overflow-wrap: anywhere;
+}
+.ag-desk-notice {
+  display: flex;
+  gap: 6px;
+  align-items: flex-start;
+  margin: 0;
+  padding: 8px 10px;
+  border: 1px solid var(--ma-border);
+  border-radius: 10px;
+  background: var(--ma-surface-fill);
+  font-size: 13px;
+  line-height: 18px;
+  color: var(--ma-text-secondary);
+}
+.ag-desk-notice svg {
+  flex: none;
+  margin-top: 2px;
+}
+@media (pointer: coarse) {
+  .ag-offer-pick select {
+    min-height: 44px;
+  }
+  .ag-offer-actions .ag-btn,
+  .ag-offer-actions .ag-text-btn,
+  .ag-answer-row .ag-btn,
+  .ag-answer-row .ag-text-btn {
+    min-height: 44px;
+  }
+}
+@media (max-width: 480px) {
+  .ag-answer-offer {
+    flex-wrap: wrap;
+  }
+  .ag-answer-offer .ag-answer-actions {
+    margin-left: auto;
+  }
+}
+/* ------------------------------------------------------------ done without asking (API.md section 18, draft ADR section 15) */
+/* A chip's "Done without asking · Undo", and the line under a reply. Neutral greys and the link colour only. */
+.ag-tool-chip[data-auto] {
+  flex-wrap: wrap;
+  row-gap: 0;
+  min-width: 0;
+  padding: 3px 10px 1px 8px;
+  border-radius: 10px;
+}
+.ag-tool-auto {
+  flex: 1 0 100%;
+  display: flex;
+  align-items: center;
+  gap: 4px;
+  /* Under the tool's words, past its icon. */
+  padding-left: 20px;
+  white-space: nowrap;
+  color: var(--ma-text-secondary);
+}
+.ag-chip-btn,
+.ag-line-btn {
+  display: inline-flex;
+  align-items: center;
+  justify-content: center;
+  min-width: 24px;
+  min-height: 24px;
+  margin: 0 -4px;
+  padding: 0 6px;
+  border: 0;
+  border-radius: 6px;
+  background: none;
+  color: var(--ma-text-link);
+  font: inherit;
+  font-weight: 600;
+  white-space: nowrap;
+}
+.ag-chip-btn:hover:not(:disabled),
+.ag-line-btn:hover:not(:disabled) {
+  background: var(--ma-accent-subtle);
+}
+.ag-line-btn[aria-disabled='true'] {
+  color: var(--ma-text-secondary);
+}
+.ag-tool-auto-state,
+.ag-auto-state {
+  font-weight: 500;
+  color: var(--ma-text-primary);
+}
+.ag-auto {
+  min-width: 0;
+  max-width: 100%;
+  margin: 2px 4px 0;
+  font-size: 12px;
+  line-height: 24px;
+  color: var(--ma-text-secondary);
+}
+.ag-auto-line {
+  overflow-wrap: anywhere;
+}
+.ag-auto-said {
+  line-height: 16px;
+  color: var(--ma-text-primary);
+}
+.ag-auto-rows {
+  display: grid;
+  /* A long path or title is cut in its row, never widening the list past the thread. */
+  grid-template-columns: minmax(0, 1fr);
+  gap: 2px;
+  margin: 4px 0 0;
+  padding: 4px 10px;
+  border: 1px solid var(--ma-border);
+  border-radius: 8px;
+  list-style: none;
+}
+.ag-auto-rows[hidden] {
+  display: none;
+}
+.ag-auto-row {
+  display: flex;
+  flex-wrap: wrap;
+  align-items: center;
+  gap: 0 8px;
+  min-height: 28px;
+}
+.ag-auto-what {
+  display: flex;
+  flex: 1 1 12em;
+  gap: 6px;
+  min-width: 0;
+}
+.ag-auto-target {
+  min-width: 0;
+  overflow: hidden;
+  text-overflow: ellipsis;
+  white-space: nowrap;
+}
+.ag-auto-why {
+  flex: 1 0 100%;
+  line-height: 16px;
+  padding-bottom: 4px;
+}
+.ag-approval-auto {
+  display: flex;
+  flex-direction: column;
+  align-items: flex-start;
+  gap: 4px;
+}
+.ag-approval-auto .ag-btn {
+  height: auto;
+  min-height: 32px;
+  padding: 6px 12px;
+  white-space: normal;
+  text-align: left;
+}
+.ag-approval-auto-note {
+  font-size: 12px;
+  line-height: 16px;
+  color: var(--ma-text-secondary);
 }

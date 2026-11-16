@@ -1,0 +1,19 @@
+From: Bob <bob@example.org>
+To: me@desk.example
+Subject: Specs
+Date: Thu, 5 Nov 2026 08:00:00 +0000
+MIME-Version: 1.0
+X-MS-TNEF-Correlator: <0001@example.org>
+Content-Type: multipart/mixed; boundary="_002_"
+
+--_002_
+Content-Type: text/plain; charset="us-ascii"
+
+See the winmail file.
+--_002_
+Content-Type: application/ms-tnef; name="winmail.dat"
+Content-Disposition: attachment; filename="winmail.dat"
+Content-Transfer-Encoding: base64
+
+eJ8+IgEAAQ==
+--_002_--

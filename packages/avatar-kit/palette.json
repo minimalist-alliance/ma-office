@@ -1,5 +1,5 @@
 {
- "_about": "Kit 1 palette. Index order is the recipe contract (0-based) and never changes; a later kit may only append. Derived from source/palette.json. Skin is swatches only, named by number. Mouth, nose and brow colors are worked out from the skin by the face rule in src/color.mjs.",
+ "_about": "Kit 1 palette. Index order is the recipe contract (0-based): recipes store indexes, never ids, so a slot never moves and a later kit may only append. Derived from source/palette.json. Skin is swatches only, named by number. Mouth, nose and brow colors are worked out from the skin by the face rule in src/color.mjs. Backgrounds are all cool (the owner's no green, brown or warm tint rule): 1.1.0 recoloured slots 1, 2, 3, 7 and 8 in place (green, amber, rose, pine, ochre became mist, sky, periwinkle, blue-grey, denim), so a stored recipe keeps its slot and takes the new colour.",
  "skin": [
   {
    "id": "skin-1",
@@ -230,22 +230,22 @@
    "bottom": "#D1DDEE"
   },
   {
-   "id": "green",
-   "name": "Green",
-   "top": "#E1EDE6",
-   "bottom": "#CFE2D7"
+   "id": "mist",
+   "name": "Mist",
+   "top": "#CFD2D5",
+   "bottom": "#BDC1C5"
   },
   {
-   "id": "amber",
-   "name": "Amber",
-   "top": "#F6ECDB",
-   "bottom": "#F1E1C6"
+   "id": "sky",
+   "name": "Sky",
+   "top": "#CDE5F3",
+   "bottom": "#B5D7ED"
   },
   {
-   "id": "rose",
-   "name": "Rose",
-   "top": "#F5E5E7",
-   "bottom": "#F0D5D8"
+   "id": "periwinkle",
+   "name": "Periwinkle",
+   "top": "#C7C9E6",
+   "bottom": "#B3B6E0"
   },
   {
    "id": "violet",
@@ -266,16 +266,16 @@
    "bottom": "#B5C8E2"
   },
   {
-   "id": "pine",
-   "name": "Pine",
-   "top": "#C8DED3",
-   "bottom": "#B1CFC1"
+   "id": "blue-grey",
+   "name": "Blue grey",
+   "top": "#A3A9B0",
+   "bottom": "#8D97A0"
   },
   {
-   "id": "ochre",
-   "name": "Ochre",
-   "top": "#EDD7AB",
-   "bottom": "#E3C586"
+   "id": "denim",
+   "name": "Denim",
+   "top": "#A3BAD4",
+   "bottom": "#86A8CE"
   },
   {
    "id": "deep-slate",

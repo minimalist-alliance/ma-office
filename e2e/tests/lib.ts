@@ -198,10 +198,26 @@ export function isRttCapLog(text: string, url: string): boolean {
   }
 }
 
-export interface Watch { errors: string[]; desks: { deskId: string; name: string; state?: string }[]; connectStatuses: number[] }
+/** The office tour's own chunk (web/src/tour/door.ts, ADR 0056): fetched only when the tour is to start by itself, or the logo's menu opens. */
+const TOUR_CHUNK = /\/TourLayer-[^/]*\.js$/;
+
+export interface Watch {
+  errors: string[];
+  desks: { deskId: string; name: string; state?: string }[];
+  connectStatuses: number[];
+  /** When the office's layout document was first read (GET /v1/me/desk-layout answered), 0 before. */
+  layoutReadAt: number;
+  /** Whether the office tour's chunk was asked for. */
+  tourAsked: boolean;
+}
 /** Console + CSP errors, the desk list the API returned, and connect response statuses. Bodies and URLs with queries are never kept. */
 export function watch(page: Page): Watch {
-  const w: Watch = { errors: [], desks: [], connectStatuses: [] };
+  const w: Watch = { errors: [], desks: [], connectStatuses: [], layoutReadAt: 0, tourAsked: false };
+  page.on('request', (r) => {
+    try {
+      if (TOUR_CHUNK.test(new URL(r.url()).pathname)) w.tourAsked = true;
+    } catch { /* not a URL */ }
+  });
   page.on('console', (m) => { if (m.type() === 'error' && !isRttCapLog(m.text(), m.location().url)) w.errors.push(m.text().replace(/[?#]\S*/g, '')); });
   page.on('pageerror', (e) => w.errors.push(String(e).slice(0, 300)));
   page.on('response', async (r) => {
@@ -210,6 +226,7 @@ export function watch(page: Page): Watch {
       try { const j = await r.json(); if (Array.isArray(j.desks)) w.desks = j.desks.map((d: { deskId: string; name: string; state?: string }) => ({ deskId: d.deskId, name: d.name, state: d.state })); } catch { /* not json */ }
     }
     if (u.origin === API && /\/connect$/.test(u.pathname)) w.connectStatuses.push(r.status());
+    if (u.origin === API && u.pathname === '/v1/me/desk-layout' && r.request().method() === 'GET' && !w.layoutReadAt) w.layoutReadAt = Date.now();
   });
   return w;
 }
@@ -230,7 +247,34 @@ export async function focusTestDesk(page: Page, w: Watch): Promise<string> {
   const d = w.desks.find((x) => x.deskId === DESK_ID);
   if (!d) throw new Error(`desk ${DESK_ID} is not in desk-1's list (${w.desks.length} desks)`);
   await page.locator('.ma-shell').waitFor({ timeout: 30_000 });
+  await closeTour(page, w);
   return d.name;
+}
+
+/**
+ * The office tour (ADR 0056) starts by itself on a member's first visit, and again on each later one until Done or "Don't
+ * show this again". desk-1 is a shared account, so whether it starts depends on what earlier runs left, and while it shows
+ * the office is inert and the keyboard is the tour's. So this ends it as a member would, with its own close button, which
+ * writes nothing: desk-1's setting stays as it was found. Any console or CSP error it caused stays in `w.errors`.
+ *
+ * The office decides once its desk list, first paint and layout document are in, and asks for the tour's chunk at once if
+ * the tour is to start; no ask within 5 s of the document means no tour in this page load. One that never finds 800 ms of
+ * quiet gives up by itself after 30 s. Returns whether it was closed.
+ */
+export async function closeTour(page: Page, w: Watch): Promise<boolean> {
+  const tour = page.getByTestId('tour');
+  const t0 = Date.now();
+  while (Date.now() - t0 < 60_000) {
+    if (await tour.isVisible().catch(() => false)) {
+      await page.getByTestId('tour-close').click();
+      await expect(tour, 'the office tour closed').toHaveCount(0, { timeout: 5_000 });
+      console.log('[e2e] the office tour started by itself: closed it with its close button');
+      return true;
+    }
+    if (w.layoutReadAt && !w.tourAsked && Date.now() - w.layoutReadAt > 5_000) return false;
+    await sleep(250);
+  }
+  return false;
 }
 
 /**

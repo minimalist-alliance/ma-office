@@ -1,0 +1,10 @@
+From: =?utf-8?Q?Billing_=3Cbilling=40bank=2Eexample=3E?= <spoof@evil.example>
+To: me@desk.example
+Date: Fri, 13 Nov 2026 10:00:00 +0000
+Subject: Account notice
+Message-ID: <ew-address-spoof@corpus.example>
+MIME-Version: 1.0
+X-Corpus-Note: a display name whose encoded word decodes to an address; the real sender is the angle address
+Content-Type: text/plain; charset=utf-8
+
+Please review your account.

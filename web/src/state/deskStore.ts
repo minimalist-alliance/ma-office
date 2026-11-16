@@ -46,11 +46,17 @@ export interface DeskInfo {
   /** A desk a step down ends at renewal (not built by Platform yet): its menu says "Stops on {date}". */
   endsAt?: string;
   /**
-   * A Work desk a step down stopped (contract `notInPlan`, or the spec's `retained` with `export` only): its tiles dim and
-   * opening it says so (`chrome/EndedDeskPanel.tsx`). `stoppedAt` is when it stopped, `retainedUntil` when its snapshot goes
+   * A Work desk a step down stopped, or a Personal desk that can't be the member's {Free} desk (contract `notInPlan`, or the
+   * spec's `retained` with `export` only): its tiles dim and opening it says so (`chrome/EndedDeskPanel.tsx`). `stoppedAt` is when it stopped, `retainedUntil` when its snapshot goes
    * (null where the desk is kept until the member moves back up).
    */
   ended?: { stoppedAt: string | null; retainedUntil: string | null };
+  /**
+   * Any kind kept for download only (contract `notInPlan`, or `retained` with `export` alone), such as a Personal desk that
+   * was an instance of its own when its member moved to Free (ma-platform tiers.md 11.8): the "You're on {Free} now" card's
+   * desk row reads it (`free/freeNow.tsx`).
+   */
+  notInPlan?: true;
 }
 
 export interface DeskBoot {
@@ -138,11 +144,16 @@ function vmOf(d: PlatformDesk): VmState {
 
 const validTime = (v: unknown): string | null => (typeof v === 'string' && v && !Number.isNaN(Date.parse(v)) ? v : null);
 
-/** A Work desk the plan no longer holds: `notInPlan`, or a retained one that offers `export` alone. Never a guild's or a free desk's. */
+/** Kept for download only: `notInPlan`, or a retained desk that offers `export` alone. */
+const keptOf = (d: PlatformDesk): boolean =>
+  d.notInPlan === true || (d.state === 'retained' && Array.isArray(d.allowedActions) && d.allowedActions.length === 1 && d.allowedActions[0] === 'export');
+
+/**
+ * A Work or Personal desk the plan no longer holds (`keptOf`): Work after a step down, Personal when it can't be the member's
+ * {Free} desk (Terms 6, "When a paid membership ends"). Never a guild's or any other.
+ */
 function endedOf(d: PlatformDesk): DeskInfo['ended'] | null {
-  if (d.kind !== 'work') return null;
-  const exportOnly = d.state === 'retained' && Array.isArray(d.allowedActions) && d.allowedActions.length === 1 && d.allowedActions[0] === 'export';
-  if (d.notInPlan !== true && !exportOnly) return null;
+  if ((d.kind !== 'work' && d.kind !== 'personal') || !keptOf(d)) return null;
   return { stoppedAt: validTime(d.endsAt) ?? validTime(d.stateChangedAt), retainedUntil: validTime(d.retainedUntil) };
 }
 
@@ -171,6 +182,7 @@ export function toDeskInfo(d: PlatformDesk): DeskInfo {
     ...(Array.isArray(d.allowedActions) && d.allowedActions.includes('rename') ? { canRename: true } : {}),
     ...(typeof d.endsAt === 'string' && d.endsAt && !ended ? { endsAt: d.endsAt } : {}),
     ...(ended ? { ended } : {}),
+    ...(d.kind !== 'guild' && keptOf(d) ? { notInPlan: true as const } : {}),
   };
 }
 

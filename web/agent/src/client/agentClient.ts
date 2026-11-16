@@ -12,7 +12,11 @@ import type {
   AttachLimits,
   AgentLink,
   AgentPatch,
+  AccessChange,
+  AgentAccess,
   Approval,
+  DeskHalves,
+  DeskIncomingHalf,
   AuditPage,
   ConversationEvent,
   DeskErrorCode,
@@ -52,7 +56,7 @@ export interface AgentClient {
    * Topic `agent.state`: every change to any agent, as the whole list, smaller than `agent.get`'s (no purpose, workspace or
    * rules' text), with the caps where the desk sends them (task 49). Returns an unsubscribe.
    */
-  watchAgents(onAgents: (agents: Agent[], caps: AgentCaps | null) => void): () => void;
+  watchAgents(onAgents: (agents: Agent[], caps: AgentCaps | null, desk?: DeskState) => void): () => void;
   /** `agent.get`: one agent, whole. */
   getAgent(agentId: string): Promise<Agent>;
   /** `agent.create`: a staff agent. `precondition_failed`, `agent_cap` at the desk's cap. */
@@ -153,6 +157,12 @@ export interface AgentClient {
    */
   decideApproval(approvalId: string, decision: { approve: boolean; sha256: string; note?: string }, m: Mutation): Promise<Approval>;
   /**
+   * `agent.approval.undo`: takes back one call done without asking (API.md section 18, "Done without asking"). Answers the
+   * approval with `undoneAt` set. `conflict` with `reason` `changed` (and, for a Notebook edit, `versionId`: the page from before
+   * it), `undone`, `not_done` or `trashed` changed nothing. Undo all is one call per row.
+   */
+  undoApproval(approvalId: string, m: Mutation): Promise<Approval>;
+  /**
    * Topic `agent.tools`: every tool call running on the desk now, a snapshot first. `onAbsent` is a desk that doesn't serve the
    * topic (every desk today): nothing is running as far as this app can tell. Returns an unsubscribe.
    */
@@ -165,6 +175,38 @@ export interface AgentClient {
   deleteMemory(agentId: string, memoryId: string, m: Mutation): Promise<void>;
   /** `agent.memory.clear`: every line, and the thread's summary. */
   clearMemories(agentId: string, m: Mutation): Promise<{ deleted: number }>;
+
+  // ----- the setup screen and its settings (draft ADR "the Agent's tools and approvals", section 16)
+
+  /** `agent.access.get`: what the agent may use, and whether its screen has been saved. */
+  getAccess(agentId: string): Promise<AgentAccess>;
+  /**
+   * `agent.access.set`: the setup screen's Save (every app and switch) or a settings change (only what changed). Needs a session
+   * that may act; nothing a proposal, a timer or the model sends can reach it.
+   */
+  setAccess(agentId: string, change: AccessChange, m: Mutation): Promise<AgentAccess>;
+  /**
+   * `agent.desks.revoke`: stops one grant to or from another desk at once, a send half or an answer half. Answers the agent's
+   * access after.
+   */
+  revokeDeskGrant(grantId: string, m: Mutation): Promise<{ agentId: string; access: AgentAccess }>;
+
+  // ----- messages between the member's desks (W6; deskd API.md section 18). The office carries the envelopes; the app only
+  // answers offers and shows what came.
+
+  /** `agent.desks.list`: other desks' offers waiting here (`offered` or `declined`), and this desk's answer halves. */
+  listDeskHalves(): Promise<DeskHalves>;
+  /**
+   * `agent.desks.answer`: Allow, with the agent here that answers (never a guild member's), or Not now (`allow: false`), which
+   * leaves the offer `declined` and still listed, and sends nothing. Answers the half after.
+   */
+  answerDeskOffer(grantId: string, answer: { allow: true; agentId: string } | { allow: false }, m: Mutation): Promise<DeskIncomingHalf>;
+}
+
+/** What `agent.state` says of the desk itself, beside its agents (W6): how many offers from other desks wait here. */
+export interface DeskState {
+  /** Null from a desk before messages between desks. */
+  deskOffers: number | null;
 }
 
 /** An `ERR` from the desk, kept to what the UI branches on. `message` is for logs, never shown. */
@@ -181,10 +223,12 @@ export class AgentError extends Error {
   readonly scope: LimitScope | null;
   /** deskd's `details.mayHaveApplied`. */
   readonly mayHaveApplied: boolean;
+  /** An undo refused `changed` on a Notebook edit: the page's version from before the edit (`details.versionId`). */
+  readonly versionId: string | null;
 
   constructor(
     code: DeskErrorCode,
-    opts: { reason?: AgentErrorReason | null; detail?: string | null; file?: string | null; limit?: number | null; scope?: LimitScope | null; mayHaveApplied?: boolean } = {},
+    opts: { reason?: AgentErrorReason | null; detail?: string | null; file?: string | null; limit?: number | null; scope?: LimitScope | null; mayHaveApplied?: boolean; versionId?: string | null } = {},
   ) {
     super(opts.reason ? `${code}: ${opts.reason}` : code);
     this.name = 'AgentError';
@@ -195,6 +239,7 @@ export class AgentError extends Error {
     this.limit = opts.limit ?? null;
     this.scope = opts.scope ?? null;
     this.mayHaveApplied = opts.mayHaveApplied ?? false;
+    this.versionId = opts.versionId ?? null;
   }
 }
 

@@ -1,0 +1,10 @@
+From: "Accounts, Billing" (billing desk) <Billing@Example.COM>
+To: me@desk.example
+Date: Fri, 13 Nov 2026 10:00:00 +0000
+Subject: Invoice 2211
+Message-ID: <from-quoted-comma-comment@corpus.example>
+MIME-Version: 1.0
+X-Corpus-Note: a quoted display name with a comma, a comment, and a mixed-case address
+Content-Type: text/plain; charset=utf-8
+
+Invoice 2211 is due on the first.

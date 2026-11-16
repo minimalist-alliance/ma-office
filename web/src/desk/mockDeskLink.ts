@@ -3,7 +3,7 @@ import { api, ApiError } from '../platform/api';
 import { THEMES } from '../theme/tokens';
 import { accountFromQuery, capsFromQuery, type FixtureName } from '../../agent/src/mock/fixtures';
 import { useDeskStore } from '../state/deskStore';
-import { ATTENTION_DEADLINE_MS, AttentionSignal } from './attention';
+import { ATTENTION_DEADLINE_MS, AttentionSignal } from './rtc/attentionSignal';
 import { MockAgentDesk, type MockAgentControl } from './mockDeskAgent';
 import { answerData, MockBulk, newDataControl, type MockDataControl } from './mockDeskData';
 import { cursorCss, InputEncoder } from './rtc/input';
@@ -15,13 +15,22 @@ import type { MockCollabServer, MockNotebookControl } from './mockNotebook';
 import { MockSimpleDesk, type MockSimpleControl } from './mockSimpleView';
 import { isRefusal, type GuildAccess } from '../guild/access';
 import { answerApps, appsControl, subscribeApps, subscribeAppTopic, type MockAppsControl } from './mockDeskApps';
+import { mockTodo, todoControl } from './mockDeskTodo';
+import { courierControl, mockCourier } from './mockDeskCourier';
+import { docsControl, mockDocs } from './mockDeskDocs';
 import { answerGuild, guildCaller, guildControl, guildSessionMember, MockCommonsChannel, seedGuildAgent, seedGuildDesk, type GuildSessionMember, type MockGuildControl } from './mockGuild';
 
 const SAMPLE: Record<string, AppSummary> = {
-  chat: { badge: 4, widget: { title: '#general', text: 'Sam: the draft is ready for a look', foot: '3 unread channels' } },
+  courier: { badge: 4, widget: { title: '#general', text: 'Sam: the draft is ready for a look', foot: '3 unread channels' } },
   notebook: { widget: { title: 'Trip notes', text: 'Book the ferry before Friday. Packing list in the second tab.', foot: 'Today 09:12' } },
   browser: { widget: { title: 'Mock page title', text: 'example.org', foot: 'Normal mode' } },
   agent: { badge: 1, marks: ['C'], widget: { title: 'Manager', text: 'Waiting for your approval', foot: 'Today: $0.42 of $5' } },
+};
+
+const withoutWidget = (s: AppSummary): AppSummary => {
+  const copy = { ...s };
+  delete copy.widget;
+  return copy;
 };
 
 /** What a dev or a `shell` test can steer and read, as `window.__maDeskMock`. */
@@ -110,6 +119,11 @@ export interface MockDeskControl {
   wakeStepMs: number;
   /** Methods whose answer waits for `releaseHeld`. */
   hold: Record<string, boolean>;
+  /**
+   * Methods whose answer is made at once and handed over only at `releaseHeld`: a reply that events overtake, as the desk's
+   * channels aren't ordered against each other (API.md section 5). The answer is what the desk had when it was asked.
+   */
+  holdAnswer: Record<string, boolean>;
   releaseHeld(): void;
   /** The export's side: the desk's files, every `data.read` and CREDIT, and a session to drop partway. */
   data: MockDataControl;
@@ -128,6 +142,12 @@ export interface MockDeskControl {
   simple: MockSimpleControl;
   /** The Files app's side (`mockDeskFiles.ts`): each desk's tree and its knobs. */
   files: Promise<typeof import('./mockDeskFiles').filesControl>;
+  /** To-do's side (`mockDeskTodo.ts`, deskd API.md section 22): each desk's store, seeded on first use (`d-personal`, `d-work` as the pick sheet's). */
+  todo: typeof todoControl;
+  /** Courier's side (`mockDeskCourier.ts`, deskd API.md section 21): each desk's store, seeded on first use (`d-personal` with the full sample). */
+  courier: typeof courierControl;
+  /** Documents' side (`mockDeskDocs.ts`, deskd API.md section 24): each desk's index, seeded on first use (`d-personal`, `d-work` with the sample). */
+  docs: typeof docsControl;
   /**
    * Each desk's side of `desk.attention` (task 46), as deskd API.md section 10 "Nobody looking" has it: a session that
    * hasn't said counts as looking while it wants `warm` or `live`; nobody looking for `attentionGraceMs` (5 s) cuts the
@@ -161,6 +181,15 @@ export interface MockDeskControl {
   viewDelayMs: number;
   deviceLog: { deskId: string; device: PhoneDevice | null; at: number }[];
   setField(deskId: string, field: BrowserViewMessage['field']): void;
+  /**
+   * The desk Browser's own zoom (ADR 0055; the Desk Engineer's `browser.zoom.get` and `browser.zoom.set`, and `browser.view`'s
+   * `zoom`). Off unless `browserZoom` (or `?browserZoom=1`): a deskd before it, which says `not_found` to both. `zoom` is
+   * each desk's level (100 if absent); `setZoom` is the desk changing it by itself (a key chord the page took), which
+   * `browser.view` says to every session.
+   */
+  browserZoom: boolean;
+  zoom: Record<string, number>;
+  setZoom(deskId: string, level: number): void;
 }
 
 const notebookModule = (): Promise<typeof import('./mockNotebook')> => import('./mockNotebook');
@@ -259,6 +288,7 @@ const control: MockDeskControl = {
   },
   wakeStepMs: Number(query.get('wakeStepMs') ?? 400),
   hold: {},
+  holdAnswer: {},
   releaseHeld: () => {
     for (const answer of heldAnswers.splice(0)) answer();
   },
@@ -268,6 +298,9 @@ const control: MockDeskControl = {
     fixture: (query.get('agentFixture') as FixtureName | null) ?? 'fresh',
     fast: query.get('speed') === 'fast',
     keysLast: query.get('keysLast') === '1',
+    setup: ((v) => (v === 'new' || v === 'upgrade' ? v : undefined))(query.get('agentSetup')),
+    credits: query.get('agentCredits') === '1',
+    approvalsWire: query.get('approvalsWire') === 'messages' ? 'messages' : undefined,
     account: accountFromQuery(query),
     caps: capsFromQuery(query),
     down: false,
@@ -279,6 +312,14 @@ const control: MockDeskControl = {
       }
     },
     desks: {},
+    seeds: {},
+    seedApproval: (deskId, seed) => {
+      const desk = control.agent.desks[deskId];
+      if (desk) void desk.client.seedApproval(seed);
+      else (control.agent.seeds[deskId] ??= []).push(seed);
+    },
+    cutSnapshots: null,
+    subDelayMs: 0,
     restart: () => {
       for (const desk of Object.values(control.agent.desks)) {
         desk.client.restart();
@@ -288,6 +329,7 @@ const control: MockDeskControl = {
     dropLink: (ms) => {
       for (const link of links) link.dropFor(ms);
     },
+    desksLog: [],
   },
   dropLink: (deskId) => {
     for (const link of mockLinks) if (!deskId || link.deskId === deskId) link.dropForTest();
@@ -307,6 +349,9 @@ const control: MockDeskControl = {
   get files() {
     return filesModule().then((m) => m.filesControl);
   },
+  todo: todoControl,
+  courier: courierControl,
+  docs: docsControl,
   attention: {},
   attentionGraceMs: Number(query.get('attentionGraceMs') ?? 5_000),
   freezeAfterMs: Number(query.get('freezeAfterMs') ?? 60_000),
@@ -326,6 +371,12 @@ const control: MockDeskControl = {
   phoneView: false,
   view: {},
   setView: (deskId, view) => publishView(deskId, view),
+  browserZoom: query.get('browserZoom') === '1',
+  zoom: {},
+  setZoom: (deskId, level) => {
+    control.zoom[deskId] = level;
+    publishView(deskId, control.view[deskId] ?? DESK_VIEW);
+  },
   viewDelayMs: 60,
   deviceLog: [],
   setField: (deskId, field) => {
@@ -374,9 +425,11 @@ const deskSeen = (d: AttentionDesk): boolean => d.open && (d.said ?? d.wants);
 const DESK_VIEW: BrowserViewMessage = { mode: 'desktop', field: null };
 const viewListeners = new Map<string, Set<(m: BrowserViewMessage) => void>>();
 const viewTimers = new Map<string, number>();
+/** What `browser.view` says of a desk: its view, and its Browser's zoom where the desk has one (ADR 0055). */
+const viewOf = (deskId: string, v: BrowserViewMessage = control.view[deskId] ?? DESK_VIEW): BrowserViewMessage => (control.browserZoom ? { ...v, zoom: control.zoom[deskId] ?? 100 } : v);
 function publishView(deskId: string, v: BrowserViewMessage): void {
   control.view[deskId] = v;
-  for (const fn of viewListeners.get(deskId) ?? []) fn(v);
+  for (const fn of viewListeners.get(deskId) ?? []) fn(viewOf(deskId, v));
   for (const link of mockLinks) if (link.deskId === deskId) link.refreshPicture();
 }
 /** A seen phone has the tabs, laid out at its size and scaled to fit the screen's top left, as deskd does. */
@@ -707,14 +760,22 @@ export class MockDeskLink implements DeskLink {
 
   /** This desk's `desk-agent`, from the first thing that asks. */
   private agentDesk(): MockAgentDesk {
-    const name = useDeskStore.getState().desks.find((d) => d.id === this.deskId)?.name;
+    const info = useDeskStore.getState().desks.find((d) => d.id === this.deskId);
+    const name = info?.name;
+    // A Guild Desk takes no part in messages between the member's desks (W6): `agent.desks.*` say `forbidden` `guild` there.
+    const guildDesk = this.guild !== null || info?.kind === 'guild';
     const emit = (subId: number, seq: number, body: { type: string; data: unknown }): void => this.agentSubs.onEvent(subId, seq, body);
     if (!control.agent.desks[this.deskId] && this.guild) {
-      control.agent.desks[this.deskId] = new MockAgentDesk(control.agent, control.refuse, emit, name);
+      control.agent.desks[this.deskId] = new MockAgentDesk(control.agent, control.refuse, emit, name, this.deskId, guildDesk);
       seedGuildAgent(control.agent.desks[this.deskId]!.client);
     }
-    const desk = (control.agent.desks[this.deskId] ??= new MockAgentDesk(control.agent, control.refuse, emit, name));
+    const desk = (control.agent.desks[this.deskId] ??= new MockAgentDesk(control.agent, control.refuse, emit, name, this.deskId, guildDesk));
     desk.emit = emit;
+    const seeds = control.agent.seeds[this.deskId];
+    if (seeds?.length) {
+      delete control.agent.seeds[this.deskId];
+      for (const seed of seeds) void desk.client.seedApproval(seed);
+    }
     return desk;
   }
 
@@ -1092,6 +1153,10 @@ export class MockDeskLink implements DeskLink {
     if (control.hold[method]) {
       return new Promise((resolve, reject) => heldAnswers.push(() => void this.answer(method, params, options).then(resolve, reject)));
     }
+    if (control.holdAnswer[method]) {
+      const answer = this.answer(method, params, options);
+      return new Promise((resolve, reject) => heldAnswers.push(() => void answer.then(resolve, reject)));
+    }
     return this.answer(method, params, options);
   }
 
@@ -1121,6 +1186,24 @@ export class MockDeskLink implements DeskLink {
         desk.control.onDrop = () => this.dropSession();
         return desk.answer(method, params, { bulk: this.session, scope: this.purpose ?? 'owner', ...(idem ? { idem } : {}) });
       }) as Promise<DeskRpc[M]>;
+    }
+    if (method.startsWith('todo.')) {
+      if (this.state !== 'open') return Promise.reject(new DeskNotConnected(this.deskId));
+      // A Guild Desk has no To-do at launch (API.md section 22).
+      if (this.guild) return Promise.reject(Object.assign(new Error('todo scope'), { code: 'forbidden', details: { reason: 'scope' } }));
+      return mockTodo(this.deskId).answer(method, params, options?.idem, this.session) as Promise<DeskRpc[M]>;
+    }
+    if (method.startsWith('docs.')) {
+      if (this.state !== 'open') return Promise.reject(new DeskNotConnected(this.deskId));
+      // A Guild Desk has no Documents (API.md section 24).
+      if (this.guild) return Promise.reject(Object.assign(new Error('docs scope'), { code: 'forbidden', details: { reason: 'scope' } }));
+      return mockDocs(this.deskId).answer(method, params ?? {}, this.session) as Promise<DeskRpc[M]>;
+    }
+    if (method.startsWith('courier.')) {
+      if (this.state !== 'open') return Promise.reject(new DeskNotConnected(this.deskId));
+      // A Guild Desk has no Courier (guild chat is Commons', API.md section 21).
+      if (this.guild) return Promise.reject(Object.assign(new Error('courier scope'), { code: 'forbidden', details: { reason: 'scope' } }));
+      return mockCourier(this.deskId).answer(method, params ?? {}, options?.idem, this.session) as Promise<DeskRpc[M]>;
     }
     if (method.startsWith('apps.')) {
       if (this.state !== 'open') return Promise.reject(new DeskNotConnected(this.deskId));
@@ -1158,6 +1241,19 @@ export class MockDeskLink implements DeskLink {
     const mutation = method.startsWith('browser.tab.') && method !== 'browser.tab.list';
     if ((mutation || method === 'browser.text.insert') && !options?.idem) {
       return Promise.reject(Object.assign(new Error(`${method} needs idem`), { code: 'bad_request', details: {} }));
+    }
+    if (method === 'browser.zoom.get' || method === 'browser.zoom.set') {
+      // A deskd before it: "No such method" (section 4).
+      if (!control.browserZoom) return Promise.reject(Object.assign(new Error(`no such method ${method}`), { code: 'not_found', details: {} }));
+      if (this.state !== 'open') return Promise.reject(new DeskNotConnected(this.deskId));
+      if (method === 'browser.zoom.get') return Promise.resolve({ level: control.zoom[this.deskId] ?? 100 } as DeskRpc[M]);
+      const level = params['level'];
+      if (!options?.idem) return Promise.reject(Object.assign(new Error(`${method} needs idem`), { code: 'bad_request', details: {} }));
+      if (typeof level !== 'number' || !Number.isInteger(level) || level < 50 || level > 200) {
+        return Promise.reject(Object.assign(new Error('level'), { code: 'bad_request', details: { reason: 'level' } }));
+      }
+      control.setZoom(this.deskId, level);
+      return Promise.resolve({ level } as DeskRpc[M]);
     }
     if (method === 'desk.attention.set') {
       if (this.state !== 'open') return Promise.reject(new DeskNotConnected(this.deskId));
@@ -1313,7 +1409,7 @@ export class MockDeskLink implements DeskLink {
       };
     }
     if (topic === 'browser.view') {
-      const refusal = control.refuse[topic] ?? (control.phoneView ? undefined : 'not_found');
+      const refusal = control.refuse[topic] ?? (control.phoneView || control.browserZoom ? undefined : 'not_found');
       if (refusal) {
         const timer = window.setTimeout(() => onRefused?.(refusal), 10);
         return () => window.clearTimeout(timer);
@@ -1322,7 +1418,7 @@ export class MockDeskLink implements DeskLink {
       let set = viewListeners.get(this.deskId);
       if (!set) viewListeners.set(this.deskId, (set = new Set()));
       set.add(listener);
-      const timer = window.setTimeout(() => listener(control.view[this.deskId] ?? DESK_VIEW), 10);
+      const timer = window.setTimeout(() => listener(viewOf(this.deskId)), 10);
       return () => {
         window.clearTimeout(timer);
         set.delete(listener);
@@ -1362,6 +1458,91 @@ export class MockDeskLink implements DeskLink {
       return () => {
         gone = true;
         off?.();
+      };
+    }
+    if (topic === 'todo') {
+      const refusal = control.refuse[topic] ?? (this.guild ? 'forbidden' : undefined);
+      if (refusal) {
+        window.setTimeout(() => onRefused?.(refusal), 0);
+        return () => {};
+      }
+      // A `snapshot` of `{rev}`, then `changed` `{op, id, rev}` after every change, while this session is open. As deskd's,
+      // the snapshot comes over an open session, and again on each new one, as the real link subscribes again.
+      const desk = mockTodo(this.deskId);
+      const send = fn as (msg: LinkTopics['todo']) => void;
+      let seq = 0;
+      const snapshot = (): void => {
+        if (this.state === 'open') send({ seq: (seq += 1), type: 'snapshot', rev: desk.currentRev });
+      };
+      const timer = window.setTimeout(snapshot, 10);
+      let was = this.state;
+      const offOpen = this.onStatus((state) => {
+        if (state === 'open' && was !== 'open') window.setTimeout(snapshot, 10);
+        was = state;
+      });
+      const off = desk.subscribe((e) => {
+        if (this.state === 'open') send({ seq: (seq += 1), ...e });
+      });
+      return () => {
+        window.clearTimeout(timer);
+        offOpen();
+        off();
+      };
+    }
+    if (topic === 'docs') {
+      const refusal = control.refuse[topic] ?? (this.guild ? 'forbidden' : undefined);
+      if (refusal) {
+        window.setTimeout(() => onRefused?.(refusal), 0);
+        return () => {};
+      }
+      // A `snapshot` of `{rev, counts}`, then `changed` `{rev, ids, counts}`, while this session is open (API.md section 24).
+      const desk = mockDocs(this.deskId);
+      const send = fn as (msg: LinkTopics['docs']) => void;
+      let seq = 0;
+      const snapshot = (): void => {
+        if (this.state === 'open') send({ seq: (seq += 1), type: 'snapshot', rev: desk.currentRev, counts: desk.counts() });
+      };
+      const timer = window.setTimeout(snapshot, 10);
+      let was = this.state;
+      const offOpen = this.onStatus((state) => {
+        if (state === 'open' && was !== 'open') window.setTimeout(snapshot, 10);
+        was = state;
+      });
+      const off = desk.subscribe((e) => {
+        if (this.state === 'open') send({ seq: (seq += 1), ...e });
+      });
+      return () => {
+        window.clearTimeout(timer);
+        offOpen();
+        off();
+      };
+    }
+    if (topic === 'courier.changed') {
+      const refusal = control.refuse[topic] ?? (this.guild ? 'forbidden' : undefined);
+      if (refusal) {
+        window.setTimeout(() => onRefused?.(refusal), 0);
+        return () => {};
+      }
+      // A `snapshot` of `{}`, then `changed` with ids and lanes only, while this session is open (API.md section 21).
+      const desk = mockCourier(this.deskId);
+      const send = fn as (msg: LinkTopics['courier.changed']) => void;
+      let seq = 0;
+      const snapshot = (): void => {
+        if (this.state === 'open') send({ seq: (seq += 1), type: 'snapshot' });
+      };
+      const timer = window.setTimeout(snapshot, 10);
+      let was = this.state;
+      const offOpen = this.onStatus((state) => {
+        if (state === 'open' && was !== 'open') window.setTimeout(snapshot, 10);
+        was = state;
+      });
+      const off = desk.subscribe((e) => {
+        if (this.state === 'open') send({ seq: (seq += 1), ...e });
+      });
+      return () => {
+        window.clearTimeout(timer);
+        offOpen();
+        off();
       };
     }
     if (topic === 'notebook.tree') {
@@ -1418,14 +1599,21 @@ export class MockDeskLink implements DeskLink {
     if (topic !== 'summary') return () => {};
     // `?agent=needs-you` and the like: the states that put an agent's status in the strip. `?agent=live`: `summary` has no word
     // on the agents, as on a real desk today, so `agent.state` fills it.
-    const word = new URLSearchParams(window.location.search).get('agent') ?? 'idle';
+    const params = new URLSearchParams(window.location.search);
+    const word = params.get('agent') ?? 'idle';
     const agent = { state: word } as AgentActivity;
+    // `?widgets=none`: badges and marks, but no widget words, as a desk that sends none (the tiles' centred glyphs).
+    const apps = params.get('widgets') === 'none' ? Object.fromEntries(Object.entries(SAMPLE).map(([k, v]) => [k, withoutWidget(v)])) : SAMPLE;
+    // To-do's count isn't here, as on a real desk (deskd serves no `summary`): the office reads it from `todo.summary` on each
+    // `todo` event (`desk/todoBadge.ts`), which this mock serves as deskd does.
     const send = (): void => {
       this.seq += 1;
-      const msg: SummaryMessage = { seq: this.seq, ...(word === 'live' ? {} : { agent }), apps: SAMPLE };
+      const msg: SummaryMessage = { seq: this.seq, ...(word === 'live' ? {} : { agent }), apps };
       fn(msg as LinkTopics[T]);
     };
     const timer = window.setTimeout(send, 60);
-    return () => window.clearTimeout(timer);
+    return () => {
+      window.clearTimeout(timer);
+    };
   }
 }

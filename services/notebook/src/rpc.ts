@@ -537,7 +537,7 @@ export function methods(deps: RpcDeps): Map<string, RpcHandler> {
 
   // The Agent's Notebook tools (agent.ts): deskd's own calls, which its relay never lists for a client.
   const all = new Map(table);
-  for (const [name, handler] of agentMethods(deps, all)) all.set(name, handler);
+  for (const [name, handler] of agentMethods(deps, all, { mayRead, mayTrash })) all.set(name, handler);
   return all;
 }
 

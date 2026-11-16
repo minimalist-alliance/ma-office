@@ -93,6 +93,66 @@ export const ASKS = {
       declined: 'Understood. I won’t remember that.',
     },
   },
+  /** W6: a run that read the member's private data asks before its message goes to their other desk (`send`). */
+  deskMessage: {
+    tool: 'desk_message',
+    risk: 'send',
+    payload: { desk: 'd-work', text: 'What did the landlord say about Tuesday? My notes here say the plumber comes at 9.' },
+    target: { kind: 'desk', deskId: 'd-work', deskName: 'Work', agentName: 'Researcher' },
+    untrusted: false,
+    runMs: 600,
+    doing: 'Messaging your other desk',
+    target2: 'Researcher on Work',
+    then: {
+      approved: 'Sent. The answer will come to this thread.',
+      declined: 'Understood. I won’t message your Work desk.',
+    },
+  },
+  /** W6: on the desk that answers, an answer that read its private data asks before it goes back. */
+  deskAnswer: {
+    tool: 'desk_answer',
+    risk: 'send',
+    payload: { grantId: 'dg-demo', replyTo: 'env-demo', text: 'The landlord said Tuesday at 9 works, and to leave the side gate open.' },
+    target: { kind: 'desk', deskId: 'd-personal', deskName: 'Personal', agentName: 'Lead' },
+    untrusted: false,
+    runMs: 600,
+    doing: 'Answering your other desk',
+    target2: 'Lead on Personal',
+    then: {
+      approved: 'Sent my answer back.',
+      declined: 'Understood. Nothing goes back.',
+    },
+  },
+  /** A new file in a folder, from a run that read nothing untrusted: the class "Don't ask again" can switch on (section 15). */
+  saveNotes: {
+    tool: 'files_write',
+    risk: 'write',
+    payload: { path: 'Research/lamp-notes.md', text: '# Desk lamps under $80\n\n- Lumen Arc: clamp, 2700 K, fits a 120 cm desk.\n', replace: false },
+    target: { kind: 'file', path: 'Research/lamp-notes.md' },
+    untrusted: false,
+    runMs: 600,
+    doing: 'Saving a file',
+    target2: 'Research/lamp-notes.md',
+    then: {
+      approved: 'Saved. Your lamp notes are in Research.',
+      declined: 'Understood. I won’t save them.',
+    },
+  },
+  /** A new Notebook page in a tab: its `new.tabId` is the tab's id on the desk, which a test or the demo sets. */
+  newPage: {
+    tool: 'notebook_write',
+    risk: 'write',
+    payload: { op: 'create', new: { tabId: 'tab-ideas', title: 'Lamp notes' }, markdown: '# Lamp notes\n\nThe Lumen Arc fits the desk.' },
+    target: { kind: 'page', pageId: null, title: 'Lamp notes' },
+    untrusted: false,
+    runMs: 600,
+    doing: 'Writing in a page',
+    target2: '“Lamp notes”',
+    then: {
+      approved: 'Made the page “Lamp notes”.',
+      declined: 'Understood. No new page.',
+    },
+  },
 } satisfies Record<string, AskSpec>;
 
 export type AskName = keyof typeof ASKS;

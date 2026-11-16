@@ -1,0 +1,93 @@
+{
+  "id": "notebook-021",
+  "area": "notebook",
+  "title": "Rename a heading",
+  "prompt": "On my Project notes page, rename the section heading Ideas to Next steps.",
+  "setup": {
+    "notebook": [
+      {
+        "tab": "Harness",
+        "title": "Project notes",
+        "markdown": "# Project notes\n\n## Ideas\n\nA shared calendar for the team.\n"
+      }
+    ]
+  },
+  "approve": "all",
+  "checks": [
+    {
+      "kind": "page",
+      "tab": "Harness",
+      "title": "Project notes",
+      "contains": [
+        "## Next steps",
+        "shared calendar"
+      ],
+      "notContains": [
+        "## Ideas"
+      ]
+    },
+    {
+      "kind": "cards",
+      "tools": [
+        "notebook_write"
+      ]
+    }
+  ],
+  "policy": {
+    "tools": [
+      "notebook_search",
+      "notebook_read",
+      "notebook_write"
+    ]
+  },
+  "standIn": [
+    {
+      "calls": [
+        {
+          "name": "notebook_search",
+          "input": {
+            "query": "Project notes"
+          }
+        }
+      ]
+    },
+    {
+      "calls": [
+        {
+          "name": "notebook_read",
+          "input": {
+            "pageId": {
+              "$re": {
+                "step": 0,
+                "call": 0,
+                "pattern": "\"pageId\":\"([^\"]+)\",\"title\":\"Project notes\""
+              }
+            }
+          }
+        }
+      ]
+    },
+    {
+      "calls": [
+        {
+          "name": "notebook_write",
+          "input": {
+            "pageId": {
+              "$re": {
+                "step": 0,
+                "call": 0,
+                "pattern": "\"pageId\":\"([^\"]+)\",\"title\":\"Project notes\""
+              }
+            },
+            "op": "replace_text",
+            "find": "## Ideas",
+            "markdown": "## Next steps"
+          }
+        }
+      ]
+    },
+    {
+      "text": "Renamed the heading to Next steps."
+    }
+  ]
+}

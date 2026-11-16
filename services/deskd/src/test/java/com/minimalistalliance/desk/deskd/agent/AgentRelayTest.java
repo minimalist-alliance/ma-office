@@ -64,6 +64,9 @@ class AgentRelayTest {
         List<String> all = new ArrayList<>(AgentMethods.READS);
         all.addAll(AgentMethods.MUTATIONS);
         all.remove(AgentMethods.KEY_ADD);
+        // The member's undo of a call done without asking isn't relayed as it came: deskd does it from its own ledger and
+        // sends desk-agent its own params (AutoApproveDeskdIntegrationTest).
+        all.remove(AgentMethods.UNDO);
         for (String method : all) {
             r.agent.handlers.put(method, p -> Map.of("method", method));
         }
@@ -71,8 +74,12 @@ class AgentRelayTest {
         for (String method : all) {
             assertThat(r.call(client, method, Map.of())).as(method).containsEntry("_kind", "RES").containsEntry("method", method);
         }
-        assertThat(all).as("task 49 added 15 methods to the 15 before, S-118 four more, S-14's memory three and"
-                + " its approvals three").hasSize(40);
+        assertThat(all).as("task 49 added 15 methods to the 15 before, S-118 four more, S-14's memory three,"
+                + " its approvals three, the setup screen's access three, Maia Mode eighteen, and the focus shield's"
+                + " agent.maia.reach nine, the decision tray's agent.maia.tray three").hasSize(73);
+        // agent.approval.undo with no approval id: refused by deskd before desk-agent hears.
+        Map<String, Object> undo = r.call(client, AgentMethods.UNDO, Map.of());
+        assertThat(undo).containsEntry("_kind", "ERR").containsEntry("code", "bad_request");
     }
 
     @Test

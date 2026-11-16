@@ -234,3 +234,76 @@ test('brows take the hair color as it is, on every skin tone (no contrast floor)
   assert.ok(!/data-part="brows/.test(render({ ...defaults, brows: brow }, 24)));
   assert.ok(/data-part="brows/.test(render({ ...defaults, brows: brow }, 32)));
 });
+
+// ---- backgrounds (1.1.0): all cool, every slot kept, the art readable on each ----
+// Recipes store a background's index (bg: 0 to 9), never its id, so 1.1.0 recoloured five swatches in their slots and
+// every stored recipe keeps validating and draws its slot's new colour. Distances are OKLab x 100 (about 2 is just
+// noticeable side by side); contrast is WCAG's, from src/color.mjs.
+const { contrast } = await import('../src/color.mjs');
+const rgb01 = (h) => [1, 3, 5].map((i) => parseInt(h.slice(i, i + 2), 16) / 255);
+const lin = (v) => (v <= 0.04045 ? v / 12.92 : ((v + 0.055) / 1.055) ** 2.4);
+function oklab(h) {
+  const [r, g, b] = rgb01(h).map(lin);
+  const [l, m, s] = [0.4122214708 * r + 0.5363325363 * g + 0.0514459929 * b, 0.2119034982 * r + 0.6806995451 * g + 0.1073969566 * b,
+    0.0883024619 * r + 0.2817188376 * g + 0.6299787005 * b].map(Math.cbrt);
+  return [0.2104542553 * l + 0.793617785 * m - 0.0040720468 * s, 1.9779984951 * l - 2.428592205 * m + 0.4505937099 * s,
+    0.0259040371 * l + 0.7827717662 * m - 0.808675766 * s];
+}
+const lab = (c) => (typeof c === 'string' ? oklab(c) : c);
+const dE = (a, b) => { const A = lab(a), B = lab(b); return 100 * Math.hypot(A[0] - B[0], A[1] - B[1], A[2] - B[2]); };
+const middle = (s) => { const T = oklab(s.top), B = oklab(s.bottom); return T.map((v, i) => (v + B[i]) / 2); }; // the gradient's middle, in OKLab
+const BG = manifest.palettes.bg;
+const RECOLOURED = { 1: 'mist', 2: 'sky', 3: 'periwinkle', 7: 'blue-grey', 8: 'denim' }; // were green, amber, rose, pine, ochre
+const OLD_HEX = ['#E1EDE6', '#CFE2D7', '#F6ECDB', '#F1E1C6', '#F5E5E7', '#F0D5D8', '#C8DED3', '#B1CFC1', '#EDD7AB', '#E3C586'];
+
+test('backgrounds keep their ten slots, in order, and every id matches its name', () => {
+  assert.deepEqual(BG.map((s) => s.id), ['blue', 'mist', 'sky', 'periwinkle', 'violet', 'slate', 'steel', 'blue-grey', 'denim', 'deep-slate']);
+  for (const s of BG) assert.equal(s.name.toLowerCase().replace(/ /g, '-'), s.id);
+  for (const [i, id] of Object.entries(RECOLOURED)) assert.equal(BG[i].id, id);
+});
+test('every background stop is cool: the office\'s test (hue 190 to 290, or saturation 0.18 or less) and the Platform\'s (blue the largest channel)', () => {
+  for (const s of BG) for (const h of [s.top, s.bottom]) {
+    const [r, g, b] = rgb01(h), mx = Math.max(r, g, b), mn = Math.min(r, g, b), d = mx - mn;
+    assert.ok(b >= mx, `${s.id} ${h}: blue is not the largest channel`);
+    if (d === 0) continue;
+    const l = (mx + mn) / 2, sat = d / (1 - Math.abs(2 * l - 1));
+    const hue = 60 * (mx === r ? ((g - b) / d + 6) % 6 : mx === g ? (b - r) / d + 2 : (r - g) / d + 4);
+    assert.ok(sat <= 0.18 || (hue >= 190 && hue <= 290), `${s.id} ${h}: hue ${hue.toFixed(0)}, saturation ${sat.toFixed(2)}`);
+  }
+});
+test('a stored recipe on any slot still validates and draws its slot\'s colour; no old warm colour is drawn', () => {
+  for (let bg = 0; bg < BG.length; bg++) {
+    const old = { kind: 'built', kit: 1, skin: 4, face: 'smile', hair: 'curly-short', bg };
+    assert.ok(validateRecipe(old).ok, `bg ${bg}`);
+    for (const size of [128, 32, 24]) {
+      const svg = render(old, size);
+      assert.ok(svg.includes(`stop-color="${BG[bg].top}"`) && svg.includes(`stop-color="${BG[bg].bottom}"`), `bg ${bg} at ${size}`);
+      for (const h of OLD_HEX) assert.ok(!svg.includes(h), `bg ${bg} at ${size} draws ${h}`);
+    }
+  }
+});
+test('each recoloured background is told apart from every other (3.2 or more), and no pair is closer than 1.0.0\'s closest (blue and slate, 1.77)', () => {
+  for (let i = 0; i < BG.length; i++) for (let j = i + 1; j < BG.length; j++) {
+    const d = dE(middle(BG[i]), middle(BG[j]));
+    assert.ok(d >= 1.75, `${BG[i].id}/${BG[j].id} ${d.toFixed(2)}`);
+    if (i in RECOLOURED || j in RECOLOURED) assert.ok(d >= 3.2, `${BG[i].id}/${BG[j].id} ${d.toFixed(2)}`);
+  }
+});
+test('the art stays readable on every background, with every skin tone', () => {
+  // the face rule holds on every swatch and tone (features sit on the skin, at 3:1 or more), at every tier
+  for (let bg = 0; bg < BG.length; bg++) for (let skin = 0; skin < manifest.palettes.skin.length; skin++) {
+    for (const size of [128, 32, 24]) {
+      const svg = render({ ...person, bg, skin, face: 'calm' }, size);
+      assert.ok(svg.includes('#FAF7F2') && svg.includes(`stop-color="${BG[bg].top}"`), `bg ${bg} skin ${skin + 1} at ${size}`);
+      const feat = svg.match(/data-part="mouth-calm"[\s\S]*?stroke="(#[0-9A-F]{6})"/)[1];
+      assert.ok(contrast(feat, manifest.palettes.skin[skin].base) >= 3, `bg ${bg} skin ${skin + 1} at ${size}`);
+    }
+  }
+  // the silhouettes stand off the disc at least as well as on the five 1.0.0 swatches kept as they were (slate and
+  // blue set these floors): the face against the swatch's middle, the hair against its top, the clothes against its bottom
+  for (const s of BG) {
+    for (const t of manifest.palettes.skin) assert.ok(dE(t.base, middle(s)) >= 4.3, `${s.id} skin ${t.id}`);
+    for (const h of manifest.palettes.hair) assert.ok(dE(h.hex, s.top) >= 0.75, `${s.id} hair ${h.id}`);
+    for (const c of manifest.palettes.clothing) assert.ok(dE(c.hex, s.bottom) >= 4.8, `${s.id} clothing ${c.id}`);
+  }
+});

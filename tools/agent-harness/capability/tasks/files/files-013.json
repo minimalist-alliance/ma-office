@@ -1,0 +1,63 @@
+{
+  "id": "files-013",
+  "area": "files",
+  "title": "Two files saved in one step",
+  "prompt": "Save two files in Harness/clients: acme.md with the line 'Kickoff call on Tuesday' and globex.md with the line 'Send the quote by Friday'.",
+  "setup": {
+    "files": {
+      "Harness/clients/index.md": "Client notes.\n"
+    }
+  },
+  "approve": "all",
+  "checks": [
+    {
+      "kind": "file",
+      "path": "Harness/clients/acme.md",
+      "contains": [
+        "Kickoff call on Tuesday"
+      ]
+    },
+    {
+      "kind": "file",
+      "path": "Harness/clients/globex.md",
+      "contains": [
+        "Send the quote by Friday"
+      ]
+    },
+    {
+      "kind": "cards",
+      "tools": [
+        "files_write",
+        "files_write"
+      ]
+    }
+  ],
+  "policy": {
+    "tools": [
+      "files_write"
+    ]
+  },
+  "standIn": [
+    {
+      "calls": [
+        {
+          "name": "files_write",
+          "input": {
+            "path": "Harness/clients/acme.md",
+            "text": "Kickoff call on Tuesday\n"
+          }
+        },
+        {
+          "name": "files_write",
+          "input": {
+            "path": "Harness/clients/globex.md",
+            "text": "Send the quote by Friday\n"
+          }
+        }
+      ]
+    },
+    {
+      "text": "Saved acme.md and globex.md in Harness/clients."
+    }
+  ]
+}

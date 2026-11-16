@@ -1,0 +1,20 @@
+From: Office <office@example.com>
+To: me@desk.example
+Date: Fri, 13 Nov 2026 10:00:00 +0000
+Subject: Flowed text
+Message-ID: <format-flowed-delsp@corpus.example>
+MIME-Version: 1.0
+X-Corpus-Note: text/plain format=flowed delsp=yes: soft breaks, a word split inside, space-stuffing
+Content-Type: text/plain; charset=utf-8; format=flowed; delsp=yes
+Content-Transfer-Encoding: 7bit
+
+This paragraph is wrapped with soft line breaks so that a client which  
+understands flowed text joins the lines back together into one  
+paragraph. The last word is light 
+house, joined only by a flowed reader.
+> Quoted flowed text also has soft  
+> breaks inside it.
+
+ From the archive: a space-stuffed line.
+-- 
+Office

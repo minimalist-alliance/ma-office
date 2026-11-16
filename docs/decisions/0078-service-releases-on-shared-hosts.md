@@ -126,6 +126,9 @@ On Platform's `batch_target` (PB-2), in `desk-host-upd` (ADR 0077 section 4). Ea
    - The rule is desk-batch's for a service batch: sessions, Agent runs and exports at 0 for the idle time, and the file fresh. `downloads` doesn't hold it, since Chromium keeps running, as on a desk of its own.
    - It also waits while the host's `cpu.pressure` `some avg10` is above 25% (the level ADR 0090 holds at), so a switch never runs starved, and while the slot's lock, a re-root or a pre-read is held.
 2. **Copy** each changed component from the store into `rel/.new-<svc>`, with `version.env` for `deskd`, checked against the store's tree hash.
+   Every file, directory and link keeps the store's time (added 2026-11-12, host 0.1.16, `sub/host-0116-fixes`): the copy is ADR 0077's
+   `copy_tree`, which wrote the copy's time on host images 0.1.12 to 0.1.15, so after a switch `deskd`'s and `desk-agent`'s app jars no
+   longer matched their AppCDS archives and both JVMs ran without them, silently (the same cost as 3.1's unpack note).
    - `rel/` is host-owned and outside the desk's root, so WALL-03 isn't touched.
    - The copy takes the host's copy turn (ADR 0077 section 4) and runs outside the slot's lock. A start or stop takes the lock at once, and the copy is dropped.
 3. **Read idle again.** If the desk isn't idle, the copies wait for the next idle. Otherwise the report's `update.holdUntil` goes 15 minutes ahead and is renewed at each step.

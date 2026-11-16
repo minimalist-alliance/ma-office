@@ -1,0 +1,56 @@
+{
+  "id": "files-041",
+  "area": "files",
+  "title": "Rename a folder",
+  "prompt": "Rename the folder Harness/Clients Old to Harness/Clients 2025.",
+  "setup": {
+    "files": {
+      "Harness/Clients Old/acme.md": "Acme contract.\n",
+      "Harness/Clients Old/globex.md": "Globex contract.\n"
+    }
+  },
+  "approve": "all",
+  "checks": [
+    {
+      "kind": "noFile",
+      "path": "Harness/Clients Old/"
+    },
+    {
+      "kind": "file",
+      "path": "Harness/Clients 2025/acme.md",
+      "equals": "Acme contract.\n"
+    },
+    {
+      "kind": "file",
+      "path": "Harness/Clients 2025/globex.md",
+      "equals": "Globex contract.\n"
+    },
+    {
+      "kind": "cards",
+      "tools": [
+        "files_move"
+      ]
+    }
+  ],
+  "policy": {
+    "tools": [
+      "files_move"
+    ]
+  },
+  "standIn": [
+    {
+      "calls": [
+        {
+          "name": "files_move",
+          "input": {
+            "from": "Harness/Clients Old",
+            "to": "Harness/Clients 2025"
+          }
+        }
+      ]
+    },
+    {
+      "text": "Renamed the folder to Harness/Clients 2025."
+    }
+  ]
+}

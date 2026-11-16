@@ -1,7 +1,8 @@
 // The turn's stream (contract maia.md, `POST /v1/maia/turn`): `data: <json>\n\n` frames, read with `fetch` and a
 // ReadableStream, since EventSource can't POST or send the token. Pure. Every field is checked, and a frame type
 // this app doesn't know, or one that doesn't parse, is dropped.
-import { readFree, when, type Free } from './gate';
+import { readFree, when, type Free } from './state';
+import { isBatchId, readQueries, readSources, type WebSource } from './web';
 
 export interface Proposal {
   proposalId: string;
@@ -21,7 +22,11 @@ export type Frame =
   | ({ type: 'proposal' } & Proposal)
   | { type: 'stop'; reason: StopReason; text: string; resetsAt: string | null; retryable: boolean; free: FreeStop | null }
   | { type: 'done'; messageId: string | null }
-  | { type: 'animation'; messageId: string | null; score: unknown };
+  | { type: 'animation'; messageId: string | null; score: unknown }
+  /** Web search (ma-platform ADR 0137): `ask` is one card for the reply's whole batch; `auto` says what's searched now. */
+  | { type: 'web_search'; batchId: string; mode: 'ask' | 'auto'; queries: string[]; expiresAt: string | null }
+  /** The sources under her reply, from the search API, never her text. */
+  | { type: 'sources'; messageId: string | null; sources: WebSource[] };
 
 /** Why a turn past the member's limit didn't get free Maia either. Her stop text already says it. */
 export type FreeStop = 'busy' | 'unavailable' | 'limit';
@@ -79,6 +84,16 @@ export function readFrame(data: unknown): Frame | null {
       return { type: 'done', messageId: id(f['messageId']) };
     case 'animation':
       return { type: 'animation', messageId: id(f['messageId']), score: f['score'] };
+    case 'web_search': {
+      const queries = readQueries(f['queries']);
+      const mode = f['mode'] === 'ask' || f['mode'] === 'auto' ? f['mode'] : null;
+      if (!isBatchId(f['batchId']) || !queries || !mode) return null;
+      return { type: 'web_search', batchId: f['batchId'], mode, queries, expiresAt: str(f['expiresAt']) };
+    }
+    case 'sources': {
+      const sources = readSources(f['sources']);
+      return sources.length ? { type: 'sources', messageId: id(f['messageId']), sources } : null;
+    }
     default:
       return null;
   }

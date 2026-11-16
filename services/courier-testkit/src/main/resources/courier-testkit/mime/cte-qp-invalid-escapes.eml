@@ -1,0 +1,12 @@
+From: Finance <finance@example.com>
+To: me@desk.example
+Date: Fri, 13 Nov 2026 10:00:00 +0000
+Subject: Sloppy QP
+Message-ID: <cte-qp-invalid-escapes@corpus.example>
+MIME-Version: 1.0
+X-Corpus-Note: quoted-printable with invalid escapes (=ZZ, =4, a bare =, lower-case hex) a lenient decoder passes through
+Content-Type: text/plain; charset=utf-8
+Content-Transfer-Encoding: quoted-printable
+
+The budget line =ZZ is wrong, =4 too, and 50 = 50.
+Lower-case hex: caf=c3=a9.

@@ -1,0 +1,76 @@
+{
+  "id": "notebook-048",
+  "area": "notebook",
+  "title": "Replace text on a page with an accented title",
+  "prompt": "On my Café list page, change Rue Cler to Rue Mouffetard.",
+  "setup": {
+    "notebook": [
+      {
+        "tab": "Harness",
+        "title": "Café list",
+        "markdown": "# Café list\n\n- Rue Cler: Café Central\n- Le Marais: Chez Nous\n"
+      }
+    ]
+  },
+  "approve": "all",
+  "checks": [
+    {
+      "kind": "page",
+      "tab": "Harness",
+      "title": "Café list",
+      "contains": [
+        "Rue Mouffetard",
+        "Chez Nous"
+      ],
+      "notContains": [
+        "Rue Cler"
+      ]
+    },
+    {
+      "kind": "cards",
+      "tools": [
+        "notebook_write"
+      ]
+    }
+  ],
+  "policy": {
+    "tools": [
+      "notebook_search",
+      "notebook_write"
+    ]
+  },
+  "standIn": [
+    {
+      "calls": [
+        {
+          "name": "notebook_search",
+          "input": {
+            "query": "Rue Cler"
+          }
+        }
+      ]
+    },
+    {
+      "calls": [
+        {
+          "name": "notebook_write",
+          "input": {
+            "pageId": {
+              "$re": {
+                "step": 0,
+                "call": 0,
+                "pattern": "\"pageId\":\"([^\"]+)\",\"title\":\"Caf"
+              }
+            },
+            "op": "replace_text",
+            "find": "Rue Cler",
+            "markdown": "Rue Mouffetard"
+          }
+        }
+      ]
+    },
+    {
+      "text": "Changed Rue Cler to Rue Mouffetard on your Café list."
+    }
+  ]
+}

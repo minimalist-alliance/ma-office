@@ -21,6 +21,14 @@ mk /data/notebook notebook notebook 0700
 # The Files app's tree (docs/decisions/0048-files-app.md, decision 1): deskd (uid 1100, desk) reads and writes it in-process,
 # and nothing else may. deskd's container mounts it. The mode matters: deskd answers files.* unavailable (reason tree) unless it is 0700.
 mk /data/files   desk   desk   0700
+# Courier's store (ma-desk draft ADR "Courier's store"; docs/sub-status/mm-courier-parse.md): its database, raw messages and the
+# vault of linked mailboxes' sealed sign-ins (courier/keys). deskd (uid 1100) alone; its container mounts it where it exists.
+# Without it Courier is inert on the desk. tools/desk-data leaves courier/keys out of every download (Security CP-L3).
+mk /data/courier desk   desk   0700
+# The desk's Courier keys (ma-desk draft ADR "Courier's envelopes"; design 10.4's /data/keys): its Ed25519 identity and X25519
+# box keys, which deskd (uid 1100) makes inside and alone reads. deskd's container mounts it; without it, member messages
+# and the mail door are unavailable. deskd tightens what's inside to 0600 itself.
+mk /data/keys    desk   desk   0700
 # The volume's record for deskd (ADR 0035): /data/.ma-volume is written at format and only root can change it. A volume
 # formatted before image 0.2.3 has none, so it gets one saying the format time isn't known. deskd's container sees only
 # /data/desk, so it gets a copy, rewritten at every boot, as desk (above). Never touches /data/browser. deskd and desk-rtc require this

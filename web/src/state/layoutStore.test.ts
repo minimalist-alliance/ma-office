@@ -1,6 +1,7 @@
 import { afterEach, beforeEach, describe, expect, it, vi } from 'vitest';
 import { deskGeometry, settleDesk, stackOrder, type LayoutDesk } from '../canvas/layout';
-import { LAYOUT_KEY, readLayoutDoc } from '../canvas/layoutDoc';
+import { LAYOUT_KEY, readLayoutDoc, storedLayoutDoc } from '../canvas/layoutDoc';
+import { STORED_COURIER } from '../canvas/storedIds';
 import { isPhone } from '../canvas/phone';
 import { cleanUpDesk, needsCleanup, restack, undoCleanup, useCleanup } from '../shell/cleanup';
 import { fitLayoutToBand, isQuietChange, moveDesk, placeItem, putDesk, reconcileLayout, reorderItems, resizeDesk, setDeskStyle, setItemLevel, stackItem, useLayoutStore } from './layoutStore';
@@ -12,7 +13,7 @@ import { setCurrentBand } from '../platform/age';
 vi.mock('../canvas/controller', () => ({ camera: { isMoving: () => false, onSettle: () => () => undefined } }));
 
 const LIST = ['a', 'b', 'c', 'd'];
-const app = (id: string, x: number, y = 24) => ({ id, app: 'chat' as const, x, y, w: 76, h: 76 });
+const app = (id: string, x: number, y = 24) => ({ id, app: 'courier' as const, x, y, w: 76, h: 76 });
 const DESK: LayoutDesk = { id: 'd1', x: 0, y: 36, w: 800, h: 500, items: [app('a', 400), app('b', 60), app('c', 90), app('d', 300, 200)] };
 
 const stored = new Map<string, string>();
@@ -76,7 +77,7 @@ describe('a raise on a larger screen', () => {
   });
 
   it('that brings the stack back to the list\'s order drops the field, and the doc is what it was', () => {
-    const start = JSON.stringify({ desks: { d1: DESK }, z: ['d1'] });
+    const start = JSON.stringify(storedLayoutDoc({ desks: { d1: DESK }, z: ['d1'] }));
     restack('d1', 'c', 'front');
     expect(desk().stack).toEqual(['a', 'b', 'd', 'c']);
     restack('d1', 'd', 'front');
@@ -227,7 +228,8 @@ describe('cleanup', () => {
 });
 
 describe('a doc with no stack', () => {
-  const TEXT = '{"desks":{"d1":{"id":"d1","x":0,"y":36,"w":800,"h":500,"items":[{"id":"a","app":"chat","x":400,"y":24,"w":76,"h":76},{"id":"b","app":"agent","x":60,"y":24,"w":76,"h":76}]}},"z":["d1"]}';
+  // As this build writes it: Courier as `STORED_COURIER` (`canvas/storedIds.ts`).
+  const TEXT = `{"desks":{"d1":{"id":"d1","x":0,"y":36,"w":800,"h":500,"items":[{"id":"a","app":"${STORED_COURIER}","x":400,"y":24,"w":76,"h":76},{"id":"b","app":"agent","x":60,"y":24,"w":76,"h":76}]}},"z":["d1"]}`;
 
   it('comes through byte-identical from a read to a write, until something raises', () => {
     useLayoutStore.setState(readLayoutDoc(JSON.parse(TEXT))!);
@@ -246,13 +248,13 @@ describe('an age band', () => {
 
   it('with no band, a desk it has never seen has every app, as ever', () => {
     reconcileLayout(['d-a']);
-    expect(appsOf('d-a')).toEqual(['chat', 'notebook', 'browser', 'agent']);
+    expect(appsOf('d-a')).toEqual(['courier', 'notebook', 'browser', 'agent']);
   });
 
   it("a teen's new desk has no Agent from the first", () => {
     setCurrentBand('teen');
     reconcileLayout(['d-a']);
-    expect(appsOf('d-a')).toEqual(['chat', 'notebook', 'browser']);
+    expect(appsOf('d-a')).toEqual(['courier', 'notebook', 'browser']);
   });
 
   it('takes hold on the desks already here, quietly, and the mirror has it at once', () => {
@@ -263,8 +265,8 @@ describe('an age band', () => {
     fitLayoutToBand();
     off();
     expect(quiet).toEqual([true]);
-    expect(appsOf('d-a')).toEqual(['chat', 'notebook', 'browser']);
-    expect(appsOf('d-b')).toEqual(['chat', 'notebook', 'browser']);
+    expect(appsOf('d-a')).toEqual(['courier', 'notebook', 'browser']);
+    expect(appsOf('d-b')).toEqual(['courier', 'notebook', 'browser']);
     expect(JSON.stringify(readLayoutDoc(JSON.parse(stored.get(LAYOUT_KEY)!)))).not.toContain('agent');
   });
 
@@ -288,7 +290,7 @@ describe('an age band', () => {
     reconcileLayout(['d-a']);
     setCurrentBand('adult');
     fitLayoutToBand();
-    expect(appsOf('d-a')).toEqual(['chat', 'notebook', 'browser', 'agent']);
+    expect(appsOf('d-a')).toEqual(['courier', 'notebook', 'browser', 'agent']);
   });
 });
 

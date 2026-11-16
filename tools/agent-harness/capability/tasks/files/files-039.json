@@ -1,0 +1,45 @@
+{
+  "id": "files-039",
+  "area": "files",
+  "title": "Read a path with spaces",
+  "prompt": "Read Harness/Work Docs/Q4 plan.md and tell me the launch date.",
+  "setup": {
+    "files": {
+      "Harness/Work Docs/Q4 plan.md": "# Q4 plan\n\nLaunch date: 14 January.\nOwner: Dana.\n"
+    }
+  },
+  "approve": "all",
+  "checks": [
+    {
+      "kind": "reply",
+      "contains": [
+        "14 January"
+      ],
+      "state": "done"
+    },
+    {
+      "kind": "cards",
+      "tools": []
+    }
+  ],
+  "policy": {
+    "tools": [
+      "files_read"
+    ]
+  },
+  "standIn": [
+    {
+      "calls": [
+        {
+          "name": "files_read",
+          "input": {
+            "path": "Harness/Work Docs/Q4 plan.md"
+          }
+        }
+      ]
+    },
+    {
+      "text": "The launch date is 14 January."
+    }
+  ]
+}

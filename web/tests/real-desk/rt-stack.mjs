@@ -39,14 +39,16 @@ const rect = (app) => p.evaluate((id) => {
   const r = document.getElementById(id)?.getBoundingClientRect();
   return r ? { x: r.x, y: r.y, w: r.width, h: r.height } : null;
 }, `proxy-${ALLOWED}:${app}`);
-const savedDesk = () => p.evaluate((id) => JSON.parse(localStorage.getItem('ma.layout.v2') ?? '{}').desks?.[id] ?? null, ALLOWED);
+// Courier's id in the stored layout: `chat` until the flip (src/canvas/storedIds.ts), read as `courier` here as the office does.
+const inMemory = (s) => (s == null ? s : s.replaceAll('"chat"', '"courier"').replaceAll(':chat"', ':courier"'));
+const savedDesk = () => p.evaluate(() => localStorage.getItem('ma.layout.v2')).then((s) => JSON.parse(inMemory(s) ?? '{}').desks?.[ALLOWED] ?? null);
 const clash = (a, b) => a.x < b.x + b.w - 0.5 && b.x < a.x + a.w - 0.5 && a.y < b.y + b.h - 0.5 && b.y < a.y + a.h - 0.5;
 const center = (r) => ({ x: r.x + r.w / 2, y: r.y + r.h / 2 });
 
-const chat = await rect('chat');
+const courier = await rect('courier');
 const notebook = await rect('notebook');
 const from = center(notebook);
-const to = { x: chat.x + chat.w * 0.75, y: chat.y + chat.h * 0.6 };
+const to = { x: courier.x + courier.w * 0.75, y: courier.y + courier.h * 0.6 };
 await p.mouse.move(from.x, from.y);
 await p.mouse.down();
 await p.mouse.move(to.x, to.y, { steps: 24 });
@@ -54,10 +56,10 @@ await shot(SHOTS, 'mid-drag');
 await p.mouse.up();
 await wait(800);
 await shot(SHOTS, 'dropped-over');
-const afterChat = await rect('chat');
+const afterCourier = await rect('courier');
 const afterNb = await rect('notebook');
 const onPointer = Math.abs(afterNb.x + afterNb.w / 2 - to.x) < 2 && Math.abs(afterNb.y + afterNb.h / 2 - to.y) < 2;
-step(2, clash(afterChat, afterNb) && onPointer, `Notebook rests over Chat, exactly where dropped: ${JSON.stringify(afterNb)} against ${JSON.stringify(afterChat)}`);
+step(2, clash(afterCourier, afterNb) && onPointer, `Notebook rests over Courier, exactly where dropped: ${JSON.stringify(afterNb)} against ${JSON.stringify(afterCourier)}`);
 
 // The layout saves a moment after a change, so wait for it rather than read too early.
 const settledDesk = async (ok, ms = 8000) => {
@@ -80,7 +82,7 @@ await waitPanel(/online/, 60_000);
 await wait(1500);
 const reloaded = await savedDesk();
 const r1 = await rect('notebook');
-const r2 = await rect('chat');
+const r2 = await rect('courier');
 step(4, JSON.stringify(reloaded) === JSON.stringify(saved) && clash(r1, r2), 'the document and the overlap survive a reload unchanged');
 await shot(SHOTS, 'after-reload');
 
@@ -94,7 +96,7 @@ await clean.focus();
 await p.keyboard.press('Enter');
 await wait(900);
 await shot(SHOTS, 'cleaned');
-const apps = ['chat', 'notebook', 'browser', 'agent'];
+const apps = ['courier', 'notebook', 'browser', 'agent'];
 const rects = await Promise.all(apps.map(rect));
 const overlaps = rects.flatMap((a, i) => rects.slice(i + 1).filter((b) => clash(a, b))).length;
 step(5, overlaps === 0, `Cleanup leaves ${overlaps} overlaps`);
@@ -104,7 +106,7 @@ await undo.focus();
 await p.keyboard.press('Enter');
 await wait(900);
 const undone = await settledDesk((d) => JSON.stringify(d?.stack) === JSON.stringify(saved.stack));
-step(6, JSON.stringify(undone?.stack) === JSON.stringify(saved.stack) && clash(await rect('notebook'), await rect('chat')), `Undo restores the overlap and the stack: ${JSON.stringify(undone?.stack)}`);
+step(6, JSON.stringify(undone?.stack) === JSON.stringify(saved.stack) && clash(await rect('notebook'), await rect('courier')), `Undo restores the overlap and the stack: ${JSON.stringify(undone?.stack)}`);
 await shot(SHOTS, 'undone');
 
 // Leave the test desk's document for the next run: back to a clean arrangement.

@@ -31,6 +31,8 @@ interface Entry {
   asking: boolean;
   /** Asked again while a SUB was on its way. */
   again: boolean;
+  /** A listener came back for it while its SUB was on its way: the next SUB asks for a snapshot, whatever `lastSeq` says. */
+  fresh: boolean;
   attempt: number;
   timer: number;
 }
@@ -54,10 +56,17 @@ export class Subscriptions {
   subscribe(topic: string, params: Record<string, unknown>, handlers: SubHandlers): () => void {
     const key = JSON.stringify([topic, params]);
     let entry = this.entries.get(key);
-    if (entry) {
+    if (entry && !entry.handlers.size) {
+      // Left while its SUB was on its way, and wanted again before the reply: the same subscription, as deskd gives a second
+      // SUB of a topic the same subId (API.md section 5), so an UNSUB for the first would take this one away. The new
+      // listener needs a snapshot of its own: asked again, fresh, once the reply lands.
+      entry.handlers.add(handlers);
+      entry.fresh = true;
+      this.ask(entry);
+    } else if (entry) {
       entry.handlers.add(handlers);
     } else {
-      entry = { key, topic, params, handlers: new Set([handlers]), subId: null, lastSeq: null, asking: false, again: false, attempt: 0, timer: 0 };
+      entry = { key, topic, params, handlers: new Set([handlers]), subId: null, lastSeq: null, asking: false, again: false, fresh: false, attempt: 0, timer: 0 };
       this.entries.set(key, entry);
       this.ask(entry);
     }
@@ -88,7 +97,8 @@ export class Subscriptions {
     this.epoch += 1;
     this.byId.clear();
     this.early.clear();
-    for (const entry of this.entries.values()) {
+    for (const entry of [...this.entries.values()]) {
+      if (!entry.handlers.size) this.entries.delete(entry.key); // left while its SUB was on its way
       window.clearTimeout(entry.timer);
       entry.timer = 0;
       entry.subId = null;
@@ -144,13 +154,21 @@ export class Subscriptions {
     }
     entry.asking = true;
     const epoch = this.epoch;
-    const { topic, params, lastSeq } = entry;
+    const { topic, params } = entry;
+    const lastSeq = entry.fresh ? null : entry.lastSeq;
+    entry.fresh = false;
     wire.sub(lastSeq === null ? { topic, params } : { topic, params, since: lastSeq }).then(
       ({ subId }) => {
         if (epoch !== this.epoch) return;
         entry.asking = false;
-        if (this.entries.get(entry.key) !== entry) {
-          wire.unsub(subId).catch(() => {}); // unsubscribed while this was on its way
+        if (this.entries.get(entry.key) !== entry || !entry.handlers.size) {
+          // Unsubscribed while this was on its way, and nobody came back for it.
+          if (this.entries.get(entry.key) === entry) this.entries.delete(entry.key);
+          if (entry.subId !== null) this.byId.delete(entry.subId);
+          entry.subId = null;
+          entry.again = false;
+          this.early.delete(subId);
+          wire.unsub(subId).catch(() => {});
           return;
         }
         entry.attempt = 0;
@@ -168,6 +186,14 @@ export class Subscriptions {
         if (epoch !== this.epoch || this.entries.get(entry.key) !== entry) return;
         entry.asking = false;
         entry.again = false;
+        if (!entry.handlers.size) {
+          this.entries.delete(entry.key);
+          if (entry.subId !== null) {
+            this.byId.delete(entry.subId);
+            this.wire?.unsub(entry.subId).catch(() => {});
+          }
+          return;
+        }
         const code = (err as { code?: string } | null)?.code ?? '';
         if (FINAL.has(code)) for (const h of entry.handlers) h.refused?.(code);
         else this.later(entry);
@@ -185,9 +211,12 @@ export class Subscriptions {
   }
 
   private drop(entry: Entry): void {
-    this.entries.delete(entry.key);
     window.clearTimeout(entry.timer);
-    if (entry.subId === null) return; // a SUB still on its way cleans up after itself
+    entry.timer = 0;
+    // A SUB still on its way cleans up after itself when its reply lands, unless a listener comes back for it first.
+    if (entry.asking) return;
+    this.entries.delete(entry.key);
+    if (entry.subId === null) return;
     this.byId.delete(entry.subId);
     this.early.delete(entry.subId);
     this.wire?.unsub(entry.subId).catch(() => {});

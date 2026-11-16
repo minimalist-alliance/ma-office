@@ -1,0 +1,10 @@
+From: Bücher Team <info@bücher.example>
+To: me@desk.example
+Date: Fri, 13 Nov 2026 10:00:00 +0000
+Subject: Bücher on sale
+Message-ID: <idn-utf8-address@corpus.example>
+MIME-Version: 1.0
+X-Corpus-Note: raw UTF-8 domain in the address (RFC 6532 / EAI)
+Content-Type: text/plain; charset=utf-8
+
+Alle Bücher sind reduziert.

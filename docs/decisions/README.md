@@ -86,12 +86,13 @@ One file per decision: `NNNN-short-title.md`, numbered in order. Never edit an a
 | [0092](0092-browser-downloads-and-tab-order.md) | The Browser says when a download starts and ends, and keeps its tab order across a stop and a wake | Proposed. Built on `sub/ls-31-36` | 2026-11-10 |
 | [0093](0093-zen-theme.md) | Dusk becomes Zen: the name, a natural palette, natural desk textures | Accepted (the owner; amends 0029, 0050) | 2026-11-10 |
 | [0094](0094-office-backgrounds.md) | Office backgrounds | Proposed. Built in the Desk app | 2026-11-10 |
+| [0095](0095-notebook-tabs-are-binder-sections.md) | Notebook tabs are section dividers: notebooks, then tabs, then pages, shown as a binder | Accepted (the owner, design Q5). Built in the Notebook app | 2026-11-11 |
+| [0096](0096-scope-is-a-filter.md) | A scope is a filter: Personal, Work and Guild hide the other desks and their badges | Accepted (the owner, design Q6). Built, but for the cross-scope dot | 2026-11-11 |
+| [0097](0097-agent-parser-sidecar.md) | The Agent's attachment reader runs in a sandbox of its own: uid 1113, no network, no `/data` (ISS20-P1; `desk-svc -accept` on desk-agent's image, on cloud, shared-host and self-hosted desks) | Proposed (amends 0049 item 3 and 0072 section 2). Built on both sides, proven on lab boxes, not baked (`docs/sub-status/desk-parse.md`); ceilings raised to 2,000,000 characters and 500 pages | 2026-11-12 |
 
 ### Drafts, not numbered yet
 | Draft | Title | Status | Date |
 |---|---|---|---|
-| [0095](0095-notebook-tabs-are-binder-sections.md) | Notebook tabs are section dividers: notebooks, then tabs, then pages, shown as a binder | Accepted (the owner, design Q5). Built in the Notebook app | 2026-11-11 |
-| [0096](0096-scope-is-a-filter.md) | A scope is a filter: Personal, Work and Guild hide the other desks and their badges | Accepted (the owner, design Q6). Built, but for the cross-scope dot | 2026-11-11 |
 | [agent tools](draft-agent-tools-approvals.md) | The Agent's tools and approvals at launch | Proposed (draft; the Desk range is full) | 2026-11-11 |
 | [desk app contract](draft-desk-app-contract.md) | The desk app contract: what any app must meet to run on a desk | Draft. Its section 13, updates by signed batches, is built on the desk (image 0.3.2 on; `docs/interfaces/desk-runtime.md` §6.1) | 2026-11-06 |
 | [export and transfer](draft-data-export-and-transfer.md) | Download all my data, and move my desk to my own hardware | Draft. The desk's half is built (`desk-data`, image 0.2.6 on) | 2026-11-06 |

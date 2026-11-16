@@ -17,19 +17,22 @@ import java.util.function.LongSupplier;
  * first, so under sustained load a very late retry could run again; optimistic concurrency
  * ({@code p.rowVersion}) is what catches that. Calls still running are never evicted. Expired
  * entries go when something next touches the store, so there's no timer.
+ *
+ * <p>The agent socket's tool calls keep their results the same way, by the call's own key ({@code tools/ToolHost},
+ * {@code API.md} §18, "Keys"): one store of their own, with {@code sub} the agent and {@code method} {@code tcall}.
  */
-final class IdempotencyStore {
+public final class IdempotencyStore {
 
-    static final long DEFAULT_TTL_NANOS = 10L * 60 * 1_000_000_000L;
-    static final int DEFAULT_MAX_ENTRIES = 4096;
+    public static final long DEFAULT_TTL_NANOS = 10L * 60 * 1_000_000_000L;
+    public static final int DEFAULT_MAX_ENTRIES = 4096;
     /** Room for 8 replies at the 1 MiB limit, and far more of the usual small ones. */
-    static final long DEFAULT_MAX_BYTES = 8L * 1024 * 1024;
+    public static final long DEFAULT_MAX_BYTES = 8L * 1024 * 1024;
 
     /** A finished call, as it went on the wire. */
-    record Stored(boolean error, byte[] payload) {}
+    public record Stored(boolean error, byte[] payload) {}
 
     /** The caller owns the call: it runs the handler, then finishes or abandons the claim. */
-    final class Claim {
+    public final class Claim {
         private final String key;
         private final Entry entry;
         private final boolean owner;
@@ -40,12 +43,12 @@ final class IdempotencyStore {
             this.owner = owner;
         }
 
-        boolean isOwner() {
+        public boolean isOwner() {
             return owner;
         }
 
         /** Stores the outcome and wakes anyone waiting on the same key. */
-        void finish(Stored stored) {
+        public void finish(Stored stored) {
             lock.lock();
             try {
                 entry.finishedAtNanos = nanoTime.getAsLong();
@@ -61,7 +64,7 @@ final class IdempotencyStore {
         }
 
         /** The handler stopped without applying anything, so a retry should run it again. */
-        void abandon() {
+        public void abandon() {
             lock.lock();
             try {
                 entries.remove(key, entry);
@@ -76,7 +79,7 @@ final class IdempotencyStore {
          *
          * @return the stored result, or null if the owner gave up and the caller should claim again
          */
-        Stored await() throws InterruptedException {
+        public Stored await() throws InterruptedException {
             try {
                 return entry.done.get();
             } catch (ExecutionException e) {
@@ -99,14 +102,14 @@ final class IdempotencyStore {
     private final long maxBytes;
     private long bytes;
 
-    IdempotencyStore(LongSupplier nanoTime, long ttlNanos, int maxEntries, long maxBytes) {
+    public IdempotencyStore(LongSupplier nanoTime, long ttlNanos, int maxEntries, long maxBytes) {
         this.nanoTime = nanoTime;
         this.ttlNanos = ttlNanos;
         this.maxEntries = maxEntries;
         this.maxBytes = maxBytes;
     }
 
-    Claim claim(String sub, String method, String idem) {
+    public Claim claim(String sub, String method, String idem) {
         String key = sub + '\0' + method + '\0' + idem;
         lock.lock();
         try {
@@ -123,7 +126,7 @@ final class IdempotencyStore {
         }
     }
 
-    int size() {
+    public int size() {
         lock.lock();
         try {
             return entries.size();

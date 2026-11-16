@@ -69,6 +69,8 @@ import org.slf4j.LoggerFactory;
  * tabs are asked, from the top down, for {@code document.visibilityState} in an isolated world, where a
  * page can't redefine it. That's a constant, and no client can reach it. The only other scripts deskd runs are the two
  * constants of {@link FilteredSites}, on a teen's desk and only on Chromium's own error page, in the same kind of world,
+ * the same read of that page and one {@code location.replace} to the portal ({@link PortalRedirect}), on any desk and only on
+ * the policy's blocked page for an office host, in that world too,
  * the simplified view's constants ({@code browser/minified}), in a world of its own, on a tab a client asked to see
  * simplified, and {@link ProtectedMedia}'s two, which tell deskd that a page was refused protected playback: one in the
  * top frame's own world of every member tab, and one in the same isolated world.
@@ -108,11 +110,20 @@ final class BrowserTabs implements CdpClient.Events, Topic {
     /** Where Chromium's own error page lives, whatever the URL that failed. */
     private static final String ERROR_PAGE_URL = "chrome-error://chromewebdata/";
     /**
+     * The policy's blocked page ({@code ERR_BLOCKED_BY_ADMINISTRATOR}) is the one error page whose error-code element is empty,
+     * and the one with the info icon: every other net error tried on Chrome 156 and 158 shows its code and the generic or
+     * offline icon. It names the error nowhere, in any language.
+     */
+    private static final String POLICY_BLOCK = "document.querySelector('.error-code').textContent.trim() === ''"
+            + " && document.querySelector('#main-content .icon.icon-info') !== null";
+    /**
      * Chromium's error page puts its net error in an element of this class, without the {@code net::} (checked on Chrome
-     * 156). Anything else answers an empty string.
+     * 156), but for the policy's block, read as {@value PortalRedirect#BLOCKED} from {@link #POLICY_BLOCK}. Anything else
+     * answers an empty string.
      */
     private static final String ERROR_CODE = "location.href === '" + ERROR_PAGE_URL + "' && document.querySelector('.error-code')"
-            + " ? document.querySelector('.error-code').textContent.trim().slice(0, 64) : ''";
+            + " ? (" + POLICY_BLOCK + " ? '" + PortalRedirect.BLOCKED + "'"
+            + " : document.querySelector('.error-code').textContent.trim().slice(0, 64)) : ''";
     /** How many of {@code Timing.visibility} one read of the list can take, whatever the number of tabs. */
     private static final int VISIBILITY_WAITS = 3;
     /** A new tab, opened by Ctrl+T, is a member's tab though it's a chrome: page. */
@@ -181,6 +192,24 @@ final class BrowserTabs implements CdpClient.Events, Topic {
     }
 
     /**
+     * What the Browser's zoom hears ({@link BrowserZoom}). Called on the read path or the connector's thread, so none may
+     * block, take a lock that waits on this one, or call Chromium.
+     */
+    interface ZoomHooks {
+        /** The connection is up and its tabs are read. */
+        void onConnected();
+
+        /** {@code Page.frameResized} on a member's tab's own session: its viewport, or its page zoom, changed. */
+        void onResized(String tabId, String sessionId);
+
+        /** A member's tab's main frame committed a new document. */
+        void onMainFrameCommitted(String tabId, String sessionId);
+
+        /** The connection is gone, and every session with it. */
+        void onDisconnected();
+    }
+
+    /**
      * One of the member's tabs that has deskd's session, as the phone view needs it.
      *
      * @param onScreen it's the tab on screen, as last known; never a guess
@@ -192,8 +221,14 @@ final class BrowserTabs implements CdpClient.Events, Topic {
         String mainFrameId;
         /** The main frame's document as of the last commit heard of, or null if none has been since deskd attached. */
         String mainLoaderId;
-        /** The last error page handed to {@link FilteredSites}, so that it's handed over once. */
-        String filterLoaderId;
+        /** The last error page handed to {@link FilteredSites} or {@link PortalRedirect}, so that it's handed over once. */
+        String errorLoaderId;
+        /** deskd has sent this tab to the portal, and no commit has come since. */
+        boolean portalSent;
+        /** The main frame's last commit was a page of the portal. */
+        boolean onPortal;
+        /** The last blocked office page handed to {@link PortalRedirect} to send on. */
+        String portalLoaderId;
         String url = "";
         String title = "";
         boolean member;
@@ -229,10 +264,13 @@ final class BrowserTabs implements CdpClient.Events, Topic {
     private final Runnable browserLost;
     private final Runnable browserDisplaced;
     private final FilteredSites filtered;
+    private final PortalRedirect portal;
     private final Timing timing;
     private final ReentrantLock lock = new ReentrantLock();
     private final Condition readyChanged = lock.newCondition();
     private final Condition tickWake = lock.newCondition();
+    /** A main frame committed somewhere, or the model went. */
+    private final Condition committed = lock.newCondition();
     private final Map<String, Tab> tabs = new LinkedHashMap<>();
     private final Map<String, Tab> bySession = new HashMap<>();
     private volatile long lastCallNanos;
@@ -242,6 +280,7 @@ final class BrowserTabs implements CdpClient.Events, Topic {
     private volatile BooleanSupplier minifiedWanted = () -> false;
     /** The phone view ({@link BrowserView}), once it listens: told of events after the lock is let go. */
     private volatile ViewHooks viewHooks;
+    private volatile ZoomHooks zoomHooks;
     private boolean ready;
     private long readySinceNanos;
     private long attemptFailures;
@@ -335,9 +374,10 @@ final class BrowserTabs implements CdpClient.Events, Topic {
             Runnable browserLost,
             Runnable browserDisplaced,
             FilteredSites filtered,
+            PortalRedirect portal,
             BrowserFreeze freeze,
             Timing timing) {
-        this(http, port, listener, hub, viewer, browserLost, browserDisplaced, filtered, freeze, timing, TabOrder.onDataVolume());
+        this(http, port, listener, hub, viewer, browserLost, browserDisplaced, filtered, portal, freeze, timing, TabOrder.onDataVolume());
     }
 
     /** @param order where the tab order is kept; {@link TabOrder#onDataVolume} on a desk */
@@ -350,6 +390,7 @@ final class BrowserTabs implements CdpClient.Events, Topic {
             Runnable browserLost,
             Runnable browserDisplaced,
             FilteredSites filtered,
+            PortalRedirect portal,
             BrowserFreeze freeze,
             Timing timing,
             TabOrder order) {
@@ -359,6 +400,7 @@ final class BrowserTabs implements CdpClient.Events, Topic {
         this.browserLost = browserLost;
         this.browserDisplaced = browserDisplaced;
         this.filtered = filtered;
+        this.portal = portal;
         this.timing = timing;
         this.cdp = new CdpClient(http, port, listener, this, this::wanted, timing.cdp());
         long now = System.nanoTime();
@@ -571,13 +613,26 @@ final class BrowserTabs implements CdpClient.Events, Topic {
         }
     }
 
-    /** @return the result of the method: the tab, and netError if the navigation failed */
+    /**
+     * An office URL goes straight to the portal while that's on ({@link PortalRedirect#direct}), so the office never gets an
+     * entry in the tab's history.
+     *
+     * @return the result of the method: the tab, and netError if the navigation failed
+     */
     Map<String, Object> navigate(RpcContext context, String tabId, String url) throws RpcException, InterruptedException {
         requireReady();
         Tab tab = resolve(tabId);
+        lock.lock();
+        try {
+            // The member's own navigation is never the portal's loop, wherever the tab was.
+            tab.portalSent = false;
+            tab.onPortal = false;
+        } finally {
+            lock.unlock();
+        }
         Map<String, Object> reply;
         try {
-            reply = applyOnTab(context, tab, "Page.navigate", Map.of("url", url), timing.navigate());
+            reply = applyOnTab(context, tab, "Page.navigate", Map.of("url", portal.direct(url)), timing.navigate());
         } catch (CdpException e) {
             if (e.kind() == CdpException.Kind.TIMEOUT) {
                 return slowNavigation(tab);
@@ -588,12 +643,38 @@ final class BrowserTabs implements CdpClient.Events, Topic {
         result.put("tabId", tab.id);
         String netError = TabText.clean(Json.string(reply, "errorText"), NET_ERROR_CHARS);
         if (BLOCKED.equals(netError)) {
+            if (onItsWayToThePortal(tab, Json.string(reply, "loaderId"))) {
+                // A redirect ended on the office, and that page has gone to the portal: nothing went wrong to show.
+                return result;
+            }
             throw new RpcException(RpcException.FORBIDDEN, "Blocked by the desk's policy", Map.of("reason", "blocked"));
         }
         if (!netError.isEmpty()) {
             result.put("netError", netError);
         }
         return result;
+    }
+
+    /**
+     * Whether the policy's blocked page this navigation ended on was handed to {@link PortalRedirect}, as one a redirect took to
+     * the office is. Page.navigate answers a blocked navigation just before its error page commits (Chrome 156), so this waits
+     * for that commit, with the reply's loader, for up to {@code request}. Only while the portal is on; a reply with no loader,
+     * or a commit that doesn't come, is the policy's block.
+     */
+    private boolean onItsWayToThePortal(Tab tab, String loaderId) throws InterruptedException {
+        if (!portal.on() || !isPlainId(loaderId)) {
+            return false;
+        }
+        long left = timing.request().toNanos();
+        lock.lockInterruptibly();
+        try {
+            while (!closed && tabs.get(tab.id) == tab && !loaderId.equals(tab.mainLoaderId) && left > 0) {
+                left = committed.awaitNanos(left);
+            }
+            return loaderId.equals(tab.portalLoaderId);
+        } finally {
+            lock.unlock();
+        }
     }
 
     /**
@@ -672,7 +753,7 @@ final class BrowserTabs implements CdpClient.Events, Topic {
         return tab.id;
     }
 
-    /** @param url already through {@link BrowserUrl}, or null for an empty tab */
+    /** @param url already through {@link BrowserUrl}, or null for an empty tab. An office URL opens the portal, as navigate's does */
     String open(RpcContext context, String url) throws RpcException, InterruptedException {
         requireReady();
         lock.lock();
@@ -685,7 +766,7 @@ final class BrowserTabs implements CdpClient.Events, Topic {
         }
         aboutToApply(context);
         try {
-            return createTab(url == null ? BLANK : url);
+            return createTab(url == null ? BLANK : portal.direct(url));
         } catch (CdpException e) {
             throw toRpc(e, null);
         }
@@ -1055,6 +1136,10 @@ final class BrowserTabs implements CdpClient.Events, Topic {
         } finally {
             lock.unlock();
         }
+        ZoomHooks zoom = zoomHooks;
+        if (zoom != null) {
+            zoom.onConnected();
+        }
     }
 
     /**
@@ -1117,6 +1202,10 @@ final class BrowserTabs implements CdpClient.Events, Topic {
         ViewHooks view = viewHooks;
         if (view != null) {
             view.onDisconnected();
+        }
+        ZoomHooks zoom = zoomHooks;
+        if (zoom != null) {
+            zoom.onDisconnected();
         }
         // Ready or still settling: either way Chromium was there, and may have gone for good.
         if (unexpected) {
@@ -1218,6 +1307,17 @@ final class BrowserTabs implements CdpClient.Events, Topic {
                 }
             }
         }
+        ZoomHooks zoom = zoomHooks;
+        if (zoom != null && sessionTab != null) {
+            if ("Page.frameResized".equals(method)) {
+                zoom.onResized(sessionTab, sessionId);
+            } else if ("Page.frameNavigated".equals(method)) {
+                Map<String, Object> frame = Json.object(params, "frame");
+                if (frame != null && frame.get("parentId") == null) {
+                    zoom.onMainFrameCommitted(sessionTab, sessionId);
+                }
+            }
+        }
     }
 
     // ---- what the phone view may do
@@ -1225,6 +1325,44 @@ final class BrowserTabs implements CdpClient.Events, Topic {
     /** The phone view listens from now on. Call once, before anything can happen. */
     void listenForView(ViewHooks hooks) {
         viewHooks = hooks;
+    }
+
+    // ---- what the Browser's zoom may do
+
+    /** The Browser's zoom listens from now on. Call once, before anything can happen. */
+    void listenForZoom(ZoomHooks hooks) {
+        zoomHooks = hooks;
+    }
+
+    /** The Browser's zoom's way to Chromium: the browser, its own hidden page, and the member's tabs' sessions. */
+    BrowserZoom.Chromium zoomAccess() {
+        return new BrowserZoom.Chromium() {
+            @Override
+            public boolean ready() {
+                lock.lock();
+                try {
+                    return ready && cdp.isConnected();
+                } finally {
+                    lock.unlock();
+                }
+            }
+
+            @Override
+            public List<ViewTab> memberTabs() {
+                return viewTabs();
+            }
+
+            @Override
+            public Map<String, Object> call(String sessionId, String method, Map<String, Object> params, Duration timeout)
+                    throws CdpException, InterruptedException {
+                return cdp.call(sessionId, method, params, timeout);
+            }
+
+            @Override
+            public Duration request() {
+                return timing.request();
+            }
+        };
     }
 
     /**
@@ -1775,12 +1913,17 @@ final class BrowserTabs implements CdpClient.Events, Topic {
         }
         String loaderId = Json.string(frame, "loaderId");
         tab.mainLoaderId = isPlainId(loaderId) ? loaderId : null;
+        committed.signalAll();
         // A new document: what the last one was refused is its own, and this one is watched afresh.
         tab.protectedMedia = null;
         markHistoryDirty(tab);
         String unreachable = Json.string(frame, "unreachableUrl");
+        // What came just before this commit, for the portal: never a loop (PortalRedirect).
+        boolean afterPortal = tab.portalSent || tab.onPortal;
+        tab.portalSent = false;
+        tab.onPortal = unreachable == null && portal.isPortalPage(Json.string(frame, "url"));
         if (unreachable != null) {
-            errorPageCommitted(tab, sessionId, unreachable);
+            errorPageCommitted(tab, sessionId, unreachable, afterPortal);
         } else {
             armSoon(tab);
         }
@@ -1893,20 +2036,37 @@ final class BrowserTabs implements CdpClient.Events, Topic {
 
     /**
      * With the lock held, on the read path or right after an attach: the main frame shows Chromium's error page for
-     * {@code unreachableUrl}, as of the commit {@code tab.mainLoaderId} names. Each such commit goes to the filter once.
+     * {@code unreachableUrl}, as of the commit {@code tab.mainLoaderId} names. Each such commit goes to one hook, once: an
+     * office host's to the portal while that's on, and any other to the teen filter while the desk is a teen's. So the two
+     * never both act on one page, whatever its error.
+     *
+     * @param afterPortal deskd sent the tab to the portal, or it showed the portal, just before this commit
      */
-    private void errorPageCommitted(Tab tab, String sessionId, String unreachableUrl) {
+    private void errorPageCommitted(Tab tab, String sessionId, String unreachableUrl, boolean afterPortal) {
         String loaderId = tab.mainLoaderId;
-        if (!filtered.active() || loaderId == null || loaderId.equals(tab.filterLoaderId)) {
+        if (loaderId == null || loaderId.equals(tab.errorLoaderId)) {
             return;
         }
-        tab.filterLoaderId = loaderId;
-        filtered.errorPageCommitted(unreachableUrl, new TabErrorPage(tab, sessionId, tab.mainFrameId, loaderId));
+        boolean toPortal = portal.wants(unreachableUrl);
+        if (!toPortal && !filtered.active()) {
+            return;
+        }
+        tab.errorLoaderId = loaderId;
+        TabErrorPage page = new TabErrorPage(tab, sessionId, tab.mainFrameId, loaderId);
+        if (toPortal) {
+            if (!afterPortal) {
+                tab.portalLoaderId = loaderId;
+            }
+            portal.errorPageCommitted(page, afterPortal);
+        } else {
+            filtered.errorPageCommitted(unreachableUrl, page);
+        }
     }
 
     /**
-     * A tab already on an error page when deskd attached, as a restored tab or one opened straight onto a filtered site
-     * can be, has no commit to tell of it. Only on a teen's desk, and one call per tab.
+     * A tab already on an error page when deskd attached, as a restored tab, one opened straight onto a filtered site or one a
+     * page opened onto the office can be, has no commit to tell of it. Only while the teen filter or the portal is on, and one
+     * call per tab.
      */
     private void lookForErrorPage(Tab tab, String sessionId) throws InterruptedException {
         Map<String, Object> frame;
@@ -1937,7 +2097,7 @@ final class BrowserTabs implements CdpClient.Events, Topic {
                 tab.mainFrameId = frameId;
             }
             if (loaderId.equals(tab.mainLoaderId)) {
-                errorPageCommitted(tab, sessionId, unreachable);
+                errorPageCommitted(tab, sessionId, unreachable, tab.portalSent || tab.onPortal);
             }
         } finally {
             lock.unlock();
@@ -1945,12 +2105,12 @@ final class BrowserTabs implements CdpClient.Events, Topic {
     }
 
     /**
-     * One commit of the error page, for {@link FilteredSites}. Each step looks first that no other commit has been heard
-     * of since. A world is made in whatever document the frame holds when Chromium gets the call, so that's looked at
-     * again once it has answered, and with still no other commit heard of, the world is this page's. Both scripts run in
-     * it, and each checks first that it's Chromium's error page.
+     * One commit of the error page, for {@link FilteredSites} or {@link PortalRedirect}. Each step looks first that no other
+     * commit has been heard of since. A world is made in whatever document the frame holds when Chromium gets the call, so
+     * that's looked at again once it has answered, and with still no other commit heard of, the world is this page's. Every
+     * script runs in it, and each checks first that it's Chromium's error page.
      */
-    private final class TabErrorPage implements FilteredSites.ErrorPage {
+    private final class TabErrorPage implements FilteredSites.ErrorPage, PortalRedirect.ErrorPage {
         private final Tab tab;
         private final String sessionId;
         private final String frameId;
@@ -1989,6 +2149,48 @@ final class BrowserTabs implements CdpClient.Events, Topic {
                 return false;
             }
             return "written".equals(evaluate(context, writeExpression(html)));
+        }
+
+        /**
+         * The portal in place of the policy's blocked page: a {@code location.replace} in the world made in that document,
+         * so the office's entry leaves the tab's history, and a page that has replaced it since is never sent anywhere, as
+         * the call fails instead. The tab is marked sent first, so whatever commits next, the portal or the office again,
+         * is known to come right after.
+         */
+        @Override
+        public boolean leaveFor(String url) throws CdpException, InterruptedException {
+            Number context = world;
+            if (context == null || !markSent(true)) {
+                return false;
+            }
+            boolean left = false;
+            try {
+                left = "left".equals(evaluate(context, leaveExpression(url)));
+                return left;
+            } finally {
+                if (!left) {
+                    markSent(false);
+                }
+            }
+        }
+
+        /** Sets the tab's {@code portalSent} if this page is still the one shown. @return whether it is */
+        private boolean markSent(boolean sent) {
+            lock.lock();
+            try {
+                if (closed || tabs.get(tab.id) != tab || !sessionId.equals(tab.sessionId) || !loaderId.equals(tab.mainLoaderId)) {
+                    return false;
+                }
+                tab.portalSent = sent;
+                return true;
+            } finally {
+                lock.unlock();
+            }
+        }
+
+        private static String leaveExpression(String url) {
+            return "location.href === '" + ERROR_PAGE_URL + "' && document.querySelector('.error-code') && " + POLICY_BLOCK
+                    + " ? (location.replace(" + new String(Json.bytes(url), StandardCharsets.UTF_8) + "), 'left') : ''";
         }
 
         /**
@@ -2035,6 +2237,7 @@ final class BrowserTabs implements CdpClient.Events, Topic {
     private void removeTab(String id) {
         Tab tab = id == null ? null : tabs.remove(id);
         if (tab != null) {
+            committed.signalAll();
             if (tab.sessionId != null) {
                 bySession.remove(tab.sessionId);
             }
@@ -2057,6 +2260,7 @@ final class BrowserTabs implements CdpClient.Events, Topic {
     }
 
     private void clearModel() {
+        committed.signalAll();
         ready = false;
         tabs.clear();
         bySession.clear();
@@ -2108,7 +2312,7 @@ final class BrowserTabs implements CdpClient.Events, Topic {
             cdp.call(sessionId, "Page.enable", Map.of(), timing.request());
             watchProtectedMedia(tab, sessionId);
             readHistory(tab, sessionId);
-            if (filtered.active()) {
+            if (filtered.active() || portal.on()) {
                 lookForErrorPage(tab, sessionId);
             }
         } catch (CdpException e) {

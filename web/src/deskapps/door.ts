@@ -6,7 +6,7 @@ import { create } from 'zustand';
 
 type Host = typeof import('./host/index');
 
-/** The first load's own window states, handed to the host (`watch.ts`): imported there, they stay in the first load's main chunk. */
+/** The window states the host borrows (`hostDeps.ts`, in every app's window's chunk), handed to it as it starts. */
 export interface HostDeps {
   PanelBody: typeof import('../browser/BrowserWindow').PanelBody;
   deskPanel: typeof import('../notebook/panel').deskPanel;
@@ -26,21 +26,20 @@ let loading: Promise<void> | undefined;
 const said = new Map<string, unknown>();
 
 /**
- * Where the host's chunk comes from, and the window states it borrows: `deskapps/watch.ts` sets both, from the shell's own
- * first-load module. Imported by the host itself, the windows' desk states (`browser/BrowserWindow`, `desk/windowVm`,
- * `notebook/panel`) were split out of the first load's main chunk into a chunk of their own, 3 KB more of first load.
+ * Where the host's chunk comes from, and the window states it borrows: `deskapps/watch.ts` sets both. The states
+ * (`browser/BrowserWindow`'s `PanelBody`, `desk/windowVm`, `notebook/panel`) are every app's window's (`hostDeps.ts`), a chunk
+ * of their own since `sub/mm-js-budget`, fetched beside the host's so neither waits for the other. Imported by the host itself,
+ * Rolldown would split them into a chunk the host's then waits for.
  */
-let importHost: (() => Promise<Host>) | undefined;
-let deps: HostDeps;
-export const setHostImport = (f: () => Promise<Host>, d: HostDeps): void => {
-  importHost = f;
-  deps = d;
+let importHost: (() => Promise<[Host, HostDeps]>) | undefined;
+export const setHostImport = (f: () => Promise<Host>, d: () => Promise<HostDeps>): void => {
+  importHost = () => Promise.all([f(), d()]);
 };
 
 /** Loads the host's chunk, once. A load that failed is tried again the next time something asks. */
 export function loadHost(): void {
   loading ??= importHost?.().then(
-    (m) => {
+    ([m, deps]) => {
       host = m;
       m.start(() => useDoor.setState((s) => ({ rev: s.rev + 1 })), deps, said);
       useDoor.setState({ host: m });
@@ -49,6 +48,14 @@ export function loadHost(): void {
       loading = undefined;
     },
   );
+}
+
+/**
+ * This tab's tokens became another account's (ISS-89's follow-up): what the last member's desks said before the host was
+ * here goes. Once it's here, each desk's word goes from it with that desk's link (`forgetLinks` in `desk/liveStore.ts`).
+ */
+export function forgetSaid(): void {
+  said.clear();
 }
 
 /** What a desk's `apps` topic says (`desk/liveStore.ts`). */

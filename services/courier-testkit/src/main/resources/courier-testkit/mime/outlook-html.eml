@@ -1,0 +1,50 @@
+From: Procurement <procurement@example.com>
+To: me@desk.example
+Date: Fri, 13 Nov 2026 10:00:00 +0000
+Subject: Procurement figures
+Message-ID: <outlook-html@corpus.example>
+MIME-Version: 1.0
+X-Corpus-Note: Outlook HTML: Word namespaces, mso conditional comments, o:p, MsoNormal styles
+Thread-Topic: Procurement figures
+Thread-Index: AdtVb2xhbmRlcg==
+Accept-Language: en-US
+Content-Language: en-US
+X-MS-Has-Attach:
+X-MS-TNEF-Correlator:
+Content-Type: multipart/alternative; boundary="_000_OUT1_"
+
+--_000_OUT1_
+Content-Type: text/plain; charset="us-ascii"
+Content-Transfer-Encoding: quoted-printable
+
+Hello,
+
+The procurement figures are in the shared folder.
+
+Regards
+
+--_000_OUT1_
+Content-Type: text/html; charset="us-ascii"
+Content-Transfer-Encoding: quoted-printable
+
+<html xmlns:v=3D"urn:schemas-microsoft-com:vml" xmlns:o=3D"urn:schemas-micr=
+osoft-com:office:office" xmlns:w=3D"urn:schemas-microsoft-com:office:word" =
+xmlns:m=3D"http://schemas.microsoft.com/office/2004/12/omml" xmlns=3D"http:=
+//www.w3.org/TR/REC-html40"><head><meta http-equiv=3D"Content-Type" content=
+=3D"text/html; charset=3Dus-ascii"><meta name=3D"Generator" content=3D"Micr=
+osoft Word 15 (filtered medium)"><!--[if gte mso 9]><xml><o:shapedefaults v=
+:ext=3D"edit" spidmax=3D"1026" /></xml><![endif]--><style><!--
+/* Font Definitions */
+@font-face {font-family:"Cambria Math";}
+p.MsoNormal, li.MsoNormal, div.MsoNormal {margin:0cm; font-size:11.0pt; fon=
+t-family:"Calibri",sans-serif;}
+@page WordSection1 {size:612.0pt 792.0pt;}
+div.WordSection1 {page:WordSection1;}
+--></style></head><body lang=3D"EN-US" link=3D"#0563C1" vlink=3D"#954F72" s=
+tyle=3D"word-wrap:break-word"><div class=3D"WordSection1"><p class=3D"MsoNo=
+rmal">Hello,<o:p></o:p></p><p class=3D"MsoNormal"><o:p>&nbsp;</o:p></p><p c=
+lass=3D"MsoNormal">The procurement figures are in the shared folder.<o:p></=
+o:p></p><p class=3D"MsoNormal"><o:p>&nbsp;</o:p></p><p class=3D"MsoNormal">=
+Regards<o:p></o:p></p></div></body></html>
+
+--_000_OUT1_--

@@ -1,0 +1,75 @@
+{
+  "id": "notebook-002",
+  "area": "notebook",
+  "title": "List one tab's pages",
+  "prompt": "List the pages in my Harness tab.",
+  "setup": {
+    "notebook": [
+      {
+        "tab": "Harness",
+        "title": "Reading list",
+        "markdown": "# Reading list\n\n- The Left Hand of Darkness\n- Piranesi\n"
+      },
+      {
+        "tab": "Harness",
+        "title": "Gift ideas",
+        "markdown": "# Gift ideas\n\n- Mom: scarf\n- Dad: chess set\n"
+      },
+      {
+        "tab": "Harness",
+        "title": "Recipes to try",
+        "markdown": "# Recipes to try\n\n- shakshuka\n"
+      }
+    ]
+  },
+  "approve": "all",
+  "checks": [
+    {
+      "kind": "reply",
+      "contains": [
+        "Reading list",
+        "Gift ideas",
+        "Recipes to try"
+      ],
+      "state": "done"
+    },
+    {
+      "kind": "cards",
+      "tools": []
+    }
+  ],
+  "policy": {
+    "tools": [
+      "notebook_list"
+    ]
+  },
+  "standIn": [
+    {
+      "calls": [
+        {
+          "name": "notebook_list",
+          "input": {}
+        }
+      ]
+    },
+    {
+      "calls": [
+        {
+          "name": "notebook_list",
+          "input": {
+            "tabId": {
+              "$re": {
+                "step": 0,
+                "call": 0,
+                "pattern": "\"tabId\":\"([^\"]+)\",\"title\":\"Harness\""
+              }
+            }
+          }
+        }
+      ]
+    },
+    {
+      "text": "The Harness tab has Reading list, Gift ideas and Recipes to try."
+    }
+  ]
+}

@@ -1,0 +1,11 @@
+From: Shipping <shipping@example.com>
+To: me@desk.example
+Date: Fri, 13 Nov 2026 10:00:00 +0000
+Subject: Smart quotes
+Message-ID: <charset-mislabeled-utf8@corpus.example>
+MIME-Version: 1.0
+X-Corpus-Note: labelled utf-8 but the bytes are windows-1252 (invalid UTF-8)
+Content-Type: text/plain; charset=utf-8
+Content-Transfer-Encoding: 8bit
+
+“The shipment left today,” said the dock — 3 crates, €90.

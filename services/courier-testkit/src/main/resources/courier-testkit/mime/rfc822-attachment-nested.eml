@@ -1,0 +1,38 @@
+From: Office <office@example.com>
+To: me@desk.example
+Date: Fri, 13 Nov 2026 10:00:00 +0000
+Subject: Fwd: Signed lease
+Message-ID: <rfc822-attachment-nested@corpus.example>
+MIME-Version: 1.0
+X-Corpus-Note: a forwarded message/rfc822 attachment that holds its own attachment; it counts as one
+Content-Type: multipart/mixed; boundary="fw-0"
+
+--fw-0
+Content-Type: text/plain; charset=utf-8
+
+The signed lease is in the attached message.
+--fw-0
+Content-Type: message/rfc822; name="lease.eml"
+Content-Disposition: attachment; filename="lease.eml"
+
+From: landlord@property.example
+To: office@example.com
+Subject: Signed lease
+Date: Tue, 10 Nov 2026 12:00:00 +0000
+MIME-Version: 1.0
+Content-Type: multipart/mixed; boundary="fw-1"
+
+--fw-1
+Content-Type: text/plain
+
+Signed copy attached.
+--fw-1
+Content-Type: application/pdf; name="lease.pdf"
+Content-Disposition: attachment; filename="lease.pdf"
+Content-Transfer-Encoding: base64
+
+JVBERi0xLjQKMSAwIG9iaiA8PCAvVHlwZSAvQ2F0YWxvZyA+PiBlbmRvYmoKdHJhaWxlciA8PCAv
+Um9vdCAxIDAgUiA+PgolJUVPRgo=
+--fw-1--
+
+--fw-0--

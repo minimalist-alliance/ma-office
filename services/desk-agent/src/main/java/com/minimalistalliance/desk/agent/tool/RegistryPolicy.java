@@ -44,6 +44,12 @@ public final class RegistryPolicy implements ToolPolicy {
     private final ToolRegistry registry;
     private final DeskLink desk;
     private final Clock clock;
+    /** The member's choices per agent (draft ADR section 16): a tool of an app switched off is refused {@code scope}. */
+    private volatile ToolAccess access = ToolAccess.ALL;
+    /** Messages between the member's desks: a desk's name to its id, and the card's names (draft ADR §14). */
+    private volatile DeskHook desks = DeskHook.NONE;
+    /** One agent's own check on a hosted call (Desk Maia's grants, API.md §23): only ever refuses or raises. */
+    private volatile HostedGuard guard = HostedGuard.NONE;
     private final Map<String, String> contexts = new LinkedHashMap<>(16, 0.75f, false) {
         @Override
         protected boolean removeEldestEntry(Map.Entry<String, String> eldest) {
@@ -55,6 +61,34 @@ public final class RegistryPolicy implements ToolPolicy {
         this.registry = registry;
         this.desk = desk;
         this.clock = clock;
+    }
+
+    /** Messages between the member's desks: names and ids. */
+    void desks(DeskHook hook) {
+        this.desks = hook == null ? DeskHook.NONE : hook;
+    }
+
+    /** Desk Maia's grants (API.md §23). Null is none. */
+    void guard(HostedGuard hostedGuard) {
+        this.guard = hostedGuard == null ? HostedGuard.NONE : hostedGuard;
+    }
+
+    /** The member's choices per agent, read at every call. Null is every tool. */
+    void access(ToolAccess choices) {
+        this.access = choices == null ? ToolAccess.ALL : choices;
+    }
+
+    /**
+     * The schema a call is checked against: its declaration's, except Desk Maia's brief, which she is offered with
+     * {@code expect} (MaiaTools.briefSpec, Maia Mode Phase 2). Checked against the bare declaration, every brief of hers
+     * that said what she expects back was refused as {@code input} (the staging proof, Nov 15).
+     */
+    static Map<String, Object> schemaFor(ToolDecl decl, RunContext run) {
+        if ("desk_message".equals(decl.name()) && run != null
+                && com.minimalistalliance.desk.agent.maia.MaiaAgent.is(run.agentId()) && decl.schema() != null) {
+            return com.minimalistalliance.desk.agent.maia.MaiaTools.briefSchema(decl.schema());
+        }
+        return decl.schema();
     }
 
     @Override
@@ -70,7 +104,15 @@ public final class RegistryPolicy implements ToolPolicy {
         if (registry.switchedOff(decl.name())) {
             return refused(call, decl, "off");
         }
-        if (Schemas.check(decl.schema(), input) != null) {
+        if (!access.allows(run.agentId(), decl.name())) {
+            // An app the member switched off for this agent, mid-run included: refused before anything is asked.
+            return refused(call, decl, "scope");
+        }
+        if (ToolRegistry.NOT_OFFERED.contains(decl.name()) && !desks.closing(call)) {
+            // A tool no model is offered, named by one: refused before anything is asked. Only a run's closing call has it.
+            return refused(call, decl, "scope");
+        }
+        if (Schemas.check(schemaFor(decl, run), input) != null) {
             return refused(call, decl, "input");
         }
         if (Classified.SESSION_GRANT.equals(decl.name()) && run.unattended()) {
@@ -93,12 +135,26 @@ public final class RegistryPolicy implements ToolPolicy {
         if (!desk.offered().contains(decl.name())) {
             return refused(call, decl, "unavailable");
         }
+        Map<String, Object> args = call.input();
+        if ("desk_message".equals(decl.name())) {
+            // The model names a desk; deskd knows desks by id, and only those this agent has an active grant to.
+            args = desks.args(run.agentId(), decl.name(), args);
+            if (args == null) {
+                return refused(call, decl, "no_grant");
+            }
+        }
+        HostedGuard checks = guard;
+        String guarded = checks.refusal(run, decl.name(), args);
+        if (guarded != null) {
+            return refused(call, decl, guarded);
+        }
         Map<String, Object> look = new LinkedHashMap<>();
         look.put("runId", run.runId());
         look.put("agentId", run.agentId());
         look.put("tool", decl.name());
-        look.put("args", call.input());
-        look.put("taint", flags(run.taint()));
+        look.put("args", args);
+        look.put("taint", flags(run.taint(), checks.flags(run)));
+        putOrigin(look, run, checks);
         look.put("phase", "look");
         DeskLink.Reply reply;
         try {
@@ -108,6 +164,10 @@ public final class RegistryPolicy implements ToolPolicy {
             return refused(call, decl, "stopped");
         }
         if (!reply.ok()) {
+            if ("setup".equals(reply.reason())) {
+                // deskd holds no copy of the member's choice for this agent: it waits for them to confirm it again.
+                access.deskdHasNoRecord(run.agentId());
+            }
             return refused(call, decl, reply.reason());
         }
         Map<String, Object> r = reply.r();
@@ -118,17 +178,25 @@ public final class RegistryPolicy implements ToolPolicy {
             found = Risk.EGRESS;
         }
         risk = risk.atLeast(found);
+        risk = risk.atLeast(checks.floor(run, decl.name(), args));
         risk = ruleOfTwo(decl, risk, run);
         String context = r.get("context") instanceof String c && (c.equals("agent") || c.startsWith("member:"))
                 ? c : "agent";
         Map<String, Object> payload = map(r.get("payload"));
         if (payload == null) {
-            payload = call.input();
+            payload = args;
+        }
+        Map<String, Object> target = map(r.get("target"));
+        if (ToolRegistry.DESKS.contains(decl.name()) && target != null) {
+            target = desks.target(run.agentId(), decl.name(), target);
         }
         String refusal = r.get("refusal") instanceof String word && !word.isBlank() ? word : null;
         remember(run.runId(), call.id(), context);
-        return new Classified(call, decl, risk, context, map(r.get("target")), payload, map(r.get("before")),
-                refusal);
+        // deskd's own per-call group (To-do's todos), only for a tool in that group: it can only narrow what asks.
+        String group = r.get("group") instanceof String g && ToolRegistry.TODO_GROUP.equals(g)
+                && ToolRegistry.TODO.contains(decl.name()) && decl.risk() != Risk.READ ? g : null;
+        return new Classified(call, decl, risk, context, target, payload, map(r.get("before")), refusal,
+                group);
     }
 
     /**
@@ -190,6 +258,20 @@ public final class RegistryPolicy implements ToolPolicy {
         }
     }
 
+    /**
+     * The contexts deskd's looks gave this step's calls before the restart, from its checkpoint, as {@link #classify}
+     * left them: a call left in flight goes again by its key with the same {@code context}, which deskd's key binds
+     * (else {@code key_mismatch}), and a card answered after the restart sends it as any other.
+     */
+    @Override
+    public void resumed(RunContext run, java.util.List<Classified> step) {
+        for (Classified c : step) {
+            if (c.decl().host() == ToolDecl.Host.DESKD && c.context() != null) {
+                remember(run.runId(), c.call().id(), c.context());
+            }
+        }
+    }
+
     private void remember(String runId, String callId, String context) {
         synchronized (contexts) {
             contexts.put(runId + "\u0000" + callId, context);
@@ -207,12 +289,47 @@ public final class RegistryPolicy implements ToolPolicy {
         return new Classified(call, decl, decl.risk(), "agent", null, call.input(), null, reason);
     }
 
+    /**
+     * A run another of the member's desks started names its message to deskd on every call ({@code origin: {kind:
+     * "desk", envelopeId}}), so deskd can give the run that message as a To-do source once its own record agrees
+     * (API.md §18). Desk Maia's runs name the answers in her thread ({@link HostedGuard#origin}; Maia Mode Phase 2: a
+     * report that came back while the member was away). No other run sends an origin.
+     */
+    static void putOrigin(Map<String, Object> call, RunContext run, HostedGuard guard) {
+        Map<String, Object> origin = run.origin();
+        if ("desk".equals(origin.get("kind")) && origin.get("envelopeId") instanceof String envelopeId) {
+            call.put("origin", Map.of("kind", "desk", "envelopeId", envelopeId));
+            return;
+        }
+        Map<String, Object> own;
+        try {
+            own = guard == null ? null : guard.origin(run);
+        } catch (RuntimeException e) {
+            // Naming nothing only leaves a desk source unknown to deskd: its todo_add is refused source_unknown.
+            own = null;
+        }
+        if (own != null && !own.isEmpty()) {
+            call.put("origin", own);
+        }
+    }
+
     static List<String> flags(Collection<Taint> taint) {
         List<String> out = new ArrayList<>();
         for (Taint t : Set.copyOf(taint)) {
             out.add(t.name());
         }
         out.sort(null);
+        return out;
+    }
+
+    /** The run's flags and a guard's own, which only ever add (deskd ignores a word it doesn't know). */
+    static List<String> flags(Collection<Taint> taint, List<String> extra) {
+        List<String> out = flags(taint);
+        for (String flag : extra) {
+            if (!out.contains(flag)) {
+                out.add(flag);
+            }
+        }
         return out;
     }
 

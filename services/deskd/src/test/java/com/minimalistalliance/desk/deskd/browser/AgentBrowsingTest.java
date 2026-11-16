@@ -20,6 +20,7 @@ import java.util.Map;
 import java.util.Objects;
 import java.util.Set;
 import java.util.concurrent.atomic.AtomicBoolean;
+import java.util.concurrent.atomic.AtomicInteger;
 import java.util.function.Function;
 import org.junit.jupiter.api.AfterEach;
 import org.junit.jupiter.api.BeforeEach;
@@ -51,6 +52,8 @@ class AgentBrowsingTest {
         /** What an Agent click's or key's look says: where it would go, and whether a payment frame is on the page. */
         volatile String clickUrl;
         volatile boolean pay;
+        /** The look's {@code nav} when it isn't a link's: {@code submit} for a form's submit control. */
+        volatile String clickNav;
         final List<Map<String, Object>> agentOps = new java.util.concurrent.CopyOnWriteArrayList<>();
 
         @Override
@@ -66,9 +69,10 @@ class AgentBrowsingTest {
                     agentOps.add(value);
                     Map<String, Object> said = new LinkedHashMap<>();
                     said.put("ok", true);
-                    said.put("nav", clickUrl == null ? null : "link");
+                    said.put("nav", clickNav != null ? clickNav : clickUrl == null ? null : "link");
                     said.put("url", clickUrl);
                     said.put("pay", pay);
+                    said.put("search", false);
                     yield Boolean.TRUE.equals(value.get("look")) ? said
                             : Objects.equals(value.get("url"), clickUrl) && (!pay || Boolean.TRUE.equals(value.get("spend")))
                             ? Map.of("ok", true) : Map.of("refused", "changed");
@@ -196,6 +200,20 @@ class AgentBrowsingTest {
 
     @Test
     void everyCommandOnAnAgentPathIsOnTheAllowList() throws Exception {
+        CdpRecorder recorder = CdpRecorder.start();
+        try {
+            everyCommandOnAnAgentPathIsOnTheAllowList(recorder);
+        } finally {
+            recorder.close();
+        }
+        // What CdpClient sent, as the real-Chromium ITs record it: AgentCdp marked its own, and nothing else named them.
+        assertThat(recorder.agentCommands()).isPositive();
+        assertThat(recorder.sent()).filteredOn(CdpRecorder.Sent::agent).extracting(CdpRecorder.Sent::method)
+                .contains("Target.createBrowserContext", "Target.createTarget", "Runtime.callFunctionOn", "Target.closeTarget");
+        assertThat(recorder.broken()).isEmpty();
+    }
+
+    private void everyCommandOnAnAgentPathIsOnTheAllowList(CdpRecorder recorder) throws Exception {
         String id = agent.open("run-1", "https://news.example/").tabId();
         Map<String, Object> read = agent.read("run-1", id);
         assertThat(read).containsEntry("view", "simplified");
@@ -241,6 +259,113 @@ class AgentBrowsingTest {
     }
 
     @Test
+    void gapSevenATabPastItsMemoryIsClosedAtTheCallThatFindsItAndBetweenCalls() throws Exception {
+        String id = agent.open("run-1", "https://news.example/").tabId();
+        // Under the cap: read as ever, its memory asked on the tab's own session.
+        cdp.answer("Runtime.getHeapUsage", command -> Map.of("usedSize", 50_000_000, "totalSize", 60_000_000,
+                "embedderHeapUsedSize", 20_000_000, "backingStorageSize", 1_000_000));
+        assertThat(agent.read("run-1", id)).containsEntry("view", "simplified");
+        assertThat(cdp.commands("Runtime.getHeapUsage")).isNotEmpty()
+                .allSatisfy(c -> assertThat(c.sessionId()).isEqualTo(FakeCdp.sessionOf(id)));
+        // Under it, nothing is collected: a collection is only for a first look over the cap.
+        assertThat(cdp.commands("HeapProfiler.collectGarbage")).isEmpty();
+        // Past it, counting Blink's heap and array buffers' stores: closed, and the call says why.
+        cdp.answer("Runtime.getHeapUsage", command -> Map.of("usedSize", 200_000_000, "totalSize", 220_000_000,
+                "embedderHeapUsedSize", 90_000_000, "backingStorageSize", 20_000_000));
+        assertThatThrownBy(() -> agent.read("run-1", id)).isInstanceOfSatisfying(RpcException.class, e -> {
+            assertThat(e.code()).isEqualTo(RpcException.TOO_LARGE);
+            assertThat(e.details()).containsEntry("reason", "memory").containsEntry("limit", 300L);
+        });
+        await().atMost(Duration.ofSeconds(5)).until(() -> !cdp.has(id));
+        assertThat(agent.tab("run-1", id)).isNull();
+        assertThat(agent.agentTabs()).isZero();
+    }
+
+    @Test
+    void aPageOverTheCapOnlyByGarbageIsCollectedAndKeptAndOneThatStillHoldsItIsClosed() throws Exception {
+        String id = agent.open("run-1", "https://news.example/").tabId();
+        AtomicBoolean collected = new AtomicBoolean();
+        cdp.answer("HeapProfiler.collectGarbage", command -> {
+            collected.set(true);
+            return Map.of();
+        });
+        // V8 keeps what earlier pages left until it collects: over the cap at a first look, 40 MB once collected.
+        cdp.answer("Runtime.getHeapUsage", command -> Map.of("totalSize", collected.getAndSet(false) ? 40_000_000 : 400_000_000));
+        assertThat(agent.read("run-1", id)).containsEntry("view", "simplified");
+        assertThat(cdp.has(id)).isTrue();
+        assertThat(cdp.commands("HeapProfiler.collectGarbage")).isNotEmpty()
+                .allSatisfy(c -> assertThat(c.sessionId()).isEqualTo(FakeCdp.sessionOf(id)));
+        // A page that still holds it once collected is closed, as before.
+        cdp.answer("HeapProfiler.collectGarbage", command -> Map.of());
+        assertThatThrownBy(() -> agent.read("run-1", id)).isInstanceOfSatisfying(RpcException.class, e -> {
+            assertThat(e.code()).isEqualTo(RpcException.TOO_LARGE);
+            assertThat(e.details()).containsEntry("reason", "memory");
+        });
+        await().atMost(Duration.ofSeconds(5)).until(() -> !cdp.has(id));
+    }
+
+    @Test
+    void aHeapTooBigToCollectInTimeKeepsItsFirstFigureAndIsClosed() throws Exception {
+        // Security's BB-L6: the collection times out, and the read behind it too; the first look's figure stands.
+        String id = agent.open("run-1", "https://news.example/").tabId();
+        AtomicInteger reads = new AtomicInteger();
+        cdp.answer("HeapProfiler.collectGarbage", command -> Map.of("_error", -32000));
+        cdp.answer("Runtime.getHeapUsage", command -> reads.incrementAndGet() % 2 == 1
+                ? Map.of("totalSize", 400_000_000) : Map.of("_error", -32000));
+        assertThatThrownBy(() -> agent.read("run-1", id)).isInstanceOfSatisfying(RpcException.class, e -> {
+            assertThat(e.code()).isEqualTo(RpcException.TOO_LARGE);
+            assertThat(e.details()).containsEntry("reason", "memory");
+        });
+        assertThat(cdp.commands("HeapProfiler.collectGarbage")).isNotEmpty();
+        await().atMost(Duration.ofSeconds(5)).until(() -> !cdp.has(id));
+    }
+
+    @Test
+    void gapSevenATabWhosePageGrowsPastItsMemoryBetweenCallsIsClosed() throws Exception {
+        // A page that grows while its run waits is closed by the watch, with no call.
+        agent.memoryCap(AgentBrowsing.TAB_MEMORY_BYTES, Duration.ofMillis(100));
+        cdp.answer("Runtime.getHeapUsage", command -> Map.of("totalSize", 10_000_000));
+        String other = agent.open("run-1", "https://news.example/").tabId();
+        assertThat(cdp.has(other)).isTrue();
+        cdp.answer("Runtime.getHeapUsage", command -> Map.of("totalSize", 400_000_000));
+        await().atMost(Duration.ofSeconds(5)).until(() -> !cdp.has(other) && agent.tab("run-1", other) == null);
+        // A later call on it says why it went, never "no such tab", so a model doesn't open the page again as if lost;
+        // the same id from another run is just not there.
+        for (ThrowingCall call : List.<ThrowingCall>of(() -> agent.read("run-1", other),
+                () -> agent.navigate("run-1", other, "https://news.example/more"), () -> agent.back("run-1", other),
+                () -> agent.close("run-1", other))) {
+            assertThatThrownBy(call::run).isInstanceOfSatisfying(RpcException.class, e -> {
+                assertThat(e.code()).isEqualTo(RpcException.TOO_LARGE);
+                assertThat(e.details()).containsEntry("reason", "memory");
+            });
+        }
+        assertThatThrownBy(() -> agent.read("run-2", other)).isInstanceOfSatisfying(RpcException.class,
+                e -> assertThat(e.code()).isEqualTo(RpcException.NOT_FOUND));
+    }
+
+    @Test
+    void gapSevenAPageThatGrowsPastItsMemoryWhileItLoadsAnswersMemoryNotNotFound() throws Exception {
+        // The watch closes the tab while its first page is still loading: open answers the cap, as a call that found it.
+        agent.memoryCap(AgentBrowsing.TAB_MEMORY_BYTES, Duration.ofMillis(100));
+        cdp.answer("Runtime.getHeapUsage", command -> Map.of("totalSize", 400_000_000));
+        cdp.hold("Page.navigate");
+        try {
+            assertThatThrownBy(() -> agent.open("run-1", "https://heavy.example/")).isInstanceOfSatisfying(RpcException.class, e -> {
+                assertThat(e.code()).isEqualTo(RpcException.TOO_LARGE);
+                assertThat(e.details()).containsEntry("reason", "memory");
+            });
+        } finally {
+            cdp.release("Page.navigate");
+        }
+        assertThat(agent.agentTabs()).isZero();
+    }
+
+    @FunctionalInterface
+    private interface ThrowingCall {
+        void run() throws Exception;
+    }
+
+    @Test
     void theRunsEndClosesItsTabsAndDisposesItsContext() throws Exception {
         String id = agent.open("run-1", "https://news.example/").tabId();
         String session = agent.useSession("run-1", "shop.example").tabId();
@@ -276,12 +401,22 @@ class AgentBrowsingTest {
             assertThat(reason(e)).isEqualTo("tab_cap");
             assertThat(e.details()).containsEntry("limit", 2);
         });
-        // A grant's tab isn't one of them.
-        agent.useSession("run-1", "shop.example");
+        // A grant's tab is one of them (gap 4): no third tab of that kind either, and nothing made in Chromium for it.
+        int created = cdp.commands("Target.createTarget").size();
+        assertThatThrownBy(() -> agent.useSession("run-1", "shop.example")).isInstanceOfSatisfying(RpcException.class,
+                e -> assertThat(reason(e)).isEqualTo("tab_cap"));
+        assertThat(cdp.commands("Target.createTarget")).hasSize(created);
         agent.runEnded("run-2");
         await().atMost(Duration.ofSeconds(5)).until(() -> agent.agentTabs() == 1);
-        free.set(true);
+        agent.useSession("run-1", "shop.example");
+        assertThat(agent.agentTabs()).isEqualTo(2);
         assertThatThrownBy(() -> agent.open("run-3", "https://c.example/")).isInstanceOfSatisfying(RpcException.class,
+                e -> assertThat(reason(e)).isEqualTo("tab_cap"));
+        agent.runEnded("run-1");
+        await().atMost(Duration.ofSeconds(5)).until(() -> agent.agentTabs() == 0);
+        free.set(true);
+        agent.useSession("run-4", "shop.example");
+        assertThatThrownBy(() -> agent.open("run-4", "https://c.example/")).isInstanceOfSatisfying(RpcException.class,
                 e -> assertThat(reason(e)).isEqualTo("tab_cap"));
     }
 
@@ -302,7 +437,8 @@ class AgentBrowsingTest {
         assertThatThrownBy(() -> agent.useSession("run-1", "third.example")).isInstanceOfSatisfying(RpcException.class,
                 e -> assertThat(reason(e)).isEqualTo("ask_cap"));
         assertThat(agent.sites("run-1")).containsExactlyInAnyOrder("shop.example", "mail.example");
-        // Another run starts with none.
+        // Another run starts with none, once the desk has a place for its tab.
+        agent.close("run-1", id);
         agent.useSession("run-2", "third.example");
     }
 
@@ -357,29 +493,29 @@ class AgentBrowsingTest {
         String session = agent.useSession("run-1", "shop.example").tabId();
         Object[] b = firstButton(session);
         page.clickUrl = "https://evil.example/steal";
-        assertThatThrownBy(() -> agent.act("run-1", session, (String) b[0], "click", null, (String) b[1], (String) b[2], (long) b[3], false))
+        assertThatThrownBy(() -> agent.act("run-1", session, (String) b[0], "click", null, (String) b[1], (String) b[2], (long) b[3], false, false))
                 .isInstanceOfSatisfying(RpcException.class, e -> assertThat(reason(e)).isEqualTo("off_site"));
         page.clickUrl = "http://10.0.0.1/admin";
-        assertThatThrownBy(() -> agent.act("run-1", session, (String) b[0], "click", null, (String) b[1], (String) b[2], (long) b[3], false))
+        assertThatThrownBy(() -> agent.act("run-1", session, (String) b[0], "click", null, (String) b[1], (String) b[2], (long) b[3], false, false))
                 .isInstanceOfSatisfying(RpcException.class, e -> assertThat(reason(e)).isEqualTo("blocked"));
         page.clickUrl = "mailto:someone@example.com";
-        assertThatThrownBy(() -> agent.act("run-1", session, (String) b[0], "click", null, (String) b[1], (String) b[2], (long) b[3], false))
+        assertThatThrownBy(() -> agent.act("run-1", session, (String) b[0], "click", null, (String) b[1], (String) b[2], (long) b[3], false, false))
                 .isInstanceOfSatisfying(RpcException.class, e -> assertThat(reason(e)).isEqualTo("blocked"));
         // Only looks went to the page: nothing was clicked.
         assertThat(page.agentOps).allSatisfy(op -> assertThat(op).containsEntry("look", true));
         // The site itself goes, the address bound to the act.
         page.clickUrl = "https://www.shop.example/orders";
-        assertThat(agent.act("run-1", session, (String) b[0], "click", null, (String) b[1], (String) b[2], (long) b[3], false))
+        assertThat(agent.act("run-1", session, (String) b[0], "click", null, (String) b[1], (String) b[2], (long) b[3], false, false))
                 .containsEntry("done", true);
         assertThat(page.agentOps.get(page.agentOps.size() - 1)).containsEntry("look", false).containsEntry("url", "https://www.shop.example/orders");
 
         String own = agent.open("run-1", "https://news.example/").tabId();
         Object[] o = firstButton(own);
         page.clickUrl = "https://elsewhere.example/";
-        assertThat(agent.act("run-1", own, (String) o[0], "click", null, (String) o[1], (String) o[2], (long) o[3], false))
+        assertThat(agent.act("run-1", own, (String) o[0], "click", null, (String) o[1], (String) o[2], (long) o[3], false, false))
                 .containsEntry("done", true);
         page.clickUrl = "http://127.0.0.1:9222/json/close/M1";
-        assertThatThrownBy(() -> agent.act("run-1", own, (String) o[0], "click", null, (String) o[1], (String) o[2], (long) o[3], false))
+        assertThatThrownBy(() -> agent.act("run-1", own, (String) o[0], "click", null, (String) o[1], (String) o[2], (long) o[3], false, false))
                 .isInstanceOfSatisfying(RpcException.class, e -> assertThat(reason(e)).isEqualTo("blocked"));
     }
 
@@ -390,14 +526,39 @@ class AgentBrowsingTest {
         page.pay = true;
         assertThat(agent.paymentFrame("run-1", id)).isTrue();
         int before = page.agentOps.size();
-        assertThatThrownBy(() -> agent.act("run-1", id, (String) b[0], "click", null, (String) b[1], (String) b[2], (long) b[3], false))
+        assertThatThrownBy(() -> agent.act("run-1", id, (String) b[0], "click", null, (String) b[1], (String) b[2], (long) b[3], false, false))
                 .isInstanceOfSatisfying(RpcException.class, e -> assertThat(reason(e)).isEqualTo("changed"));
         assertThat(page.agentOps.subList(before, page.agentOps.size())).allSatisfy(op -> assertThat(op).containsEntry("look", true));
-        assertThat(agent.act("run-1", id, (String) b[0], "click", null, (String) b[1], (String) b[2], (long) b[3], true))
+        assertThat(agent.act("run-1", id, (String) b[0], "click", null, (String) b[1], (String) b[2], (long) b[3], true, false))
                 .containsEntry("done", true);
         assertThat(page.agentOps.get(page.agentOps.size() - 1)).containsEntry("look", false).containsEntry("spend", true);
         page.pay = false;
         assertThat(agent.paymentFrame("run-1", id)).isFalse();
+    }
+
+    @Test
+    void gapOneAClickThatSubmitsAFormIsDoneOnlyWhenItMaySubmitAndTheLookSaysWhatItDoes() throws Exception {
+        String id = agent.open("run-1", "https://shop.example/").tabId();
+        Object[] b = firstButton(id);
+        page.clickNav = "submit";
+        page.clickUrl = "https://shop.example/send";
+        // What it would do, with nothing done.
+        int before = page.agentOps.size();
+        assertThat(agent.actLook("run-1", id, (String) b[0], (String) b[1], null))
+                .containsEntry("nav", "submit").containsEntry("url", "https://shop.example/send").containsEntry("search", false)
+                .containsEntry("pay", false);
+        assertThat(page.agentOps.subList(before, page.agentOps.size())).allSatisfy(op -> assertThat(op).containsEntry("look", true));
+        // Not allowed to submit: refused at the proxy's own look, and only looks reached the page.
+        assertThatThrownBy(() -> agent.act("run-1", id, (String) b[0], "click", null, (String) b[1], (String) b[2], (long) b[3], false, false))
+                .isInstanceOfSatisfying(RpcException.class, e -> assertThat(reason(e)).isEqualTo("changed"));
+        assertThat(page.agentOps.subList(before, page.agentOps.size())).allSatisfy(op -> assertThat(op).containsEntry("look", true));
+        // Allowed: clicked, and the page's half is told so too.
+        assertThat(agent.act("run-1", id, (String) b[0], "click", null, (String) b[1], (String) b[2], (long) b[3], false, true))
+                .containsEntry("done", true);
+        assertThat(page.agentOps.get(page.agentOps.size() - 1)).containsEntry("look", false).containsEntry("submit", true);
+        // A node the view doesn't hold with that fingerprint isn't looked at.
+        assertThatThrownBy(() -> agent.actLook("run-1", id, (String) b[0], "other", null))
+                .isInstanceOfSatisfying(RpcException.class, e -> assertThat(reason(e)).isEqualTo("changed"));
     }
 
     @Test

@@ -1,0 +1,71 @@
+{
+  "format" : "ma-platform contract 0.4.0 section 2 (relay.md); ma-desk draft ADR \"Courier's envelopes\"",
+  "hpke" : "RFC 9180 base mode; KEM 0x0020 DHKEM(X25519, HKDF-SHA256), KDF 0x0001 HKDF-SHA256, AEAD 0x0003 ChaCha20-Poly1305",
+  "recipient" : {
+    "address" : "sam@courier.minimalistalliance.com",
+    "identitySeed" : "1111111111111111111111111111111111111111111111111111111111111111",
+    "boxSecret" : "2222222222222222222222222222222222222222222222222222222222222222",
+    "publish" : {
+      "identityKey" : "0EqyMnQrtKs6E2i9RhXk5tAiSrcaAWuvhSCjMsl3hzc",
+      "boxKey" : "D6poTtKIZ7l_Smot7l34zpdOdrcBjj8iocTPJnhXDyA",
+      "binding" : "QxB4rw5WB2UKuA66Vw8MVcsSrEDQT3Af1En2irjNJUmwW-H6goImca86whzMEXeixe3IGGSY4XuVuD9QuBSECw"
+    },
+    "fingerprint" : "e0ac-6d48-e85f-01d2-4098-468f-57d0-0518"
+  },
+  "sender" : {
+    "address" : "dana@courier.minimalistalliance.com",
+    "identitySeed" : "3333333333333333333333333333333333333333333333333333333333333333",
+    "boxSecret" : "3434343434343434343434343434343434343434343434343434343434343434",
+    "publish" : {
+      "identityKey" : "F8t5-ytBIPKx7GXkGY1uCLKOgT_rAeSkAIObheGAgM4",
+      "boxKey" : "_8lRqm8voDCW0dG1eXNbL2-EAZ_i9heqZf89aHBfJSc",
+      "binding" : "tm27NwrqSdR1t6l8llW-nSJo9P5J_RbpIWBx48izCpdMh04QBpcdooChkiXn57_cdZbQtn7v46gOGUvk4ntRDw"
+    },
+    "fingerprint" : "a730-9c7a-062e-ff53-a541-c3c9-6496-860b"
+  },
+  "safetyNumber" : "27157 35577 63745 35384 38673 02406 62054 22813 02444 54248 31679 46262",
+  "cases" : [ {
+    "name" : "ma-inline",
+    "kind" : "ma",
+    "ikmE" : "5555555555555555555555555555555555555555555555555555555555555555",
+    "plaintext" : "{\"p\":\"{\\\"v\\\":1,\\\"kind\\\":\\\"message\\\",\\\"id\\\":\\\"01JCQ4V9X3M7K2P8R5T6W0Y1Z2\\\",\\\"from\\\":\\\"dana@courier.minimalistalliance.com\\\",\\\"to\\\":\\\"sam@courier.minimalistalliance.com\\\",\\\"at\\\":\\\"2026-11-14T20:00:00.123Z\\\",\\\"text\\\":\\\"Lunch at noon?\\\"}\",\"s\":\"kZwdRioeyu55eHw7QmF-hbgxQ5o_tACZaaW0TB8VvqbdkWrhWrtk_4u5-R3LY53Yh-g9QnsJ9CXzkKWfxNWYBQ\"}",
+    "paddedLength" : 512,
+    "relay" : {
+      "to" : "sam@courier.minimalistalliance.com",
+      "kind" : "ma",
+      "enc" : "edMlGCMt14KSqsbI4ija3IVKNRJLvLQQwkEFu41LUi8",
+      "ct" : "sIbltZByFscCqtOwMv9Zyqg0qdDUxnnoK5SaIPYKa2cd7S24ZChrIk-leMUB4geCgQ8EYewMIycZ7YUUAHrtpHQNx6nzaR--lWonOu8mBlLyE05t1hAePvMhQh9hOzjEKuCQrhNrGAl_ub-l7clALJp40pwg9_ioQEUtS3ScgW0mU4nUTLYXrd1Bry5ZrplrUxIIT0axegngJ-yOcyVeMjc-knrmw622SmWDJ4XsjMuM8KRDJEXEk_53k0h6SFeXQ3UtB6ndvjEtvvmj9fwkCV4jvp0pFMIpfJ6tPo1Ma6uHivCfHOfgbvJfZGd813PK8cw_AcLjEUc0K1hZj-HmuUkpFuGWPktJEyPPZt9PJNVDPpFItffkohTeikEUmTX1fpSyLXIsVCAQyMtA-gcotYPUJ8DGzIAE3fntZ18uJ7MBDSI-bsNABUGQ3ueqPW31DfOBUFc5LmFSjd57fy-FIkatmCQC5rEQNkxX3VcDZQn2Eq8y22OOkzuZpu665ysgA7MmV4KR3MG8Avf6KA6gf7KUOc7K_mu6qWbKT92wtgliodXUSGxeHcq11MjAto8TfDbiLmkaeBU1POz2JOdJDP4cwVzto76mP8fLRnyX11d3oOJDKS21EG6CJuEAjErCsnzbH2drTqKF9fvgtoqL3vGlW7eeLQXd_3xSNTXJK05Ar8koElQBXUJTAScCqgrM"
+    }
+  }, {
+    "name" : "ma-with-drop",
+    "kind" : "ma",
+    "ikmE" : "7777777777777777777777777777777777777777777777777777777777777777",
+    "plaintext" : "{\"p\":\"{\\\"v\\\":1,\\\"kind\\\":\\\"message\\\",\\\"id\\\":\\\"01JCQ4V9X3M7K2P8R5T6W0Y1Z3\\\",\\\"from\\\":\\\"dana@courier.minimalistalliance.com\\\",\\\"to\\\":\\\"sam@courier.minimalistalliance.com\\\",\\\"at\\\":\\\"2026-11-14T20:00:01.000Z\\\",\\\"text\\\":\\\"The photos\\\",\\\"drop\\\":{\\\"id\\\":\\\"dr-01JCQ4V9X3M7K2P8R5T6W0Y1Z4\\\",\\\"key\\\":\\\"ZmZmZmZmZmZmZmZmZmZmZmZmZmZmZmZmZmZmZmZmZmZmZmZmZmZmZmZmZmY\\\",\\\"len\\\":150000,\\\"sha256\\\":\\\"BEgYRQ8OYqJrCKVzobdZ3bOSjauU04EGvbh_Em8vMMI\\\",\\\"bytes\\\":262144}}\",\"s\":\"05nOzTIv2g0oFUynUPLLXcaGXoNLAFpw2QiqMU5mMdZl5VNo06GECBwN2JXQFOjs03WNNmZgMgyqvz2I4dEWAg\"}",
+    "paddedLength" : 768,
+    "relay" : {
+      "to" : "sam@courier.minimalistalliance.com",
+      "kind" : "ma",
+      "enc" : "5iSS1AqxDQ9D_aqJ4fIQfh4tBZ0jofAMSHp-YrXG5n0",
+      "ct" : "FeP5JfkrbmtmFOV2oi63DTO1Qnn47_UwsRtJcVRatNjJzX7s0Ia1iQOTw0b60ZjkgztajXuc2CWa6gfHpou-TIeQ9k9cukfdMg8PgGqwkfhhGFogtRuzgacoPEN55SdGi88pYqMkrk0-D76957MTEIOJ0NvaruykgmU66G2_sm3lcgg1HrJhsHcvR8JPt7Ojk1KFzzZnVVPytDFRyEw_Ib47eYFJauKJIIY9FK68RgnSBJcF_NJAFfhbBibuTb9DdtrDSum3qcxY5o_57exERQZ7pRvI9rUFZV1FCbhkx1y_TXj-TqoPmVqZ4hKEpg0P9xpg7rSpbBs2IxkjpqkFhXVbNVKA2-3G-JyWkSMzdD8OitdKwWusdrAV_WDYYhUnffsSdm5dC8AjQ7ELy1ndhp_e0GtKpu7LzcwJGvI7Vj3jrEF_8yj3aV4onqYUNuI1Q97sXJe9Mlun5eqCfJpbOKj0W6ChlTWOxXAyHr3vnHTq-WNmN0aI3bg7ff8bluqlZs5rLI6Bb70GR2KmuMRR9jROeC5SZKc5iIZeMnGdOzTpYZBiZ5NOoe1rQGtJqASWF09zt9z3TbRvQ0hRICZWfv-eznCk1CrN-gdFuqEsVSGPOZiX18hL8RqSR7XphLLEjgSWwBzp2ARhy3NVAaRnpVCnwJ5Ee_fzAQGlOjHKB4WnzJhS10rXEgVL3iN7VdxqmbBgYXwYH6qWnzmYoSEL_vAkWCtCTM18ccAtBYoZWQpzhcfHxzi2aOsgQrci7dB6O-wHnsyvtlxbBKvbMB-6HLfxDFxPx4fXRwN3QMoSQ79c2NjkXnsbve_t0Tk6OvfLv4IyExjgTkXilrfRNjG9ZCjDs7Ugjy7ZIlu9cHjnypYppXiCcQbIQtdwpGqeLboemGYkk1JlpesDK1dEkgEcxVRTs_XP3crweT8eUh_Sbgc50UqMSK1SrMvJdwuPthFyRHVtT2BRnUzj8XcCx1XzOKVe_lHQD0J_FBDR2vqQeTXrS1dqFczs7ZgdazZsMyJ85du0_AIIBoQXGB6CMb0mnw"
+    },
+    "dropBody" : "byte i = (i * 31 + 7) mod 256, 150000 bytes, SHA-256 044818450f0e62a26b08a573a1b759ddb3928dab94d38106bdb87f126f2f30c2",
+    "dropKey" : "6666666666666666666666666666666666666666666666666666666666666666666666666666666666666666",
+    "dropLength" : 262144,
+    "dropSha256" : "d858812c96faebd93def55132e304598d5b54b860a6ada64dc4cd88007d4f233",
+    "dropFirst64Hex" : "9635aab0b0bad5d17015f5fb7471ab5bd9d33acfbfb4ff85d94a6523cada6de65dae360b808f48b02ce99fe5013e2554556aff97d0d3fedc23601502f1e34da4"
+  }, {
+    "name" : "mail-proposed",
+    "kind" : "mail",
+    "ikmE" : "8888888888888888888888888888888888888888888888888888888888888888",
+    "plaintext" : "{\"p\":\"{\\\"v\\\":1,\\\"kind\\\":\\\"mail\\\",\\\"id\\\":\\\"01JCQ4V9X3M7K2P8R5T6W0Y1Z5\\\",\\\"from\\\":\\\"mailer-daemon@courier.minimalistalliance.com\\\",\\\"to\\\":\\\"sam@courier.minimalistalliance.com\\\",\\\"at\\\":\\\"2026-11-14T20:00:02.000Z\\\",\\\"mailFrom\\\":\\\"alex@example.org\\\",\\\"verdicts\\\":{\\\"spf\\\":\\\"PASS\\\",\\\"dkim\\\":\\\"PASS\\\",\\\"dmarc\\\":\\\"PASS\\\",\\\"spam\\\":\\\"PASS\\\",\\\"virus\\\":\\\"PASS\\\"},\\\"raw\\\":\\\"RnJvbTogQWxleCA8YWxleEBleGFtcGxlLm9yZz4NClRvOiBzYW1AY291cmllci5taW5pbWFsaXN0YWxsaWFuY2UuY29tDQpTdWJqZWN0OiBIZWxsbw0KTWVzc2FnZS1JRDogPHZlY3Rvci0xQGV4YW1wbGUub3JnPg0KRGF0ZTogRnJpLCAxNCBOb3YgMjAyNiAyMDowMDowMCArMDAwMA0KDQpIaSBTYW0uDQo\\\"}\",\"s\":\"6_nmYfTy5tqyLA8Xr5DMg5se27BJBHL78EgcMQ2Lcq2OqTWM37xYDjhUXhCJbaQb1gNHp8ljlWflAg3FBGHbBA\"}",
+    "paddedLength" : 768,
+    "relay" : {
+      "to" : "sam@courier.minimalistalliance.com",
+      "kind" : "mail",
+      "enc" : "2QbYNH3OCcGE3gCd0ZS1L-SCBojINK6zLJFMaI_Xkng",
+      "ct" : "iL09ONrsTX8Tv3E7BIKd5I9AAhr8b8pJHe9VFspBT7Lsx8pwc1mgRZCmp7i6ujk8BHY1j8ymb2LWi_aUSNxiHuSiw6Ose4mg_rFQ3hWR78ERcZs7TFZrHRgP96cngqoBzg4CPExVy8GJNcWNjIJTfCuUM-zjyMjXrwWFAjGtJQj18w6a7XOHLvpM_NS20SL4ljAKUmYZw9FxVZmuuiJSh3ZMz-HhI5e2Bf1KGv7InWrmhlBEL1iJmQhObGmEGi201A1fniKvvYkGtCVTcrf772GKYC1nwrak_xbr9zfvE468MLsTmNrZ1Az90LBM5sjwLOq1vWDoH9WBkGN-OCV-hVA0sEu9ZUcDvPzZO5yOnP7x1blfsFbHuM7ELVKErF1kByn-OHQBQuOiIAMcZZ1SWE9PFNX-kVgJ2jAmw2JUhIwXgA3GmBfJ2Dreab77O1mdvAKlrqo3NB_3QJMCKnHZystzekgcdeMrfCkSmVltyzIaBGhWbuXbGqbwvUZCUA1YloH6FhPA7rJSnybVEXNGvQ2AUZqvNzvSH3_iwE1EDn88UNzAKNjCeMp_xcl6j6GHnQ92qu-t3aErrMhoGWkP0VRsRWVWAi4tbKtd-Vw9yyz1VPTbGlwdsfmVUUqggLTw5Og0x3duUXHvccSAN53yMkDIYJhJHQfHh5bd-sSIR5R4XX9aaJvh5LHHkKHDhk7OCMmMTZ9ieEgtkuNkEXWnhw2JNWOfeIENJ1WUwAXbkYTQk5w-OLQH_7-2euUwXnKeXy5cYRFj7s9oZQ6x1nobzxF1JdOquvkozPBGvMWnsozjLOzKu18YkkUYQ4hqQdFcmzOytkGS-X54uxjVUA3DMqVLa3WG2wJ7Tf-Yu5iw344Ed894l5NsToZghYq0HYfi9MoIqfGM8JBNjJ0vqIpbnynDqiMBvTMI7fLUD_Ktm1yDIABoHrWds8g8eOlBAzvLDMoNc2jrw6x_xN458sR6TpZGQ-TRW8OGAM_FTN7Oz0uQiGYv0BoU3YAK38P3U8TQQV-9BDa6DSsVFQh6i88AIw"
+    },
+    "doorIdentitySeed" : "4444444444444444444444444444444444444444444444444444444444444444",
+    "doorIdentityKey" : "11l5O7wTooGagnx2rbb7qKSa7gB_SfLQmS2ZuCWtLEg"
+  } ]
+}

@@ -35,6 +35,6 @@ export const useDeskWords = (): DeskWords => (useOnGuildDesk() ? GUILD_WORDS : D
 export const REMOVED_TITLE = "You're no longer in this guild";
 export const REMOVED_LINE = 'Its Guild Desk, Commons and pages have closed here. Your own desks are just as they were.';
 /** The Agent window's quiet line on a Guild Desk (draft ADR section 7, decision 6). */
-export const AGENT_PRIVATE_LINE = "Your conversations here are private to you. The guild's limits apply.";
+export const AGENT_PRIVATE_LINE = "Other members of the guild don't see your conversations here. The guild's limits apply.";
 /** Where a link in a guild page goes instead of a Browser: one of the member's own desks, by their choice. */
 export const OPEN_ON = { personal: 'Open on Personal', work: 'Open on Work' } as const;

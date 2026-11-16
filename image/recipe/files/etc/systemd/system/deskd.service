@@ -7,6 +7,9 @@ Wants=desk-rtc.service network-online.target
 # The shaper goes on first if it can. Wants, not Requires: its failure never stops this unit (ADR 0036).
 Wants=desk-egress.service
 After=desk-egress.service
+# Courier's mail reader (desk-parse-courier, ADR 0097's sandbox on desk-agent's image; docs/sub-status/mm-courier-parse.md).
+# Wants, not Requires, and no After: without its socket deskd keeps mail as pending, raw kept, and runs on.
+Wants=desk-parse-courier.service
 StartLimitIntervalSec=0
 
 [Service]

@@ -1,0 +1,92 @@
+From: Updates <updates@example.net>
+To: me@desk.example
+Date: Fri, 13 Nov 2026 10:00:00 +0000
+Subject: Updates to install
+Message-ID: <dangerous-programs@corpus.example>
+MIME-Version: 1.0
+X-Corpus-Note: program attachments: .exe .scr .js .vbs .ps1 .bat .msi .hta
+Content-Type: multipart/mixed; boundary="att-1"
+
+--att-1
+Content-Type: text/plain; charset=utf-8
+
+Install all the updates attached.
+--att-1
+Content-Type: application/x-msdownload; name="setup.exe"
+Content-Disposition: attachment; filename="setup.exe"
+Content-Transfer-Encoding: base64
+
+TVqQAAMAAAAEAAAA//8AAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAA
+AAAAQAAAAFRoaXMgcHJvZ3JhbSBjYW5ub3QgYmUgcnVuIGluIERPUyBtb2RlLg0NCiQAAAAAAAAA
+AAAAAAAAAAAA
+--att-1
+Content-Type: application/octet-stream; name="screensaver.scr"
+Content-Disposition: attachment; filename="screensaver.scr"
+Content-Transfer-Encoding: base64
+
+TVqQAAMAAAAEAAAA//8AAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAA
+AAAAQAAAAFRoaXMgcHJvZ3JhbSBjYW5ub3QgYmUgcnVuIGluIERPUyBtb2RlLg0NCiQAAAAAAAAA
+AAAAAAAAAAAA
+--att-1
+Content-Type: application/javascript; name="update.js"
+Content-Disposition: attachment; filename="update.js"
+Content-Transfer-Encoding: base64
+
+V1NjcmlwdC5FY2hvKCdoZWxsbycpOw0K
+--att-1
+Content-Type: text/vbscript; name="macro.vbs"
+Content-Disposition: attachment; filename="macro.vbs"
+Content-Transfer-Encoding: base64
+
+TXNnQm94ICJoZWxsbyINCg==
+--att-1
+Content-Type: text/plain; name="cleanup.ps1"
+Content-Disposition: attachment; filename="cleanup.ps1"
+Content-Transfer-Encoding: base64
+
+V3JpdGUtT3V0cHV0ICdoZWxsbycNCg==
+--att-1
+Content-Type: application/x-bat; name="run.bat"
+Content-Disposition: attachment; filename="run.bat"
+Content-Transfer-Encoding: base64
+
+QGVjaG8gb2ZmDQplY2hvIGhlbGxvDQo=
+--att-1
+Content-Type: application/x-msi; name="installer.msi"
+Content-Disposition: attachment; filename="installer.msi"
+Content-Transfer-Encoding: base64
+
+0M8R4KGxGuEAAAAAAAAAAAAAAAAAAAAAPgADAP7/CQAGAAAAAAAAAAAAAAABAAAAAQAAAAAAAAAA
+EAAA/v///wAAAAD+////AAAAAAAAAAD/////////////////////////////////////////////
+////////////////////////////////////////////////////////////////////////////
+////////////////////////////////////////////////////////////////////////////
+////////////////////////////////////////////////////////////////////////////
+////////////////////////////////////////////////////////////////////////////
+////////////////////////////////////////////////////////////////////////////
+////////////////////////////////////////////////////////////////////////////
+///////////////////////////////////////////////////////////////////////////9
+/////v//////////////////////////////////////////////////////////////////////
+////////////////////////////////////////////////////////////////////////////
+////////////////////////////////////////////////////////////////////////////
+////////////////////////////////////////////////////////////////////////////
+////////////////////////////////////////////////////////////////////////////
+////////////////////////////////////////////////////////////////////////////
+////////////////////////////////////////////////////////////////////////////
+////////////////////////////////////////////////////////////////////////////
+/////////////////////////////////////////////////////////////////////////1IA
+bwBvAHQAIABFAG4AdAByAHkAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAA
+AAAAAAAWAAUB//////////8BAAAAhBAMAAAAAADAAAAAAAAARgAAAAAAAAAAAAAAAAAAAAAAAAAA
+/v///wAAAAAAAAAABQBTAHUAbQBtAGEAcgB5AEkAbgBmAG8AcgBtAGEAdABpAG8AbgAAAAAAAAAA
+AAAAAAAAAAAAAAAAAAAAAAAAACgAAgH///////////////8AAAAAAAAAAAAAAAAAAAAAAAAAAAAA
+AAAAAAAAAAAAAAAAAAD+////AAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAA
+AAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAP///////////////wAAAAAAAAAA
+AAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAA
+AAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAA////////
+////////AAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAA
+--att-1
+Content-Type: application/hta; name="help.hta"
+Content-Disposition: attachment; filename="help.hta"
+Content-Transfer-Encoding: base64
+
+PGh0bWw+PHNjcmlwdD5hbGVydCgxKTwvc2NyaXB0PjwvaHRtbD4NCg==
+--att-1--

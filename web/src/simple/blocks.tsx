@@ -585,7 +585,7 @@ function Answer({ b }: { b: Extract<Block, { t: 'answer' }> }) {
   const inner = useRef<HTMLDivElement>(null);
   const [open, setOpen] = useState(false);
   const [overflows, setOverflows] = useState(false);
-  // Folded at about 8 lines (R22): measured again whenever its words take their size (Nunito arriving, a narrower window).
+  // Folded at about 8 lines (R22): measured again whenever its words take their size (the font arriving, a narrower window).
   useEffect(() => {
     const el = body.current;
     const content = inner.current;

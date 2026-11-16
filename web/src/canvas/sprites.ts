@@ -10,11 +10,14 @@
 import type { DeskStyleLook } from '../theme/deskStyles';
 import type { DeskEtch, ShadowLayer, Tokens } from '../theme/tokens';
 import { backdropOn } from '../theme/backdropMirror';
-import { RING } from '../theme/tokens';
+import { RING, TILE_FACE, type TileFaceTokens } from '../theme/tokens';
+import { bevelWidth, clear, EGG, tileFill } from '../theme/tileFace';
+import { glassFace, glassOpacity, glassTextOpacity } from '../theme/tileGlass';
+import { drawGlass } from './glass';
 import { textureLevel, texturePattern } from './textureHub';
 import { askForEtchFont, COUNT_GAP, countCell, countDigitInk, etchEpoch, etchWidth, setCountType, setEtchType, setStatusType, statusTextWidth } from './etch';
-import { drawEtchIcon, drawGlyph, drawHiddenIcon, type EtchIcon } from './glyphs';
-import { ETCH_DEPTH, ETCH_ICON, ETCH_SIZE, iconGlyphSize } from './layout';
+import { drawEtchIcon, drawGlyph, drawHiddenIcon, themeOf, tileAccent, type EtchIcon } from './glyphs';
+import { ETCH_DEPTH, ETCH_ICON, ETCH_SIZE, FACE_GLYPH_MAX, faceGlyphSize } from './layout';
 import type { GlyphId } from '../agent/roster';
 
 export interface Sprite {
@@ -52,17 +55,45 @@ const cutCache = new Map<string, Sprite>();
 const MAX_CUT_BYTES = 8 * 1024 * 1024;
 let cutBytes = 0;
 
-/** Drop every bitmap. Called on a theme change: all chrome is theme colors. */
-export function invalidateSprites(): void {
-  for (const s of cache.values()) s.image.close();
-  cache.clear();
-  bytes = 0;
+/**
+ * The tiles' bitmaps are keyed by their own epoch, not the theme store's `rev`, which a theme slider bumps every frame it moves:
+ * a theme switch and a setting landing move it on (and the tiles raster once), a slider moving doesn't (release 6.11). The glass's
+ * backdrops (the frosted, bent desk under a tile) hold no colour the sliders reach, so only a theme switch moves theirs.
+ */
+let tileEpoch = 0;
+let backdropEpoch = 0;
+/** What each redraw keeps: a slider's move, the tiles', their glyphs' and the backdrops'; a setting landing, the backdrops'. */
+const KEEP = { theme: /^$/, tune: /^gb\|/, live: /^(t|g|gb)\|/ };
+
+/**
+ * Drop the bitmaps a redraw needs again (`Redraw` in `themeStore.ts`): every one on a theme switch, all but the glass's
+ * backdrops when the theme sliders' setting lands, and all but the tiles' while a slider moves.
+ */
+export function invalidateSprites(why: keyof typeof KEEP = 'theme'): void {
+  if (why == 'theme') {
+    backdropEpoch++;
+    backdropAt.clear();
+    backdropQueue.clear();
+  }
+  if (why != 'live') tileEpoch++;
+  for (const [key, s] of cache) {
+    if (KEEP[why].test(key)) continue;
+    s.image.close();
+    cache.delete(key);
+    bytes -= s.bytes;
+  }
   for (const s of cutCache.values()) s.image.close();
   cutCache.clear();
   cutBytes = 0;
 }
 
+let tileRasters = 0;
+/** How many tile bitmaps have been drawn since the page loaded, for tests and perf runs: a slider's move mustn't add to it. */
+export const tileRasterCount = (): number => tileRasters;
+
 export const spriteCount = (): number => cache.size + cutCache.size;
+/** The bitmaps' bytes held, for tests and perf runs. */
+export const spriteBytes = (): number => bytes + cutBytes;
 
 function remember(key: string, s: Sprite): Sprite {
   cache.set(key, s);
@@ -243,26 +274,130 @@ export interface TileSpec {
   radius: number;
   /** Over another tile, or being dragged: `elevation.tileStacked`'s shadow and edge, in place of the resting look (ADR 0064). */
   stacked: boolean;
-  /** Resting on a textured desk: `elevation.tileTextured`, which in Dark has an edge. */
+  /** Resting on a textured desk: `elevation.tileTextured`'s edge too, which in Dark there is. */
   textured?: boolean;
+  /**
+   * An icon's tile: the app (its glyph) whose accent tints it, as a very subtle egg (APP-TILES), whether or not the glyph is
+   * drawn (a far zoom's plain face keeps the tint). Absent for a widget's card, which is the plain tile.
+   */
+  tint?: GlyphId;
+  /**
+   * A widget's card: in glass too (the owner, Nov 16: "Probably all of the UI elements in office actually"), in the office blue's
+   * egg, never the app's tint (a card that size in a warm accent reads brown), its body opaque enough to keep the widget's words
+   * at 4.5:1 on the desk (`glassTextOpacity`). Under reduced transparency or more contrast, the plain card, as ever.
+   */
+  words?: boolean;
+  /**
+   * Where an icon's tile sits on its desk and the desk's look, for the glass (`GLASS_FACE`): its body's opacity keeps the icons at
+   * 3:1 on the desk's colour, and on a textured desk it shows and bends the texture. Only for an icon at rest under glass; in hand
+   * the body lets the desk through as it's drawn.
+   */
+  at?: { x: number; y: number; look: DeskStyleLook };
 }
 
-export function tileSprite(spec: TileSpec, t: Tokens, rev: number): Sprite {
+/**
+ * The bevel (the owner, Nov 15 night: "proper, clean bevel"): inside the tile's edge, `lit` along the top fading down the left
+ * side, `shade` along the foot, as the window lift's lit edge is lit from the top left, a band about 1.45 px wide on an icon,
+ * crisp at the edge and softer a band further in. Draws on the current path (the tile's rounded rect), clipped to it.
+ */
+function bevel(ctx: OffscreenCanvasRenderingContext2D, w: number, h: number, face: TileFaceTokens): void {
+  const b = bevelWidth(w);
+  const g = ctx.createLinearGradient(w * 0.35, 0, w * 0.65, h);
+  g.addColorStop(0, face.lit);
+  g.addColorStop(0.42, clear(face.lit));
+  g.addColorStop(0.58, clear(face.shade));
+  g.addColorStop(1, face.shade);
+  ctx.save();
+  ctx.clip();
+  ctx.strokeStyle = g;
+  ctx.lineWidth = 2 * b;
+  ctx.stroke();
+  ctx.globalAlpha = 0.4;
+  ctx.lineWidth = 4 * b;
+  ctx.stroke();
+  ctx.restore();
+}
+
+/**
+ * A tile's bitmap's key. An icon's tile under glass (the owner's pick, Nov 16) is keyed by the desk's look too (the body's
+ * opacity keeps the icons at 3:1 on it); the solid face (a widget's card, or any tile under reduced transparency or more
+ * contrast) has the key it has always had. The desk under the glass is a bitmap of its own (`glassBackdropSprite`), so the face
+ * stays shared by every tile of its app and size.
+ */
+export function tileKey(spec: TileSpec, rev: number, q: number, glass: boolean): string {
+  const g = glass ? `|g|${spec.at?.look.key ?? ''}${spec.words ? '|w' : ''}` : '';
+  return `t|${rev}|${q}|${spec.w}|${spec.h}|${spec.app ?? ''}|${spec.tint ?? ''}|${spec.glyphSize}|${spec.radius}|${spec.stacked ? 1 : 0}|${spec.textured ? 1 : 0}${g}`;
+}
+
+export function tileSprite(spec: TileSpec, t: Tokens): Sprite {
   const q = rasterScale;
-  const key = `t|${rev}|${q}|${spec.w}|${spec.h}|${spec.app ?? ''}|${spec.glyphSize}|${spec.radius}|${spec.stacked ? 1 : 0}|${spec.textured ? 1 : 0}`;
+  const glass = spec.tint || spec.words ? glassFace(themeOf(t)) : null;
+  const key = tileKey(spec, tileEpoch, q, !!glass);
   const hit = recall(key);
   if (hit) return hit;
-  const layers = spec.stacked ? t.elevation.tileStacked : spec.textured ? t.elevation.tileTextured : t.elevation.tile;
+  tileRasters += 1;
+  const rev = tileEpoch;
+  const theme = themeOf(t);
+  const face = TILE_FACE[theme];
+  if (glass) {
+    // The contact shadow (in hand, the stacked one, its spread edge left out: there's no hairline on glass), cut away under the
+    // body so it never shows through it; then the glass; then the glyph, crisp, as ever.
+    const glayers = spec.stacked ? t.elevation.tileStacked.filter((l) => !l.spread) : glass.lift;
+    const gm = shadowMargin(glayers, 1);
+    const { canvas, ctx } = makeCanvas(spec.w + 2 * gm, spec.h + 2 * gm, q);
+    ctx.translate(gm, gm);
+    paintShadows(ctx, spec.w, spec.h, spec.radius, glayers, rev, gm);
+    ctx.save();
+    ctx.globalCompositeOperation = 'destination-out';
+    ctx.beginPath();
+    ctx.roundRect(0, 0, spec.w, spec.h, spec.radius);
+    ctx.fill();
+    ctx.restore();
+    // An icon's tile is its app's tint; a widget's card the office blue's, as the office's DOM glass is.
+    const accent = spec.tint ? tileAccent(spec.tint, t) : t.accent.default;
+    const fill = tileFill(accent, theme);
+    // The egg's middle over the desk's colour (the panel's, for a tile with no desk under it: in hand, or a fixture's).
+    const ground = spec.at?.look.base ?? t.surface.panel;
+    const opacity = spec.words ? glassTextOpacity(glass, fill.centre, ground, theme) : glassOpacity(glass, fill.centre, ground, theme, accent);
+    drawGlass(ctx, spec.w, spec.h, spec.radius, q, glass, fill, opacity);
+    if (spec.app) {
+      ctx.save();
+      ctx.translate((spec.w - spec.glyphSize) / 2, (spec.h - spec.glyphSize) / 2);
+      drawGlyph(ctx, spec.app, t, spec.glyphSize);
+      ctx.restore();
+    }
+    return finish(key, canvas, q, -gm, -gm);
+  }
+  // At rest the tile's lift; over another or in hand, the stacked shadow and edge (ADR 0064); on a texture, its edge too.
+  const layers = spec.stacked ? t.elevation.tileStacked : spec.textured ? [...face.lift, ...t.elevation.tileTextured.filter((l) => l.spread)] : face.lift;
   const m = shadowMargin(layers, 1);
   const cw = spec.w + 2 * m;
   const ch = spec.h + 2 * m;
   const { canvas, ctx } = makeCanvas(cw, ch, q);
   ctx.translate(m, m);
   paintShadows(ctx, spec.w, spec.h, spec.radius, layers, rev, m);
-  ctx.fillStyle = t.surface.tile;
   ctx.beginPath();
   ctx.roundRect(0, 0, spec.w, spec.h, spec.radius);
-  ctx.fill();
+  if (spec.tint) {
+    // An icon's tile: its app's accent, calm, as a very subtle egg, lightest where the icon sits (no rim of colour).
+    const fill = tileFill(tileAccent(spec.tint, t), theme);
+    ctx.save();
+    ctx.clip();
+    ctx.translate(spec.w * EGG.cx, spec.h * EGG.cy);
+    ctx.scale(spec.w * EGG.rx, spec.h * EGG.ry);
+    const g = ctx.createRadialGradient(0, 0, 0, 0, 0, 1);
+    g.addColorStop(EGG.flat, fill.centre);
+    g.addColorStop(1, fill.rim);
+    ctx.fillStyle = g;
+    ctx.fillRect(-2, -2, 4, 4);
+    ctx.restore();
+  } else {
+    ctx.fillStyle = t.surface.tile;
+    ctx.fill();
+  }
+  bevel(ctx, spec.w, spec.h, face);
+  ctx.beginPath();
+  ctx.roundRect(0, 0, spec.w, spec.h, spec.radius);
   const edge = layers.find((l) => l.spread)?.color;
   if (edge) {
     // A spread of 1 is a ring just outside the card, so the stroke's middle is half a unit out, and it keeps its token's strength at 1x.
@@ -281,10 +416,116 @@ export function tileSprite(spec: TileSpec, t: Tokens, rev: number): Sprite {
   return finish(key, canvas, q, -m, -m);
 }
 
-/** A glyph alone: 22 px for a widget's head, or larger to scale while a tile is resized. */
-export function glyphSprite(app: GlyphId, t: Tokens, rev: number, size = 22): Sprite {
+/**
+ * The desk under an icon's glass, frosted and bent at the rim, on a textured desk; null on a flat one (the body
+ * lets the desk through as it's drawn), in hand, or too small to see. It depends on where the tile sits (the texture repeats, so
+ * its place modulo a tile), so each tile has its own, made when the page is idle, never in the frame that asks: until then the
+ * last one made for that tile, at whatever scale (a frosted desk scales without showing it), or nothing the first time.
+ */
+const backdropAt = new Map<string, Sprite>();
+const backdropQueue = new Map<string, () => void>();
+let backdropIdle: (() => void) | null = null;
+const backdropListeners = new Set<() => void>();
+/** A glass backdrop has been made: whatever draws tiles redraws. */
+export function onGlassBackdrop(fn: () => void): () => void {
+  backdropListeners.add(fn);
+  return () => backdropListeners.delete(fn);
+}
+
+/**
+ * The lens that frosts and bends them (`glassLens.ts`) is a chunk of its own, fetched with the first backdrop asked for; the queue
+ * waits for it. One that fails is asked for again with the next backdrop.
+ */
+let lens: typeof import('./glassLens') | null = null;
+let lensAsked = false;
+/** Time spent bending desks under glass since the page loaded, and how many tiles, for perf runs. */
+export const glassLensStats = (): { ms: number; count: number } => lens?.glassLensStats() ?? { ms: 0, count: 0 };
+
+function drainBackdrops(deadline?: IdleDeadline): void {
+  backdropIdle = null;
+  if (!lens) {
+    if (!lensAsked) {
+      lensAsked = true;
+      import('./glassLens').then(
+        (m) => {
+          lens = m;
+          backdropIdle ??= idleWithDeadline(drainBackdrops);
+        },
+        () => (lensAsked = false),
+      );
+    }
+    return;
+  }
+  const t0 = performance.now();
+  for (const [key, make] of backdropQueue) {
+    backdropQueue.delete(key);
+    make();
+    if (deadline ? deadline.timeRemaining() < 3 : performance.now() - t0 > 8) break;
+  }
+  backdropListeners.forEach((fn) => fn());
+  if (backdropQueue.size) backdropIdle = idleWithDeadline(drainBackdrops);
+}
+
+function idleWithDeadline(fn: (d?: IdleDeadline) => void): () => void {
+  if (typeof window.requestIdleCallback === 'function') {
+    const id = window.requestIdleCallback(fn, { timeout: 500 });
+    return () => window.cancelIdleCallback(id);
+  }
+  const id = window.setTimeout(() => fn(), 50);
+  return () => window.clearTimeout(id);
+}
+
+/**
+ * Where a tile's glass backdrop is, as far as its bitmap goes: the desk's look, the tile's size and its place on the desk modulo
+ * the texture's period in desk units (the texture repeats, so two tiles a period apart show the same wood), to a quarter unit.
+ */
+export function backdropPlace(spec: TileSpec, at: { x: number; y: number; look: { key: string } }, rev: number, period: number): string {
+  const mod = (v: number): number => (((Math.round(v * 4) / 4) % period) + period) % period;
+  return `gb|${rev}|${at.look.key}|${mod(at.x)}|${mod(at.y)}|${spec.w}|${spec.h}|${spec.radius}`;
+}
+
+export function glassBackdropSprite(spec: TileSpec, t: Tokens): Sprite | null {
+  const rev = backdropEpoch;
   const q = rasterScale;
-  const key = `g|${rev}|${q}|${app}|${size}`;
+  if ((!spec.tint && !spec.words) || !spec.at || spec.stacked || spec.w * q < 40) return null;
+  const theme = themeOf(t);
+  const glass = glassFace(theme);
+  const tex = glass ? spec.at.look.texture : null;
+  const lvl = tex ? textureLevel(tex, q) : null;
+  if (!glass || !tex || !lvl) return null;
+  const place = backdropPlace(spec, spec.at, rev, tex.width / tex.density);
+  const key = `${place}|${q}|${lvl.level}`;
+  const hit = recall(key);
+  if (hit) return hit;
+  if (!backdropQueue.has(key)) {
+    const at = { x: spec.at.x, y: spec.at.y, base: spec.at.look.base, image: lvl.image, density: lvl.density };
+    const { w, h, radius } = spec;
+    backdropQueue.set(key, () => {
+      if (q !== rasterScale) return; // the camera settled elsewhere since: that scale's turn will come
+      const bmp = lens!.glassBackdrop(w, h, radius, q, at, glass);
+      if (!bmp) return;
+      const s = remember(key, { image: bmp.transferToImageBitmap(), x: 0, y: 0, width: w, height: h, bytes: bmp.width * bmp.height * 4 });
+      backdropAt.set(place, s);
+    });
+    backdropIdle ??= idleWithDeadline(drainBackdrops);
+  }
+  const stale = backdropAt.get(place);
+  // A bitmap the cache let go of is closed, and a closed one has no width.
+  return stale && stale.image.width > 0 ? stale : null;
+}
+
+/** A glass backdrop, smoothed whenever it's drawn at a scale it wasn't made for. */
+export function blitBackdrop(ctx: CanvasRenderingContext2D, s: Sprite): void {
+  const prev = ctx.imageSmoothingEnabled;
+  ctx.imageSmoothingEnabled = true;
+  ctx.drawImage(s.image, s.x, s.y, s.width, s.height);
+  ctx.imageSmoothingEnabled = prev;
+}
+
+/** A glyph alone: 22 px for a widget's head, or larger to scale while a tile is resized. */
+export function glyphSprite(app: GlyphId, t: Tokens, size = 22): Sprite {
+  const q = rasterScale;
+  const key = `g|${tileEpoch}|${q}|${app}|${size}`;
   const hit = recall(key);
   if (hit) return hit;
   const { canvas, ctx } = makeCanvas(size, size, q);
@@ -603,17 +844,18 @@ export function blitPanelLive(ctx: CanvasRenderingContext2D, w: number, h: numbe
 
 // Past a widget's corner (20) and the stacked shadow's falloff (blur 14, offset 4), since a tile being resized is being dragged.
 const TILE_CORNER = 44;
-const LIVE_GLYPH = 96;
+// The largest the centred glyph gets, so it's only ever drawn smaller.
+const LIVE_GLYPH = FACE_GLYPH_MAX;
 
-/** A tile while its corner is being dragged: the same idea as a panel, with its glyph scaled over it. */
-export function blitTileLive(ctx: CanvasRenderingContext2D, w: number, h: number, app: GlyphId | null, t: Tokens, rev: number, radius: number): void {
+/** A tile while its corner is being dragged: the same idea as a panel, with its glyph scaled over it, as it will be at rest. */
+export function blitTileLive(ctx: CanvasRenderingContext2D, w: number, h: number, app: GlyphId | null, t: Tokens, radius: number): void {
   const base = 2 * TILE_CORNER + 2;
-  blitStretched(ctx, tileSprite({ w: base, h: base, app: null, glyphSize: 0, radius, stacked: true }, t, rev), w, h, TILE_CORNER, t.surface.tile);
+  blitStretched(ctx, tileSprite({ w: base, h: base, app: null, glyphSize: 0, radius, stacked: true }, t), w, h, TILE_CORNER, t.surface.tile);
   if (!app) return;
-  const size = iconGlyphSize(w, h);
+  const size = faceGlyphSize(w, h);
   const prev = ctx.imageSmoothingEnabled;
   ctx.imageSmoothingEnabled = true;
-  ctx.drawImage(glyphSprite(app, t, rev, LIVE_GLYPH).image, (w - size) / 2, (h - size) / 2, size, size);
+  ctx.drawImage(glyphSprite(app, t, LIVE_GLYPH).image, (w - size) / 2, (h - size) / 2, size, size);
   ctx.imageSmoothingEnabled = prev;
 }
 

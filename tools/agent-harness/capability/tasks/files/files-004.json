@@ -1,0 +1,49 @@
+{
+  "id": "files-004",
+  "area": "files",
+  "title": "Who owns a follow-up",
+  "prompt": "Who owns the budget follow-up in my meeting notes at Harness/meetings/2026-11-03.md?",
+  "setup": {
+    "files": {
+      "Harness/meetings/2026-11-03.md": "# Planning, 3 November\n\n- Priya: budget follow-up with finance\n- Tom: book the venue\n- Lee: draft the agenda\n"
+    }
+  },
+  "approve": "all",
+  "checks": [
+    {
+      "kind": "reply",
+      "contains": [
+        "Priya"
+      ],
+      "state": "done"
+    },
+    {
+      "kind": "untrusted",
+      "value": true
+    },
+    {
+      "kind": "cards",
+      "tools": []
+    }
+  ],
+  "policy": {
+    "tools": [
+      "files_read"
+    ]
+  },
+  "standIn": [
+    {
+      "calls": [
+        {
+          "name": "files_read",
+          "input": {
+            "path": "Harness/meetings/2026-11-03.md"
+          }
+        }
+      ]
+    },
+    {
+      "text": "Priya owns the budget follow-up with finance."
+    }
+  ]
+}

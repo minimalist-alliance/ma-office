@@ -1,0 +1,93 @@
+{
+  "id": "notebook-006",
+  "area": "notebook",
+  "title": "Replace a word on a page",
+  "prompt": "On my Gift ideas page, change scarf to wool gloves.",
+  "setup": {
+    "notebook": [
+      {
+        "tab": "Harness",
+        "title": "Gift ideas",
+        "markdown": "# Gift ideas\n\n- Mom: scarf\n- Dad: chess set\n"
+      }
+    ]
+  },
+  "approve": "all",
+  "checks": [
+    {
+      "kind": "page",
+      "tab": "Harness",
+      "title": "Gift ideas",
+      "contains": [
+        "wool gloves",
+        "chess set"
+      ],
+      "notContains": [
+        "scarf"
+      ]
+    },
+    {
+      "kind": "cards",
+      "tools": [
+        "notebook_write"
+      ]
+    }
+  ],
+  "policy": {
+    "tools": [
+      "notebook_search",
+      "notebook_read",
+      "notebook_write"
+    ]
+  },
+  "standIn": [
+    {
+      "calls": [
+        {
+          "name": "notebook_search",
+          "input": {
+            "query": "Gift ideas"
+          }
+        }
+      ]
+    },
+    {
+      "calls": [
+        {
+          "name": "notebook_read",
+          "input": {
+            "pageId": {
+              "$re": {
+                "step": 0,
+                "call": 0,
+                "pattern": "\"pageId\":\"([^\"]+)\",\"title\":\"Gift ideas\""
+              }
+            }
+          }
+        }
+      ]
+    },
+    {
+      "calls": [
+        {
+          "name": "notebook_write",
+          "input": {
+            "pageId": {
+              "$re": {
+                "step": 0,
+                "call": 0,
+                "pattern": "\"pageId\":\"([^\"]+)\",\"title\":\"Gift ideas\""
+              }
+            },
+            "op": "replace_text",
+            "find": "scarf",
+            "markdown": "wool gloves"
+          }
+        }
+      ]
+    },
+    {
+      "text": "Changed scarf to wool gloves on your Gift ideas page."
+    }
+  ]
+}

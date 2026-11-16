@@ -3,10 +3,11 @@
 import Konva from 'konva/lib/Core.js';
 import { readJson, reducedMotion, writeJson } from '../lib/util';
 import {
-  cameraDuration, DESK_MAX_SCALE, easeCamera, fitRect, interpolateCamera, isVisible, lodFor, MAX_SCALE, OVERVIEW_MAX_SCALE, SlowFrameWindow, snapToDevice, zoomAtPoint,
+  cameraDuration, deskFramingScale, DESK_MAX_SCALE, easeCamera, fitRect, interpolateCamera, isVisible, lodFor, MAX_SCALE, OVERVIEW_MAX_SCALE, SlowFrameWindow, snapToDevice, zoomAtPoint,
   type Camera, type Insets, type Lod, type Viewport,
 } from './camera';
 import { setRasterScale, setScreenScale } from './sprites';
+import { CAMERA_KEY, deviceStamp, keptForThisMember } from '../state/deviceOwner';
 import type { Point, Rect } from './layout';
 
 const SETTLE_MS = 140;
@@ -15,7 +16,12 @@ const FRAME_WINDOW = 12;
 const SLOW_IN_WINDOW = 4; // a one-off stall isn't worth reallocating the canvas
 const LOW_DPR_MOVES = 8; // moves that start at DPR 1 after a drop, before full DPR is tried again
 const PHONE_W = 600;
-const CAMERA_KEY = 'ma.camera.v1';
+/**
+ * The bars' short-viewport mode (`useIsShort`, `app.css`): under 400 CSS px high each bar is one row, 52 px at the top and
+ * 60 at the foot. A phone on its side is one. There a new desk takes the phone's own fit (ADR 0057), by height.
+ */
+const SHORT_H = 400;
+const SHORT_INSETS: Insets = { top: 52, bottom: 60, side: 0 };
 
 export function chromeInsets(w: number): Insets {
   return { top: w < PHONE_W ? 16 : 72, bottom: w < PHONE_W ? 16 : 64, side: 0 };
@@ -42,6 +48,8 @@ class CameraController {
   private droppedDpr = false;
   private lowDprMoves = 0;
   private saved: Camera | null = null;
+  /** Who the saved camera was written for (`state/deviceOwner.ts`): none from a build before it. */
+  private savedBy: unknown = undefined;
 
   /** Canvas pixels per CSS pixel: min(devicePixelRatio, 2) (design 3.10). */
   dpr(): number {
@@ -51,8 +59,11 @@ class CameraController {
   attach(stage: Konva.Stage, layer: Konva.Layer): void {
     this.stage = stage;
     this.layer = layer;
-    const saved = readJson<Camera>(CAMERA_KEY);
-    if (saved && Number.isFinite(saved.x) && Number.isFinite(saved.y) && saved.s > 0) this.saved = saved;
+    const saved = readJson<Camera & { owner?: unknown }>(CAMERA_KEY);
+    if (saved && Number.isFinite(saved.x) && Number.isFinite(saved.y) && saved.s > 0) {
+      this.saved = { x: saved.x, y: saved.y, s: saved.s };
+      this.savedBy = saved.owner;
+    }
     Konva.pixelRatio = this.dpr();
     layer.getCanvas().setPixelRatio(this.dpr());
     setRasterScale(this.cam.s * this.dpr());
@@ -267,7 +278,9 @@ class CameraController {
     setRasterScale(this.cam.s * d);
     this.layer?.listening(true);
     this.write();
-    writeJson(CAMERA_KEY, this.cam); // per device (design 3.8), for a free camera after a reload
+    // Per device (design 3.8), for a free camera after a reload, and stamped with its member while their id may be kept
+    // here, so the next member in this browser never starts on it (ADR 0057), and no id outlives a sign-out (ISS-89).
+    writeJson(CAMERA_KEY, { ...this.cam, owner: deviceStamp() });
     this.settleListeners.forEach((fn) => fn());
   }
 
@@ -278,7 +291,8 @@ class CameraController {
 
   /** The camera saved on this device, once, for a reload in free mode. */
   takeSaved(): Camera | null {
-    const s = this.saved;
+    // Another member's camera isn't theirs to start on: their office is framed as a first visit's (ADR 0057).
+    const s = keptForThisMember(this.savedBy) ? this.saved : null;
     this.saved = null;
     return s;
   }
@@ -338,9 +352,24 @@ class CameraController {
   /**
    * `stage` is a desk in carousel mode (`carousel/`): the app on it is laid out in screen pixels whatever the zoom, so the
    * desk can fill the screen, up to the camera's own limit, and the app has the room.
+   *
+   * `framed` is a desk still as the office introduced it (`asIntroduced`, ADR 0057): framed by the owner's rule, up to
+   * `deskFramingScale`, the zoom at which it takes half the width of a 16:9 screen (the same share of the area on any other),
+   * centred, inside the fit's margins. `desk` is any other desk, the member's own arrangement: it fills the screen inside the
+   * margins up to 175 %, as it always has. The overview comes no closer than 100 %, nor, with `introducedInView` (a desk as
+   * introduced is in it), than the rule, so zooming out never zooms in. A phone keeps its own fit: its desk is the cell grid
+   * across the screen's width (ADR 0062), so there `framed` is `desk`. So does a short screen, by height (a phone on its
+   * side): a new desk fills the room between its one-row bars, with the phone's margin, rather than the rule's share.
    */
-  fit(rect: Rect, mode: 'desk' | 'overview' | 'stage'): Camera {
-    const max = mode === 'desk' ? DESK_MAX_SCALE : mode === 'stage' ? MAX_SCALE : OVERVIEW_MAX_SCALE;
+  fit(rect: Rect, mode: 'desk' | 'framed' | 'overview' | 'stage', introducedInView = false): Camera {
+    const phone = this.vp.w < PHONE_W;
+    const short = !phone && this.vp.h < SHORT_H;
+    if (mode === 'framed' && short) return fitRect(rect, this.vp, SHORT_INSETS, fitMargin(0), DESK_MAX_SCALE);
+    const rule = phone || short ? DESK_MAX_SCALE : deskFramingScale(this.vp);
+    const max = mode === 'stage' ? MAX_SCALE
+      : mode === 'framed' ? rule
+        : mode === 'desk' ? DESK_MAX_SCALE
+          : introducedInView ? Math.min(OVERVIEW_MAX_SCALE, rule) : OVERVIEW_MAX_SCALE;
     return fitRect(rect, this.vp, chromeInsets(this.vp.w), fitMargin(this.vp.w), max);
   }
 

@@ -2,7 +2,7 @@
 // page load at phone width is desk mode on the desk the phone remembers, else the first; the home mark and a reload that
 // follows it still behave. At 390 x 844 with the harness's three desks (Personal, Work, Guild).
 import { expect, test, type APIRequestContext, type Page } from '@playwright/test';
-import { canvasPainted, harness, setTheme, signIn, watchConsole, type ThemeId } from './helpers';
+import { canvasPainted, harness, homeMark, setTheme, signIn, tapHome, watchConsole, type ThemeId } from './helpers';
 
 test.use({ viewport: { width: 390, height: 844 }, hasTouch: true });
 test.beforeEach(async ({ request }) => {
@@ -10,7 +10,7 @@ test.beforeEach(async ({ request }) => {
 });
 
 const view = (page: Page): Promise<{ mode: string; activeDesk: string | null }> => page.evaluate(() => JSON.parse(localStorage.getItem('ma.view.v1') ?? '{}'));
-const home = (page: Page) => page.getByRole('button', { name: 'Your office, show all desks' });
+const home = (page: Page) => homeMark(page);
 
 async function remember(page: Page, v: { mode: string; activeDesk: string }): Promise<void> {
   await page.addInitScript((saved) => {
@@ -70,7 +70,7 @@ test('the home mark goes to the overview, and a reload after it lands on the des
   await signIn(page, '/?fixture=three');
   await canvasPainted(page);
   await settled(page);
-  await home(page).tap();
+  await tapHome(page);
   await settled(page);
   const parked = await view(page); // the overview's own ring: whichever desk it rests on is the one remembered
   expect(parked.mode).toBe('overview');
@@ -87,7 +87,7 @@ test('a screen reader meets the desk first: its first app, not the overview', as
   await canvasPainted(page);
   await settled(page);
   const first = page.locator('.proxy-layer [tabindex="0"]').first();
-  await expect(first).toHaveAttribute('aria-label', /^(Notebook|Browser|Chat|Agent|Commons|Files)/);
+  await expect(first).toHaveAttribute('aria-label', /^(Notebook|Browser|Courier|Agent|Commons|Files)/);
 });
 
 for (const theme of ['light', 'dusk', 'dark'] as ThemeId[]) {

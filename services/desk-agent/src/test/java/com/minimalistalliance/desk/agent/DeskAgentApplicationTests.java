@@ -41,6 +41,24 @@ class DeskAgentApplicationTests {
         assertManagerAnswers(output, dir);
     }
 
+    /** ADR 0097: with the image's marker, health says the sidecar reads files, and the child never will. */
+    @Test
+    void healthSaysSidecarOnceTheMarkerIsThere() throws Exception {
+        Path data = Files.createDirectory(dir.resolve("data"));
+        Path parse = Files.createDirectory(dir.resolve("desk-parse"));
+        Files.writeString(parse.resolve("required"), "1");
+        try (ConfigurableApplicationContext context = DeskAgentApplication.application().run(args(dir, data))) {
+            assertThat(Health.get(dir.resolve("admin.sock"))).startsWith("HTTP/1.1 200 ")
+                    .contains("\"parse\":\"sidecar\"");
+            com.minimalistalliance.desk.agent.attach.Parsers parsers =
+                    context.getBean(com.minimalistalliance.desk.agent.attach.Parsers.class);
+            assertThatThrownBy(() -> parsers.read("text", "words".getBytes(StandardCharsets.UTF_8), 1000, 1, "f"))
+                    .isInstanceOfSatisfying(com.minimalistalliance.desk.agent.attach.AttachException.class,
+                            e -> assertThat(e.reason()).isEqualTo("unavailable"));
+            assertThat(parsers.counts().child()).isZero();
+        }
+    }
+
     @Test
     void healthIs503WhenTheDataDirectoryIsMissing() throws Exception {
         String[] args = {
@@ -93,6 +111,7 @@ class DeskAgentApplicationTests {
             "--desk.agent.data.dir=" + data,
             "--desk.agent.admin.socket=" + dir.resolve("admin.sock"),
             "--desk.agent.socket=" + dir.resolve("agent.sock"),
+            "--desk.agent.parse.dir=" + dir.resolve("desk-parse"),
         };
     }
 
@@ -104,7 +123,7 @@ class DeskAgentApplicationTests {
             assertThat(health)
                     .startsWith("HTTP/1.1 200 ")
                     .contains("\"status\":\"ok\"", "\"data\":\"ok\"", "\"audit\":\"open\"", "\"usage\":\"open\"",
-                            "\"manager\":\"no_key\"", "\"keys\":0");
+                            "\"manager\":\"no_key\"", "\"keys\":0", "\"parse\":\"child\"");
             assertThat(health).doesNotContain("\"version\":\"unknown\"").doesNotContain("@");
             assertThat(Files.getPosixFilePermissions(dir.resolve("admin.sock")))
                     .containsExactlyInAnyOrder(java.nio.file.attribute.PosixFilePermission.OWNER_READ,

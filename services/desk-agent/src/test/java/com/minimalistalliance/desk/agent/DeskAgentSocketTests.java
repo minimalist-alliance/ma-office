@@ -79,7 +79,8 @@ class DeskAgentSocketTests {
     @Test
     void theAgentAppsWholeFlow(CapturedOutput output) throws Exception {
         assertThat(result(desk.call("agent.providers", Map.of())).get("providers")).asList()
-                .extracting(p -> map(p).get("id")).containsExactly("anthropic", "openai", "xai", "openrouter");
+                .extracting(p -> map(p).get("id"))
+                .containsExactly("anthropic", "openai", "xai", "openrouter", "google", "moonshot");
         Map<String, Object> manager = agent(result(desk.call("agent.list", Map.of())));
         assertThat(manager).containsEntry("id", "manager").containsEntry("role", "manager")
                 .containsEntry("status", "no_key").containsEntry("binding", null).containsEntry("unseen", 0);
@@ -112,6 +113,13 @@ class DeskAgentSocketTests {
         Map<String, Object> bound = map(result(desk.call("agent.bind",
                 Map.of("agentId", "manager", "keyId", keyId, "model", "claude-sonnet-5-5"))).get("agent"));
         assertThat(bound).containsEntry("status", "online");
+        // The member saves the agent's setup screen (draft ADR section 16): before it, a send is refused setup.
+        assertThat(desk.call("agent.message.send", Map.of("agentId", "manager", "text", "Too soon")))
+                .containsEntry("t", "err").containsEntry("code", "precondition_failed")
+                .containsEntry("details", Map.of("reason", "setup"));
+        assertThat(map(result(desk.call("agent.get", Map.of("agentId", "manager"))).get("agent")))
+                .containsEntry("setup", "new");
+        result(desk.call("agent.access.set", com.minimalistalliance.desk.agent.testing.Setups.defaults("manager")));
         assertThat(map(bound.get("binding"))).containsEntry("providerName", "Anthropic")
                 .containsEntry("model", "claude-sonnet-5-5");
 
@@ -230,8 +238,12 @@ class DeskAgentSocketTests {
         assertThat(desk.addKey("anthropic", "Bad", ascii("sk-ant has a space")))
                 .containsEntry("code", "bad_request")
                 .containsEntry("details", Map.of("reason", "key_malformed", "detail", "format"));
-        assertThat(desk.addKey("google", "Bad", ascii(FakeLlmServer.KEY)))
+        // A provider desk-agent doesn't have (Google and Moonshot AI are registered since Nov 15).
+        assertThat(desk.addKey("mistral", "Bad", ascii(FakeLlmServer.KEY)))
                 .containsEntry("details", Map.of("reason", "key_malformed", "detail", "provider"));
+        // Anthropic's key picked as Google's never leaves the desk.
+        assertThat(desk.addKey("google", "Bad", ascii(FakeLlmServer.KEY)))
+                .containsEntry("details", Map.of("reason", "key_malformed", "detail", "provider_mismatch"));
         assertThat(result(desk.call("agent.key.list", Map.of())).get("keys")).asList().isEmpty();
         assertThat(desk.call("agent.create", Map.of("name", "<Writer>")))
                 .containsEntry("code", "bad_request").containsEntry("details", Map.of("detail", "name"));
@@ -672,6 +684,7 @@ class DeskAgentSocketTests {
         llm.acceptedKey = key;
         String keyId = (String) map(result(desk.addKey(provider, "Test", ascii(key))).get("key")).get("keyId");
         result(desk.call("agent.bind", Map.of("agentId", "manager", "keyId", keyId, "model", model)));
+        result(desk.call("agent.access.set", com.minimalistalliance.desk.agent.testing.Setups.defaults("manager")));
         return keyId;
     }
 

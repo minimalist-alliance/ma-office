@@ -1,0 +1,29 @@
+From: Office <office@example.com>
+To: me@desk.example
+Date: Fri, 13 Nov 2026 10:00:00 +0000
+Subject: Notes archive
+Message-ID: <zip-clean@corpus.example>
+MIME-Version: 1.0
+X-Corpus-Note: a harmless zip: text, a PNG and a UTF-8 file name
+Content-Type: multipart/mixed; boundary="att-1"
+
+--att-1
+Content-Type: text/plain; charset=utf-8
+
+The notes archive is attached.
+--att-1
+Content-Type: application/zip; name="notes.zip"
+Content-Disposition: attachment; filename="notes.zip"
+Content-Transfer-Encoding: base64
+
+UEsDBBQAAAAIAABQbV3YIJDuIAAAACMAAAAJAAAAbm90ZXMudHh0801NLcnMS1fIyy9JLbYCURkg
+bkm+QlFqQX5RiR4vFwBQSwMEFAAAAAAAAFBtXavq+ROQAAAAkAAAAA8AAABwaG90b3MvbG9nby5w
+bmeJUE5HDQoaCgAAAA1JSERSAAAAEAAAABAIAgAAAJCRaDYAAABXSURBVHiclctJDoAgEATARlFx
+HZ7hS/j/kzyYEMIyNEldy7wIHuBZeACGF8NESsPMyILtKsOiq4ZV0QpbixJclR72UjccGSacKTJc
+ER/u31B4ABkKAsgHJVkHZlrNAKUAAAAASUVORK5CYIJQSwMEFAAACAgAAFBtXf2DKmEbAAAAGQAA
+AA4AAADDnGJlcnNpY2h0LmNzdvPNz0sssXZKLSlKTOfl8krMK00ssjY04uUCAFBLAQIUABQAAAAI
+AABQbV3YIJDuIAAAACMAAAAJAAAAAAAAAAAAAAAAAAAAAABub3Rlcy50eHRQSwECFAAUAAAAAAAA
+UG1dq+r5E5AAAACQAAAADwAAAAAAAAAAAAAAAABHAAAAcGhvdG9zL2xvZ28ucG5nUEsBAhQAFAAA
+CAgAAFBtXf2DKmEbAAAAGQAAAA4AAAAAAAAAAAAAAAAABAEAAMOcYmVyc2ljaHQuY3N2UEsFBgAA
+AAADAAMAsAAAAEsBAAAAAA==
+--att-1--

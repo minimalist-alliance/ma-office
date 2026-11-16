@@ -4,6 +4,7 @@
 // the field. deskd sets it once per page and clears it on a navigation to a new document. No site is blocked and nothing
 // here claims protected playback works (task 16 G). A desk before the field never has one, so there is never a note.
 import type { BrowserTab } from '../desk/deskLink';
+import { onMemberChange } from '../platform/auth';
 
 export interface ProtectedFailure {
   tabId: string;
@@ -55,7 +56,14 @@ export class ProtectedWatch {
   }
 }
 
-/** For tests. */
+/** For tests, and a change of account. */
 export function resetProtectedDismissals(): void {
+  for (const sites of dismissedByDesk.values()) sites.clear(); // a watch still held has the same set
   dismissedByDesk.clear();
 }
+
+// This tab's tokens became another account's (ISS-89's follow-up): the sites the last member put a note away for were theirs.
+// The first token (`before` null) is nobody's change; this chunk loads with the first Browser window.
+onMemberChange((_sub, before) => {
+  if (before !== null) resetProtectedDismissals();
+});

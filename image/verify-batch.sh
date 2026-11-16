@@ -36,6 +36,7 @@ COMP=ma-verify-batch
 W=$(mktemp -d /var/tmp/verify-batch.XXXXXX); chmod 0755 "$W"
 bad() { echo "BAD: $*"; echo FAILED; }
 cleanup() {
+  chattr -i "$IDLE" 2>/dev/null
   rm -f "$DROP/verify-batch.pem" "$IDLE"
   rm -rf "/opt/ma/$COMP" "$STATE/pending/"* "$STATE/state.json"
   rm -rf "$W"
@@ -256,7 +257,11 @@ rollback)
   manifest 7101 "$COMP:2:$as2" "$B:9:$bs"
   printf '{"components": {"%s": "%s", "%s": "file://%s"}}\n' "$COMP" "$a2" "$B" "$W/b.tgz" > "$W/urls.json"
   $DB offer "$W/m7101.json" "$W/m7101.sig" "$W/urls.json" >/dev/null || bad "offer"
-  idle_file 1200; $DB tick 2>"$W/err"
+  # The tick reads idle.json twice, before and after preparing both components, and deskd rewrites it every 15 s with its own
+  # clock (idleSince from deskd's last start; 600 s needed): a rewrite between the two reads left the batch "prepared, then not
+  # idle" with no error (0.3.9's first verify run). The planted file is held immutable for the tick (deskd logs one failed
+  # write and writes again after); idle gating itself is the idle part's.
+  idle_file 1200; chattr +i "$IDLE"; $DB tick 2>"$W/err"; chattr -i "$IDLE"
   echo "phase $(st 'd["phase"]'), $COMP $(cur $COMP), $B $(cur $B), error: $(st 'd["lastError"]["text"]')"
   [ "$(st 'd["phase"]')" = rolled-back ] || bad "phase $(st 'd["phase"]')"
   [ "$(cur $COMP)" = 1 ] || bad "$COMP wasn't rolled back: $(cur $COMP)"

@@ -1,0 +1,18 @@
+From: Office <office@example.com>
+To: me@desk.example
+Date: Fri, 13 Nov 2026 10:00:00 +0000
+Subject: Preamble and epilogue
+Message-ID: <preamble-epilogue@corpus.example>
+MIME-Version: 1.0
+X-Corpus-Note: multipart preamble and epilogue text that are not part of the body
+Content-Type: multipart/mixed; boundary="pe-1"
+
+This preamble should never be shown as the body.
+
+--pe-1
+Content-Type: text/plain; charset=utf-8
+
+Only this sentence about the lighthouse is the body.
+--pe-1--
+
+This epilogue should not be shown either.

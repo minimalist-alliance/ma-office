@@ -141,10 +141,12 @@ tool for a run (Files, the Browser, Notebook), and deskd answers. deskd serves t
 
 | From | `t` or `m` | Fields | Meaning |
 |---|---|---|---|
-| deskd | `req` `desk.tools.hello` | `{v: 1, tools: [names]}`, no `caller` | On each connection: the tools deskd runs now (Notebook only on a guild desk). desk-agent answers `{}`, and sends no `tcall` before it; an older desk-agent answers `not_found` and the link stays. A hello with a `caller` is refused |
-| desk-agent | `tcall` | `id`, `runId`, `agentId`, `tool`, `args`, `taint`, and `phase: "look"`, or `approval: {approvalId, sha256}` and `context` | One call. `look` classifies it with nothing done. `taint` is the run's flags (`U`, `S`); deskd adds them to its own copy and never removes any. `tool: "run_end"` says a run ended |
+| deskd | `req` `desk.tools.hello` | `{v: 1, tools: [names], keys: {ttlSec: 600}}`, no `caller` | On each connection: the tools deskd runs now (Notebook only on a guild desk). desk-agent answers `{}`, and sends no `tcall` before it; an older desk-agent answers `not_found` and the link stays. A hello with a `caller` is refused |
+| desk-agent | `tcall` | `id`, `runId`, `agentId`, `tool`, `args`, `taint`, and `phase: "look"`, or `approval: {approvalId, sha256}` and `context`; `key` on every call that isn't a look, and `retry: true` when it's asked again | One call. `look` classifies it with nothing done. `taint` is the run's flags (`U`, `S`); deskd adds them to its own copy and never removes any. `tool: "run_end"` says a run ended. `key` is the call's record's UUIDv7 (durable runs' seam): deskd keeps the reply by it 10 minutes, and a repeat gets that reply and runs nothing (`API.md` §18, "Keys") |
+| deskd | `req` `desk.desks.queue` | `{envelopes: [{id, grantId, toDeskId, kind, seq, envelope}]}`, no `caller` | Messages between desks (draft ADR §14): the envelopes deskd made from the member's choices (offers, accepts, revokes), into desk-agent's outbox, each once by its id; sent on every connection until answered `{ids}`. Refused from a frame with a `caller` |
+| deskd | `req` `desk.desks.deliver` | `{opened}`, no `caller` | An envelope from another of the member's desks, as deskd opened and checked it: the only way one reaches desk-agent. `{id, outcome, taken?}` (`taken: true` when the waiting `desk_message` call took an answer, which deskd then gives that run as a To-do source), or `conflict` `stale`, `forbidden` `revoked`, `no_grant` or `rate`. Refused from a frame with a `caller` |
 | deskd | `tres` | `id`, `r`, `taint` | A look: `r` is `{risk, context, target, payload, before, refusal}`. A run: `{content, taints, risk}` and the area's chip words (`session`). `taint` is the run's flags as deskd now holds them |
-| deskd | `terr` | `id`, `code`, `details: {reason}` | A deskd error code and one word: `approval_required`, `approval_unknown`, `approval_used`, `approval_mismatch`, `scope`, `age_band`, `member`, `run`, `tool`, `changed`, `gone`, `exists`, `off_site`, `sensitive`, `no_space`, … Never content |
+| deskd | `terr` | `id`, `code`, `details: {reason}` | A deskd error code and one word: `approval_required`, `approval_unknown`, `approval_used`, `approval_mismatch`, `scope`, `age_band`, `member`, `run`, `tool`, `changed`, `gone`, `exists`, `off_site`, `sensitive`, `no_space`, and for a key `key`, `key_mismatch`, `key_unknown`, `key_expired`, … Never content |
 
 - **What deskd checks** before an area runs anything (`ToolHost`): the tool is one it declares (`HostedDecls`), the
   area is there and allowed (a guild desk has Notebook only), the desk's owner or the member is an adult, the run is
@@ -253,3 +255,12 @@ The change in `services/deskd` that section 5's mapping needs. desk-agent's side
 - **Tests:** a fake agent socket in `testing/`, as `FakeDeskRtc` is for `rtc.sock`, and one `RealDeskAgentIT` that
   runs the real desk-agent jar, as `RealDeskRtcIT` runs the real `desk-rtc`.
 - **Docs:** `API.md` gains a section with task 07's table (`web/agent/README.md`, "Interface").
+
+## 9. The parse sidecar (System Engineer), ADR 0097
+desk-agent's half is **done on `sub/desk-parse`** (`README.md`, "Files on a message"; `docs/sub-status/desk-parse-sidecar.md`):
+the `parse1` client with ADR 0097's marker rule and failure table, `ParseWorker --from-stream`, `/app/parse.options`,
+`run`'s mount and health's `parse`. A release with it works on every image: without the marker or the socket it keeps
+its child. What the image, the shared hosts and self-hosted desks need is ADR 0097 section 1 and 4, plus what the
+sub-status lists under "For the System Engineer". `run` mounts `/run/desk-parse` read-only where the directory exists,
+so `desk-runtime.md` section 5's desk-agent block gains
+`--mount type=bind,src=/run/desk-parse,dst=/run/desk-parse,readonly` on images that have it.

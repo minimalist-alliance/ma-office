@@ -7,6 +7,7 @@
 import { create } from 'zustand';
 import type { AppId, LayoutDesk } from '../canvas/layout';
 import { carouselApps, carouselOn, shownApp } from './model';
+import { appFromStored, appToStored } from '../canvas/storedIds';
 
 const KEY = 'ma.phoneCarousel.v1';
 
@@ -17,7 +18,8 @@ function load(): PhoneShown {
   try {
     const v: unknown = JSON.parse(window.sessionStorage.getItem(KEY) ?? 'null');
     if (!v || typeof v !== 'object' || Array.isArray(v)) return {};
-    return Object.fromEntries(Object.entries(v).filter(([, app]) => app === null || typeof app === 'string')) as PhoneShown;
+    // Courier as every build stores it (`canvas/storedIds.ts`).
+    return Object.fromEntries(Object.entries(v).filter(([, app]) => app === null || typeof app === 'string').map(([desk, app]) => [desk, appFromStored(app)])) as PhoneShown;
   } catch {
     return {};
   }
@@ -32,7 +34,7 @@ export function setPhoneShown(deskId: string, app: AppId | null): boolean {
   const shown = { ...cur, [deskId]: app };
   usePhoneCarousel.setState({ shown });
   try {
-    window.sessionStorage.setItem(KEY, JSON.stringify(shown));
+    window.sessionStorage.setItem(KEY, JSON.stringify(Object.fromEntries(Object.entries(shown).map(([desk, app]) => [desk, app === null ? null : appToStored(app)]))));
   } catch {
     /* storage unavailable: this tab still has it */
   }

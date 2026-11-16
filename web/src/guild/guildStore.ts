@@ -17,6 +17,7 @@ import { focusDesk } from '../shell/actions';
 import { allDeskIds, setGuildDesks, useDeskStore, type DeskInfo } from '../state/deskStore';
 import { reconcileLayout, useLayoutStore } from '../state/layoutStore';
 import { setView } from '../state/viewStore';
+import { requestClose, useWindowStore } from '../state/windowStore';
 import { setGuildAccessHooks } from './access';
 import { getGuildDesk, getGuilds, type GuildDesk, type GuildHello, type GuildMine } from './api';
 import { guildIdOfPanel, guildPanelId, guildVm, isGuildPanel, myGuilds } from './panel';
@@ -353,6 +354,17 @@ export function dismissRemoved(guildId: string): void {
   delete removed[guildId];
   set({ removed });
   publish();
+}
+
+/**
+ * Put it away: a removed guild's windows close and its panel goes. Here, not in `GuildWindow.tsx`, so the shell's notice
+ * (`GuildLayer.tsx`) doesn't keep the guild's window wrapper in the first load: that's every app's window's chunk now.
+ */
+export function putAway(deskId: string): void {
+  const guildId = guildIdOfPanel(deskId);
+  if (!guildId) return;
+  for (const w of Object.values(useWindowStore.getState().windows)) if (w.deskId === deskId) requestClose(w.key);
+  dismissRemoved(guildId);
 }
 
 document.addEventListener('visibilitychange', () => {

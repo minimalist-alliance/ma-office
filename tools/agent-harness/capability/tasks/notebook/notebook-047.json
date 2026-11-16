@@ -1,0 +1,102 @@
+{
+  "id": "notebook-047",
+  "area": "notebook",
+  "title": "Two pages with one title, in different tabs",
+  "prompt": "Add milk to the Groceries page in my Harness Home tab, not the one in Harness.",
+  "setup": {
+    "notebook": [
+      {
+        "tab": "Harness",
+        "title": "Groceries",
+        "markdown": "# Groceries\n\n- eggs\n"
+      },
+      {
+        "tab": "Harness Home",
+        "title": "Groceries",
+        "markdown": "# Groceries\n\n- rice\n"
+      }
+    ]
+  },
+  "approve": "all",
+  "checks": [
+    {
+      "kind": "page",
+      "tab": "Harness Home",
+      "title": "Groceries",
+      "contains": [
+        "milk",
+        "rice"
+      ]
+    },
+    {
+      "kind": "page",
+      "tab": "Harness",
+      "title": "Groceries",
+      "contains": [
+        "eggs"
+      ],
+      "notContains": [
+        "milk"
+      ]
+    },
+    {
+      "kind": "cards",
+      "tools": [
+        "notebook_write"
+      ]
+    }
+  ],
+  "policy": {
+    "tools": [
+      "notebook_list",
+      "notebook_write"
+    ]
+  },
+  "standIn": [
+    {
+      "calls": [
+        {
+          "name": "notebook_list",
+          "input": {}
+        }
+      ]
+    },
+    {
+      "calls": [
+        {
+          "name": "notebook_list",
+          "input": {
+            "tabId": {
+              "$re": {
+                "step": 0,
+                "call": 0,
+                "pattern": "\"tabId\":\"([^\"]+)\",\"title\":\"Harness Home\""
+              }
+            }
+          }
+        }
+      ]
+    },
+    {
+      "calls": [
+        {
+          "name": "notebook_write",
+          "input": {
+            "pageId": {
+              "$re": {
+                "step": 1,
+                "call": 0,
+                "pattern": "\"pageId\":\"([^\"]+)\",\"title\":\"Groceries\""
+              }
+            },
+            "op": "append",
+            "markdown": "- milk"
+          }
+        }
+      ]
+    },
+    {
+      "text": "Added milk to Groceries in your Harness Home tab."
+    }
+  ]
+}

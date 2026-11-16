@@ -1,0 +1,10 @@
+From: =?utf-8?Q?B=C3=BCcher_Team?= <info@xn--bcher-kva.example>
+To: me@desk.example
+Date: Fri, 13 Nov 2026 10:00:00 +0000
+Subject: =?utf-8?Q?Neue_B=C3=BCcher?=
+Message-ID: <idn-punycode@corpus.example>
+MIME-Version: 1.0
+X-Corpus-Note: an internationalised domain written as punycode (xn--)
+Content-Type: text/plain; charset=utf-8
+
+Die neuen Bücher sind da.

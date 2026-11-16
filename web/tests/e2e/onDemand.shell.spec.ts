@@ -5,7 +5,7 @@
 // keyboard in it and its name. `MA_MENU_SHOTS=<dir>` saves the open account menu in each theme, to compare with main's
 // (`-g "account menu"` runs only that test, which needs nothing of this branch).
 import { expect, test, type Locator, type Page } from '@playwright/test';
-import { canvasPainted, harness, setTheme, signIn, watchConsole, type ThemeId } from './helpers';
+import { canvasPainted, harness, setTheme, signIn, watchConsole, type ThemeId, openMenuSection } from './helpers';
 
 const WINDOWS = /\/AppWindow-[^/]*\.js$/;
 const POPOVERS = /\/popovers-[^/]*\.js$/;
@@ -185,6 +185,92 @@ test('short-viewport mode: the scope list and the zoom popover, after the idle f
   expect(errors).toEqual([]);
 });
 
+// The mark's menu (`chrome/MarkPanel.tsx`) is the popovers chunk's too; the mark's hook asks for it as the pointer or the
+// keyboard reaches the mark, and at idle. After the idle fetch it's there at the next frame after Enter, unfolding, with the
+// keyboard left on the mark; pressed sooner, it shows as the chunk lands; opened by hover, with the pointer gone by the
+// time the chunk lands, it shuts at once.
+test('the mark\'s menu: after the idle fetch at the next frame; pressed sooner, as its chunk lands; the pointer gone by then, shut at once', async ({ page, request }) => {
+  const errors = await arrive(page, request);
+  await fetched(page, POPOVERS);
+  const mark = page.getByRole('button', { name: 'Minimalist Alliance', exact: true });
+  const nav = page.getByRole('navigation', { name: 'Minimalist Alliance' });
+  expect(await pressAndWatch(mark, '#mark-menu')).toEqual({ frames: 0, animating: true, focused: false });
+  await expect(mark).toBeFocused();
+  await page.keyboard.press('Escape');
+  await expect(page.locator('.mark-pop')).toHaveCount(0);
+
+  const hold = async (): Promise<() => void> => {
+    let release: () => void = () => {};
+    const held = new Promise<void>((r) => {
+      release = r;
+    });
+    await page.unroute(POPOVERS);
+    await page.route(POPOVERS, async (route) => {
+      await held;
+      await route.continue();
+    });
+    await page.reload();
+    await canvasPainted(page);
+    return release;
+  };
+  let release = await hold();
+  await mark.focus();
+  await page.keyboard.press('Enter');
+  await expect(mark).toHaveAttribute('aria-expanded', 'true');
+  await page.waitForTimeout(300);
+  await expect(nav).toHaveCount(0);
+  release();
+  await expect(nav).toBeVisible();
+  await expect(nav.getByRole('link', { name: 'Account' })).toBeVisible();
+  await expect(mark).toBeFocused();
+
+  release = await hold();
+  const box = (await mark.boundingBox())!;
+  await page.mouse.move(box.x + box.width / 2, box.y + box.height / 2);
+  await expect(mark).toHaveAttribute('aria-expanded', 'true');
+  await page.mouse.move(700, 450);
+  await page.waitForTimeout(200);
+  release();
+  await expect(mark).toHaveAttribute('aria-expanded', 'false');
+  await expect(page.locator('.mark-pop')).toHaveCount(0);
+  expect(errors).toEqual([]);
+});
+
+test('Take the tour pressed before the tour\'s chunk is here (ADR 0056): the menu shuts, and the tour starts as the chunk lands, with the keyboard in it', async ({ page, request }) => {
+  const errors = watchConsole(page);
+  await harness(request, { reset: true });
+  await harness(request, { walkthrough: null });
+  // A member who has had the tour, so only Take the tour fetches it (the menu's own prefetch, held here).
+  await page.addInitScript(() => {
+    if (window === window.top) localStorage.setItem('ma.tour.v1', JSON.stringify({ who: 'u-test', off: true }));
+  });
+  let release: () => void = () => {};
+  const held = new Promise<void>((r) => {
+    release = r;
+  });
+  await page.route(/\/TourLayer-[^/]*\.js$/, async (route) => {
+    await held;
+    await route.continue();
+  });
+  await signIn(page, '/?fixture=one');
+  await canvasPainted(page);
+  await fetched(page, POPOVERS);
+  const mark = page.getByRole('button', { name: 'Minimalist Alliance', exact: true });
+  await mark.focus();
+  await page.keyboard.press('Enter');
+  await page.locator('#mark-menu').getByRole('button', { name: 'Take the tour' }).click();
+  await expect(page.locator('.mark-pop')).toHaveCount(0);
+  await page.waitForTimeout(300);
+  await expect(page.locator('.tour')).toHaveCount(0);
+  release();
+  await expect(page.getByRole('dialog', { name: 'Welcome to your office' })).toBeVisible();
+  await expect(page.getByTestId('tour-next')).toBeFocused();
+  await page.keyboard.press('Escape');
+  await expect(page.locator('.tour')).toHaveCount(0);
+  await expect(mark).toBeFocused();
+  expect(errors).toEqual([]);
+});
+
 for (const theme of ['light', 'dusk', 'dark'] as const) {
   test(`${theme}: the account menu reads as main's, Zen's Background (in Zen only), labels and hint included`, async ({ page, request }) => {
     const errors = await arrive(page, request, theme);
@@ -192,10 +278,14 @@ for (const theme of ['light', 'dusk', 'dark'] as const) {
     const menu = accountMenu(page);
     await expect(menu).toBeVisible();
     await expect(menu.getByRole('radiogroup', { name: 'Theme' }).getByRole('radio')).toHaveText(['System', 'Light', 'Zen', 'Dark']);
+    // Appearance holds the rest (the owner's Nov 16 tidy): the system-dark choice, the sliders, the background.
+    await openMenuSection(page, 'menu-appearance');
     // The Background picker is Zen's alone (`BACKGROUNDS_IN`).
     if (theme === 'dusk') await expect(menu.getByRole('radio', { name: 'Background: None' })).toBeVisible();
     else await expect(menu.getByRole('radio', { name: 'Background: None' })).toHaveCount(0);
-    await expect(menu.getByText('No gradient or picture behind the desks. On by default on very large high-resolution screens')).toBeVisible();
+    // No "Plain background" (the owner, Nov 13): its row and hint are gone.
+    await expect(menu.getByRole('switch', { name: 'Plain background' })).toHaveCount(0);
+    await expect(menu.getByText('No gradient or picture behind the desks')).toHaveCount(0);
     await menu.getByRole('radiogroup', { name: 'Theme' }).getByRole('radio', { name: 'System', exact: true }).click();
     await expect(menu.getByText('Use Zen when the system is dark')).toBeVisible();
     await menu.getByRole('radiogroup', { name: 'Theme' }).getByRole('radio', { name: theme === 'dusk' ? 'Zen' : theme === 'light' ? 'Light' : 'Dark', exact: true }).click();

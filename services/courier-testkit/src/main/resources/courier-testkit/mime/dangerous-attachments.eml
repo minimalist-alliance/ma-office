@@ -1,0 +1,22 @@
+From: Dana <dana@example.com>
+To: me@desk.example
+Date: Mon, 2 Nov 2026 09:00:00 +0000
+Subject: Invoice
+MIME-Version: 1.0
+Content-Type: multipart/mixed; boundary=d1
+
+--d1
+Content-Type: text/plain
+
+Open it now.
+--d1
+Content-Type: application/octet-stream
+Content-Disposition: attachment; filename="invoice.pdf.exe"
+
+MZ
+--d1
+Content-Type: text/html
+Content-Disposition: attachment; filename="login.html"
+
+<form></form>
+--d1--

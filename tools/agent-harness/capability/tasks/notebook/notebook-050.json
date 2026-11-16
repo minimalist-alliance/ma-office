@@ -1,0 +1,76 @@
+{
+  "id": "notebook-050",
+  "area": "notebook",
+  "title": "Trash a page in another tab",
+  "prompt": "Trash the page Old standup notes in my Harness Work tab.",
+  "setup": {
+    "notebook": [
+      {
+        "tab": "Harness Work",
+        "title": "Old standup notes",
+        "markdown": "# Old standup notes\n\nFrom last quarter.\n"
+      },
+      {
+        "tab": "Harness Work",
+        "title": "Standup",
+        "markdown": "# Standup\n\nDaily notes.\n"
+      }
+    ]
+  },
+  "approve": "all",
+  "checks": [
+    {
+      "kind": "noPage",
+      "tab": "Harness Work",
+      "title": "Old standup notes"
+    },
+    {
+      "kind": "page",
+      "tab": "Harness Work",
+      "title": "Standup"
+    },
+    {
+      "kind": "cards",
+      "tools": [
+        "notebook_trash"
+      ]
+    }
+  ],
+  "policy": {
+    "tools": [
+      "notebook_search",
+      "notebook_trash"
+    ]
+  },
+  "standIn": [
+    {
+      "calls": [
+        {
+          "name": "notebook_search",
+          "input": {
+            "query": "Old standup notes"
+          }
+        }
+      ]
+    },
+    {
+      "calls": [
+        {
+          "name": "notebook_trash",
+          "input": {
+            "pageId": {
+              "$re": {
+                "step": 0,
+                "call": 0,
+                "pattern": "\"pageId\":\"([^\"]+)\",\"title\":\"Old standup notes\""
+              }
+            }
+          }
+        }
+      ]
+    },
+    {
+      "text": "Moved Old standup notes to the trash."
+    }
+  ]
+}

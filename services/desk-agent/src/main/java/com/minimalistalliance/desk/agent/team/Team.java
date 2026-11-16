@@ -199,6 +199,14 @@ public final class Team {
         this.toolStore = new ToolStore(store);
     }
 
+    /**
+     * What a run answering another desk's message may spend now, µ$ (section 14): the agent's share for messages and
+     * the desk's, and its run limit. Read only: for the team view's headroom (Desk Maia's planning, API.md §23).
+     */
+    public long briefCap(String agentId) {
+        return tools.deskCap(agentId);
+    }
+
     /** The tools' rows: workspace files a {@code U} run wrote, and replies' plans (the tools and approvals draft). */
     private final ToolStore toolStore;
 
@@ -464,8 +472,9 @@ public final class Team {
         boolean lead = AgentStore.MANAGER.equals(view.get("id"));
         view.put("lead", lead);
         Map<String, Object> look = new LinkedHashMap<>();
-        look.put("icon", extras == null ? "nodes" : extras.icon());
+        look.put("icon", extras == null ? TeamTools.DEFAULT_ICON : TeamTools.icon(extras.icon()));
         look.put("tone", extras == null ? "graphite" : extras.tone());
+        look.put("color", colorOf((String) view.get("id"), extras));
         look.put("png", extras == null ? null : extras.pngVersion());
         view.put("look", look);
         view.put("solo", extras == null || extras.solo());
@@ -586,8 +595,9 @@ public final class Team {
             throws RpcError, SQLException {
         String name = name(p, true);
         String purpose = purpose(p);
-        String icon = look(p, "icon", "nodes");
+        String icon = look(p, "icon", TeamTools.DEFAULT_ICON);
         String picked = p.get("tone") == null ? null : look(p, "tone", null);
+        String pickedColor = p.get("color") == null ? null : color(p);
         boolean solo = !p.containsKey("solo") || bool(p, "solo");
         Integer workspaceMb = workspaceMb(p);
         String keyId = p.get("keyId") == null ? null : string(p, "keyId");
@@ -598,7 +608,9 @@ public final class Team {
         if (model != null && !MODEL.matcher(model).matches()) {
             throw RpcError.badRequest("model");
         }
-        if (keyId != null && store.key(keyId) == null) {
+        // The member's MA credits have no key row: the bind that follows checks they're offered (API.md §24).
+        if (keyId != null && store.key(keyId) == null
+                && !com.minimalistalliance.desk.agent.key.KeyRing.CREDITS.equals(keyId)) {
             throw RpcError.notFound("key");
         }
         String id = newAgentId();
@@ -612,11 +624,13 @@ public final class Team {
             }
             requireUniqueName(name, null, agents);
             for (Link link : links) {
-                if (store.agent(link.to()) == null || Caller.isMemberAgent(link.to())) {
+                if (store.agent(link.to()) == null || Caller.isMemberAgent(link.to())
+                        || com.minimalistalliance.desk.agent.maia.MaiaAgent.is(link.to())) {
                     throw RpcError.badRequest("links");
                 }
             }
             String tone = picked != null ? picked : defaultTone();
+            String color = pickedColor != null ? pickedColor : nextColor();
             if (workspaceMb == null) {
                 // Stored now, so a later change of the tier's default never shrinks this agent.
                 long left = (workspaceBudgetBytes() - workspaceTotalBytes()) / MIB;
@@ -628,7 +642,7 @@ public final class Team {
                 checkBudget(null, workspaceMb * MIB);
             }
             team.createAgent(id, name, clock.millis(),
-                    new Extras(id, purpose, icon, tone, null, solo, workspaceMb, List.of()), links);
+                    new Extras(id, purpose, icon, tone, color, null, solo, workspaceMb, List.of()), links);
             pausedCache = null;
             pausedGeneration.incrementAndGet();
         } finally {
@@ -728,11 +742,11 @@ public final class Team {
     }
 
     /** What an {@code agent.update} changes of task 49's fields, all checked, nothing written yet. */
-    private record Change(String purpose, String icon, String tone, Boolean solo, Integer workspaceMb,
+    private record Change(String purpose, String icon, String tone, String color, Boolean solo, Integer workspaceMb,
             boolean clearQuota) {
         boolean none() {
-            return purpose == null && icon == null && tone == null && solo == null && workspaceMb == null
-                    && !clearQuota;
+            return purpose == null && icon == null && tone == null && color == null && solo == null
+                    && workspaceMb == null && !clearQuota;
         }
     }
 
@@ -746,6 +760,14 @@ public final class Team {
             }
         }
         String tone = p.containsKey("tone") ? look(p, "tone", null) : null;
+        String color = null;
+        if (p.containsKey("color")) {
+            // The lead keeps the Agent app's own colour.
+            if (AgentStore.MANAGER.equals(agentId)) {
+                throw RpcError.badRequest("color");
+            }
+            color = color(p);
+        }
         Boolean solo = p.containsKey("solo") ? bool(p, "solo") : null;
         boolean clearQuota = p.containsKey("workspaceMb") && p.get("workspaceMb") == null;
         Integer workspaceMb = p.get("workspaceMb") == null ? null : workspaceMb(p);
@@ -760,7 +782,7 @@ public final class Team {
                 throw RpcError.of("precondition_failed", "reason", "workspace_full");
             }
         }
-        return new Change(purpose, icon, tone, solo, workspaceMb, clearQuota);
+        return new Change(purpose, icon, tone, color, solo, workspaceMb, clearQuota);
     }
 
     /** Writes a change, and a new name if one is given, in one transaction. */
@@ -777,8 +799,8 @@ public final class Team {
                     checkBudget(agentId, next);
                 }
             }
-            team.changeAgent(agentId, name, change.purpose(), change.icon(), change.tone(), change.solo(),
-                    change.workspaceMb(), change.clearQuota());
+            team.changeAgent(agentId, name, change.purpose(), change.icon(), change.tone(), change.color(),
+                    change.solo(), change.workspaceMb(), change.clearQuota());
         } finally {
             agentsLock.unlock();
         }
@@ -830,7 +852,7 @@ public final class Team {
             if (key == null) {
                 throw RpcError.of("precondition_failed", "reason", "no_key");
             }
-            if (store.key(key) == null) {
+            if (store.key(key) == null && !com.minimalistalliance.desk.agent.key.KeyRing.CREDITS.equals(key)) {
                 throw RpcError.notFound("key");
             }
             host.bind(agentId, key, model);
@@ -858,7 +880,8 @@ public final class Team {
     /** The binding back as it was, after the rest of a change failed. */
     private void unbind(AgentRow before, Exception cause) {
         try {
-            if (before.keyId() == null || before.model() == null || store.key(before.keyId()) == null) {
+            if (before.keyId() == null || before.model() == null || (store.key(before.keyId()) == null
+                    && !com.minimalistalliance.desk.agent.key.KeyRing.CREDITS.equals(before.keyId()))) {
                 throw new IllegalStateException("no binding to go back to");
             }
             host.bind(before.id(), before.keyId(), before.model());
@@ -918,7 +941,8 @@ public final class Team {
         agentsLock.lock();
         try {
             for (Link link : links) {
-                if (store.agent(link.to()) == null || Caller.isMemberAgent(link.to())) {
+                if (store.agent(link.to()) == null || Caller.isMemberAgent(link.to())
+                        || com.minimalistalliance.desk.agent.maia.MaiaAgent.is(link.to())) {
                     throw RpcError.badRequest("links");
                 }
             }
@@ -1221,8 +1245,9 @@ public final class Team {
                     switch (field) {
                         case "name" -> out.put("name", row.name());
                         case "purpose" -> out.put("purpose", extras.purpose());
-                        case "icon" -> out.put("icon", extras.icon());
+                        case "icon" -> out.put("icon", TeamTools.icon(extras.icon()));
                         case "tone" -> out.put("tone", extras.tone());
+                        case "color" -> out.put("color", colorOf(agentId, extras));
                         case "solo" -> out.put("solo", extras.solo());
                         case "keyId" -> out.put("keyId", row.keyId());
                         case "model" -> out.put("model", row.model());
@@ -1252,8 +1277,9 @@ public final class Team {
             case "agent.delete" -> {
                 out.put("name", row.name());
                 Map<String, Object> look = new LinkedHashMap<>();
-                look.put("icon", extras.icon());
+                look.put("icon", TeamTools.icon(extras.icon()));
                 look.put("tone", extras.tone());
+                look.put("color", colorOf(agentId, extras));
                 look.put("png", extras.pngVersion());
                 out.put("look", look);
                 out.put("usedBytes", usedBytes(agentId));
@@ -1616,6 +1642,11 @@ public final class Team {
             return null;
         }
         Map<String, Object> origin = parseOrigin(row.origin());
+        if (origin != null && "desk".equals(origin.get("kind")) && "message".equals(origin.get("role"))
+                && origin.get("grantId") instanceof String grantId) {
+            // Another desk's message (section 14): its pairing is its grant's messages and the replies to them.
+            return "desk:" + grantId;
+        }
         return origin != null && "agent".equals(origin.get("kind")) && origin.get("agentId") instanceof String id
                 ? id : null;
     }
@@ -1789,7 +1820,8 @@ public final class Team {
     /** An agent id a team method takes: never a guild member's own agent ({@code gm-*}, Security T49M-5). */
     static String agentId(Map<String, Object> p) throws RpcError {
         String id = string(p, "agentId");
-        if (!AGENT_ID.matcher(id).matches() || Caller.isMemberAgent(id)) {
+        if (!AGENT_ID.matcher(id).matches() || Caller.isMemberAgent(id)
+                || com.minimalistalliance.desk.agent.maia.MaiaAgent.is(id)) {
             throw RpcError.notFound("agent");
         }
         return id;
@@ -1860,6 +1892,26 @@ public final class Team {
             throw RpcError.badRequest(key);
         }
         return key.equals("icon") ? TeamTools.icon(id) : key.equals("tone") ? TeamTools.tone(id) : id;
+    }
+
+    /** A colour id: one of {@link TeamTools#COLORS}, else {@code bad_request} {@code detail: "color"}. */
+    static String color(Map<String, Object> p) throws RpcError {
+        if (p.get("color") instanceof String id && TeamTools.COLORS.contains(id)) {
+            return id;
+        }
+        throw RpcError.badRequest("color");
+    }
+
+    /**
+     * The colour an agent shows: the lead's and a guild member's own agent's are always the Agent app's own
+     * ({@link TeamStore#LEAD_COLOR}), never stored or counted; any other its stored one, and the first colour for a row
+     * no open has given one yet.
+     */
+    static String colorOf(String agentId, Extras extras) {
+        if (AgentStore.MANAGER.equals(agentId) || Caller.isMemberAgent(agentId)) {
+            return TeamStore.LEAD_COLOR;
+        }
+        return extras == null || extras.color() == null ? TeamTools.COLORS.getFirst() : extras.color();
     }
 
     /** An optional whole number, 0 or more. */
@@ -1993,13 +2045,32 @@ public final class Team {
     }
 
     /**
+     * The colour a new agent gets when none is picked: the first in {@link TeamTools#COLORS} order that no agent here
+     * has (the lead's {@code indigo} counts; a guild member's own agent and Desk Maia don't), and once every one is
+     * taken, the least used ({@link TeamStore#nextColor}). A create calls it with {@link #agentsLock} held; a
+     * proposal's is the one its card shows, and the member confirms that one.
+     */
+    String nextColor() throws SQLException {
+        List<String> used = new ArrayList<>(List.of(TeamStore.LEAD_COLOR));
+        for (Extras extras : team.extras().values()) {
+            String id = extras.id();
+            if (!AgentStore.MANAGER.equals(id) && !Caller.isMemberAgent(id)
+                    && !com.minimalistalliance.desk.agent.maia.MaiaAgent.is(id) && extras.color() != null) {
+                used.add(extras.color());
+            }
+        }
+        return TeamStore.nextColor(used);
+    }
+
+    /**
      * The desk's own agents: the lead and staff, not a guild member's own agent (a {@code manager} row whose id is a
      * member's id, deskd's API.md section 14), which the team never counts, lists, links or shares with.
      */
     List<AgentRow> teamAgents() throws SQLException {
         List<AgentRow> rows = new ArrayList<>();
         for (AgentRow row : store.agents()) {
-            if (!Caller.isMemberAgent(row.id())) {
+            // Desk Maia (Maia Mode, API.md §23) is no team agent: not counted, listed, linked or proposed.
+            if (!Caller.isMemberAgent(row.id()) && !com.minimalistalliance.desk.agent.maia.MaiaAgent.is(row.id())) {
                 rows.add(row);
             }
         }

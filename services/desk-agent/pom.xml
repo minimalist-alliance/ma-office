@@ -65,6 +65,17 @@
       </exclusions>
     </dependency>
 
+    <!--
+      desk-parse's Courier mode (courier-parse, ADR 0097 with the draft ADR "Courier's store" section 4). desk-agent never
+      calls it: it's here so its jars ship in this image, whose /app/lib the parse sandbox runs as
+      java @/app/courier-parse.options for deskd. Its classes stay out of desk-agent's own packages and beans.
+    -->
+    <dependency>
+      <groupId>com.minimalistalliance.desk</groupId>
+      <artifactId>courier-parse</artifactId>
+      <version>${project.version}</version>
+    </dependency>
+
     <dependency>
       <groupId>org.springframework.boot</groupId>
       <artifactId>spring-boot-starter-test</artifactId>

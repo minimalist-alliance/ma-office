@@ -2,7 +2,12 @@
 // to two initials on one of six tints. Pure, so the other apps can match it exactly: the same member gets the same tint
 // in the Desk, Platform and Guild apps only if each picks it the same way, which is `hueOf` below.
 
-export const HUES = ['blue', 'green', 'amber', 'rose', 'violet', 'slate'] as const;
+/**
+ * The six tints, all cool (Nov 16: the owner's no-green, no-warm rule). Their order is the contract: a member's slot never
+ * moves. They were blue, green, amber, rose, violet and slate; each slot was renamed for its new colour (slot 1 denim,
+ * 2 mist, 3 periwinkle, 4 steel), so ma-platform's `avatar.ts` has the same list.
+ */
+export const HUES = ['blue', 'denim', 'mist', 'periwinkle', 'steel', 'slate'] as const;
 export type Hue = (typeof HUES)[number];
 
 /**

@@ -1,0 +1,2271 @@
+/* The held line and what hangs from it (the focus shield, `maiamode/shield/`): its own stylesheet, fetched with its chunk only while
+   Desk Maia is on. Tokens only (no colour literals; `check-css-literals.mjs`), no green, brown or warm tint: the accent blue for the
+   dot and an interrupt card's weight, never a warning colour. Still: the line never moves; the card settles in once, the sheet slides
+   in once, and nothing moves under reduced motion. 44 px targets on a phone, 16 px gutters, no sideways scroll.
+
+   The look is the brand pass's "Maia's tray" (the Product Designer, Nov 15, `design-drafts/maia-shield-brand/DIRECTION.md`): every
+   surface Maia hands something over on is one lifted material, the office's own (the tray's top-to-foot gradient, the window lift's
+   lit edge and shadow), with sunken insets inside it, Maia's still in her field at the head, the desk's etched name as the source, and
+   pills only. Transform and opacity only in motion, no backdrop blur (30+ fps on shared machines). */
+
+/* ------------------------------------------------------------ the material */
+.sh-card,
+.sh-catchup,
+.sh-sheet,
+.sh-resume,
+.menu.sh-menu {
+  border: 0;
+  background: linear-gradient(180deg, var(--ma-maia-mode-tray-top), var(--ma-maia-mode-tray-foot));
+  box-shadow: var(--ma-window-lift-edge), 0 0 0 1px var(--ma-border-hairline), var(--ma-window-lift-active);
+  color: var(--ma-text-primary);
+}
+.sh-inset {
+  border-radius: 14px;
+  background: var(--ma-maia-mode-tray-inset);
+}
+.sh-card p,
+.sh-catchup p,
+.sh-sheet p,
+.sh-catchup h2,
+.sh-catchup h3,
+.sh-sheet h2,
+.sh-sheet h3 {
+  margin: 0;
+}
+
+/* Maia's still in her field, each theme's own file. */
+.sh-maia {
+  position: relative;
+  flex: none;
+  display: inline-grid;
+  place-items: center;
+  width: 34px;
+  height: 34px;
+  border-radius: 50%;
+  background: radial-gradient(closest-side, var(--ma-maia-mode-field), var(--ma-maia-mode-field-edge) 70%, transparent 100%);
+}
+.sh-maia img {
+  display: none;
+  width: 32px;
+  height: 32px;
+  user-select: none;
+}
+.sh-maia.md {
+  width: 44px;
+  height: 44px;
+}
+.sh-maia.md img {
+  width: 40px;
+  height: 40px;
+}
+:root:not([data-theme='dusk']):not([data-theme='dark']) .sh-maia .on-light,
+:root[data-theme='dusk'] .sh-maia .on-zen,
+:root[data-theme='dark'] .sh-maia .on-dark {
+  display: block;
+}
+
+/* The source: the desk's name as it's etched on the desk, then who. */
+.sh-source {
+  display: flex;
+  align-items: baseline;
+  gap: 6px;
+  min-width: 0;
+  font-size: 12.5px;
+  line-height: 16px;
+  color: var(--ma-text-secondary);
+}
+.sh-etch {
+  flex: none;
+  font-family: Jost, var(--ma-font-ui);
+  font-weight: 600;
+  font-size: 11px;
+  line-height: 16px;
+  letter-spacing: 0.16em;
+  text-transform: uppercase;
+  color: var(--ma-text-tertiary);
+}
+.sh-source-rest {
+  min-width: 0;
+  overflow: hidden;
+  text-overflow: ellipsis;
+  white-space: nowrap;
+}
+.sh-source-rest::before {
+  content: '·';
+  margin-right: 6px;
+  color: var(--ma-text-tertiary);
+}
+.sh-source.small .sh-etch {
+  font-size: 10px;
+}
+.sh-source.small {
+  font-size: 12px;
+}
+
+/* A kind's glyph in its rounded chip. */
+.sh-kind {
+  flex: none;
+  display: inline-grid;
+  place-items: center;
+  width: 30px;
+  height: 30px;
+  border-radius: 9px;
+  background: var(--ma-accent-subtle);
+  color: var(--ma-accent);
+}
+.sh-kind .sh-ico {
+  width: 16px;
+  height: 16px;
+  stroke-width: 1.7;
+}
+
+.sh-dot {
+  flex: none;
+  width: 7px;
+  height: 7px;
+  border-radius: 50%;
+  background: var(--ma-accent);
+}
+.sh-ico {
+  width: 18px;
+  height: 18px;
+  fill: none;
+  stroke: currentColor;
+  stroke-width: 1.8;
+  stroke-linecap: round;
+  stroke-linejoin: round;
+}
+
+/* ------------------------------------------------------------ pills: primary, soft, quiet */
+.sh-btn,
+.sh-chip {
+  display: inline-flex;
+  align-items: center;
+  justify-content: center;
+  gap: 6px;
+  min-height: 34px;
+  padding: 0 16px;
+  border: 0;
+  border-radius: 999px;
+  background: var(--ma-maia-mode-soft);
+  color: var(--ma-text-primary);
+  font: inherit;
+  font-size: 13.5px;
+  line-height: 18px;
+  font-weight: 550;
+  white-space: nowrap;
+  cursor: pointer;
+  transition: background-color 120ms linear, color 120ms linear;
+}
+.sh-chip {
+  min-height: 30px;
+  padding: 0 14px;
+  font-size: 13px;
+}
+.sh-btn:hover:not(:disabled),
+.sh-chip:hover:not(:disabled) {
+  background: var(--ma-maia-mode-soft-hover);
+}
+.sh-btn.primary,
+.sh-chip.primary {
+  background: var(--ma-accent);
+  color: var(--ma-text-on-accent);
+  font-weight: 600;
+  box-shadow: var(--ma-maia-mode-pill-lit);
+}
+.sh-btn.primary:hover:not(:disabled),
+.sh-chip.primary:hover:not(:disabled) {
+  background: var(--ma-accent-hover);
+}
+.sh-btn.primary:active:not(:disabled),
+.sh-chip.primary:active:not(:disabled) {
+  background: var(--ma-accent-pressed);
+}
+.sh-btn.quiet,
+.sh-chip.quiet {
+  padding: 0 8px;
+  background: transparent;
+  color: var(--ma-text-link);
+  font-weight: 600;
+}
+.sh-btn.quiet:hover:not(:disabled) {
+  background: var(--ma-maia-mode-soft);
+  color: var(--ma-text-primary);
+}
+.sh-chip.quiet {
+  min-height: 24px;
+  padding: 0;
+  color: var(--ma-text-link);
+  font-size: 12.5px;
+  font-weight: 550;
+}
+.sh-chip.quiet:hover:not(:disabled) {
+  background: transparent;
+  color: var(--ma-text-primary);
+}
+.sh-chip.quiet[aria-pressed='true']::before {
+  content: '';
+  width: 8px;
+  height: 4px;
+  margin: 0 2px 3px 0;
+  border-left: 1.5px solid currentColor;
+  border-bottom: 1.5px solid currentColor;
+  transform: rotate(-45deg);
+}
+.sh-btn:disabled,
+.sh-chip:disabled {
+  opacity: 0.55;
+  cursor: default;
+}
+.sh-acts,
+.sh-chips {
+  display: flex;
+  flex-wrap: wrap;
+  align-items: center;
+  gap: 8px;
+}
+.sh-chips:has(.quiet) {
+  gap: 4px 16px;
+}
+.sh-link {
+  padding: 0;
+  border: 0;
+  background: none;
+  color: var(--ma-text-link);
+  font: inherit;
+  font-weight: 600;
+  cursor: pointer;
+}
+
+.sh-line:focus-visible,
+.sh-more:focus-visible,
+.sh-btn:focus-visible,
+.sh-chip:focus-visible,
+.sh-link:focus-visible,
+.sh-why-btn:focus-visible,
+.sh-icon-btn:focus-visible,
+.sh-settings input:focus-visible,
+.sh-filter select:focus-visible,
+.sh-radios button:focus-visible {
+  outline: 2px solid var(--ma-focus-ring);
+  outline-offset: 2px;
+}
+
+/* ------------------------------------------------------------ the held line: a still, lifted pill */
+.sh-wrap {
+  position: relative;
+  display: inline-flex;
+  align-items: center;
+  max-width: min(360px, 40vw);
+  height: 38px;
+  border: 1px solid var(--ma-glass-line, var(--ma-border));
+  border-radius: 999px;
+  /* A top bar pill in the office's glass (`styles/glass.css`, `docs/sub-status/office-glass.md`); this lifted pill is its look
+     under reduced transparency or more contrast. Its menu and sheet keep theirs. */
+  --ma-glass-edge: 1px;
+  --ma-glass-solid-bg: var(--ma-surface-chrome);
+  --ma-glass-solid-shadow: var(--ma-window-lift-edge);
+  color: var(--ma-text-primary);
+}
+.topbar:has(.sh-under),
+.topbar:has(.sh-menu) {
+  z-index: 30;
+}
+.sh-line {
+  display: inline-flex;
+  align-items: center;
+  gap: 8px;
+  min-width: 0;
+  height: 100%;
+  padding: 0 12px 0 15px;
+  border: 0;
+  border-radius: 999px 0 0 999px;
+  background: none;
+  color: inherit;
+  font: inherit;
+  font-size: 13px;
+  line-height: 18px;
+  cursor: pointer;
+}
+.sh-line-text {
+  min-width: 0;
+  overflow: hidden;
+  text-overflow: ellipsis;
+  white-space: nowrap;
+}
+.sh-line-lead {
+  font-weight: 600;
+  font-variant-numeric: tabular-nums;
+}
+.sh-line-rest {
+  color: var(--ma-text-secondary);
+}
+.sh-line-short {
+  display: none;
+  font-weight: 600;
+  font-variant-numeric: tabular-nums;
+}
+.sh-rule {
+  flex: none;
+  width: 1px;
+  height: 18px;
+  background: var(--ma-border);
+}
+.sh-line:hover,
+.sh-more:hover {
+  background: var(--ma-surface-fill);
+}
+.sh-more {
+  display: inline-grid;
+  place-items: center;
+  flex: none;
+  width: 34px;
+  height: 100%;
+  padding: 0 4px 0 0;
+  border: 0;
+  border-radius: 0 999px 999px 0;
+  background: none;
+  color: var(--ma-text-secondary);
+  cursor: pointer;
+}
+.sh-more .sh-ico {
+  width: 16px;
+  height: 16px;
+}
+.sh-wrap > .sh-chip {
+  margin: 0 4px;
+  min-height: 28px;
+}
+
+/* ------------------------------------------------------------ its menu */
+.menu.sh-menu {
+  width: min(288px, calc(100vw - 32px));
+  padding: 8px;
+  border-radius: 18px;
+}
+.sh-menu-label {
+  padding: 8px 10px 4px;
+  font-size: 11px;
+  line-height: 14px;
+  font-weight: 600;
+  letter-spacing: 0.08em;
+  text-transform: uppercase;
+  color: var(--ma-text-tertiary);
+}
+.menu-item.sh-menu-item {
+  display: flex;
+  align-items: center;
+  gap: 12px;
+  padding: 9px 10px;
+  border-radius: 12px;
+  color: var(--ma-text-primary);
+}
+.sh-menu-item .sh-ico {
+  flex: none;
+  color: var(--ma-text-secondary);
+}
+.sh-menu-item:hover:not(:disabled) {
+  background: var(--ma-maia-mode-soft);
+}
+.sh-working {
+  display: flex;
+  align-items: center;
+  gap: 8px;
+  margin: 8px 0 0;
+  padding: 4px 4px 4px 12px;
+  border-radius: 12px;
+  background: var(--ma-maia-mode-tray-inset);
+}
+.sh-working-text {
+  flex: 1;
+  min-width: 0;
+  margin: 0;
+  overflow: hidden;
+  text-overflow: ellipsis;
+  white-space: nowrap;
+  font-size: 13px;
+  line-height: 18px;
+  color: var(--ma-text-secondary);
+}
+.menu-item.sh-menu-item.sh-working-clear {
+  flex: none;
+  width: auto;
+  padding: 7px 10px;
+  color: var(--ma-text-link);
+  font-size: 13px;
+  font-weight: 600;
+}
+
+/* ------------------------------------------------------------ the card and the catch-up, under the line */
+.sh-under {
+  position: absolute;
+  top: calc(100% + 10px);
+  right: 0;
+  width: min(360px, calc(100vw - 32px));
+  z-index: 35;
+}
+.sh-card,
+.sh-catchup {
+  display: flex;
+  flex-direction: column;
+  gap: 8px;
+  padding: 14px 16px 16px;
+  border-radius: 18px;
+  animation: sh-settle 240ms cubic-bezier(0.2, 0, 0, 1) both;
+}
+/* An interrupt's weight: the startup chooser's selection, its accent line and cool glow. Nothing else changes. */
+.sh-card.interrupt {
+  box-shadow: var(--ma-window-lift-edge), var(--ma-maia-mode-sel-glow), var(--ma-window-lift-active);
+}
+.sh-head {
+  display: flex;
+  align-items: center;
+  gap: 10px;
+  min-width: 0;
+  margin: -2px 0 2px -2px;
+}
+.sh-what {
+  font-size: 15px;
+  line-height: 21px;
+  font-weight: 560;
+  letter-spacing: -0.005em;
+  overflow-wrap: anywhere;
+}
+.sh-quote {
+  padding-left: 10px;
+  border-left: 2px solid var(--ma-border);
+  font-size: 13px;
+  line-height: 18px;
+  color: var(--ma-text-secondary);
+  overflow-wrap: anywhere;
+}
+.sh-why,
+.sh-why-text,
+.sh-after-text,
+.sh-summary,
+.sh-first p,
+.sh-catchup-sub {
+  font-size: 13px;
+  line-height: 18px;
+  color: var(--ma-text-secondary);
+}
+.sh-why {
+  display: flex;
+  align-items: center;
+  gap: 7px;
+  align-self: flex-start;
+  max-width: 100%;
+}
+/* Why an interrupt is here now: the accent time chip. */
+.sh-why.time {
+  padding: 4px 11px 4px 9px;
+  border-radius: 999px;
+  background: var(--ma-accent-subtle);
+  color: var(--ma-text-link);
+  font-size: 12.5px;
+  line-height: 16px;
+  font-weight: 600;
+}
+.sh-why-btn {
+  position: relative;
+  display: inline-flex;
+  align-items: center;
+  gap: 7px;
+  padding: 0;
+  border: 0;
+  background: none;
+  color: inherit;
+  font: inherit;
+  text-align: left;
+  cursor: pointer;
+}
+.sh-why-btn::after {
+  content: '';
+  flex: none;
+  width: 5px;
+  height: 5px;
+  margin-top: -3px;
+  border-right: 1.5px solid currentColor;
+  border-bottom: 1.5px solid currentColor;
+  transform: rotate(45deg);
+  transition: transform 160ms cubic-bezier(0.2, 0, 0, 1);
+}
+.sh-why-btn[aria-expanded='true']::after {
+  margin-top: 3px;
+  transform: rotate(-135deg);
+}
+.sh-why-more {
+  font-size: 12.5px;
+  line-height: 17px;
+  color: var(--ma-text-secondary);
+}
+.sh-first {
+  display: flex;
+  flex-direction: column;
+  gap: 4px;
+  padding: 10px 12px 6px;
+}
+.sh-first .sh-acts {
+  gap: 2px;
+  margin-left: -8px;
+}
+.sh-first .sh-btn.quiet {
+  min-height: 30px;
+}
+.sh-card > .sh-acts {
+  margin-top: 4px;
+}
+
+/* "Not now": the card folds into one held line for a moment. */
+.sh-card.sh-after {
+  flex-direction: row;
+  align-items: center;
+  flex-wrap: wrap;
+  gap: 4px 10px;
+  padding: 10px 12px;
+  animation: sh-fold 200ms cubic-bezier(0.2, 0, 0, 1) both;
+}
+.sh-card.sh-after .sh-after-text {
+  flex: 1;
+  min-width: 0;
+  color: var(--ma-text-primary);
+  font-weight: 550;
+}
+.sh-card.sh-after .sh-acts {
+  gap: 0;
+}
+
+/* The riders, in the sunken tray at the card's foot. */
+.sh-riders-tray {
+  margin: 6px 0 0;
+  padding: 10px 12px 4px;
+}
+.sh-more-head,
+.sh-group-label,
+.sh-set-title {
+  margin: 0;
+  font-size: 11px;
+  line-height: 14px;
+  font-weight: 600;
+  letter-spacing: 0.08em;
+  text-transform: uppercase;
+  color: var(--ma-text-tertiary);
+}
+.sh-riders,
+.sh-list,
+.sh-group-items,
+.sh-people,
+.sh-learned,
+.sh-times {
+  display: flex;
+  flex-direction: column;
+  margin: 0;
+  padding: 0;
+  list-style: none;
+}
+.sh-rider {
+  display: grid;
+  grid-template-columns: 30px minmax(0, 1fr) auto;
+  align-items: center;
+  column-gap: 10px;
+  padding: 8px 0;
+}
+.sh-rider + .sh-rider {
+  border-top: 1px solid var(--ma-border-hairline);
+}
+.sh-rider-text {
+  display: flex;
+  flex-direction: column;
+  gap: 1px;
+  min-width: 0;
+}
+.sh-rider-what {
+  font-size: 13.5px;
+  line-height: 18px;
+  font-weight: 550;
+  overflow-wrap: anywhere;
+}
+.sh-rider .sh-why-text {
+  font-size: 12px;
+  line-height: 16px;
+}
+
+/* ------------------------------------------------------------ the catch-up: a short letter from Maia */
+.sh-catchup {
+  gap: 14px;
+  padding: 14px 16px 16px;
+  max-height: calc(100dvh - 120px);
+  overflow-y: auto;
+}
+.sh-catchup-head,
+.sh-sheet-head {
+  display: flex;
+  align-items: center;
+  gap: 12px;
+}
+.sh-catchup-head {
+  margin: -2px 0 0 -4px;
+}
+.sh-catchup-words {
+  flex: 1;
+  min-width: 0;
+}
+.sh-catchup-title,
+.sh-sheet-title {
+  font-size: 16px;
+  line-height: 22px;
+  font-weight: 600;
+  letter-spacing: -0.005em;
+}
+.sh-catchup-head .sh-btn.quiet {
+  align-self: flex-start;
+  margin: 4px -6px 0 0;
+}
+.sh-group {
+  display: flex;
+  flex-direction: column;
+  gap: 4px;
+}
+.sh-group-item {
+  display: flex;
+  flex-direction: column;
+  gap: 4px;
+  padding: 8px 0;
+}
+.sh-group-item + .sh-group-item {
+  border-top: 1px solid var(--ma-border-hairline);
+}
+.sh-item-main {
+  display: flex;
+  align-items: center;
+  gap: 12px;
+}
+.sh-item-line {
+  flex: 1;
+  min-width: 0;
+  font-size: 14px;
+  line-height: 19px;
+  font-weight: 500;
+  overflow-wrap: anywhere;
+}
+.sh-tally {
+  margin: 0;
+  padding: 2px 14px;
+  list-style: none;
+}
+.sh-tally-row {
+  display: flex;
+  align-items: baseline;
+  justify-content: space-between;
+  gap: 12px;
+  padding: 8px 0;
+}
+.sh-tally-row + .sh-tally-row {
+  border-top: 1px solid var(--ma-border-hairline);
+}
+.sh-tally-label {
+  font-size: 13px;
+  line-height: 18px;
+  color: var(--ma-text-secondary);
+}
+.sh-tally-label + .sh-summary {
+  color: var(--ma-text-primary);
+  font-weight: 550;
+  font-variant-numeric: tabular-nums;
+}
+.sh-question {
+  display: flex;
+  flex-direction: column;
+  gap: 10px;
+  padding: 12px 14px;
+  border-radius: 14px;
+  background: var(--ma-accent-subtle);
+}
+.sh-question p {
+  font-size: 13.5px;
+  line-height: 19px;
+  font-weight: 500;
+  color: var(--ma-text-primary);
+}
+.sh-question .sh-chip.soft {
+  background: var(--ma-maia-mode-tray-top);
+  box-shadow: 0 0 0 1px var(--ma-border-hairline);
+}
+.sh-question .sh-chip.soft:hover {
+  background: var(--ma-maia-mode-tray-foot);
+}
+.sh-end {
+  padding-top: 2px;
+  text-align: center;
+  font-size: 12.5px;
+  line-height: 17px;
+  color: var(--ma-text-tertiary);
+}
+.sh-end::before {
+  content: '';
+  display: block;
+  width: 28px;
+  height: 2px;
+  margin: 0 auto 10px;
+  border-radius: 1px;
+  background: var(--ma-border);
+}
+/* Her groups come in one after another, at most five steps. */
+.sh-catchup > :nth-child(n + 3) {
+  animation: sh-rise 260ms cubic-bezier(0.2, 0, 0, 1) both;
+}
+.sh-catchup > :nth-child(4) {
+  animation-delay: 30ms;
+}
+.sh-catchup > :nth-child(5) {
+  animation-delay: 60ms;
+}
+.sh-catchup > :nth-child(6) {
+  animation-delay: 90ms;
+}
+.sh-catchup > :nth-child(n + 7) {
+  animation-delay: 120ms;
+}
+
+/* ------------------------------------------------------------ Back's ready-to-resume line */
+.sh-resume {
+  position: fixed;
+  top: 80px;
+  left: 50%;
+  max-width: min(480px, calc(100vw - 32px));
+  transform: translateX(-50%);
+  padding: 10px 18px;
+  border-radius: 999px;
+  font-size: 13px;
+  line-height: 18px;
+  z-index: 45;
+  animation: sh-fade 5s linear both;
+  pointer-events: none;
+}
+
+/* ------------------------------------------------------------ To-do as a sheet, All held, What reaches you */
+.sh-layer {
+  position: fixed;
+  inset: 0;
+  z-index: 60;
+}
+.sh-layer-top {
+  z-index: 70;
+}
+.sh-scrim {
+  position: absolute;
+  inset: 0;
+  background: var(--ma-maia-mode-scrim);
+}
+.sh-sheet {
+  position: absolute;
+  top: 72px;
+  right: 16px;
+  max-height: calc(100dvh - 88px);
+  width: min(400px, calc(100vw - 32px));
+  display: flex;
+  flex-direction: column;
+  gap: 14px;
+  padding: 14px 16px 16px;
+  border-radius: 22px;
+  animation: sh-in-side 260ms cubic-bezier(0.2, 0, 0, 1) both;
+}
+.sh-settings {
+  bottom: 16px;
+}
+.sh-grab {
+  display: none;
+}
+.sh-sheet-head {
+  margin: 0 0 0 -4px;
+}
+.sh-sheet-head .sh-icon-btn {
+  margin-left: auto;
+}
+.sh-sheet-title {
+  flex: 1;
+  min-width: 0;
+  outline: none;
+}
+.sh-tabs button {
+  min-height: 32px;
+  font-size: 14px;
+}
+.sh-tabs button.on {
+  border-color: transparent;
+  background: var(--ma-maia-mode-tray-top);
+  box-shadow: var(--ma-window-lift-edge), 0 0 0 1px var(--ma-border-hairline), var(--ma-window-lift-rest);
+}
+.sh-sheet-body {
+  flex: 0 1 auto;
+  min-height: 0;
+  overflow-y: auto;
+  display: flex;
+  flex-direction: column;
+  gap: 14px;
+}
+.sh-sheet-foot {
+  display: flex;
+  justify-content: flex-start;
+  padding-top: 12px;
+  border-top: 1px solid var(--ma-border-hairline);
+}
+.sh-icon-btn {
+  display: inline-grid;
+  place-items: center;
+  flex: none;
+  width: 34px;
+  height: 34px;
+  border: 0;
+  border-radius: 999px;
+  background: none;
+  color: var(--ma-text-secondary);
+  cursor: pointer;
+}
+.sh-icon-btn:hover {
+  background: var(--ma-maia-mode-soft);
+}
+.sh-icon-btn .sh-ico {
+  width: 16px;
+  height: 16px;
+}
+.sh-list-item {
+  display: grid;
+  grid-template-columns: 30px minmax(0, 1fr) auto;
+  align-items: center;
+  column-gap: 12px;
+  padding: 10px 0;
+}
+.sh-list-item + .sh-list-item {
+  border-top: 1px solid var(--ma-border-hairline);
+}
+.sh-list-text {
+  display: flex;
+  flex-direction: column;
+  gap: 2px;
+  min-width: 0;
+}
+.sh-list-what {
+  font-size: 14px;
+  line-height: 19px;
+  font-weight: 550;
+  overflow-wrap: anywhere;
+}
+.sh-list-what .sh-dot {
+  display: inline-block;
+  margin: 0 7px 2px 0;
+  vertical-align: middle;
+}
+.sh-list-item .sh-source .sh-etch {
+  font-size: 10px;
+}
+.sh-desk-label {
+  margin: 0 0 2px;
+  line-height: 14px;
+}
+.sh-held,
+.sh-held-desk {
+  display: flex;
+  flex-direction: column;
+}
+.sh-held {
+  gap: 14px;
+}
+.sh-empty,
+.sh-set-hint,
+.sh-problem {
+  margin: 0;
+  font-size: 13px;
+  line-height: 18px;
+  color: var(--ma-text-secondary);
+}
+.sh-filters {
+  display: flex;
+  flex-wrap: wrap;
+  gap: 8px;
+}
+.sh-filter {
+  position: relative;
+  display: inline-flex;
+}
+.sh-filter::after {
+  content: '';
+  position: absolute;
+  top: 50%;
+  right: 14px;
+  width: 5px;
+  height: 5px;
+  margin-top: -4px;
+  border-right: 1.5px solid var(--ma-text-secondary);
+  border-bottom: 1.5px solid var(--ma-text-secondary);
+  transform: rotate(45deg);
+  pointer-events: none;
+}
+.sh-filter select {
+  appearance: none;
+  min-height: 32px;
+  padding: 0 32px 0 14px;
+  border: 0;
+  border-radius: 999px;
+  background: var(--ma-maia-mode-soft);
+  color: var(--ma-text-primary);
+  font: inherit;
+  font-size: 13px;
+  font-weight: 550;
+  cursor: pointer;
+}
+.sh-filter select:hover {
+  background: var(--ma-maia-mode-soft-hover);
+}
+
+/* What reaches you: each section's rows in one sunken group. */
+.sh-set {
+  display: flex;
+  flex-direction: column;
+  gap: 6px;
+}
+.sh-set-title,
+.sh-set-hint {
+  padding: 0 4px;
+}
+.sh-set-hint {
+  font-size: 12.5px;
+  line-height: 17px;
+}
+.sh-set-box {
+  display: flex;
+  flex-direction: column;
+  padding: 2px 14px;
+  border-radius: 14px;
+  background: var(--ma-maia-mode-tray-inset);
+}
+.sh-set-box > * + * {
+  border-top: 1px solid var(--ma-border-hairline);
+}
+.sh-set-box > .sh-set-hint,
+.sh-set-box > .sh-btn {
+  margin: 10px 0;
+}
+.sh-set-box > .sh-btn + *,
+.sh-set-box > * + .sh-btn {
+  border-top: 0;
+}
+.sh-set-box > .sh-btn {
+  align-self: flex-start;
+}
+/* Inside a sunken group a soft pill stands on the tray's top, with its hairline. */
+.sh-set-box .sh-btn.soft {
+  background: var(--ma-maia-mode-tray-top);
+  box-shadow: 0 0 0 1px var(--ma-border-hairline);
+}
+.sh-set-box .sh-btn.soft:hover:not(:disabled) {
+  background: var(--ma-maia-mode-tray-foot);
+}
+.sh-set-box .switch-row {
+  min-height: 24px;
+  padding: 11px 0;
+}
+.sh-set-box .switch-text {
+  font-size: 14px;
+  line-height: 19px;
+}
+.sh-set-box .segmented.sh-seg {
+  margin: 10px 0;
+  background: var(--ma-maia-mode-tray-foot);
+}
+.sh-set-box .segmented.sh-seg button.on {
+  border-color: transparent;
+  background: var(--ma-maia-mode-tray-top);
+  box-shadow: var(--ma-window-lift-edge), 0 0 0 1px var(--ma-border-hairline), var(--ma-window-lift-rest);
+}
+.segmented.sh-radios {
+  display: flex;
+  flex-direction: column;
+  padding: 0;
+  gap: 0;
+  border-radius: 0;
+  background: none;
+}
+.segmented.sh-radios button {
+  justify-content: space-between;
+  padding: 11px 0;
+  border: 0;
+  border-radius: 0;
+  background: none;
+  color: var(--ma-text-primary);
+  font-size: 14px;
+  line-height: 19px;
+  font-weight: 450;
+  text-align: left;
+  white-space: normal;
+}
+.segmented.sh-radios button + button {
+  border-top: 1px solid var(--ma-border-hairline);
+}
+.segmented.sh-radios button:hover {
+  background: none;
+  color: var(--ma-text-link);
+}
+.segmented.sh-radios button.on {
+  font-weight: 600;
+}
+/* The check is ::before (the touch rule gives every switcher button's ::after to its target), drawn after the words. */
+.segmented.sh-radios button.on::before {
+  content: '';
+  order: 2;
+  flex: none;
+  width: 10px;
+  height: 5px;
+  margin: 0 4px 4px 12px;
+  border-left: 2px solid var(--ma-accent);
+  border-bottom: 2px solid var(--ma-accent);
+  transform: rotate(-45deg);
+}
+.sh-name {
+  display: flex;
+  flex-direction: column;
+  gap: 6px;
+  padding: 10px 0;
+  font-size: 13px;
+  color: var(--ma-text-secondary);
+}
+.sh-name small {
+  color: var(--ma-text-tertiary);
+  font-size: 12px;
+  line-height: 16px;
+}
+.sh-name-row,
+.sh-time-row,
+.sh-person {
+  display: flex;
+  align-items: center;
+  gap: 8px;
+  flex-wrap: wrap;
+}
+.sh-time-row {
+  padding: 8px 0;
+}
+.sh-name-row input {
+  flex: 1;
+  min-width: 0;
+}
+.sh-settings input::placeholder {
+  color: var(--ma-text-tertiary);
+  opacity: 1;
+}
+.sh-settings input[type='time'],
+.sh-settings input[type='text'] {
+  min-height: 34px;
+  padding: 0 12px;
+  border: 1px solid var(--ma-border);
+  border-radius: 999px;
+  background: var(--ma-maia-mode-tray-top);
+  color: var(--ma-text-primary);
+  font: inherit;
+  font-size: 13px;
+}
+.sh-time-row label {
+  display: inline-flex;
+  align-items: center;
+  gap: 6px;
+  font-size: 13px;
+  color: var(--ma-text-secondary);
+}
+.sh-people > li,
+.sh-learned > li {
+  padding: 6px 0;
+}
+.sh-people > li + li,
+.sh-learned > li + li {
+  border-top: 1px solid var(--ma-border-hairline);
+}
+.sh-person {
+  flex-wrap: nowrap;
+  justify-content: space-between;
+  font-size: 14px;
+  line-height: 19px;
+}
+.sh-person > span {
+  flex: 1;
+  min-width: 0;
+}
+.sh-learned .sh-person {
+  font-size: 13px;
+  color: var(--ma-text-secondary);
+}
+.sh-ask {
+  display: flex;
+  flex-direction: column;
+  gap: 8px;
+  padding: 10px 0;
+  font-size: 13px;
+}
+
+/* ------------------------------------------------------------ motion */
+@keyframes sh-settle {
+  from {
+    opacity: 0;
+    transform: translateY(-8px);
+  }
+}
+@keyframes sh-fold {
+  from {
+    opacity: 0.4;
+    transform: translateY(-4px) scaleY(0.96);
+  }
+}
+@keyframes sh-rise {
+  from {
+    opacity: 0;
+    transform: translateY(4px);
+  }
+}
+@keyframes sh-in-side {
+  from {
+    opacity: 0;
+    transform: translateX(16px);
+  }
+}
+@keyframes sh-in-up {
+  from {
+    opacity: 0;
+    transform: translateY(24px);
+  }
+}
+@keyframes sh-fade {
+  0%,
+  80% {
+    opacity: 1;
+  }
+  100% {
+    opacity: 0;
+  }
+}
+
+/* A phone: the sheet from the bottom with its grabber, the line as its pill ("6 held"), 44 px targets, 16 px gutters. */
+@media (max-width: 599px) {
+  .sh-wrap {
+    max-width: 44vw;
+    height: 44px;
+  }
+  .sh-line-text {
+    display: none;
+  }
+  .sh-line-short {
+    display: inline;
+    overflow: hidden;
+    text-overflow: ellipsis;
+    white-space: nowrap;
+  }
+  .sh-more {
+    width: 36px;
+  }
+  .sh-under {
+    position: fixed;
+    top: 72px;
+    left: 16px;
+    right: 16px;
+    width: auto;
+  }
+  .sh-sheet {
+    top: auto;
+    left: 0;
+    right: 0;
+    bottom: 0;
+    width: auto;
+    max-height: 85%;
+    padding-top: 10px;
+    border-radius: 22px 22px 0 0;
+    padding-bottom: calc(16px + env(safe-area-inset-bottom));
+    animation-name: sh-in-up;
+  }
+  .sh-grab {
+    display: block;
+    flex: none;
+    width: 36px;
+    height: 4px;
+    margin: 0 auto -4px;
+    border-radius: 2px;
+    background: var(--ma-border-strong);
+  }
+  .sh-btn,
+  .sh-chip,
+  .sh-chip.quiet,
+  .sh-icon-btn,
+  .sh-filter select,
+  .sh-settings input[type='time'],
+  .sh-settings input[type='text'] {
+    min-height: 44px;
+  }
+  .sh-icon-btn {
+    width: 44px;
+    height: 44px;
+  }
+  .segmented.sh-radios button {
+    min-height: 44px;
+    padding: 0;
+  }
+  /* The why chip keeps its size; its touch area is 44 px. */
+  .sh-why-btn::before {
+    content: '';
+    position: absolute;
+    inset: -14px -10px;
+  }
+}
+
+@media (prefers-reduced-motion: reduce) {
+  .sh-card,
+  .sh-card.sh-after,
+  .sh-catchup,
+  .sh-catchup > :nth-child(n),
+  .sh-sheet,
+  .sh-resume {
+    animation: none;
+  }
+  .sh-why-btn::after {
+    transition: none;
+  }
+}
+
+/* ------------------------------------------------------------ in her room: the To-do column's head */
+.sh-room {
+  display: flex;
+  flex-direction: column;
+  gap: 8px;
+  margin: 4px 0 8px;
+}
+.sh-room-line {
+  display: inline-flex;
+  align-items: center;
+  gap: 8px;
+  align-self: flex-start;
+  max-width: 100%;
+  min-height: 32px;
+  padding: 0 14px;
+  border: 1px solid var(--ma-border);
+  border-radius: 999px;
+  background: var(--ma-surface-chrome);
+  box-shadow: var(--ma-window-lift-edge);
+  color: var(--ma-text-primary);
+  font: inherit;
+  font-size: 13px;
+  text-align: left;
+  cursor: pointer;
+}
+.sh-room-line:hover {
+  background: var(--ma-surface-fill);
+}
+.sh-room-line:focus-visible {
+  outline: 2px solid var(--ma-focus-ring);
+  outline-offset: 2px;
+}
+.sh-room-resume {
+  margin: 0;
+  font-size: 13px;
+  line-height: 18px;
+  color: var(--ma-text-secondary);
+}
+/* She's right there in her room: no still of her on what she hands over, and no lift off the column. */
+.sh-room .sh-maia {
+  display: none;
+}
+.sh-room .sh-card,
+.sh-room .sh-catchup {
+  box-shadow: var(--ma-window-lift-edge), 0 0 0 1px var(--ma-border-hairline);
+}
+.sh-room .sh-card.interrupt {
+  box-shadow: var(--ma-window-lift-edge), var(--ma-maia-mode-sel-glow);
+}
+@media (max-width: 599px) {
+  .sh-room-line {
+    min-height: 44px;
+  }
+}
+
+/* ------------------------------------------------------------ the decision tray: papers on Maia's tray (the tray spec) */
+/* A paper is a raised sheet on the tray (surface.tile, radius 14, the window lift's lit edge and a short contact shadow); two
+   sheet edges under it while more papers wait. Insets (her line, the confirm strip, filed lines) stay sunken. Pills only. */
+.sh-maia.xs {
+  width: 22px;
+  height: 22px;
+}
+.sh-maia.xs img {
+  width: 18px;
+  height: 18px;
+}
+.sh-ico.sm {
+  width: 14px;
+  height: 14px;
+}
+.sh-stack {
+  display: flex;
+  flex-direction: column;
+  gap: 10px;
+  min-width: 0;
+}
+.sh-stack-head,
+.sh-needs-head {
+  display: flex;
+  align-items: center;
+  justify-content: space-between;
+  gap: 12px;
+  min-height: 20px;
+}
+.sh-count {
+  margin-left: 8px;
+  font-variant-numeric: tabular-nums;
+}
+.sh-stack-pos {
+  display: inline-flex;
+  align-items: center;
+  gap: 10px;
+  font-size: 12.5px;
+  line-height: 16px;
+  font-weight: 550;
+  color: var(--ma-text-secondary);
+  font-variant-numeric: tabular-nums;
+}
+.sh-dots {
+  display: inline-flex;
+  align-items: center;
+  gap: 4px;
+}
+.sh-dots > span {
+  width: 6px;
+  height: 6px;
+  border-radius: 3px;
+  background: var(--ma-border-strong);
+}
+.sh-dots > span.on {
+  width: 18px;
+  background: var(--ma-accent);
+}
+
+/* Filed lines: one sunken row each, the answer in the member's words, then where it went. */
+.sh-filed-list {
+  display: flex;
+  flex-direction: column;
+  gap: 6px;
+  margin: 0;
+  padding: 0;
+  list-style: none;
+}
+.sh-filed {
+  display: flex;
+  align-items: center;
+  gap: 8px;
+  min-height: 38px;
+  padding: 0 14px;
+  border-radius: 12px;
+  background: var(--ma-maia-mode-tray-inset);
+  font-size: 13px;
+  line-height: 18px;
+  color: var(--ma-text-secondary);
+  animation: sh-rise 200ms cubic-bezier(0.2, 0, 0, 1) both;
+}
+.sh-filed .sh-ico {
+  width: 16px;
+  height: 16px;
+  color: var(--ma-accent);
+}
+.sh-filed-lead {
+  color: var(--ma-text-primary);
+  font-weight: 600;
+  white-space: nowrap;
+}
+.sh-filed-rest {
+  flex: 1;
+  min-width: 0;
+  overflow: hidden;
+  text-overflow: ellipsis;
+  white-space: nowrap;
+}
+.sh-filed-at {
+  color: var(--ma-text-tertiary);
+  font-variant-numeric: tabular-nums;
+}
+
+/* The stack's sheets: the top paper and up to two edges under it, 8 and 16 px narrower, 5 px apart. */
+.sh-sheets {
+  position: relative;
+  padding-bottom: 0;
+}
+.sh-sheets[data-under='1'] {
+  padding-bottom: 5px;
+}
+.sh-sheets[data-under='2'] {
+  padding-bottom: 10px;
+}
+.sh-sheets::before,
+.sh-sheets::after {
+  content: '';
+  position: absolute;
+  height: 24px;
+  border-radius: 0 0 14px 14px;
+  background: var(--ma-surface-tile);
+  box-shadow: 0 0 0 1px var(--ma-border-hairline), var(--ma-elevation-tile);
+  display: none;
+}
+.sh-sheets::before {
+  left: 8px;
+  right: 8px;
+  bottom: 5px;
+  z-index: 0;
+}
+.sh-sheets::after {
+  left: 16px;
+  right: 16px;
+  bottom: 0;
+  z-index: -1;
+}
+.sh-sheets[data-under='1']::before,
+.sh-sheets[data-under='2']::before,
+.sh-sheets[data-under='2']::after {
+  display: block;
+}
+
+.sh-paper {
+  position: relative;
+  z-index: 1;
+  display: flex;
+  flex-direction: column;
+  gap: 10px;
+  padding: 14px 16px 16px;
+  border-radius: 14px;
+  background: var(--ma-surface-tile);
+  box-shadow: var(--ma-window-lift-edge), 0 0 0 1px var(--ma-border-hairline), var(--ma-elevation-tile);
+  color: var(--ma-text-primary);
+}
+.sh-paper p,
+.sh-paper h3,
+.sh-paper h4 {
+  margin: 0;
+}
+.sh-paper.leaving {
+  animation: sh-file 180ms cubic-bezier(0.2, 0, 0, 1) both;
+}
+.sh-paper.rising {
+  animation: sh-rise 220ms cubic-bezier(0.2, 0, 0, 1) both;
+}
+.sh-paper-head {
+  display: flex;
+  align-items: center;
+  justify-content: space-between;
+  gap: 10px;
+  min-width: 0;
+}
+/* Urgency is a time chip, never a colour alarm: the accent on accent.subtle, as a pill. */
+.sh-time-chip {
+  flex: none;
+  display: inline-flex;
+  align-items: center;
+  gap: 6px;
+  padding: 4px 11px 4px 9px;
+  border-radius: 999px;
+  background: var(--ma-accent-subtle);
+  color: var(--ma-text-link);
+  font-size: 12.5px;
+  line-height: 16px;
+  font-weight: 600;
+  font-variant-numeric: tabular-nums;
+  white-space: nowrap;
+}
+.sh-time-chip .sh-ico {
+  width: 14px;
+  height: 14px;
+}
+.sh-paper-title {
+  font-size: 15px;
+  line-height: 21px;
+  font-weight: 560;
+  letter-spacing: -0.005em;
+  overflow-wrap: anywhere;
+}
+.sh-paper-risks {
+  display: flex;
+  flex-direction: column;
+  gap: 2px;
+  margin-top: -4px;
+}
+.sh-paper-risk {
+  display: flex;
+  align-items: center;
+  gap: 8px;
+  font-size: 13px;
+  line-height: 18px;
+  color: var(--ma-text-secondary);
+}
+.sh-paper-risk .sh-ico {
+  width: 16px;
+  height: 16px;
+}
+.sh-paper-hidden {
+  font-size: 13px;
+  line-height: 18px;
+  color: var(--ma-text-tertiary);
+}
+
+/* Her line in its sunken inset: her still in its halo, "Maia's summary", the line in italic, and where it came from. */
+.sh-her {
+  display: flex;
+  flex-direction: column;
+  gap: 6px;
+  padding: 12px 14px;
+}
+.sh-her.code {
+  padding: 0;
+  background: transparent;
+}
+.sh-her-head {
+  display: flex;
+  align-items: center;
+  gap: 8px;
+}
+.sh-her-label {
+  font-size: 11px;
+  line-height: 14px;
+  font-weight: 600;
+  letter-spacing: 0.08em;
+  text-transform: uppercase;
+  color: var(--ma-text-tertiary);
+}
+.sh-her-line {
+  font-size: 13px;
+  line-height: 19px;
+  font-style: italic;
+  color: var(--ma-text-secondary);
+  overflow-wrap: anywhere;
+}
+.sh-her-plain {
+  font-size: 13px;
+  line-height: 18px;
+  color: var(--ma-text-secondary);
+}
+.sh-her-from {
+  display: inline-flex;
+  align-items: center;
+  gap: 4px;
+  align-self: flex-start;
+  padding: 0;
+  border: 0;
+  background: none;
+  color: var(--ma-text-link);
+  font: inherit;
+  font-size: 12.5px;
+  line-height: 17px;
+  font-weight: 600;
+  cursor: pointer;
+}
+.sh-her-from:hover {
+  color: var(--ma-text-primary);
+}
+
+/* Materials: soft pills with a 16 px line glyph; the open one carries the accent ring. */
+.sh-materials {
+  display: flex;
+  flex-wrap: wrap;
+  gap: 8px;
+}
+.sh-material-pill {
+  display: inline-flex;
+  align-items: center;
+  gap: 8px;
+  min-height: 32px;
+  max-width: 100%;
+  padding: 0 14px 0 12px;
+  border: 0;
+  border-radius: 999px;
+  background: var(--ma-maia-mode-soft);
+  color: var(--ma-text-primary);
+  font: inherit;
+  font-size: 13px;
+  line-height: 18px;
+  font-weight: 550;
+  cursor: pointer;
+  transition: background-color 120ms linear;
+}
+.sh-material-pill span {
+  overflow: hidden;
+  text-overflow: ellipsis;
+  white-space: nowrap;
+}
+.sh-material-pill .sh-ico {
+  flex: none;
+  width: 16px;
+  height: 16px;
+  color: var(--ma-text-secondary);
+}
+.sh-material-pill:hover {
+  background: var(--ma-maia-mode-soft-hover);
+}
+.sh-material-pill.on {
+  background: var(--ma-accent-subtle);
+  color: var(--ma-text-link);
+  box-shadow: inset 0 0 0 1px var(--ma-accent);
+}
+.sh-material-pill.on .sh-ico {
+  color: var(--ma-text-link);
+}
+
+/* The answers: one primary at most (her pick), the rest soft, Decline quiet. */
+.sh-answers {
+  display: flex;
+  flex-wrap: wrap;
+  align-items: center;
+  gap: 8px;
+}
+.sh-answers .sh-btn {
+  min-height: 36px;
+}
+.sh-btn[aria-disabled='true'] {
+  cursor: default;
+}
+.sh-btn.chosen {
+  background: var(--ma-accent-subtle);
+  color: var(--ma-text-link);
+  box-shadow: inset 0 0 0 1px var(--ma-accent);
+}
+.sh-btn.chosen .sh-ico {
+  width: 16px;
+  height: 16px;
+}
+.sh-answers.chosen .sh-btn:disabled {
+  opacity: 0.5;
+}
+.sh-paper-foot {
+  display: flex;
+  align-items: center;
+  gap: 10px;
+}
+.sh-reply {
+  position: relative;
+  flex: 1;
+  min-width: 0;
+  display: flex;
+}
+.sh-reply-box {
+  flex: 1;
+  min-width: 0;
+  height: 40px;
+  padding: 0 16px;
+  border: 0;
+  border-radius: 999px;
+  background: var(--ma-maia-mode-tray-inset);
+  color: var(--ma-text-primary);
+  font: inherit;
+  font-size: 13.5px;
+}
+.sh-reply-box::placeholder,
+.sh-note-box::placeholder {
+  color: var(--ma-text-tertiary);
+}
+.sh-reply-box:focus-visible,
+.sh-her-from:focus-visible,
+.sh-material-pill:focus-visible,
+.sh-mat-tabs button:focus-visible,
+.sh-room-needs:focus-visible {
+  outline: 2px solid var(--ma-focus-ring);
+  outline-offset: 2px;
+}
+.sh-reply-send {
+  position: absolute;
+  right: 4px;
+  top: 3px;
+}
+.sh-later {
+  flex: none;
+}
+.sh-paper-foot:not(:has(.sh-reply)) {
+  justify-content: flex-end;
+}
+
+/* The free-form note: its label, the box, who gets it, then Cancel and the one action. */
+.sh-note {
+  display: flex;
+  flex-direction: column;
+  gap: 8px;
+}
+.sh-note-label {
+  font-size: 13px;
+  line-height: 18px;
+  font-weight: 600;
+  color: var(--ma-text-primary);
+}
+.sh-note-box {
+  min-height: 84px;
+  padding: 10px 14px;
+  border: 0;
+  border-radius: 14px;
+  background: var(--ma-maia-mode-tray-inset);
+  color: var(--ma-text-primary);
+  font: inherit;
+  font-size: 14px;
+  line-height: 20px;
+  resize: vertical;
+}
+.sh-note-box:focus,
+.sh-qr-box:focus {
+  outline: 2px solid var(--ma-focus-ring);
+  outline-offset: 2px;
+}
+.sh-note-hint {
+  display: flex;
+  align-items: center;
+  gap: 8px;
+  font-size: 12.5px;
+  line-height: 17px;
+  color: var(--ma-text-secondary);
+}
+.sh-note-hint .sh-ico {
+  width: 15px;
+  height: 15px;
+}
+.sh-note-acts {
+  display: flex;
+  justify-content: flex-end;
+  align-items: center;
+  gap: 8px;
+}
+
+/* The confirm strip: an accent.subtle inset with exactly what goes where; Back quiet on the left, the one action on the right. */
+.sh-confirm {
+  display: flex;
+  flex-direction: column;
+  gap: 4px;
+  padding: 14px 16px;
+  border-radius: 14px;
+  background: var(--ma-accent-subtle);
+  animation: sh-rise 200ms cubic-bezier(0.2, 0, 0, 1) both;
+}
+.sh-confirm-title {
+  font-size: 15px;
+  line-height: 21px;
+  font-weight: 600;
+  color: var(--ma-text-primary);
+  overflow-wrap: anywhere;
+}
+.sh-confirm-foot {
+  font-size: 13px;
+  line-height: 18px;
+  color: var(--ma-text-secondary);
+}
+.sh-confirm-acts {
+  display: flex;
+  align-items: center;
+  justify-content: space-between;
+  gap: 12px;
+  margin-top: 10px;
+}
+.sh-confirm-acts .sh-btn {
+  min-height: 40px;
+}
+.sh-confirm-acts .sh-btn.primary {
+  padding: 0 22px;
+}
+.sh-confirm-acts .sh-btn.primary[aria-disabled='true'] {
+  opacity: 0.6;
+}
+.sh-changed {
+  display: flex;
+  align-items: center;
+  justify-content: space-between;
+  gap: 10px;
+  padding: 10px 12px 10px 14px;
+  font-size: 13px;
+  line-height: 18px;
+  color: var(--ma-text-primary);
+}
+.sh-paper-error {
+  font-size: 12.5px;
+  line-height: 17px;
+  color: var(--ma-text-secondary);
+}
+.sh-stack-tally {
+  margin: 0;
+  padding: 11px 14px;
+  font-size: 13px;
+  line-height: 18px;
+  color: var(--ma-text-secondary);
+  font-variant-numeric: tabular-nums;
+}
+
+/* In the catch-up, the stack takes Needs you's place. */
+.sh-group-stack {
+  gap: 0;
+}
+
+/* ------------------------------------------------------------ a material, opened inside the paper */
+.sh-mat-pane {
+  position: fixed;
+  top: 72px;
+  bottom: 24px;
+  right: var(--sh-mat-right, 400px);
+  width: min(760px, calc(100vw - var(--sh-mat-right, 400px) - 32px));
+  z-index: 64;
+  display: flex;
+}
+.sh-material {
+  flex: 1;
+  min-width: 0;
+  display: flex;
+  flex-direction: column;
+  border-radius: 18px;
+  background: linear-gradient(180deg, var(--ma-maia-mode-tray-top), var(--ma-maia-mode-tray-foot));
+  box-shadow: var(--ma-window-lift-edge), 0 0 0 1px var(--ma-border-hairline), var(--ma-window-lift-active);
+  color: var(--ma-text-primary);
+  overflow: hidden;
+  animation: sh-in-side 260ms cubic-bezier(0.2, 0, 0, 1) both;
+}
+.sh-mat-head {
+  display: flex;
+  align-items: center;
+  justify-content: space-between;
+  gap: 12px;
+  padding: 12px 12px 10px 16px;
+}
+.sh-mat-name {
+  display: flex;
+  align-items: center;
+  gap: 8px;
+  margin: 0;
+  font-size: 14px;
+  line-height: 20px;
+  font-weight: 600;
+}
+.sh-mat-tabs {
+  display: flex;
+  gap: 4px;
+  padding: 3px;
+  border-radius: 999px;
+  background: var(--ma-maia-mode-tray-inset);
+  min-width: 0;
+}
+.sh-mat-tabs button {
+  display: inline-flex;
+  align-items: center;
+  gap: 7px;
+  min-height: 32px;
+  padding: 0 14px 0 12px;
+  border: 0;
+  border-radius: 999px;
+  background: transparent;
+  color: var(--ma-text-secondary);
+  font: inherit;
+  font-size: 13px;
+  font-weight: 550;
+  cursor: pointer;
+}
+.sh-mat-tabs button.on {
+  background: var(--ma-maia-mode-tray-top);
+  color: var(--ma-text-primary);
+  box-shadow: var(--ma-window-lift-edge), 0 0 0 1px var(--ma-border-hairline);
+}
+.sh-mat-tabs .sh-ico,
+.sh-mat-name .sh-ico {
+  width: 16px;
+  height: 16px;
+}
+.sh-mat-body {
+  flex: 1;
+  min-height: 0;
+  overflow: auto;
+  padding: 4px 20px 16px;
+}
+.sh-mat-foot {
+  display: flex;
+  justify-content: flex-end;
+  padding: 8px 12px 12px;
+  border-top: 1px solid var(--ma-border-hairline);
+}
+.sh-mat-empty {
+  margin: 16px 0;
+  font-size: 13px;
+  color: var(--ma-text-secondary);
+}
+.sh-mat-asleep {
+  display: flex;
+  flex-direction: column;
+  gap: 12px;
+  margin: 16px 0;
+  font-size: 13.5px;
+}
+.sh-mat-payload,
+.sh-mat-thread,
+.sh-mat-todo {
+  display: flex;
+  flex-direction: column;
+  gap: 10px;
+  max-width: 640px;
+}
+.sh-mat-title {
+  margin: 0;
+  font-size: 15px;
+  line-height: 21px;
+  font-weight: 600;
+}
+.sh-mat-fields {
+  display: flex;
+  flex-direction: column;
+  margin: 0;
+  border-radius: 14px;
+  background: var(--ma-maia-mode-tray-inset);
+}
+.sh-mat-field {
+  display: grid;
+  grid-template-columns: 110px minmax(0, 1fr);
+  gap: 12px;
+  padding: 10px 14px;
+}
+.sh-mat-field + .sh-mat-field {
+  border-top: 1px solid var(--ma-border-hairline);
+}
+.sh-mat-field dt {
+  font-size: 12.5px;
+  line-height: 18px;
+  color: var(--ma-text-secondary);
+}
+.sh-mat-field dd {
+  margin: 0;
+  font-size: 13.5px;
+  line-height: 19px;
+  white-space: pre-wrap;
+  overflow-wrap: anywhere;
+}
+.sh-mat-field dd.mono {
+  font-family: ui-monospace, SFMono-Regular, Menlo, Consolas, monospace;
+  font-size: 12.5px;
+}
+.sh-mat-note {
+  margin: 0;
+  font-size: 12.5px;
+  line-height: 17px;
+  color: var(--ma-text-secondary);
+}
+.sh-mat-thread ol {
+  display: flex;
+  flex-direction: column;
+  gap: 8px;
+  margin: 0;
+  padding: 0;
+  list-style: none;
+}
+.sh-mat-thread li {
+  align-self: flex-start;
+  max-width: 85%;
+  padding: 9px 13px;
+  border-radius: 14px;
+  background: var(--ma-maia-mode-tray-inset);
+  font-size: 13.5px;
+  line-height: 19px;
+  white-space: pre-wrap;
+  overflow-wrap: anywhere;
+}
+.sh-mat-thread li.mine {
+  align-self: flex-end;
+  background: var(--ma-accent-subtle);
+}
+.sh-mat-doc {
+  display: flex;
+  flex-direction: column;
+  min-height: 100%;
+}
+/* The Documents viewer inside a paper: the tray's calm reader (soft pills, links without underlines), not Documents' toolbar. */
+.sh-mat-doc .docs-vhead {
+  padding: 12px 16px 6px;
+}
+.sh-mat-doc .docs-tools,
+.sh-mat-doc .docs-lines {
+  padding-left: 16px;
+  padding-right: 16px;
+}
+.sh-mat-doc .docs-tool {
+  min-height: 32px;
+  padding: 0 14px;
+  border: 0;
+  border-radius: 999px;
+  background: var(--ma-maia-mode-soft);
+  color: var(--ma-text-primary);
+  font-weight: 550;
+}
+.sh-mat-doc .docs-tool:hover {
+  background: var(--ma-maia-mode-soft-hover);
+}
+.sh-mat-doc .docs-tool[aria-pressed='true'],
+.sh-mat-doc .docs-tool[aria-expanded='true'] {
+  background: var(--ma-maia-mode-soft-hover);
+  box-shadow: var(--ma-maia-mode-pill-lit);
+}
+.sh-mat-doc .docs-panel {
+  margin: 0 16px 10px;
+  border: 0;
+  border-radius: 14px;
+  background: var(--ma-maia-mode-tray-inset);
+}
+.sh-mat-doc .docs-link {
+  color: var(--ma-text-link);
+  text-decoration: none;
+}
+.sh-mat-doc .docs-link:hover,
+.sh-mat-doc .docs-link:focus-visible {
+  text-decoration: underline;
+}
+/* A phone: the material rises as an 88% sheet over the paper, its answers docked in the foot. */
+.sh-mat-layer {
+  position: fixed;
+  inset: 0;
+  z-index: 64;
+  background: var(--ma-maia-mode-scrim);
+}
+.sh-material.phone {
+  position: absolute;
+  left: 0;
+  right: 0;
+  bottom: 0;
+  height: 88%;
+  border-radius: 22px 22px 0 0;
+  padding-top: 10px;
+  animation-name: sh-in-up;
+}
+.sh-material.phone .sh-grab {
+  display: block;
+  flex: none;
+  width: 36px;
+  height: 4px;
+  margin: 0 auto 2px;
+  border-radius: 2px;
+  background: var(--ma-border-strong);
+}
+.sh-mat-dock {
+  flex: none;
+  padding: 10px 16px calc(12px + env(safe-area-inset-bottom));
+  border-top: 1px solid var(--ma-border-hairline);
+  background: var(--ma-maia-mode-tray-foot);
+}
+.sh-paper.docked {
+  padding: 0;
+  background: transparent;
+  box-shadow: none;
+}
+
+/* ------------------------------------------------------------ Needs you in To-do, her room and her chat */
+.sh-needs {
+  display: flex;
+  flex-direction: column;
+  gap: 6px;
+  margin-bottom: 14px;
+}
+.sh-needs-back {
+  align-self: flex-start;
+}
+.sh-paper-row .sh-list-text .sh-source {
+  margin-bottom: 1px;
+}
+.sh-room-needs {
+  display: flex;
+  align-items: center;
+  justify-content: space-between;
+  gap: 10px;
+  min-height: 40px;
+  padding: 0 8px 0 14px;
+  border: 0;
+  border-radius: 14px;
+  background: var(--ma-maia-mode-tray-inset);
+  color: var(--ma-text-primary);
+  font: inherit;
+  font-size: 13px;
+  font-weight: 550;
+  cursor: pointer;
+}
+.sh-room-needs-go {
+  color: var(--ma-text-link);
+  font-weight: 600;
+  padding: 0 6px;
+}
+.sh-room-stack {
+  display: flex;
+  flex-direction: column;
+  gap: 8px;
+}
+.sh-chat-stack {
+  margin-top: 10px;
+}
+.sh-card.sh-card-papers {
+  padding: 10px;
+  background: linear-gradient(180deg, var(--ma-maia-mode-tray-top), var(--ma-maia-mode-tray-foot));
+}
+
+@keyframes sh-file {
+  to {
+    opacity: 0;
+    transform: translateY(-10px);
+  }
+}
+
+@media (max-width: 599px) {
+  .sh-paper {
+    padding: 14px 14px 16px;
+  }
+  .sh-answers .sh-btn,
+  .sh-material-pill,
+  .sh-reply-box,
+  .sh-confirm-acts .sh-btn {
+    min-height: 44px;
+  }
+  .sh-reply-box {
+    height: 44px;
+  }
+  .sh-mat-field {
+    grid-template-columns: minmax(0, 1fr);
+    gap: 2px;
+  }
+}
+
+@media (prefers-reduced-motion: reduce) {
+  .sh-paper.leaving,
+  .sh-paper.rising,
+  .sh-filed,
+  .sh-confirm,
+  .sh-material {
+    animation: none;
+  }
+}
+/* With papers in it the catch-up opens a little wider: three answers fit one row, as the tray's mockups have it. */
+.sh-under:has(.sh-stack) {
+  width: min(440px, calc(100vw - 32px));
+}
+
+/* ------------------------------------------------------------ quick reply (the owner, Nov 15): reply to a person right where it is */
+/* The reply arrow is the way in, on every card, held row and paper about a person's message. A drag down on the head (or a long
+   press with a finger) is the shortcut: transform only, a spring settle, nothing under reduced motion. */
+.sh-reply-btn {
+  flex: none;
+  display: inline-grid;
+  place-items: center;
+  width: 32px;
+  height: 32px;
+  margin-left: auto;
+  padding: 0;
+  border: 0;
+  border-radius: 999px;
+  background: var(--ma-maia-mode-soft);
+  color: var(--ma-text-link);
+  cursor: pointer;
+  transition: background-color 120ms linear;
+}
+.sh-reply-btn .sh-ico {
+  width: 17px;
+  height: 17px;
+  stroke-width: 2;
+}
+.sh-reply-btn:hover {
+  background: var(--ma-maia-mode-soft-hover);
+}
+.sh-reply-btn:focus-visible {
+  outline: 2px solid var(--ma-focus-ring);
+  outline-offset: 2px;
+}
+.sh-paper-head .sh-time-chip + .sh-reply-btn {
+  margin-left: 0;
+}
+.sh-paper-head:has(.sh-reply-btn) .sh-time-chip {
+  margin-left: auto;
+}
+/* The handle takes a finger's drag (it doesn't scroll anything); the body still scrolls as it did. */
+.sh-pull {
+  touch-action: none;
+  cursor: grab;
+}
+.sh-pull:active {
+  cursor: grabbing;
+}
+.sh-qr {
+  display: flex;
+  flex-direction: column;
+  gap: 8px;
+  animation: sh-rise 200ms cubic-bezier(0.2, 0, 0, 1) both;
+}
+.sh-qr-quote {
+  display: flex;
+  flex-direction: column;
+  gap: 2px;
+  margin: 0;
+  padding: 10px 12px;
+  border-radius: 12px;
+  background: var(--ma-maia-mode-tray-inset);
+  font-size: 13px;
+  line-height: 18px;
+  color: var(--ma-text-secondary);
+}
+.sh-qr-quote q {
+  display: -webkit-box;
+  -webkit-line-clamp: 2;
+  -webkit-box-orient: vertical;
+  overflow: hidden;
+  color: var(--ma-text-primary);
+  overflow-wrap: anywhere;
+}
+.sh-qr-who {
+  font-size: 11px;
+  line-height: 14px;
+  font-weight: 600;
+  letter-spacing: 0.08em;
+  text-transform: uppercase;
+  color: var(--ma-text-tertiary);
+}
+.sh-qr-box {
+  min-height: 64px;
+  padding: 10px 14px;
+  border: 0;
+  border-radius: 14px;
+  background: var(--ma-maia-mode-tray-inset);
+  color: var(--ma-text-primary);
+  font: inherit;
+  font-size: 14px;
+  line-height: 20px;
+  resize: vertical;
+}
+.sh-qr-box::placeholder {
+  color: var(--ma-text-tertiary);
+}
+.sh-qr-foot {
+  display: flex;
+  align-items: center;
+  gap: 6px;
+}
+.sh-qr-how {
+  flex: 1;
+  min-width: 0;
+  font-size: 12.5px;
+  line-height: 17px;
+  color: var(--ma-text-secondary);
+}
+.sh-qr-held {
+  flex-direction: row;
+  align-items: center;
+  justify-content: space-between;
+  min-height: 40px;
+  padding: 0 6px 0 14px;
+  border-radius: 12px;
+  background: var(--ma-accent-subtle);
+  font-size: 13.5px;
+  font-weight: 600;
+  color: var(--ma-text-primary);
+}
+.sh-row-reply {
+  grid-column: 1 / -1;
+  margin-top: 10px;
+}
+.sh-list-item .sh-reply-btn {
+  margin-left: 0;
+}
+@media (max-width: 599px) {
+  .sh-reply-btn {
+    width: 44px;
+    height: 44px;
+  }
+}
+@media (prefers-reduced-motion: reduce) {
+  .sh-qr {
+    animation: none;
+  }
+}

@@ -349,6 +349,16 @@ export function rememberChoice(prefs: { staySignedIn?: unknown; staySignedInSinc
 }
 
 /**
+ * Past `signedInAt` plus 30 days, whatever the choice (contract auth.md §3.3 item 2 and §2.8, 0.3.118 draft; only where the
+ * shared sign-in is on, `auth.ts`). For a direct sign-in that is Cognito's own end; for a session from the shared sign-in's
+ * code, `signedInAt` is the original sign-in's, though its refresh token has a fresh 30 days. Never with no `signedInAt`.
+ */
+export function pastThirtyDays(now: number = Date.now()): boolean {
+  const at = readSignedInAt();
+  return at !== null && now - at * 1000 > 30 * 86_400_000;
+}
+
+/**
  * The choice this browser's session has outlived, or null. `7d`, `1d` and `browser` count from the later of `signedInAt`
  * and `staySignedInSince`, so saving a shorter choice never ends a session on the spot. Never `30d`, an unknown choice,
  * or a token with no `signedInAt` yet (the next refresh brings it).

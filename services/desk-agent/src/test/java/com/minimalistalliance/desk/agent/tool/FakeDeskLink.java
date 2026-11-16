@@ -17,6 +17,8 @@ import java.util.function.Function;
 final class FakeDeskLink implements DeskLink {
 
     volatile Set<String> offered = Set.copyOf(new java.util.HashSet<>(allHosted()));
+    /** Whether this deskd said it keeps calls' replies by their key, so a call with no answer may be asked again. */
+    volatile boolean keyed;
     final List<Map<String, Object>> calls = new CopyOnWriteArrayList<>();
     final Map<String, Function<Map<String, Object>, Reply>> looks = new ConcurrentHashMap<>();
     final Map<String, Function<Map<String, Object>, Reply>> runs = new ConcurrentHashMap<>();
@@ -31,6 +33,11 @@ final class FakeDeskLink implements DeskLink {
     @Override
     public Set<String> offered() {
         return offered;
+    }
+
+    @Override
+    public boolean keyed() {
+        return keyed;
     }
 
     @Override

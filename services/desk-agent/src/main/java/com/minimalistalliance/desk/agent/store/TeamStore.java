@@ -22,13 +22,16 @@ import java.util.Map;
  */
 public final class TeamStore {
 
-    /** An agent's task 49 settings. {@code workspaceMb} null follows the tier. */
-    public record Extras(String id, String purpose, String icon, String tone, Integer pngVersion, boolean solo,
-            Integer workspaceMb, List<String> sharedWith) {
+    /**
+     * An agent's task 49 settings. {@code workspaceMb} null follows the tier. {@code color} is null only for a row no
+     * open has given one yet (a guild member's own agent, Desk Maia, or one a rolled-back desk-agent made).
+     */
+    public record Extras(String id, String purpose, String icon, String tone, String color, Integer pngVersion,
+            boolean solo, Integer workspaceMb, List<String> sharedWith) {
 
         @Override
         public String toString() {
-            return "Extras[" + id + ", " + icon + ", " + tone + ", solo " + solo + "]";
+            return "Extras[" + id + ", " + icon + ", " + tone + ", " + color + ", solo " + solo + "]";
         }
     }
 
@@ -71,13 +74,55 @@ public final class TeamStore {
 
     /**
      * Icon ids the library no longer has, each to the one that took its place (Design H4, M13). {@link TeamSchema}
-     * moves stored rows once at open, and desk-agent maps one wherever it comes in.
+     * moves stored rows once at open, and desk-agent maps one wherever it comes in. {@code nodes}, the old "Team"
+     * mark and default, read as a snowflake (the owner, Nov 15): it and {@code spark} became {@code hat}, the Agent
+     * app's own icon.
      */
     public static final Map<String, String> RETIRED_ICONS = Map.of("globe", "plane", "chat", "person", "heart",
-            "wallet", "star", "bulb", "puzzle", "terminal", "briefcase", "document", "spark", "nodes");
+            "wallet", "star", "bulb", "puzzle", "terminal", "briefcase", "document", "spark", "hat", "nodes", "hat");
 
-    /** Tone ids the wheel no longer has, each to the one that took its place. */
-    public static final Map<String, String> RETIRED_TONES = Map.of("moss", "green", "sky", "blue");
+    /**
+     * An agent's colour ids, in the order new agents take them (the owner, Nov 15: every agent wears the Agent app's
+     * own icon, the guy with the hat, in a colour of its own). {@code web/agent/src/look/colors.ts} has the same list
+     * in the same order ({@code LookIdsTest}). Ids are stored with the agent: never reuse or rename one.
+     */
+    public static final List<String> COLORS = List.of("sage", "amber", "rose", "blue", "harbor", "clay", "indigo");
+
+    /** The lead's colour, the Agent app's own accent, which can't change. A guild member's own agent shows it too. */
+    public static final String LEAD_COLOR = "indigo";
+
+    /**
+     * The colour a new agent takes, given every colour the desk's agents have now (the lead's included): the first in
+     * {@link #COLORS} order that none has, and once all are used, the least used ({@link #COLORS} order breaks ties).
+     */
+    public static String nextColor(Collection<String> used) {
+        Map<String, Integer> counts = new HashMap<>();
+        for (String color : used) {
+            if (color != null) {
+                counts.merge(color, 1, Integer::sum);
+            }
+        }
+        String best = COLORS.getFirst();
+        int least = Integer.MAX_VALUE;
+        for (String color : COLORS) {
+            int count = counts.getOrDefault(color, 0);
+            if (count < least) {
+                best = color;
+                least = count;
+            }
+        }
+        return best;
+    }
+
+    /**
+     * Tone ids the wheel no longer has, each to the nearest of the seven that took its place (the Product Designer, Nov 14:
+     * the warm and green ones went; {@code web/agent/src/look/tones.ts} has the same map). {@link TeamSchema} moves stored
+     * rows once at open, and desk-agent maps one wherever it comes in.
+     */
+    public static final Map<String, String> RETIRED_TONES = Map.ofEntries(Map.entry("rose", "iris"),
+            Map.entry("clay", "navy"), Map.entry("amber", "steel"), Map.entry("olive", "harbor"),
+            Map.entry("green", "harbor"), Map.entry("teal", "harbor"), Map.entry("cyan", "steel"),
+            Map.entry("violet", "iris"), Map.entry("plum", "iris"), Map.entry("moss", "harbor"), Map.entry("sky", "blue"));
 
     private final AgentStore store;
 
@@ -91,8 +136,8 @@ public final class TeamStore {
 
     // ---------------------------------------------------------------- agents
 
-    private static final String EXTRAS = "SELECT id, purpose, icon, tone, png_version, solo, workspace_mb, shared_with"
-            + " FROM agents";
+    private static final String EXTRAS = "SELECT id, purpose, icon, tone, png_version, solo, workspace_mb, shared_with,"
+            + " color FROM agents";
 
     public Map<String, Extras> extras() throws SQLException {
         return db().call(connection -> {
@@ -124,7 +169,7 @@ public final class TeamStore {
         Integer pngVersion = r.wasNull() ? null : (int) png;
         long mb = r.getLong(7);
         Integer workspaceMb = r.wasNull() ? null : (int) mb;
-        return new Extras(r.getString(1), r.getString(2), r.getString(3), r.getString(4), pngVersion,
+        return new Extras(r.getString(1), r.getString(2), r.getString(3), r.getString(4), r.getString(9), pngVersion,
                 r.getInt(6) != 0, workspaceMb, stringList(r.getString(8)));
     }
 
@@ -138,7 +183,8 @@ public final class TeamStore {
             throws SQLException {
         db().transaction(connection -> {
             try (PreparedStatement insert = connection.prepareStatement("INSERT INTO agents (id, name, role,"
-                    + " created_at, purpose, icon, tone, solo, workspace_mb) VALUES (?, ?, 'staff', ?, ?, ?, ?, ?, ?)")) {
+                    + " created_at, purpose, icon, tone, solo, workspace_mb, color)"
+                    + " VALUES (?, ?, 'staff', ?, ?, ?, ?, ?, ?, ?)")) {
                 insert.setString(1, id);
                 insert.setString(2, name);
                 insert.setLong(3, at);
@@ -147,6 +193,7 @@ public final class TeamStore {
                 insert.setString(6, extras.tone());
                 insert.setInt(7, extras.solo() ? 1 : 0);
                 setInt(insert, 8, extras.workspaceMb());
+                insert.setString(9, extras.color());
                 insert.executeUpdate();
             }
             for (Link link : links) {
@@ -164,22 +211,23 @@ public final class TeamStore {
     }
 
     /** Changes any of these; a null leaves that column. {@code clearWorkspaceMb} sets the tier's default back. */
-    public void updateExtras(String id, String purpose, String icon, String tone, Boolean solo, Integer workspaceMb,
-            boolean clearWorkspaceMb) throws SQLException {
+    public void updateExtras(String id, String purpose, String icon, String tone, String color, Boolean solo,
+            Integer workspaceMb, boolean clearWorkspaceMb) throws SQLException {
         update("UPDATE agents SET purpose = COALESCE(?, purpose), icon = COALESCE(?, icon), tone = COALESCE(?, tone),"
-                + " solo = COALESCE(?, solo), workspace_mb = CASE WHEN ? THEN NULL ELSE COALESCE(?, workspace_mb) END"
-                + " WHERE id = ?", s -> {
+                + " color = COALESCE(?, color), solo = COALESCE(?, solo),"
+                + " workspace_mb = CASE WHEN ? THEN NULL ELSE COALESCE(?, workspace_mb) END WHERE id = ?", s -> {
                     s.setString(1, purpose);
                     s.setString(2, icon);
                     s.setString(3, tone);
+                    s.setString(4, color);
                     if (solo == null) {
-                        s.setNull(4, Types.INTEGER);
+                        s.setNull(5, Types.INTEGER);
                     } else {
-                        s.setInt(4, solo ? 1 : 0);
+                        s.setInt(5, solo ? 1 : 0);
                     }
-                    s.setInt(5, clearWorkspaceMb ? 1 : 0);
-                    setInt(s, 6, workspaceMb);
-                    s.setString(7, id);
+                    s.setInt(6, clearWorkspaceMb ? 1 : 0);
+                    setInt(s, 7, workspaceMb);
+                    s.setString(8, id);
                 });
     }
 
@@ -187,25 +235,26 @@ public final class TeamStore {
      * Changes the name and any of these in one statement; a null leaves that column. A new icon drops an uploaded
      * one's version, as the library's icon is shown again. {@code clearWorkspaceMb} sets the tier's default back.
      */
-    public void changeAgent(String id, String name, String purpose, String icon, String tone, Boolean solo,
-            Integer workspaceMb, boolean clearWorkspaceMb) throws SQLException {
+    public void changeAgent(String id, String name, String purpose, String icon, String tone, String color,
+            Boolean solo, Integer workspaceMb, boolean clearWorkspaceMb) throws SQLException {
         update("UPDATE agents SET name = COALESCE(?, name), purpose = COALESCE(?, purpose), icon = COALESCE(?, icon),"
                 + " png_version = CASE WHEN ? IS NULL THEN png_version ELSE NULL END, tone = COALESCE(?, tone),"
-                + " solo = COALESCE(?, solo), workspace_mb = CASE WHEN ? THEN NULL ELSE COALESCE(?, workspace_mb) END"
-                + " WHERE id = ?", s -> {
+                + " color = COALESCE(?, color), solo = COALESCE(?, solo),"
+                + " workspace_mb = CASE WHEN ? THEN NULL ELSE COALESCE(?, workspace_mb) END WHERE id = ?", s -> {
                     s.setString(1, name);
                     s.setString(2, purpose);
                     s.setString(3, icon);
                     s.setString(4, icon);
                     s.setString(5, tone);
+                    s.setString(6, color);
                     if (solo == null) {
-                        s.setNull(6, Types.INTEGER);
+                        s.setNull(7, Types.INTEGER);
                     } else {
-                        s.setInt(6, solo ? 1 : 0);
+                        s.setInt(7, solo ? 1 : 0);
                     }
-                    s.setInt(7, clearWorkspaceMb ? 1 : 0);
-                    setInt(s, 8, workspaceMb);
-                    s.setString(9, id);
+                    s.setInt(8, clearWorkspaceMb ? 1 : 0);
+                    setInt(s, 9, workspaceMb);
+                    s.setString(10, id);
                 });
     }
 
@@ -238,6 +287,11 @@ public final class TeamStore {
                     "DELETE FROM memories WHERE agent_id = ?", "DELETE FROM thread_summaries WHERE agent_id = ?",
                     "DELETE FROM approvals WHERE agent_id = ?", "DELETE FROM run_marks WHERE agent_id = ?",
                     "DELETE FROM run_plans WHERE agent_id = ?", "DELETE FROM workspace_marks WHERE agent_id = ?",
+                    "DELETE FROM run_calls WHERE agent_id = ?",
+                    // Its runs' checkpoints (durable runs): their steps, results and waits, then the runs.
+                    "DELETE FROM run_steps WHERE run_id IN (SELECT run_id FROM runs WHERE agent_id = ?)",
+                    "DELETE FROM run_results WHERE run_id IN (SELECT run_id FROM runs WHERE agent_id = ?)",
+                    "DELETE FROM run_waits WHERE agent_id = ?", "DELETE FROM runs WHERE agent_id = ?",
                     "DELETE FROM links WHERE from_id = ? OR to_id = ?", "DELETE FROM timers WHERE agent_id = ?",
                     "DELETE FROM agents WHERE id = ? AND role = 'staff'")) {
                 try (PreparedStatement delete = connection.prepareStatement(sql)) {

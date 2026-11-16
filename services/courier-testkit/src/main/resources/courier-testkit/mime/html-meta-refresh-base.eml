@@ -1,0 +1,10 @@
+From: Bank Notices <notices@bank.example>
+To: me@desk.example
+Date: Fri, 13 Nov 2026 10:00:00 +0000
+Subject: Statement ready
+Message-ID: <html-meta-refresh-base@corpus.example>
+MIME-Version: 1.0
+X-Corpus-Note: HTML with a meta refresh to another site and a base href that rewrites relative links
+Content-Type: text/html; charset=utf-8
+
+<html><head><meta http-equiv="refresh" content="0; url=https://redirect.example/"><base href="https://base.example.org/"><link rel="stylesheet" href="https://css.example.net/s.css"></head><body><p>Your statement is ready.</p><p><a href="account/statement">Open it</a> or <img src="logo.png" alt="logo"></p></body></html>

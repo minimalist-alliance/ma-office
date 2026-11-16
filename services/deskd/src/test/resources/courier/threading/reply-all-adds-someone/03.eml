@@ -1,0 +1,12 @@
+From: Carol <carol@example.net>
+To: me@gmail.example
+Cc: dana@example.com
+Subject: Re: Trip
+Date: Wed, 11 Nov 2026 10:00:00 +0000
+Message-ID: <t3@example.net>
+In-Reply-To: <t2@example.com>
+References: <t1@gmail.example> <t2@example.com>
+MIME-Version: 1.0
+Content-Type: text/plain; charset=utf-8
+
+Hello.

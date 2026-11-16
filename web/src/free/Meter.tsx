@@ -36,7 +36,7 @@ function Panel({ id, t, now }: { id: string; t: BrowserTime; now: number }) {
   // Asked when the panel opens (as the bandwidth panel's Maia line is), and nothing where she isn't open to the member.
   const trial = trialLine(readTrial(useMaiaState()?.trial), { now });
   return (
-    <div className="bw-panel free-panel" id={id} data-testid="free-meter-panel">
+    <div className="bw-panel free-panel ma-glass" id={id} data-testid="free-meter-panel">
       <p className="bw-title">Browser time</p>
       <div className="bw-row">
         <div className="bw-head">
@@ -145,7 +145,7 @@ function MeterRing({ bar, covered = false }: { bar: boolean; covered?: boolean }
       <button
         ref={btnRef}
         type="button"
-        className={bar ? 'bw-btn' : 'free-ring-btn'}
+        className={bar ? 'bw-btn ma-glass' : 'free-ring-btn'}
         aria-label={meterLabel(t, { now })}
         aria-expanded={!!open}
         aria-controls={open ? panelId : undefined}

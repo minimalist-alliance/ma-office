@@ -25,9 +25,12 @@ type Hook = { __maDeskMock: { sleep(deskId: string): void }; __maDesk: { camera:
 /** Which keys each state shows. `within` is the key a key is looked for inside; `list` takes one or more. */
 interface Check { key: string; within?: string; list?: true }
 const STATES = {
-  office: [{ key: 'office.shell' }, { key: 'office.desk', list: true }, { key: 'office.desk.kind', list: true }, { key: 'office.tile', list: true }, { key: 'office.home' }, { key: 'office.desknav' }],
+  office: [{ key: 'office.shell' }, { key: 'office.desk', list: true }, { key: 'office.desk.kind', list: true }, { key: 'office.tile', list: true }, { key: 'office.tile.face', list: true }, { key: 'office.home' }, { key: 'office.desknav' }],
   noDesks: [{ key: 'office.notice' }],
+  closeHold: [{ key: 'office.notice.closeHold' }],
   window: [{ key: 'office.window', list: true }, { key: 'office.window.close', within: 'office.window' }],
+  // An app's zoom (ADR 0055): the button in the window's head, and its popout open.
+  appZoom: [{ key: 'office.app.zoom', within: 'office.window' }, { key: 'office.app.zoom.slider', within: 'office.window' }, { key: 'office.app.zoom.reset', within: 'office.window' }],
   openTile: [{ key: 'office.opentile', list: true }],
   deskMenu: [{ key: 'office.menu.desk' }, { key: 'office.menu.apps', within: 'office.menu.desk' }],
   sheet: [
@@ -39,6 +42,9 @@ const STATES = {
   installed: [{ key: 'office.apps.open', within: 'office.apps.sheet' }, { key: 'office.apps.remove', within: 'office.apps.sheet' }],
   asleep: [{ key: 'office.apps.empty', within: 'office.apps.sheet' }],
   bible: [{ key: 'bible.frame' }],
+  // The Browser bar's Open on this device (on the tab's own address) and its line when the desk refuses an address.
+  browserBar: [{ key: 'office.browser.openhere', within: 'office.window' }],
+  browserNotice: [{ key: 'office.browser.notice', within: 'office.window' }],
   account: [
     { key: 'office.account' },
     { key: 'office.account.dialog' },
@@ -54,7 +60,29 @@ const STATES = {
     { key: 'office.browser.tab', within: 'office.window', list: true },
     { key: 'office.browser.tab.title', within: 'office.browser.tab' },
   ],
-  browserSimple: [{ key: 'office.browser.simple', within: 'office.window' }],
+  browserSimple: [{ key: 'office.browser.simple', within: 'office.window' }, { key: 'office.browser.full', within: 'office.window' }],
+  // The mark's menu, open, with every row (each row's own sel is already inside the menu).
+  markMenu: [
+    { key: 'office.mark' },
+    { key: 'office.mark.menu' },
+    { key: 'office.mark.alldesks' },
+    { key: 'office.mark.forums' },
+    { key: 'office.mark.help' },
+    { key: 'office.mark.account' },
+    { key: 'office.mark.billing' },
+    { key: 'office.mark.privacy' },
+    { key: 'office.mark.terms' },
+    { key: 'office.mark.guidelines' },
+  ],
+  // The office tour (ADR 0056) on a first visit, then its row in the mark's menu.
+  tour: [
+    { key: 'office.tour' },
+    { key: 'office.tour.next', within: 'office.tour' },
+    { key: 'office.tour.skip', within: 'office.tour' },
+    { key: 'office.tour.close', within: 'office.tour' },
+    { key: 'office.tour.off', within: 'office.tour' },
+  ],
+  markTour: [{ key: 'office.mark.tour' }],
 } satisfies Record<string, Check[]>;
 
 const sel = (key: string): string => {
@@ -91,7 +119,7 @@ async function front(page: Page): Promise<void> {
   const desk = page.locator(`[id="proxy-${PERSONAL}"]`);
   await desk.focus();
   await desk.evaluate((e) => (e as HTMLButtonElement).click());
-  await expect(page.getByRole('button', { name: 'Your office, show all desks' })).toBeVisible();
+  await expect(page.locator('.home-mark-btn[data-home]')).toBeVisible();
   await settled(page);
 }
 
@@ -131,6 +159,41 @@ test('the office: desks, tiles, the home mark and the desk switch with a desk in
   await pressTile(page, 'notebook');
   await expect(page.getByTestId('window-notebook')).toBeVisible();
   await resolves(page, STATES.window);
+  await page.locator(sel('office.app.zoom')).click();
+  await expect(page.locator(sel('office.app.zoom.slider'))).toBeFocused();
+  await resolves(page, STATES.appZoom);
+});
+
+test('the mark and its menu, every row there (client-config with the links Platform is asked for), with a desk in front', async ({ page, request }) => {
+  await office(page, request, {
+    configExtra: {
+      links: {
+        forums: 'https://forums.localhost/',
+        help: 'https://localhost/help',
+        privacy: 'https://localhost/privacy',
+        terms: 'https://localhost/terms',
+        guidelines: 'https://localhost/guidelines',
+        billing: 'https://platform.localhost/billing',
+      },
+    },
+  });
+  await front(page);
+  await page.locator(sel('office.mark')).focus();
+  await page.keyboard.press('Enter');
+  await resolves(page, STATES.markMenu);
+  // office.home is the same button while a click goes home.
+  await expect(page.locator(sel('office.home'))).toHaveAttribute('aria-label', 'Minimalist Alliance');
+});
+
+test('the office tour on a first visit (the harness has it off unless asked), then Take the tour in the mark menu', async ({ page, request }) => {
+  await office(page, request, { walkthrough: null });
+  await expect(page.locator(sel('office.tour'))).toBeVisible();
+  await resolves(page, STATES.tour);
+  await page.locator(sel('office.tour.skip')).click();
+  await expect(page.locator(sel('office.tour'))).toHaveCount(0);
+  await page.locator(sel('office.mark')).focus();
+  await page.keyboard.press('Enter');
+  await resolves(page, STATES.markTour);
 });
 
 test('the office\'s notice with no desks', async ({ page, request }) => {
@@ -139,12 +202,17 @@ test('the office\'s notice with no desks', async ({ page, request }) => {
   await resolves(page, STATES.noDesks);
 });
 
+test('the close hold\'s notice, while /v1/me carries it', async ({ page, request }) => {
+  await office(page, request, { notices: [{ kind: 'close_hold_cancelled', at: '2026-11-14T09:30:00.000Z', requestedAt: null }] });
+  await resolves(page, STATES.closeHold);
+});
+
 test('a tile at the open size, live', async ({ page, request }) => {
   const span = (n: number): number => n * 76 + (n - 1) * 16;
   const item = (app: string, x: number, w = 76, h = 76) => ({ id: `${PERSONAL}:${app}`, app, x, y: 24, w, h });
   const desk = {
     x: 0, y: 0, w: 24 + span(6) + 16 + 4 * 92 + 24, h: 24 + span(5) + 44 + 16,
-    items: [item('notebook', 24, span(6), span(5)), item('chat', 24 + span(6) + 16), item('browser', 24 + span(6) + 108), item('agent', 24 + span(6) + 200)],
+    items: [item('notebook', 24, span(6), span(5)), item('courier', 24 + span(6) + 16), item('browser', 24 + span(6) + 108), item('agent', 24 + span(6) + 200)],
   };
   await office(page, request, { fleet: [fleet[0]], layoutDocs: { 'u-test': { version: 1, updatedAt: '2026-11-11T00:00:00Z', layout: { schemaVersion: 2, desks: { [PERSONAL]: desk }, z: [PERSONAL] } } } });
   await settled(page);
@@ -209,4 +277,25 @@ test('the Browser\'s Simplified switch, where the desk serves that view', async 
   await pressTile(page, 'browser');
   await expect(page.getByTestId('browser-simple-on')).toBeVisible();
   await resolves(page, STATES.browserSimple);
+});
+
+test('the Browser\'s Open on this device on the tab\'s own address, and the bar\'s line when the desk refuses one', async ({ page, request }) => {
+  await office(page, request);
+  await front(page);
+  await pressTile(page, 'browser');
+  await expect(page.getByTestId('window-browser')).toBeVisible();
+  await expect.poll(() => page.getByTestId('browser-video').evaluate((v: HTMLVideoElement) => v.videoWidth)).toBeGreaterThan(0);
+  await resolves(page, STATES.browserBar);
+  // The desk refuses the next address as deskd refuses one its policy blocks (`forbidden`, `blocked`): the bar says so
+  // for 5 s, and keeps what was typed.
+  await page.evaluate(() => {
+    const mock = (window as unknown as { __maDeskMock: { refuse: Record<string, string>; refuseDetails: Record<string, unknown> } }).__maDeskMock;
+    mock.refuse['browser.tab.navigate'] = 'forbidden';
+    mock.refuseDetails = { reason: 'blocked' };
+  });
+  const address = page.getByTestId('browser-address');
+  await address.fill('https://blocked.example/');
+  await address.press('Enter');
+  await expect(page.getByTestId('browser-notice')).toHaveText('This desk blocks that address.');
+  await resolves(page, STATES.browserNotice);
 });

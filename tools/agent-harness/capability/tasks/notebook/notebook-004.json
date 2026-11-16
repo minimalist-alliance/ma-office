@@ -1,0 +1,77 @@
+{
+  "id": "notebook-004",
+  "area": "notebook",
+  "title": "Create a page in a tab",
+  "prompt": "Create a page called Weekend plan in my Harness tab: Saturday hike, Sunday brunch with Jo.",
+  "setup": {
+    "notebook": [
+      {
+        "tab": "Harness",
+        "title": "Inbox",
+        "markdown": "# Inbox\n\nThings to sort later.\n"
+      }
+    ]
+  },
+  "approve": "all",
+  "checks": [
+    {
+      "kind": "page",
+      "tab": "Harness",
+      "title": "Weekend plan",
+      "contains": [
+        "hike",
+        "brunch with Jo"
+      ]
+    },
+    {
+      "kind": "untrusted",
+      "value": false
+    },
+    {
+      "kind": "cards",
+      "tools": [
+        "notebook_write"
+      ]
+    }
+  ],
+  "policy": {
+    "tools": [
+      "notebook_list",
+      "notebook_write"
+    ]
+  },
+  "standIn": [
+    {
+      "calls": [
+        {
+          "name": "notebook_list",
+          "input": {}
+        }
+      ]
+    },
+    {
+      "calls": [
+        {
+          "name": "notebook_write",
+          "input": {
+            "op": "create",
+            "new": {
+              "tabId": {
+                "$re": {
+                  "step": 0,
+                  "call": 0,
+                  "pattern": "\"tabId\":\"([^\"]+)\",\"title\":\"Harness\""
+                }
+              },
+              "title": "Weekend plan"
+            },
+            "markdown": "- Saturday: hike\n- Sunday: brunch with Jo"
+          }
+        }
+      ]
+    },
+    {
+      "text": "Made the page Weekend plan in your Harness tab."
+    }
+  ]
+}

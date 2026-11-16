@@ -53,7 +53,8 @@ test('a key that is plainly wrong never leaves the field', async ({ page }) => {
   // Another provider's key names that provider (deskd API.md §11's `provider_mismatch`, caught here first).
   await field.fill('sk-proj-TEST-0000000000-openai-style');
   await page.getByTestId('key-submit').click();
-  await expect(page.getByTestId('key-error')).toHaveText('That’s a key from OpenAI. Pick OpenAI above and paste it again.');
+  // OpenAI and Moonshot AI share `sk-` (Nov 15), so it names both.
+  await expect(page.getByTestId('key-error')).toHaveText('That’s a key from OpenAI or Moonshot AI. Pick OpenAI or Moonshot AI above and paste it again.');
   await expect(field).toHaveValue('');
   await expect(field).toBeFocused();
   // A key with no known prefix says what this provider's start with.

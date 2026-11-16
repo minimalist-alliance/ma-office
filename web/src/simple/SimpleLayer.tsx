@@ -15,7 +15,6 @@ import { filtersOf, FilterRow, SiteRow } from './SiteRow';
 import { isFront, outline } from './outline';
 import { linkSource, type SimpleSource } from './source';
 import type { SimpleUi } from './ui';
-import '@fontsource-variable/nunito';
 import simpleCssUrl from './simple.css?url';
 
 // The bar's switch and line ride in this chunk (`BrowserBar.tsx` loads them from here).

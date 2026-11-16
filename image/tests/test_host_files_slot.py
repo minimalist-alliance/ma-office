@@ -41,7 +41,7 @@ class ClonePolicy(unittest.TestCase):
 
     def setUp(self):
         self.m = load_file("mounts_h5", LIB / "mounts.py")
-        self.vol = {"desk": "dir", "files": "dir", "agent": "dir", "notebook": "dir", "rtc": "dir"}
+        self.vol = {"desk": "dir", "files": "dir", "courier": "dir", "keys": "dir", "agent": "dir", "notebook": "dir", "rtc": "dir"}
         self.link_errno = "ENOTDIR"
         self.opened, self.closed, self.n = [], [], [100]
 
@@ -69,16 +69,16 @@ class ClonePolicy(unittest.TestCase):
     def run_it(self):
         return self.m.clone_dirs(3, self.m.SERVICES, lambda svc: True)
 
-    def test_deskd_gets_desk_and_files(self):
+    def test_deskd_gets_desk_and_files(self):   # and Courier's two (courier-slot), as test_host_courier.py checks them
         trees, refused, skipped = self.run_it()
-        self.assertEqual([s for s, _ in trees["deskd"]], ["desk", "files"])
+        self.assertEqual([s for s, _ in trees["deskd"]], ["desk", "files", "courier", "keys"])
         self.assertEqual((refused, skipped), ([], {}))
         self.assertTrue(all(r == self.m.RESOLVE for _p, r in self.opened), "every directory resolved in the volume's root, no links, no crossings")
 
     def test_a_volume_from_before_with_no_files_skips_only_that_mount(self):
         del self.vol["files"]
         trees, refused, skipped = self.run_it()
-        self.assertEqual([s for s, _ in trees["deskd"]], ["desk"])
+        self.assertEqual([s for s, _ in trees["deskd"]], ["desk", "courier", "keys"])
         self.assertNotIn("deskd", refused)
         self.assertEqual(skipped, {"deskd": {"files": "ENOENT"}})
 
@@ -87,7 +87,7 @@ class ClonePolicy(unittest.TestCase):
             with self.subTest(what=what, errno=code):
                 self.vol["files"], self.link_errno = what, link_errno
                 trees, refused, skipped = self.run_it()
-                self.assertEqual([s for s, _ in trees["deskd"]], ["desk"])
+                self.assertEqual([s for s, _ in trees["deskd"]], ["desk", "courier", "keys"])
                 self.assertEqual((refused, skipped), ([], {"deskd": {"files": code}}))
 
     def test_deskd_without_its_desk_is_refused_as_before(self):
@@ -142,7 +142,7 @@ class SpecPlaceholders(unittest.TestCase):
         for svc in m.SERVICES:
             placeholders[svc] = sorted(x["destination"] for x in m.spec(2, svc)["mounts"]
                                        if x["destination"].startswith("/data/") and x["type"] == "tmpfs" and "mode=000" in x["options"])
-        self.assertEqual(placeholders["deskd"], ["/data/desk", "/data/files"])
+        self.assertEqual(placeholders["deskd"], ["/data/courier", "/data/desk", "/data/files", "/data/keys"])   # Courier's two: courier-slot
         self.assertEqual(placeholders["desk-agent"], ["/data/agent"])
         self.assertEqual(placeholders["desk-data"], [])
         self.assertFalse([s for s, p in placeholders.items() if s != "deskd" and "/data/files" in p])

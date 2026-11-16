@@ -67,5 +67,5 @@ Colors are CSS color strings. An app with its own ink (the office's `APP_INKS`, 
 ## Limits the Desk app keeps
 
 - The view's three files total at most 512 KiB.
-- **The frame budget:** a view must not hold the office's main thread. Three frames over 50 ms in 10 s while the view shows and the office is otherwise idle, and the view is unloaded with "Paused to keep your desk smooth" and Resume. Keep work in small pieces.
+- **The frame budget:** a view must not hold the office's main thread. Where the view's frame shares the office's thread (Chrome on a computer gives it its own, where it's never paused), three frames in 10 s in which the view took over 50 ms, while the office is otherwise idle and after the view's first 2 s, and the view is unloaded with "Paused to keep your desk smooth" and Resume; in browsers without Long Animation Frames, two hangs over 1 s in 30 s. Only the view's own time counts, never the office's. Keep work in small pieces.
 - No pop-ups, notifications or sound outside the window; a notification is the widget's badge, only for something that needs the member.

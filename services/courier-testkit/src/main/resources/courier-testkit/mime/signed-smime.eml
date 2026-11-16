@@ -1,0 +1,44 @@
+From: Finance <finance@example.com>
+To: me@desk.example
+Date: Fri, 13 Nov 2026 10:00:00 +0000
+Subject: Quarterly statement
+Message-ID: <signed-smime@corpus.example>
+MIME-Version: 1.0
+X-Corpus-Note: multipart/signed (S/MIME): multipart/alternative and an smime.p7s attachment
+Content-Type: multipart/signed; protocol="application/pkcs7-signature"; micalg=sha-256; boundary="sig-2"
+
+This is a cryptographically signed message in MIME format.
+
+--sig-2
+Content-Type: multipart/alternative; boundary="alt-3"
+
+--alt-3
+Content-Type: text/plain; charset=utf-8
+
+The quarterly statement is ready for review.
+--alt-3
+Content-Type: text/html; charset=utf-8
+
+<p>The quarterly statement is ready for review.</p>
+--alt-3--
+
+--sig-2
+Content-Type: application/pkcs7-signature; name="smime.p7s"
+Content-Transfer-Encoding: base64
+Content-Disposition: attachment; filename="smime.p7s"
+Content-Description: S/MIME Cryptographic Signature
+
+MIICvPKJs0nDBb/3jOt0AErhvFOtax5mJqzPLAkfci7Y4znYRaBTGlcqzdbw9MQPKmKFtrnFnjqB
+eKu6vlsOw9wQDXHaFsZoNHBbJ4wS3Y3/sBrrvGqtkOnz9npV7bpdYHADia5bewQUfju4Twyljzx1
+9Pq1huNT5ZUXjqjjbZGCDgENQ4jXRntm3vEehBTV3C/PZbG8xVIITw8TJdRmwjK0YJ+K+z9syX0k
+0LalKqpILp+fXN+7Wg9r+eP4Wx2u6XqnMXIDuLuPZ92XcEuqU+3Hf+vrGXTQyuEaNp+zCKT/uJ1X
+RfRzRID9F9u6ktGQx6RLQIQQwdPZhq3QwvzEzF1WaYI4iRu3nEafbAydFQZXZFNkl2Fenws0uv9m
+5TIDQMn5lu+2xtQOjgpP+7s02s+/JEKyH3Y32CscBH8POQ5082nrrNihe8gsrB65SJg++EWOBmV1
+P/ffrs+ircP4r2O5IHauxYhA4Y6Br9Y0PfxYuU+Nwauev7Wp6yRYzGilu7NIl6yqyxWoJTOAU/gu
+n1fgdZAid2BkjD5sXfWe6kP3yOHux7iLZHr4rbXMnEUMJpXHlPZN16BbhNjTGkgZ5zudfVFrPsL7
+nS9iSnTCg7tgQGo3eoUR4zf6Xh3fmgv8xLfMKyfozAS+1EgMqyWNn3CZ0I/JKReSupKxKj8VOkgg
+TERVWrRyzglKkOrpp1WABZLd3mlWCrW3lTD6vtS2phSaBJihRx2iemg+LCFZ3K6JF99wv6KsGqH1
+aHAiMPX8U2fvx6xhRVbx5U86Z9JtWoMkp/DmLt7IZlZbSStVplcWd/H4R1Et63VM/UqMfoWAKMlT
+iw/aFeZAZt5dHwkEPkjOmWot4CxZlyNTzw2rBU03KAWIvYabtzxW4DHf0L6PuTc2p4x1poP19K4C
+PSvMA1B14P/JxSIvUORW5Z+YeBg=
+--sig-2--

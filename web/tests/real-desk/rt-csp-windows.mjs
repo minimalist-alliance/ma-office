@@ -2,7 +2,7 @@
 // app window on the real test desk as desk-1, and counts CSP violations and console problems. The desk must be
 // running already: nothing here is allowed to wake it, and opening an app on a stopped desk would.
 import { mkdirSync } from 'node:fs';
-import { ALLOWED, events, getDesk, log, openSession, S, shot, shutdown, wait, waitPanel } from './rt-lib.mjs';
+import { ALLOWED, closeTour, events, getDesk, log, openSession, S, shot, shutdown, wait, waitPanel } from './rt-lib.mjs';
 
 const SHOTS = new URL('../../test-results/real-desk/rt-shots-csp/', import.meta.url).pathname;
 mkdirSync(SHOTS, { recursive: true });
@@ -13,6 +13,8 @@ watchdog.unref();
 await openSession();
 const p = S.page;
 await p.locator(`#proxy-${ALLOWED}`).waitFor({ state: 'attached', timeout: 60_000 });
+// The office tour holds the keyboard while it shows (ADR 0056): closed as a member would, before the first key.
+const tourClosed = await closeTour();
 const desk = await getDesk();
 log('desk', desk.state, desk.phase);
 if (desk.state !== 'running') {
@@ -41,7 +43,7 @@ await wait(1500);
 await shot(SHOTS, 'focused');
 
 const results = [];
-for (const [id, label] of [['chat', 'Chat'], ['notebook', 'Notebook'], ['browser', 'Browser'], ['agent', 'Agent']]) {
+for (const [id, label] of [['courier', 'Courier'], ['notebook', 'Notebook'], ['browser', 'Browser'], ['agent', 'Agent']]) {
   const proxy = p.locator(`[id="proxy-${ALLOWED}:${id}"]`);
   await proxy.focus();
   await p.keyboard.press('Enter');
@@ -61,6 +63,6 @@ for (const [id, label] of [['chat', 'Chat'], ['notebook', 'Notebook'], ['browser
 
 const violations = await p.evaluate(() => window.__violations);
 const consoleProblems = events.filter((e) => e.k === 'console').length;
-log('RESULT', JSON.stringify({ windows: results, violations, consoleProblems }));
+log('RESULT', JSON.stringify({ tourClosed, windows: results, violations, consoleProblems }));
 log(violations.length === 0 && consoleProblems === 0 && results.every((r) => r.opened) ? 'PASS' : 'CHECK');
 await shutdown(violations.length === 0 ? 0 : 1, 'done');

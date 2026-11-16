@@ -1,10 +1,14 @@
 // The Agent app's backend for the demo and the tests: the whole `AgentClient` in memory, with no network and no
 // model. It behaves like the desk in the ways the UI depends on: latency, streaming, limits that refuse before
 // a call, provider badges, an audit log, and a key that's checked and then dropped, keeping only its last 4.
-import { AgentError, type AgentClient, type Mutation } from '../client/agentClient';
+import { AgentError, type AgentClient, type DeskState, type Mutation } from '../client/agentClient';
 import { uploadInChunks } from '../client/attachUpload';
-import { keyFormatProblem, keyOwner, type KeySecret } from '../client/keySecret';
+import { keyFormatProblem, type KeySecret } from '../client/keySecret';
 import type {
+  AccessApps,
+  AccessAuto,
+  AccessChange,
+  AgentAccess,
   AttachCapsView,
   AttachLimits,
   SentFile,
@@ -17,10 +21,16 @@ import type {
   AgentLink,
   AgentPatch,
   Approval,
+  ApprovalTarget,
+  AutoDone,
   AuditDetail,
   AuditEntry,
   AuditPage,
   ConversationEvent,
+  DeskGrantHalf,
+  DeskHalves,
+  DeskIncomingHalf,
+  DeskOrigin,
   KeyMeta,
   Limit,
   LimitLayer,
@@ -48,8 +58,10 @@ import type {
   WorkspaceView,
 } from '../client/types';
 import { AGENT_ICONS } from '../look/icons';
-import { TONES } from '../look/tones';
+import { TONES, currentTone } from '../look/tones';
+import { LEAD_COLOR, isAgentColor, nextAgentColor } from '../look/colors';
 import { hasHiddenChars, nameKey } from '../model/agents';
+import { plainName } from '../model/deskMessages';
 import { askedWord, doneWord, levelOf, TOLD, toolWords } from '../model/approvals';
 import { extOf, isImageName } from '../model/attachments';
 import { linkProblems } from '../model/links';
@@ -61,6 +73,12 @@ import { DEFAULT_CAPS, DEFAULT_POLICY, DESK_DEFAULTS, MAX_OUTPUT_TOKENS, MODELS,
 import { ASKS, type AskName, type AskSpec } from './asks';
 import { check, cost, estimate, totalTokens, usageView, type LedgerRow, type Price } from './ledger';
 import { cannedReply, chunks } from './replies';
+
+/** A new agent's screen, and what an agent made before the screen could use (section 16). */
+const FRESH_APPS: AccessApps = { notebook: true, files: true, browser: true, courier: false, todos: true };
+const LEGACY_APPS: AccessApps = { notebook: true, files: true, browser: true, courier: false, todos: false };
+const notChosen = (apps: AccessApps, setup: 'new' | 'upgrade' | 'confirm'): AgentAccess => ({ chosen: false, setup, apps: { ...apps }, auto: { notebook: null, files: null, todos: false }, desks: [], incoming: [], updatedAt: null });
+const chosenAccess = (apps: AccessApps, at: number): AgentAccess => ({ chosen: true, setup: null, apps: { ...apps }, auto: { notebook: null, files: null, todos: false }, desks: [], incoming: [], updatedAt: at });
 
 export interface MockOptions {
   fixture?: FixtureName;
@@ -84,6 +102,38 @@ export interface MockOptions {
   zoneAudit?: boolean;
   /** The tier's values, over multi-agent.md section 2's built-in defaults: `{agentCap: 3}` to reach the cap quickly. */
   caps?: Partial<AgentCaps>;
+  /** This desk's id, for the envelopes of messages between desks (W6). Unset: `d-mock`. */
+  deskId?: string;
+  /**
+   * The member's MA credits are usable (API.md §24): an `agent.create` with no key runs on them (`ma-credits`, model `auto`).
+   * Unset: none, so a create with no key waits for one, and one with `ifRunnable` is refused `cant_run`.
+   */
+  credits?: boolean;
+  /**
+   * The setup screen (draft ADR section 16): `new` has every agent the fixture starts with waiting for its screen, `upgrade`
+   * as agents made before the screen existed (Notebook, Files and Browser on). Unset: they've all been set up, as on a desk
+   * whose member saved them. An agent made here always waits for its screen.
+   */
+  setup?: 'new' | 'upgrade';
+}
+
+/**
+ * One call a mock run makes without asking, under the member's setting for the agent (deskd API.md section 18, "Done without
+ * asking"): for the demo and the tests. What its undo answers is the desk's: taken back, or refused as the member having changed
+ * it since (`changed`, with `versionId` for a Notebook edit) or the page being in the Trash already.
+ */
+export interface UnaskedSpec {
+  tool: string;
+  payload: Record<string, unknown>;
+  target?: ApprovalTarget | null;
+  /** The switch's group: `notebook`, `files` or `todos`. */
+  group: string;
+  /** The switch's place when it ran. */
+  place?: { folder?: string; tabId?: string };
+  /** It ran and failed, with this word. */
+  fails?: string;
+  /** Its undo is refused, as the desk would. */
+  undo?: { reason: 'changed' | 'trashed'; versionId?: string };
 }
 
 interface Run {
@@ -111,6 +161,8 @@ interface Run {
   /** S-14: the calls this run asks about once its words are out, and then the ids it waits on. */
   asks?: AskSpec[];
   waiting?: string[];
+  /** Calls it makes without asking as it ends, under a switch the member turned on. */
+  unasked?: UnaskedSpec[];
 }
 
 /** A tool call running in the mock: the wire's call, what it answers, and its timer. */
@@ -163,6 +215,70 @@ const kindOf = (name: string): string => extOf(name) || (isImageName(name) ? 'im
 const hex = (b: ArrayBuffer): string => [...new Uint8Array(b)].map((x) => x.toString(16).padStart(2, '0')).join('');
 const clone = <T>(v: T): T => structuredClone(v);
 
+// ----- W6's mock desk side (messages between the member's desks)
+type EnvelopeKind = 'offer' | 'accept' | 'msg' | 'answer' | 'revoke';
+/** One row of a desk's outbox. `agentId` is the agent here it's for: its sender, or the one that answers. */
+interface OutboxRow {
+  id: string;
+  toDeskId: string;
+  grantId: string;
+  agentId: string;
+  kind: EnvelopeKind;
+  seq: number;
+  sentAt: number;
+  envelope: string;
+  done: boolean;
+  outcome: string | null;
+  reason: string | null;
+}
+/** One line of topic `agent.desks.outbox`: how many wait for a desk, never what. */
+export interface OutboxPending {
+  toDeskId: string;
+  count: number;
+  oldestAt: number;
+}
+/** Every mock desk is the same member's. */
+const MOCK_ACCOUNT = 'acct-mock-member';
+const DESK_MESSAGES_A_DAY = 20;
+/** Unique across desks, as an envelope's id and a grant's must be: a desk drops one it has by id. */
+const randomId = (prefix: string): string => {
+  const b = new Uint8Array(16);
+  crypto.getRandomValues(b);
+  return `${prefix}-${[...b].map((x) => BASE32[x % 32]).join('')}`;
+};
+function outboxPending(rows: readonly OutboxRow[]): OutboxPending[] {
+  const by = new Map<string, OutboxPending>();
+  for (const r of rows) {
+    if (r.done) continue;
+    const p = by.get(r.toDeskId);
+    if (p) p.count += 1;
+    else by.set(r.toDeskId, { toDeskId: r.toDeskId, count: 1, oldestAt: r.sentAt });
+  }
+  return [...by.values()];
+}
+/** The tool's result when no answer comes within the wait (deskd API.md section 18). */
+const sentText = (desk: string): string => `Sent. It reaches ${desk} when your office is open and ${desk} is running, and the answer will come to this thread.`;
+/** A run waiting for its answer from another desk. */
+interface DeskWait {
+  agentId: string;
+  runMessageId: string;
+  /** The other desk's name, from this desk's half. */
+  toDesk: string;
+  timer: ReturnType<typeof setTimeout>;
+}
+
+/** A waiting approval a mock office seeds with a known id (`seedApproval`). */
+export interface ApprovalSeed {
+  id: string;
+  agentId: string;
+  tool: string;
+  risk: Approval['risk'];
+  title: string;
+  payload: Record<string, unknown>;
+  target?: Approval['target'];
+  expiresAt: number;
+}
+
 export class MockAgentClient implements AgentClient {
   private readonly latency: number;
   private readonly streamMs: number;
@@ -177,7 +293,7 @@ export class MockAgentClient implements AgentClient {
   private auditTail: Promise<void> = Promise.resolve();
   private head = '00'.repeat(32);
   private runs = new Map<string, Run>();
-  private agentWatchers = new Set<(a: Agent[], caps: AgentCaps | null) => void>();
+  private agentWatchers = new Set<(a: Agent[], caps: AgentCaps | null, desk?: DeskState) => void>();
   private readonly capValues: AgentCaps;
   /** Each agent's workspace: path to text and when it changed. */
   private files: Record<string, Map<string, { text: string; modifiedAt: number }>> = {};
@@ -195,12 +311,19 @@ export class MockAgentClient implements AgentClient {
   private live = new Map<string, Live>();
   private toolWatchers = new Set<(e: ToolsEvent) => void>();
   private memories: Record<string, MemoryLine[]> = {};
+  /** Each agent's access (section 16), and its send halves to other desks. */
+  private accessBy = new Map<string, AgentAccess>();
+  // Auto-approve (API.md section 18, "Done without asking"): refusals an undo answers, and each undo by its `idem`.
+  private undoRefusals = new Map<string, NonNullable<UnaskedSpec['undo']>>();
+  private undos = new Map<string, Approval | AgentError>();
   private counter = 0;
   /** `agent.attach.put`'s files, by upload id: sizes only, as the real desk's are memory the mock doesn't need. */
   private staged = new Map<string, Staged>();
   private attachCapValues: AttachLimits = { ...ATTACH_CAPS };
   readonly deskName: string;
+  readonly deskId: string;
   private readonly keysLast: boolean;
+  private readonly credits: boolean;
   private readonly zoneAudit: boolean;
   /** Keys with a row and nothing behind it. */
   private readonly lost = new Set<string>();
@@ -216,7 +339,9 @@ export class MockAgentClient implements AgentClient {
     this.now = opts.now ?? Date.now;
     const s = seed(opts.fixture ?? 'ready', this.now());
     this.deskName = opts.deskName ?? s.deskName;
+    this.deskId = opts.deskId ?? 'd-mock';
     this.keysLast = opts.keysLast ?? false;
+    this.credits = opts.credits ?? false;
     this.zoneAudit = opts.zoneAudit ?? false;
     if (opts.account) this.setAccount(opts.account);
     this.capValues = { ...DEFAULT_CAPS, ...opts.caps };
@@ -235,6 +360,7 @@ export class MockAgentClient implements AgentClient {
     for (const id of Object.keys(this.threads)) this.seqs[id] = (this.threads[id] ?? []).length;
     for (const k of s.keys) this.record('user', 'key.add', `key:${k.keyId}`, `provider:${k.provider}`, null, k.createdAt);
     this.memories = s.memories ?? {};
+    for (const a of this.agents) this.accessBy.set(a.id, opts.setup ? notChosen(opts.setup === 'upgrade' ? LEGACY_APPS : FRESH_APPS, opts.setup) : chosenAccess(FRESH_APPS, at - HOUR));
     if (opts.fixture === 'tools') this.seedToolsAudit();
     for (const w of s.waiting ?? []) this.seedWaiting(w);
   }
@@ -266,14 +392,112 @@ export class MockAgentClient implements AgentClient {
     if (a) this.setApproval({ ...a, payload: { ...(a.payload ?? {}), url: 'https://evil.example.net/' } });
   }
 
+  /**
+   * A waiting approval with a known id, its hash made as desk-agent makes it: for a mock office's own papers about it (Maia's
+   * decision tray). Nothing else changes. For tests and the mock.
+   */
+  seedApproval(seed: ApprovalSeed): Promise<void> {
+    this.seeding = this.seeding.then(() => this.seedOne(seed));
+    return this.seeding;
+  }
+
+  private seeding: Promise<void> = Promise.resolve();
+
+  private async seedOne(seed: ApprovalSeed): Promise<void> {
+    if (this.approvals.has(seed.id)) return;
+    const runId = `run-${seed.id.slice(3)}`;
+    const sha256 = await sha256Hex(canonicalJson({ v: 1, agentId: seed.agentId, runId, tool: seed.tool, context: 'agent', payload: seed.payload }));
+    const at = this.now();
+    this.approvals.set(seed.id, {
+      id: seed.id,
+      agentId: seed.agentId,
+      runId,
+      messageId: `msg-${seed.id.slice(3)}`,
+      tool: seed.tool,
+      risk: seed.risk,
+      title: seed.title,
+      context: 'agent',
+      target: seed.target ?? null,
+      payload: clone(seed.payload),
+      payloadOmitted: false,
+      payloadBytes: bytesOf(canonicalJson(seed.payload)),
+      before: null,
+      sha256,
+      untrusted: false,
+      origin: { kind: 'member' },
+      state: 'pending',
+      detail: null,
+      createdAt: at,
+      expiresAt: seed.expiresAt,
+      decidedAt: null,
+      decidedBy: null,
+      note: null,
+      result: null,
+    });
+  }
+
   /** An agent asks about one of the presets (`ASKS`) as if its run had just reached the call, with a short reply before it. */
-  ask(agentId: string, name: AskName, text = 'Before I go on, I need your yes for one thing.'): void {
+  ask(agentId: string, name: AskName, text = 'Before I go on, I need your yes for one thing.', over: Partial<AskSpec> = {}): void {
     const a = this.agent(agentId);
     const at = this.now();
     const runId = this.id('run');
     const reply: Message = { id: this.id('msg'), role: 'assistant', text, at, runId, ...(a.binding ? { badge: { provider: a.binding.provider, providerName: a.binding.providerName, model: a.binding.model } } : {}), state: 'streaming' };
     this.putMessage(agentId, reply);
-    this.seedWaiting({ agentId, messageId: reply.id, runId, ask: name, at });
+    this.seedWaiting({ agentId, messageId: reply.id, runId, ask: name, at, spec: { ...ASKS[name], ...over } });
+  }
+
+  /**
+   * A run that did these without asking, under the member's setting for the agent, ends now: its approval rows (`decidedBy:
+   * "auto"`), their chips, the reply's `auto` and the audit's rows, as a desk sends them (API.md section 18, "Done without
+   * asking"). `origin` is a run the member didn't start (a timer's): the rail counts what it did until the thread is seen.
+   */
+  async unasked(agentId: string, specs: readonly UnaskedSpec[], opts: { text?: string; origin?: { kind: 'timer'; timerId: string; label: string } } = {}): Promise<{ messageId: string; approvalIds: string[] }> {
+    const a = this.agent(agentId);
+    const at = this.now();
+    const runId = this.id('run');
+    if (opts.origin) this.putMessage(agentId, { id: this.id('msg'), role: 'user', text: 'Write up what changed.', at: at - 2, origin: { kind: 'timer', timerId: opts.origin.timerId, label: opts.origin.label } });
+    const messageId = this.id('msg');
+    const origin: Approval['origin'] = opts.origin ? { kind: 'timer', agentId, timerId: opts.origin.timerId, label: opts.origin.label } : { kind: 'member' };
+    const done = await this.recordUnasked(agentId, runId, messageId, specs, origin, at);
+    this.putMessage(agentId, {
+      id: messageId,
+      role: 'assistant',
+      text: opts.text ?? 'Done. I kept notes as I went.',
+      at: at - 1,
+      runId,
+      ...(a.binding ? { badge: { provider: a.binding.provider, providerName: a.binding.providerName, model: a.binding.model } } : {}),
+      state: 'done',
+      tools: done.chips,
+      auto: done.rows,
+    });
+    if (opts.origin) this.patchAgent(agentId, { autoUnseen: (this.agent(agentId).autoUnseen ?? 0) + done.rows.filter((r) => r.state === 'done').length, unseen: this.agent(agentId).unseen + 1 });
+    return { messageId, approvalIds: done.rows.map((r) => r.approvalId) };
+  }
+
+  /** For tests: the member changed what this call made, so its undo is refused `changed` (with the page from before, for a Notebook edit). */
+  changeUnasked(approvalId: string, versionId?: string): void {
+    this.undoRefusals.set(approvalId, { reason: 'changed', ...(versionId ? { versionId } : {}) });
+  }
+
+  /**
+   * A finished reply with the desk's own fields for its run (API.md section 18: `tools`, `untrusted`, `egressCount`, `plan`), as a
+   * real desk sends it once the run ends: for the run summary's and taint notice's tests and stills.
+   */
+  finishReply(agentId: string, over: Partial<Message> = {}): string {
+    const a = this.agent(agentId);
+    const id = this.id('msg');
+    const reply: Message = {
+      id,
+      role: 'assistant',
+      text: 'Done.',
+      at: this.now(),
+      runId: this.id('run'),
+      ...(a.binding ? { badge: { provider: a.binding.provider, providerName: a.binding.providerName, model: a.binding.model } } : {}),
+      state: 'done',
+      ...over,
+    };
+    this.putMessage(agentId, reply);
+    return id;
   }
 
   /** Everything the mock holds, as JSON. A test searches it for a key it must not find. */
@@ -393,7 +617,9 @@ export class MockAgentClient implements AgentClient {
 
   /** A view of an agent with its workspace quota as it applies: never above the tier's most. */
   private viewOf(a: Agent): Agent {
-    const out: Agent = this.pausedByCap(a.id) ? { ...a, status: 'paused', statusDetail: 'agent_cap' } : a;
+    const paused: Agent = this.pausedByCap(a.id) ? { ...a, status: 'paused', statusDetail: 'agent_cap' } : a;
+    const held = this.accessBy.get(a.id);
+    const out: Agent = { ...paused, setup: held ? held.setup : 'new' };
     if (!out.workspace) return out;
     return { ...out, workspace: { ...out.workspace, quotaBytes: Math.min(out.workspace.quotaBytes, this.capValues.workspaceMaxMb * MB) } };
   }
@@ -431,7 +657,8 @@ export class MockAgentClient implements AgentClient {
   private emitAgents(): void {
     const snapshot = this.agents.map((a) => this.slim(a));
     const caps = this.capsNow();
-    queueMicrotask(() => this.agentWatchers.forEach((fn) => fn(clone(snapshot), clone(caps))));
+    const desk = this.deskState();
+    queueMicrotask(() => this.agentWatchers.forEach((fn) => fn(clone(snapshot), clone(caps), { ...desk })));
   }
 
   private emit(
@@ -517,11 +744,12 @@ export class MockAgentClient implements AgentClient {
     return clone(this.agents.map((a) => this.viewOf(a)));
   }
 
-  watchAgents(onAgents: (agents: Agent[], caps: AgentCaps | null) => void): () => void {
+  watchAgents(onAgents: (agents: Agent[], caps: AgentCaps | null, desk?: DeskState) => void): () => void {
     this.agentWatchers.add(onAgents);
     const snapshot = this.agents.map((a) => this.slim(a));
     const caps = this.capsNow();
-    queueMicrotask(() => this.agentWatchers.has(onAgents) && onAgents(snapshot, caps));
+    const desk = this.deskState();
+    queueMicrotask(() => this.agentWatchers.has(onAgents) && onAgents(snapshot, caps, desk));
     return () => this.agentWatchers.delete(onAgents);
   }
 
@@ -557,27 +785,31 @@ export class MockAgentClient implements AgentClient {
     if (!name || name.length > 24) throw new AgentError('bad_request', { detail: 'name' });
     this.checkName(name);
     this.checkFields(input);
+    // The welcome's helpers: made only if they can run now (a key given, or the member's credits usable), else nothing is made.
+    if (input.ifRunnable === true && !input.keyId && !this.credits) throw new AgentError('precondition_failed', { reason: 'cant_run' });
     if (this.agents.length >= this.capValues.agentCap) throw new AgentError('precondition_failed', { reason: 'agent_cap' });
     // A create with no size takes the tier's default or what the desk's budget has left, whichever is less, and at least 10 MB.
     const left = this.workspaceLeftMb();
     const quotaMb = input.workspaceMb ?? Math.min(this.capValues.workspaceMb, left);
     if (input.workspaceMb !== undefined ? input.workspaceMb > left : left < 10) throw new AgentError('precondition_failed', { reason: 'disk_budget' });
+    // Both or neither, as desk-agent takes them (`Team.create`): a key alone is refused `model`, a model alone `keyId`.
+    if (!input.keyId !== !input.model) throw new AgentError('bad_request', { detail: input.keyId ? 'model' : 'keyId' });
     const key = input.keyId ? this.keys.find((k) => k.keyId === input.keyId) : undefined;
-    if (input.keyId && !key) throw new AgentError('bad_request', { detail: 'keyId' });
-    const model = key ? (input.model ?? MODELS[key.provider]?.[0]?.id) : undefined;
+    if (input.keyId && !key) throw new AgentError('not_found', { detail: 'key' });
+    const model = key ? input.model : undefined;
     if (key && model && !(MODELS[key.provider] ?? []).some((x) => x.id === model)) throw new AgentError('bad_request', { detail: 'model' });
     const agent: Agent = {
       id: this.agentId(),
       name,
       role: 'staff',
       lead: false,
-      status: key && !this.lost.has(key.keyId) ? 'online' : 'no_key',
-      binding: key && model ? { keyId: key.keyId, provider: key.provider, providerName: key.providerName, model } : null,
+      status: (key && !this.lost.has(key.keyId)) || (!input.keyId && this.credits) ? 'online' : 'no_key',
+      binding: key && model ? { keyId: key.keyId, provider: key.provider, providerName: key.providerName, model } : !input.keyId && this.credits ? { keyId: 'ma-credits', provider: 'ma-credits', providerName: 'Minimalist Alliance', model: 'auto' } : null,
       badgeHidden: false,
       badgeNotice: false,
       unseen: 0,
       purpose: input.purpose ?? '',
-      look: { icon: input.icon ?? 'nodes', tone: input.tone ?? this.unusedTone(), png: null },
+      look: { icon: input.icon ?? 'hat', color: input.color ?? nextAgentColor(this.agents.map((a) => a.look?.color ?? (a.lead ? LEAD_COLOR : null))), tone: input.tone !== undefined ? currentTone(input.tone) : this.unusedTone(), png: null },
       solo: input.solo ?? true,
       links: [],
       workspace: { quotaBytes: Math.max(quotaMb, input.workspaceMb === undefined ? 10 : 0) * MB, usedBytes: 0, sharedWith: [] },
@@ -590,6 +822,8 @@ export class MockAgentClient implements AgentClient {
     this.policies[agent.id] = { ...DEFAULT_POLICY };
     this.files[agent.id] = new Map();
     this.timerLists[agent.id] = [];
+    // A new agent, by hand or from the lead's proposal, waits for its setup screen: nothing it can use is chosen yet.
+    this.accessBy.set(agent.id, notChosen(FRESH_APPS, 'new'));
     this.record(actor, 'agent.create', `agent:${agent.id}`, 'ok');
     return agent;
   }
@@ -609,11 +843,13 @@ export class MockAgentClient implements AgentClient {
   }
 
   /** The fields `agent.create` and `agent.update` share, checked as desk-agent does. */
-  private checkFields(input: { purpose?: unknown; icon?: unknown; tone?: unknown; workspaceMb?: unknown; solo?: unknown }, agentId?: string): void {
+  private checkFields(input: { purpose?: unknown; icon?: unknown; color?: unknown; tone?: unknown; workspaceMb?: unknown; solo?: unknown }, agentId?: string): void {
+    // The lead keeps the Agent app's own colour; any other takes one of the seven.
+    if (input.color !== undefined && !(typeof input.color === 'string' && isAgentColor(input.color) && agentId !== this.agents.find((a) => a.lead)?.id)) throw new AgentError('bad_request', { detail: 'color' });
     if (input.purpose !== undefined && (typeof input.purpose !== 'string' || input.purpose.length > this.capValues.purposeMax)) throw new AgentError('bad_request', { detail: 'purpose' });
     if (typeof input.purpose === 'string' && hasHiddenChars(input.purpose)) throw new AgentError('bad_request', { detail: 'purpose', reason: 'hidden_chars' });
     if (input.icon !== undefined && !(typeof input.icon === 'string' && (ICON_IDS.has(input.icon) || (input.icon === 'png' && !!agentId && !!this.icons[agentId])))) throw new AgentError('bad_request', { detail: 'icon' });
-    if (input.tone !== undefined && !(typeof input.tone === 'string' && TONE_IDS.has(input.tone))) throw new AgentError('bad_request', { detail: 'tone' });
+    if (input.tone !== undefined && !(typeof input.tone === 'string' && TONE_IDS.has(currentTone(input.tone)))) throw new AgentError('bad_request', { detail: 'tone' });
     if (input.solo !== undefined && typeof input.solo !== 'boolean') throw new AgentError('bad_request', { detail: 'solo' });
     const mb = input.workspaceMb;
     if (mb !== undefined && !(typeof mb === 'number' && Number.isInteger(mb) && mb >= 1 && mb <= this.capValues.workspaceMaxMb)) throw new AgentError('bad_request', { detail: 'workspaceMb' });
@@ -636,9 +872,9 @@ export class MockAgentClient implements AgentClient {
     }
     this.checkFields(patch, agentId);
     if (patch.purpose !== undefined) next.purpose = patch.purpose;
-    if (patch.icon !== undefined || patch.tone !== undefined) {
-      const look = a.look ?? { icon: 'nodes', tone: 'graphite', png: null };
-      next.look = { ...look, ...(patch.icon !== undefined ? { icon: patch.icon } : {}), ...(patch.tone !== undefined ? { tone: patch.tone } : {}) };
+    if (patch.icon !== undefined || patch.tone !== undefined || patch.color !== undefined) {
+      const look = a.look ?? { icon: 'hat', tone: 'graphite', png: null };
+      next.look = { ...look, ...(patch.icon !== undefined ? { icon: patch.icon } : {}), ...(patch.color !== undefined ? { color: patch.color } : {}), ...(patch.tone !== undefined ? { tone: currentTone(patch.tone) } : {}) };
     }
     if (patch.solo !== undefined) next.solo = patch.solo;
     if (patch.workspaceMb !== undefined) {
@@ -681,6 +917,7 @@ export class MockAgentClient implements AgentClient {
     delete this.files[agentId];
     delete this.timerLists[agentId];
     delete this.icons[agentId];
+    this.revokeHalvesOf(agentId);
     this.record(actor, 'agent.delete', `agent:${agentId}`, 'ok');
     this.emitAgents();
   }
@@ -755,6 +992,8 @@ export class MockAgentClient implements AgentClient {
     // The real desk checks a missing key and a busy desk before it takes the files, so those leave them staged. A refusal after
     // it has read them (a limit, an agent cap, a file it can't read) has deleted them already.
     if (refusal === 'no_key') throw new AgentError('precondition_failed', { reason: 'no_key' });
+    // Section 16: no run before the member has saved the agent's setup screen.
+    if (!this.accessBy.get(agentId)?.chosen) throw new AgentError('precondition_failed', { reason: 'setup' });
     // API.md section 18: a message to an agent whose run waits on the member is refused until it's answered or stopped.
     if (refusal === 'busy' && [...this.runs.values()].some((r) => r.agentId === agentId && r.waiting)) throw new AgentError('conflict', { reason: 'awaiting_approval' });
     if (refusal === 'busy') throw new AgentError('conflict', { reason: 'busy' });
@@ -777,6 +1016,7 @@ export class MockAgentClient implements AgentClient {
     let refusedWrites: Run['refusedWrites'];
     let asks: AskSpec[] | undefined;
     let tools: ToolChip[] | undefined;
+    let unaskedRun: UnaskedSpec[] | undefined;
     // A provider's failure, by its kind, before anything is said: `demo:free_limit` (with `_at`, when they come back),
     // `demo:rate_limited`, `demo:timeout`, `demo:data_policy`, as desk-agent ends a reply (deskd API.md §11).
     const failing = /demo:(free_limit|rate_limited|timeout|data_policy)(_at)?/i.exec(body);
@@ -797,6 +1037,17 @@ export class MockAgentClient implements AgentClient {
     } else if (/demo:refused/i.test(body)) {
       reply = 'I’m not able to help with that.';
       ends = 'refused';
+    } else if (/\b(keep|write up|take) notes\b/i.test(body)) {
+      // Auto-approve in the demo: a note in Research, done without asking if the member switched that on for this agent
+      // (at setup, in its settings, or with a card's "Don't ask again"), else asked on a card.
+      const unasked = this.unaskedFor(agentId, ASKS.saveNotes);
+      if (unasked) {
+        reply = 'I put my notes on the lamps in Research.';
+        unaskedRun = [unasked];
+      } else {
+        reply = 'I’d like to keep my notes on the lamps in Research.';
+        asks = [ASKS.saveNotes];
+      }
     } else if (/\b(price|prices|shop)\b/i.test(body)) {
       // S-14 in the demo: a tool call that asks. The run's words come first, then the card, then what it says next.
       reply = 'Two review sites both like the Lumen Arc. I’d like to check its price today at the shop.';
@@ -845,7 +1096,7 @@ export class MockAgentClient implements AgentClient {
     }
     const at = this.now();
     const userMsg: Message = { id: this.id('msg'), role: 'user', text: body, at, ...(sent.length ? { attachments: sent } : {}) };
-    const runId = this.begin(agentId, userMsg, reply, { proposals, after, ...(ends ? { ends } : {}), ...(endsDetail ? { endsDetail } : {}), ...(endsResetAt ? { endsResetAt } : {}), ...(refusedWrites ? { refusedWrites } : {}), ...(asks ? { asks } : {}), ...(tools ? { tools } : {}) });
+    const runId = this.begin(agentId, userMsg, reply, { proposals, after, ...(ends ? { ends } : {}), ...(endsDetail ? { endsDetail } : {}), ...(endsResetAt ? { endsResetAt } : {}), ...(refusedWrites ? { refusedWrites } : {}), ...(asks ? { asks } : {}), ...(tools ? { tools } : {}), ...(unaskedRun ? { unasked: unaskedRun } : {}) });
     return { messageId: userMsg.id, runId };
   }
 
@@ -871,7 +1122,7 @@ export class MockAgentClient implements AgentClient {
   }
 
   /** A run: the message that starts it goes in the thread, and the reply streams after it. */
-  private begin(agentId: string, start: Message, reply: string, opts: { proposals?: Proposal[]; after?: Run['after']; ends?: Run['ends']; endsDetail?: string; endsResetAt?: number; refusedWrites?: Run['refusedWrites']; asks?: AskSpec[]; tools?: ToolChip[] } = {}): string {
+  private begin(agentId: string, start: Message, reply: string, opts: { proposals?: Proposal[]; after?: Run['after']; ends?: Run['ends']; endsDetail?: string; endsResetAt?: number; refusedWrites?: Run['refusedWrites']; asks?: AskSpec[]; tools?: ToolChip[]; unasked?: UnaskedSpec[] } = {}): string {
     const a = this.agent(agentId);
     const { keyId, provider, providerName, model } = a.binding!;
     const price = this.price(provider, model);
@@ -900,6 +1151,7 @@ export class MockAgentClient implements AgentClient {
       ...(opts.endsResetAt ? { endsResetAt: opts.endsResetAt } : {}),
       ...(opts.refusedWrites?.length ? { refusedWrites: opts.refusedWrites } : {}),
       ...(opts.asks?.length ? { asks: opts.asks } : {}),
+      ...(opts.unasked?.length ? { unasked: opts.unasked } : {}),
     };
     this.runs.set(runId, run);
     run.timer = setTimeout(() => this.step(run), this.streamMs * 4);
@@ -959,6 +1211,13 @@ export class MockAgentClient implements AgentClient {
     }
     this.record(`agent:${run.agentId}`, 'llm.call', `key:${run.keyId} model:${a.binding?.provider ?? '?'}/${a.binding?.model ?? '?'}`, how === 'done' ? 'ok' : how === 'failed' ? `error:${run.ends ?? 'unavailable'}` : 'error:cancelled', spent);
     this.patchAgent(run.agentId, { status: a.binding ? 'online' : 'no_key', unseen: a.unseen + (how === 'done' ? 1 : 0) });
+    if (how === 'done' && run.unasked?.length) {
+      // What it did without asking, as the desk's rows, chips and the reply's `auto`.
+      void this.recordUnasked(run.agentId, run.runId, run.messageId, run.unasked, { kind: 'member' }, this.now()).then(({ rows, chips }) => {
+        const reply = (this.threads[run.agentId] ?? []).find((x) => x.id === run.messageId);
+        if (reply) this.putMessage(run.agentId, { ...reply, tools: [...(reply.tools ?? []), ...chips], auto: rows });
+      });
+    }
     run.after?.(spent, run.sent, how);
   }
 
@@ -1061,7 +1320,8 @@ export class MockAgentClient implements AgentClient {
   }
 
   async markSeen(agentId: string): Promise<void> {
-    if (this.agent(agentId).unseen) this.patchAgent(agentId, { unseen: 0 });
+    const a = this.agent(agentId);
+    if (a.unseen || a.autoUnseen) this.patchAgent(agentId, { unseen: 0, autoUnseen: 0 });
   }
 
   async listKeys(): Promise<KeyMeta[]> {
@@ -1076,8 +1336,12 @@ export class MockAgentClient implements AgentClient {
     if (!p) throw new AgentError('bad_request', { detail: 'provider' });
     // What deskd does: check the format, then ask the provider's free model list. Here, a key with "revoked" in it
     // stands in for one the provider refuses. Only the last 4 characters are kept.
-    const owner = keyOwner(input.secret, PROVIDERS);
-    const problem = owner && owner.id !== p.id ? 'provider_mismatch' : keyFormatProblem(input.secret, p.keyPrefix);
+    // desk-agent's rule (AgentService.belongsToAnother): the longest prefix that fits decides, and a key is the picked
+    // provider's if that provider is among those with it (Moonshot AI shares OpenAI's `sk-`).
+    const fits = PROVIDERS.filter((x) => x.keyPrefix && input.secret.withPlaintext((k) => k.startsWith(x.keyPrefix)));
+    const longest = Math.max(0, ...fits.map((x) => x.keyPrefix.length));
+    const another = longest > 0 && !fits.some((x) => x.id === p.id && x.keyPrefix.length === longest);
+    const problem = another ? 'provider_mismatch' : keyFormatProblem(input.secret, p.keyPrefix);
     const refused = input.secret.withPlaintext((k) => /revoked/i.test(k));
     // Stand-ins for a desk that can't reach the provider to check the key (its name filter, ADR 0070) and one that can't seal it.
     const unreachable = input.secret.withPlaintext((k) => /unreachable/i.test(k));
@@ -1182,7 +1446,7 @@ export class MockAgentClient implements AgentClient {
 
   // ------------------------------------------------------------ S-14: approvals (API.md section 18), running tools, memory
 
-  private seedWaiting(w: { agentId: string; messageId: string; runId: string; ask: AskName; at: number }): void {
+  private seedWaiting(w: { agentId: string; messageId: string; runId: string; ask: AskName; at: number; spec?: AskSpec }): void {
     const a = this.agent(w.agentId);
     const base = (this.threads[w.agentId] ?? []).find((x) => x.id === w.messageId);
     if (!a.binding || !base) return;
@@ -1201,7 +1465,80 @@ export class MockAgentClient implements AgentClient {
       after: null,
     };
     this.runs.set(run.runId, run);
-    void this.askFor(run, [ASKS[w.ask]], w.at);
+    void this.askFor(run, [w.spec ?? ASKS[w.ask]], w.at);
+  }
+
+  /**
+   * Calls a run made without asking: each an approval row with `decidedBy: "auto"` and its own id, its `approval` event, its chip
+   * and the reply's row, and desk-agent's `tool.call` (`auto:<group>`, no approval) and `approval.auto` audit rows.
+   */
+  private async recordUnasked(agentId: string, runId: string, messageId: string, specs: readonly UnaskedSpec[], origin: Approval['origin'], at: number): Promise<{ rows: AutoDone[]; chips: ToolChip[] }> {
+    const rows: AutoDone[] = [];
+    const chips: ToolChip[] = [];
+    for (const spec of specs) {
+      const sha256 = await sha256Hex(canonicalJson({ v: 1, agentId, runId, tool: spec.tool, context: 'agent', payload: spec.payload }));
+      const b = new Uint8Array(20);
+      crypto.getRandomValues(b);
+      const id = `ap-${[...b].map((x) => BASE32[x % 32]).join('')}`;
+      const words = toolWords(spec.tool);
+      const target = spec.target ?? null;
+      const ok = !spec.fails;
+      const a: Approval = {
+        id,
+        agentId,
+        runId,
+        messageId,
+        tool: spec.tool,
+        risk: 'write',
+        title: words ? words.title(spec.payload, { before: null, target }) : spec.tool,
+        context: 'agent',
+        target,
+        payload: clone(spec.payload),
+        payloadOmitted: false,
+        payloadBytes: bytesOf(canonicalJson(spec.payload)),
+        before: null,
+        sha256,
+        untrusted: false,
+        origin,
+        state: ok ? 'done' : 'failed',
+        detail: null,
+        createdAt: at,
+        expiresAt: at,
+        decidedAt: at,
+        decidedBy: 'auto',
+        note: null,
+        result: ok ? { ok: true, durationMs: 300 } : { ok: false, error: spec.fails ?? 'unavailable' },
+        auto: { group: spec.group, ...(spec.place?.folder ? { folder: spec.place.folder } : {}), ...(spec.place?.tabId ? { tabId: spec.place.tabId } : {}) },
+        undoneAt: null,
+        undoneBy: null,
+      };
+      this.approvals.set(id, a);
+      if (spec.undo) this.undoRefusals.set(id, spec.undo);
+      this.emit(agentId, { type: 'approval', approval: clone(a) });
+      this.record(`agent:${agentId}`, 'tool.call', `tool:${spec.tool} run:${runId} auto:${spec.group}`, ok ? 'ok' : `error:${spec.fails}`, null, at, { agentId, tool: spec.tool, risk: 'write', done: doneWord(spec.tool), asked: askedWord(spec.tool), target: null });
+      this.record(`agent:${agentId}`, 'approval.auto', `tool:${spec.tool} run:${runId} approval:${id} group:${spec.group}`, ok ? 'ok' : `error:${spec.fails}`, null, at);
+      rows.push({ approvalId: id, tool: spec.tool, target, group: spec.group, state: a.state, undoneAt: null });
+      chips.push({ name: spec.tool, summary: doneWord(spec.tool), ok, risk: 'write', auto: spec.group, approval: { id, decision: 'auto' }, target, durationMs: 300, ...(ok ? {} : { reason: spec.fails ?? 'unavailable' }) });
+    }
+    return { rows, chips };
+  }
+
+  /** A run's switch for this call is on: it goes without asking. The first switch that takes it, by the group's place. */
+  private unaskedFor(agentId: string, spec: AskSpec): UnaskedSpec | null {
+    const auto = this.accessBy.get(agentId)?.auto;
+    const p = spec.payload;
+    if (!auto || spec.untrusted) return null;
+    if ((spec.tool === 'files_write' && p['replace'] === false) || spec.tool === 'files_mkdir') {
+      const path = String(p['path'] ?? '');
+      if (!auto.files || !path.startsWith(`${auto.files.folder}/`)) return null;
+      return { tool: spec.tool, payload: p, target: spec.target ?? null, group: 'files', place: { folder: auto.files.folder } };
+    }
+    if (spec.tool === 'notebook_write' && p['op'] === 'create') {
+      const tabId = (p['new'] as { tabId?: unknown } | undefined)?.tabId;
+      if (!auto.notebook || tabId !== auto.notebook.tabId) return null;
+      return { tool: spec.tool, payload: p, target: spec.target ?? null, group: 'notebook', place: { tabId: auto.notebook.tabId } };
+    }
+    return null;
   }
 
   /** A run reaches calls that ask: each gets its card, the reply waits, and the agent says it needs the member. */
@@ -1306,6 +1643,7 @@ export class MockAgentClient implements AgentClient {
   }
 
   async getApproval(approvalId: string): Promise<Approval> {
+    await this.seeding;
     await this.wait();
     const a = this.approvals.get(approvalId);
     if (!a) throw new AgentError('not_found', { detail: 'approval' });
@@ -1348,6 +1686,43 @@ export class MockAgentClient implements AgentClient {
     this.decisions.set(m.idem, next);
     this.countWaiting(a.agentId);
     return clone(this.approvals.get(a.id) ?? next);
+  }
+
+  async undoApproval(approvalId: string, m: Mutation): Promise<Approval> {
+    this.log('agent.approval.undo', { approvalId, idem: m.idem });
+    await this.wait();
+    // The same key gets the first answer back, a refusal included.
+    const again = this.undos.get(m.idem);
+    if (again instanceof AgentError) throw again;
+    if (again) return clone(again);
+    const answer = (): Approval => {
+      const a = this.approvals.get(approvalId);
+      if (!a || a.decidedBy !== 'auto') throw new AgentError('not_found', { detail: 'approval' });
+      if (a.undoneAt) throw new AgentError('conflict', { reason: 'undone' });
+      if (a.state !== 'done') throw new AgentError('conflict', { reason: 'not_done' });
+      const refused = this.undoRefusals.get(approvalId);
+      if (refused) throw new AgentError('conflict', { reason: refused.reason, ...(refused.versionId ? { versionId: refused.versionId } : {}) });
+      const now = this.now();
+      const next: Approval = { ...a, undoneAt: now, undoneBy: 'owner' };
+      this.setApproval(next);
+      // The reply's own row, as the thread's next read has it; the approval's event says it now.
+      this.threads[a.agentId] = (this.threads[a.agentId] ?? []).map((x) => (x.id === a.messageId && x.auto ? { ...x, auto: x.auto.map((r) => (r.approvalId === a.id ? { ...r, undoneAt: now } : r)) } : x));
+      return next;
+    };
+    const a = this.approvals.get(approvalId);
+    const target = a ? `approval:${a.id} tool:${a.tool} run:${a.runId}` : `approval:${approvalId}`;
+    try {
+      const next = answer();
+      this.record('user', 'approval.undo', target, 'ok', null, this.now(), a ? { agentId: a.agentId, tool: a.tool, risk: a.risk, done: doneWord(a.tool), asked: askedWord(a.tool) } : undefined);
+      this.undos.set(m.idem, next);
+      return clone(next);
+    } catch (err) {
+      if (err instanceof AgentError) {
+        if (a) this.record('user', 'approval.undo', target, `refused:${err.reason ?? err.code}`, null, this.now(), { agentId: a.agentId, tool: a.tool, risk: a.risk, done: doneWord(a.tool), asked: askedWord(a.tool) });
+        this.undos.set(m.idem, err);
+      }
+      throw err;
+    }
   }
 
   private startCall(a: Approval, spec: AskSpec | null): void {
@@ -1477,6 +1852,461 @@ export class MockAgentClient implements AgentClient {
     this.record('user', 'memory.clear', `agent:${agentId}`, `deleted:${deleted}`);
     return { deleted };
   }
+  // ------------------------------------------------------------ the setup screen (draft ADR section 16)
+
+  async getAccess(agentId: string): Promise<AgentAccess> {
+    this.log('agent.access.get', { agentId });
+    await this.wait();
+    this.agent(agentId);
+    return clone(this.accessView(agentId));
+  }
+
+  async setAccess(agentId: string, change: AccessChange, m: Mutation): Promise<AgentAccess> {
+    this.log('agent.access.set', { agentId, ...change, idem: m.idem });
+    await this.wait(this.latency * 2);
+    this.agent(agentId);
+    const before = this.accessNow(agentId);
+    const first = !before.chosen;
+    if (first && !change.apps) throw new AgentError('bad_request', { detail: 'apps', reason: 'required' });
+    if (first && !change.auto) throw new AgentError('bad_request', { detail: 'auto', reason: 'required' });
+    const apps: AccessApps = first ? { notebook: false, files: false, browser: false, courier: false, todos: false } : { ...before.apps };
+    for (const [app, on] of Object.entries(change.apps ?? {})) {
+      if (!(app in apps) || typeof on !== 'boolean') throw new AgentError('bad_request', { detail: `apps.${app}` });
+      apps[app as keyof AccessApps] = on;
+    }
+    if (first) for (const app of Object.keys(apps)) if (!change.apps || !(app in change.apps)) throw new AgentError('bad_request', { detail: `apps.${app}`, reason: 'required' });
+    const auto: AccessAuto = first ? { notebook: null, files: null, todos: false } : { ...before.auto };
+    const named = change.auto ?? {};
+    if ('notebook' in named) auto.notebook = named.notebook ?? null;
+    if ('files' in named) auto.files = named.files ?? null;
+    if ('todos' in named) auto.todos = named.todos === true;
+    for (const [name, app] of [['notebook', 'notebook'], ['files', 'files'], ['todos', 'todos']] as const) {
+      const on = name === 'todos' ? auto.todos : auto[name] !== null;
+      if (on && !apps[app]) {
+        if (name in named) throw new AgentError('bad_request', { detail: `auto.${name}`, reason: 'app_off' });
+        if (name === 'todos') auto.todos = false;
+        else auto[name] = null;
+      }
+    }
+    if (auto.files && (!auto.files.folder || auto.files.folder.split('/').some((p) => p === '..' || p === '.trash'))) throw new AgentError('bad_request', { detail: 'auto.files', reason: 'folder' });
+    const desks = before.desks.filter((d) => d.state !== 'revoked').map((d) => ({ ...d }));
+    const offers: DeskGrantHalf[] = [];
+    const revokes: DeskGrantHalf[] = [];
+    for (const d of change.desks ?? []) {
+      const live = desks.find((h) => h.toDeskId === d.deskId);
+      if (d.on && !live) {
+        if (!d.deskName) throw new AgentError('bad_request', { detail: 'desks', reason: 'name' });
+        const half: DeskGrantHalf = { grantId: randomId('dg'), agentId, toDeskId: d.deskId, toDeskName: d.deskName, toKey: null, state: 'offered', createdAt: this.now(), lastUsedAt: null, count: 0 };
+        desks.push(half);
+        offers.push(half);
+        this.record('user', 'desks.offer', `agent:${agentId} desk:${d.deskId}`, 'ok');
+      }
+      if (!d.on && live) {
+        live.state = 'revoked';
+        revokes.push(live);
+        this.record('user', 'desks.revoke', `agent:${agentId} desk:${d.deskId}`, 'ok');
+      }
+    }
+    const next: AgentAccess = { chosen: true, setup: null, apps, auto, desks: desks.filter((d) => d.state !== 'revoked'), incoming: [], updatedAt: this.now() };
+    this.accessBy.set(agentId, next);
+    // W6: an `offer` goes to the other desk, and a `revoke` tells it of a half stopped here.
+    const name = this.agent(agentId).name;
+    for (const h of offers) this.queue(h.toDeskId, h.grantId, agentId, { kind: 'offer', fromAgentId: agentId, fromAgentName: name, keys: { sig: 'mock-sig', box: 'mock-box', binding: 'mock-binding' } });
+    for (const h of revokes) this.queue(h.toDeskId, h.grantId, agentId, { kind: 'revoke', fromAgentId: agentId, fromAgentName: name });
+    this.record('user', 'access.set', `agent:${agentId}`, first ? 'setup' : 'ok');
+    this.emitAgents();
+    return clone(this.accessView(agentId));
+  }
+
+  async revokeDeskGrant(grantId: string, m: Mutation): Promise<{ agentId: string; access: AgentAccess }> {
+    this.log('agent.desks.revoke', { grantId, idem: m.idem });
+    await this.wait();
+    for (const [agentId, access] of this.accessBy) {
+      const half = access.desks.find((d) => d.grantId === grantId && d.state !== 'revoked');
+      if (!half) continue;
+      const next: AgentAccess = { ...access, desks: access.desks.filter((d) => d.grantId !== grantId), updatedAt: this.now() };
+      this.accessBy.set(agentId, next);
+      // W6: the other desk hears of it with a `revoke`.
+      this.queue(half.toDeskId, grantId, agentId, { kind: 'revoke', fromAgentId: agentId, fromAgentName: this.agent(agentId).name });
+      this.record('user', 'desks.revoke', `agent:${agentId} desk:${half.toDeskId}`, 'ok');
+      this.emitAgents();
+      return { agentId, access: clone(this.accessView(agentId)) };
+    }
+    // An answer half here: this desk refuses the very next message of that grant on its own, and a `revoke` tells the other.
+    const incoming = this.halvesIn.find((h) => h.grantId === grantId && h.state === 'active' && h.agentId !== null);
+    if (incoming?.agentId) {
+      const answerer = incoming.agentId;
+      incoming.state = 'revoked';
+      this.queue(incoming.fromDeskId, grantId, answerer, { kind: 'revoke', fromAgentId: answerer, fromAgentName: this.agents.find((a) => a.id === answerer)?.name ?? '' });
+      this.record('user', 'desks.revoke', `agent:${answerer} grant:${grantId} desk:${incoming.fromDeskId}`, 'ok');
+      this.emitAgents();
+      return { agentId: answerer, access: clone(this.accessView(answerer)) };
+    }
+    throw new AgentError('not_found', { detail: 'grant' });
+  }
+
+  /** For tests: the agent waits for its screen again, as when the desk lost its own copy (`confirm`), its choices kept. */
+  needsSetup(agentId: string, reason: 'new' | 'upgrade' | 'confirm' = 'confirm'): void {
+    const before = this.accessNow(agentId);
+    this.accessBy.set(agentId, { ...before, chosen: false, setup: reason });
+    this.emitAgents();
+  }
+
+  /** For tests: the other desk allowed a grant, as messages between desks will (section 14). */
+  allowGrant(agentId: string, deskId: string): void {
+    const before = this.accessNow(agentId);
+    this.accessBy.set(agentId, { ...before, desks: before.desks.map((d) => (d.toDeskId === deskId ? { ...d, state: 'active' as const } : d)) });
+  }
+
+  private accessNow(agentId: string): AgentAccess {
+    return this.accessBy.get(agentId) ?? notChosen(FRESH_APPS, 'new');
+  }
+
+  /** `agent.access.get`'s answer: the record, with `incoming` the answer halves this agent answers and the offers waiting here (W6). */
+  private accessView(agentId: string): AgentAccess {
+    const incoming = this.halvesIn.filter((h) => (h.state === 'active' && h.agentId === agentId) || (h.agentId === null && (h.state === 'offered' || h.state === 'declined')));
+    return { ...this.accessNow(agentId), incoming: clone(incoming) };
+  }
+
+  // ------------------------------------------------------------ messages between the member's desks (W6; deskd API.md section 18)
+  // This desk's outbox and what it holds of other desks' grants, as desk-agent and deskd keep them. The envelope is opaque to the
+  // office: here it's JSON, with no real signature or seal (the mock's stand-in for the chat spike's), but each check the
+  // contract names is made: another desk's, another member's, a duplicate by id, a stale `seq` per grant, past 7 days, no grant,
+  // revoked, and 20 a grant a day.
+
+  private outbox: OutboxRow[] = [];
+  private outboxWatchers = new Set<(e: { pending: OutboxPending[] }) => void>();
+  /** Offers and answer halves from other desks, held here. */
+  private halvesIn: DeskIncomingHalf[] = [];
+  private deliveredIds = new Set<string>();
+  /** The last `seq` taken from each grant, by the desk it came from. */
+  private seqIn = new Map<string, number>();
+  private seqOut = new Map<string, number>();
+  /** Messages taken, per grant, for the 20 a day. */
+  private taken: { grantId: string; at: number }[] = [];
+  /** Runs waiting for an answer from another desk (`waiting_desk`), by the message's envelope id. */
+  private deskWaits = new Map<string, DeskWait>();
+
+  /** What `agent.state` says of the desk: offers from other desks waiting here. */
+  private deskState(): DeskState {
+    return { deskOffers: this.halvesIn.filter((h) => h.state === 'offered' && h.agentId === null).length };
+  }
+
+  /** One envelope into the outbox, to `toDeskId`, with this grant's next `seq`. */
+  private queue(toDeskId: string, grantId: string, agentId: string, body: { kind: EnvelopeKind } & Record<string, unknown>): OutboxRow {
+    const seq = (this.seqOut.get(grantId) ?? 0) + 1;
+    this.seqOut.set(grantId, seq);
+    const id = randomId('env');
+    const sentAt = this.now();
+    const p = { v: 1, ...body, id, grantId, from: this.deskId, to: toDeskId, account: MOCK_ACCOUNT, sentAt, seq };
+    const envelope = JSON.stringify({ v: 1, id, from: this.deskId, to: toDeskId, p: JSON.stringify(p), s: 'mock-signature' });
+    const row: OutboxRow = { id, toDeskId, grantId, agentId, kind: body.kind, seq, sentAt, envelope, done: false, outcome: null, reason: null };
+    this.outbox.push(row);
+    this.record(`agent:${agentId}`, 'desks.sent', `grant:${grantId} env:${id}`, 'ok');
+    this.emitOutbox();
+    return row;
+  }
+
+  private emitOutbox(): void {
+    const pending = outboxPending(this.outbox);
+    queueMicrotask(() => this.outboxWatchers.forEach((fn) => fn({ pending: clone(pending) })));
+  }
+
+  /** Topic `agent.desks.outbox`: the whole list on each change, never content. */
+  watchOutbox(onEvent: (e: { pending: OutboxPending[] }) => void): () => void {
+    this.outboxWatchers.add(onEvent);
+    const pending = outboxPending(this.outbox);
+    queueMicrotask(() => this.outboxWatchers.has(onEvent) && onEvent({ pending: clone(pending) }));
+    return () => this.outboxWatchers.delete(onEvent);
+  }
+
+  /** `agent.desks.list`. */
+  async listDeskHalves(): Promise<DeskHalves> {
+    this.log('agent.desks.list', {});
+    await this.wait();
+    return clone({
+      offers: this.halvesIn.filter((h) => h.agentId === null && (h.state === 'offered' || h.state === 'declined')),
+      answers: this.halvesIn.filter((h) => h.state === 'active' && h.agentId !== null),
+    });
+  }
+
+  /** `agent.desks.answer`: Allow, with the agent that answers, sends `accept`; Not now leaves it `declined` and sends nothing. */
+  async answerDeskOffer(grantId: string, answer: { allow: true; agentId: string } | { allow: false }, m: Mutation): Promise<DeskIncomingHalf> {
+    this.log('agent.desks.answer', { grantId, ...answer, idem: m.idem });
+    await this.wait(this.latency * 2);
+    const half = this.halvesIn.find((h) => h.grantId === grantId && h.agentId === null && (h.state === 'offered' || h.state === 'declined'));
+    if (!half) throw new AgentError('not_found', { detail: 'grant' });
+    if (!answer.allow) {
+      half.state = 'declined';
+      this.record('user', 'desks.decline', `grant:${grantId} desk:${half.fromDeskId}`, 'ok');
+      this.emitAgents();
+      return clone(half);
+    }
+    const y = this.agents.find((a) => a.id === answer.agentId);
+    if (!y) throw new AgentError('bad_request', { detail: 'agentId' });
+    half.agentId = y.id;
+    half.state = 'active';
+    this.queue(half.fromDeskId, grantId, y.id, { kind: 'accept', fromAgentId: y.id, fromAgentName: y.name, keys: { sig: 'mock-sig', box: 'mock-box', binding: 'mock-binding' } });
+    this.record('user', 'desks.accept', `agent:${y.id} grant:${grantId} desk:${half.fromDeskId}`, 'ok');
+    this.emitAgents();
+    return clone(half);
+  }
+
+  /** `agent.desks.take`: what waits for that desk, oldest first. Not a mutation: what isn't `done` comes again. */
+  async takeOutbox(toDeskId: string, limit = 50): Promise<{ envelopes: { id: string; toDeskId: string; envelope: string }[]; more: boolean }> {
+    await this.wait();
+    const n = Math.max(1, Math.min(100, Math.floor(limit) || 50));
+    const rows = this.outbox.filter((r) => !r.done && r.toDeskId === toDeskId);
+    return { envelopes: rows.slice(0, n).map((r) => ({ id: r.id, toDeskId: r.toDeskId, envelope: r.envelope })), more: rows.length > n };
+  }
+
+  /** `agent.desks.done`: the outcomes the office reports. A refused message is a notice in its sender's thread. */
+  async doneOutbox(results: readonly { id: string; outcome: string; reason?: string | null }[]): Promise<{ done: number }> {
+    await this.wait();
+    let n = 0;
+    for (const r of results.slice(0, 100)) {
+      const row = this.outbox.find((x) => x.id === r.id);
+      if (!row || row.done) continue;
+      row.done = true;
+      row.outcome = r.outcome;
+      row.reason = r.reason ?? null;
+      n += 1;
+      if (r.outcome === 'refused') {
+        this.record(`agent:${row.agentId}`, 'desks.refused', `grant:${row.grantId} env:${row.id}`, `refused:${r.reason ?? 'unknown'}`);
+        if (row.kind === 'msg') this.deskNotice(row.agentId, row, 'refused', r.reason ?? null, null);
+      }
+    }
+    if (n) this.emitOutbox();
+    return { done: n };
+  }
+
+  /** `agent.desks.deliver`: one envelope from another desk, checked as deskd checks it, then applied once. */
+  async deliverEnvelope(envelope: unknown): Promise<{ id: string; outcome: 'delivered' | 'duplicate' }> {
+    await this.wait();
+    if (typeof envelope !== 'string' && (typeof envelope !== 'object' || envelope === null)) throw new AgentError('bad_request', { reason: 'envelope' });
+    const raw = typeof envelope === 'string' ? envelope : JSON.stringify(envelope);
+    if (bytesOf(raw) > 64 * 1024) throw new AgentError('too_large', { reason: 'too_large' });
+    let outer: { id?: unknown; p?: unknown };
+    let p: Record<string, unknown>;
+    try {
+      outer = JSON.parse(raw) as typeof outer;
+      p = JSON.parse(String(outer.p)) as Record<string, unknown>;
+    } catch {
+      throw new AgentError('bad_request', { reason: 'envelope' });
+    }
+    const id = String(outer.id ?? '');
+    const grantId = String(p['grantId'] ?? '');
+    const from = String(p['from'] ?? '');
+    const seq = Number(p['seq']);
+    if (!id || id !== p['id'] || !grantId || !Number.isFinite(seq)) throw new AgentError('bad_request', { reason: 'envelope' });
+    if (p['to'] !== this.deskId) throw new AgentError('forbidden', { reason: 'not_for_me' });
+    if (p['account'] !== MOCK_ACCOUNT) throw new AgentError('forbidden', { reason: 'account' });
+    if (this.deliveredIds.has(id)) return { id, outcome: 'duplicate' };
+    const key = `${grantId}\n${from}`;
+    if (seq <= (this.seqIn.get(key) ?? 0)) throw new AgentError('conflict', { reason: 'stale' });
+    if (this.now() - Number(p['sentAt']) > 7 * DAY) throw new AgentError('conflict', { reason: 'expired' });
+    // Each kind's own checks come first: a refusal changes nothing.
+    const apply = this.checkEnvelope(p['kind'] as EnvelopeKind, id, grantId, from, p);
+    this.deliveredIds.add(id);
+    this.seqIn.set(key, seq);
+    apply();
+    this.record('system', 'desks.delivered', `grant:${grantId} env:${id}`, 'ok');
+    return { id, outcome: 'delivered' };
+  }
+
+  /** Checks an envelope of this kind, and gives back what applying it does. Throws the desk's refusal. */
+  private checkEnvelope(kind: EnvelopeKind, id: string, grantId: string, from: string, p: Record<string, unknown>): () => void {
+    const fromAgentId = String(p['fromAgentId'] ?? '');
+    const fromAgentName = String(p['fromAgentName'] ?? '');
+    const sendHalf = (): { agentId: string; half: DeskGrantHalf } | null => {
+      for (const [agentId, access] of this.accessBy) {
+        const half = access.desks.find((d) => d.grantId === grantId && d.toDeskId === from);
+        if (half) return { agentId, half };
+      }
+      return null;
+    };
+    const answerHalf = this.halvesIn.find((h) => h.grantId === grantId && h.fromDeskId === from);
+    switch (kind) {
+      case 'offer':
+        return () => {
+          if (answerHalf) return; // the same grant again: nothing new
+          this.halvesIn.push({ grantId, fromDeskId: from, fromAgentId, fromAgentName, agentId: null, state: 'offered', createdAt: this.now(), lastUsedAt: null, count: 0 });
+          this.record('system', 'desks.offer', `grant:${grantId} desk:${from}`, 'ok');
+          this.emitAgents();
+        };
+      case 'accept': {
+        const held = sendHalf();
+        if (!held) throw new AgentError('forbidden', { reason: 'no_grant' });
+        return () => {
+          const now = this.accessNow(held.agentId);
+          this.accessBy.set(held.agentId, { ...now, desks: now.desks.map((d) => (d.grantId === grantId ? { ...d, state: 'active' as const, toAgentName: fromAgentName, toKey: 'mock-box' } : d)), updatedAt: this.now() });
+          this.record('system', 'desks.accept', `agent:${held.agentId} grant:${grantId} desk:${from}`, 'ok');
+          this.emitAgents();
+        };
+      }
+      case 'revoke':
+        return () => {
+          const held = sendHalf();
+          if (held) {
+            const now = this.accessNow(held.agentId);
+            this.accessBy.set(held.agentId, { ...now, desks: now.desks.filter((d) => d.grantId !== grantId), updatedAt: this.now() });
+          }
+          if (answerHalf) answerHalf.state = 'revoked';
+          this.record('system', 'desks.revoke', `grant:${grantId} desk:${from}`, 'ok');
+          this.emitAgents();
+        };
+      case 'msg': {
+        if (answerHalf?.state === 'revoked') throw new AgentError('forbidden', { reason: 'revoked' });
+        if (!answerHalf || answerHalf.agentId === null || answerHalf.state !== 'active') throw new AgentError('forbidden', { reason: 'no_grant' });
+        const since = this.now() - DAY;
+        this.taken = this.taken.filter((t) => t.at > since);
+        if (this.taken.filter((t) => t.grantId === grantId).length >= DESK_MESSAGES_A_DAY) throw new AgentError('forbidden', { reason: 'rate' });
+        const half = answerHalf;
+        return () => {
+          this.taken.push({ grantId, at: this.now() });
+          half.count += 1;
+          half.lastUsedAt = this.now();
+          this.answerFromHere(half, id, String(p['text'] ?? ''));
+        };
+      }
+      case 'answer': {
+        const held = sendHalf();
+        if (!held) throw new AgentError('forbidden', { reason: 'no_grant' });
+        return () => this.answerArrived(held.agentId, held.half, id, p);
+      }
+      default:
+        throw new AgentError('bad_request', { reason: 'envelope' });
+    }
+  }
+
+  /**
+   * On the desk that answers: one run of the agent that answers, its origin the other desk, and its reply goes back as the answer.
+   * A run that can't start, or doesn't finish, sends a failure in its place.
+   */
+  private answerFromHere(half: DeskIncomingHalf, envelopeId: string, text: string): void {
+    const y = this.agents.find((a) => a.id === half.agentId);
+    const origin: DeskOrigin = { kind: 'desk', deskId: half.fromDeskId, agentId: half.fromAgentId, agentName: half.fromAgentName, grantId: half.grantId, envelopeId, role: 'message' };
+    const start: Message = { id: this.id('msg'), role: 'user', text, at: this.now(), origin };
+    const reply = (body: Record<string, unknown>): void => {
+      if (!y) return;
+      this.queue(half.fromDeskId, half.grantId, y.id, { kind: 'answer', fromAgentId: y.id, fromAgentName: y.name, replyTo: envelopeId, private: false, ...body });
+      this.record(`agent:${y.id}`, 'desks.answered', `grant:${half.grantId} env:${envelopeId}`, typeof body['failed'] === 'string' ? `failed:${body['failed']}` : 'ok');
+    };
+    if (!y) return;
+    const blocked = !this.accessNow(y.id).chosen ? 'setup' : this.refusal(y.id, text);
+    if (blocked) {
+      this.putMessage(y.id, start);
+      reply({ failed: typeof blocked === 'string' ? blocked : 'limit_reached' });
+      return;
+    }
+    const answer = `${y.name} here, on your ${this.deskName} desk. This is the demo, so I can’t look anything up, but I read what ${plainName(half.fromAgentName)} sent.`;
+    this.begin(y.id, start, answer, {
+      after: (_spent, sent, how) => reply(how === 'done' ? { text: sent.slice(0, 8000) } : { failed: how === 'stopped' ? 'stopped' : 'unavailable' }),
+    });
+  }
+
+  /** On the desk that sent: an answer is the waiting run's result within its wait, else a message in the thread, untrusted. */
+  private answerArrived(agentId: string, half: DeskGrantHalf, envelopeId: string, p: Record<string, unknown>): void {
+    const replyTo = typeof p['replyTo'] === 'string' ? p['replyTo'] : null;
+    const name = String(p['fromAgentName'] ?? '');
+    const otherAgent = String(p['fromAgentId'] ?? '');
+    if (typeof p['failed'] === 'string') {
+      this.deskNotice(agentId, { id: replyTo ?? envelopeId, grantId: half.grantId, toDeskId: half.toDeskId }, 'failed', p['failed'], name, otherAgent);
+      return;
+    }
+    const text = String(p['text'] ?? '');
+    const wait = replyTo ? this.deskWaits.get(replyTo) : undefined;
+    if (wait && replyTo) {
+      // The answer is the tool's result: the run goes on and says what came back, which marks it untrusted.
+      clearTimeout(wait.timer);
+      this.deskWaits.delete(replyTo);
+      this.endDeskWait(wait, `${plainName(name)} on your ${wait.toDesk} desk answered: ${text}`);
+      return;
+    }
+    const origin: DeskOrigin = { kind: 'desk', deskId: half.toDeskId, agentId: otherAgent, agentName: name, grantId: half.grantId, envelopeId, replyTo, role: 'answer', private: p['private'] === true };
+    this.putMessage(agentId, { id: this.id('msg'), role: 'user', text, at: this.now(), origin, untrusted: true });
+    const a = this.agents.find((x) => x.id === agentId);
+    if (a) this.patchAgent(agentId, { unseen: a.unseen + 1 });
+  }
+
+  /** A notice in the sender's thread about a message that got no answer: refused there, failed there, or not delivered. */
+  private deskNotice(agentId: string, row: { id: string; grantId: string; toDeskId: string }, notice: 'refused' | 'failed' | 'not_delivered', reason: unknown, agentName: string | null, otherAgentId = ''): void {
+    if (!this.agents.some((a) => a.id === agentId)) return;
+    const wait = this.deskWaits.get(row.id);
+    if (wait) {
+      clearTimeout(wait.timer);
+      this.deskWaits.delete(row.id);
+      this.endDeskWait(wait, null);
+    }
+    const origin: DeskOrigin = { kind: 'desk', deskId: row.toDeskId, agentId: otherAgentId, agentName: agentName ?? '', grantId: row.grantId, envelopeId: row.id, role: 'notice', notice, reason: typeof reason === 'string' ? reason : null };
+    this.putMessage(agentId, { id: this.id('msg'), role: 'user', text: '', at: this.now(), origin });
+  }
+
+  /** A waiting run ends: with the answer, which came within its wait, or with the tool's "Sent." once the wait is over. */
+  private endDeskWait(wait: DeskWait, answered: string | null): void {
+    const base = (this.threads[wait.agentId] ?? []).find((x) => x.id === wait.runMessageId);
+    if (base) this.putMessage(wait.agentId, { ...base, text: answered ?? sentText(wait.toDesk), state: 'done', ...(answered ? { untrusted: true } : {}) });
+    const a = this.agents.find((x) => x.id === wait.agentId);
+    if (a) this.patchAgent(wait.agentId, { status: a.binding ? 'online' : 'no_key', statusDetail: null });
+  }
+
+  /**
+   * For tests and the demo: an agent here calls `desk_message {desk, text}`, as its run would. Refused before anything goes, as the
+   * desk refuses it: `no_grant` (no active grant for that desk), `rate` (20 a grant a day), `input`. With `wait`, the run waits for
+   * the answer (`working`, `waiting_desk`) for `waitMs` (120 s), and an answer within it is the tool's result; without, the run ends
+   * at once with the tool's "Sent." and the answer comes to the thread. Answers the envelope's id.
+   */
+  deskMessage(agentId: string, desk: string, text: string, opts: { wait?: boolean; waitMs?: number } = {}): string {
+    const a = this.agent(agentId);
+    const half = this.accessNow(agentId).desks.find((d) => (d.toDeskId === desk || d.toDeskName === desk) && d.state === 'active');
+    if (!half) throw new AgentError('precondition_failed', { reason: 'no_grant' });
+    if (!text || text.length > 8000) throw new AgentError('bad_request', { reason: 'input' });
+    const since = this.now() - DAY;
+    if (this.outbox.filter((r) => r.kind === 'msg' && r.grantId === half.grantId && r.sentAt > since).length >= DESK_MESSAGES_A_DAY) throw new AgentError('precondition_failed', { reason: 'rate' });
+    const row = this.queue(half.toDeskId, half.grantId, agentId, { kind: 'msg', fromAgentId: agentId, fromAgentName: a.name, text });
+    const now = this.accessNow(agentId);
+    this.accessBy.set(agentId, { ...now, desks: now.desks.map((d) => (d.grantId === half.grantId ? { ...d, count: d.count + 1, lastUsedAt: this.now() } : d)) });
+    const tools: ToolChip[] = [{ name: 'desk_message', summary: 'Messaged an agent on your other desk', ok: true, risk: 'own', target: { kind: 'desk', deskId: half.toDeskId, deskName: half.toDeskName, agentName: half.toAgentName ?? null } }];
+    const reply: Message = {
+      id: this.id('msg'),
+      role: 'assistant',
+      text: opts.wait ? `I’ve asked ${plainName(half.toAgentName, 'its agent')} on your ${half.toDeskName} desk.` : sentText(half.toDeskName),
+      at: this.now(),
+      runId: this.id('run'),
+      ...(a.binding ? { badge: { provider: a.binding.provider, providerName: a.binding.providerName, model: a.binding.model } } : {}),
+      state: opts.wait ? 'streaming' : 'done',
+      tools,
+    };
+    this.putMessage(agentId, reply);
+    if (opts.wait) {
+      const wait: DeskWait = {
+        agentId,
+        runMessageId: reply.id,
+        toDesk: half.toDeskName,
+        timer: setTimeout(() => {
+          this.deskWaits.delete(row.id);
+          this.endDeskWait(wait, null);
+        }, opts.waitMs ?? 120_000),
+      };
+      this.deskWaits.set(row.id, wait);
+      this.patchAgent(agentId, { status: 'working', statusDetail: 'waiting_desk' });
+    } else {
+      this.emitAgents();
+    }
+    return row.id;
+  }
+
+  /** Deleting an agent revokes its halves (section 14), and each other desk hears of it. */
+  private revokeHalvesOf(agentId: string): void {
+    for (const h of this.accessBy.get(agentId)?.desks ?? []) if (h.state !== 'revoked') this.queue(h.toDeskId, h.grantId, agentId, { kind: 'revoke', fromAgentId: agentId, fromAgentName: '' });
+    this.accessBy.delete(agentId);
+    for (const h of this.halvesIn) {
+      if (h.agentId !== agentId || h.state !== 'active') continue;
+      h.state = 'revoked';
+      this.queue(h.fromDeskId, h.grantId, agentId, { kind: 'revoke', fromAgentId: agentId, fromAgentName: '' });
+    }
+  }
+
 
   /** The `tools` fixture's history in Activity (still 07): reads, a memory, a decline, a request no one answered. */
   private seedToolsAudit(): void {
@@ -1505,13 +2335,13 @@ export class MockAgentClient implements AgentClient {
         name: 'Scout',
         purpose: 'Each weekday morning, read the notes in your workspace and write a short brief of what changed.',
         icon: 'compass',
-        tone: 'teal',
+        tone: 'harbor',
         ...bind,
         solo: true,
         workspaceMb: 50,
         timers: [{ label: 'Morning brief', kind: 'repeat', days: [1, 2, 3, 4, 5], time: '08:00', prompt: 'Read the workspace notes and write a short brief of what changed.' }],
       };
-      const writer = { name: 'Writer', purpose: 'Draft and tidy the member’s writing. Ask Scout for its latest brief when it helps.', icon: 'pen', tone: 'plum', ...bind, solo: false, workspaceMb: 100 };
+      const writer = { name: 'Writer', purpose: 'Draft and tidy the member’s writing. Ask Scout for its latest brief when it helps.', icon: 'pen', tone: 'iris', ...bind, solo: false, workspaceMb: 100 };
       return {
         text: 'Here’s what I’d set up: Scout, solo, with a brief each weekday at 8:00, and Writer, who can message Scout once you agree how. Nothing changes until you confirm each card.',
         proposals: [await this.propose('agent.create', 'Add Scout: compass on teal, solo, a weekday brief at 8:00', scout, null), await this.propose('agent.create', 'Add Writer: pen on plum', writer, null)],
@@ -1919,7 +2749,7 @@ export class MockAgentClient implements AgentClient {
     const version = (this.icons[agentId]?.version ?? a.look?.png ?? 0) + 1;
     this.icons[agentId] = { png: mask ?? pngBase64, version };
     this.record('user', 'icon.upload', `agent:${agentId}`, 'ok');
-    const look = a.look ?? { icon: 'nodes', tone: 'graphite', png: null };
+    const look = a.look ?? { icon: 'hat', tone: 'graphite', png: null };
     return clone(this.patchAgent(agentId, { look: { ...look, icon: 'png', png: version } }));
   }
 

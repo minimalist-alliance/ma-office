@@ -1,10 +1,13 @@
 package com.minimalistalliance.desk.agent.store;
 
 import java.sql.Connection;
+import java.sql.PreparedStatement;
 import java.sql.ResultSet;
 import java.sql.SQLException;
 import java.sql.Statement;
+import java.util.ArrayList;
 import java.util.HashSet;
+import java.util.List;
 import java.util.Map;
 import java.util.Set;
 import java.util.TreeMap;
@@ -28,7 +31,10 @@ final class TeamSchema {
                 "png_version INTEGER",
                 "solo INTEGER NOT NULL DEFAULT 1",
                 "workspace_mb INTEGER",
-                "shared_with TEXT NOT NULL DEFAULT '[]'");
+                "shared_with TEXT NOT NULL DEFAULT '[]'",
+                // Nullable, so a rolled-back desk-agent's inserts still work: colors() fills them at the next open.
+                // The icon's default stays 'nodes' (a column default can't change additively): retire() moves it.
+                "color TEXT");
         addColumns(connection, "messages", "origin TEXT", "tools TEXT");
         try (Statement statement = connection.createStatement()) {
             statement.execute("""
@@ -137,6 +143,7 @@ final class TeamSchema {
             // it catches rows a rolled-back desk-agent wrote meanwhile.
             retire(statement, "icon", TeamStore.RETIRED_ICONS);
             retire(statement, "tone", TeamStore.RETIRED_TONES);
+            colors(connection, statement);
             // The manager became the lead: a desk that kept the old default name gets the new one, once.
             statement.execute("INSERT OR IGNORE INTO settings (name, value) VALUES ('team.lead_named', '0')");
             try (ResultSet done = statement.executeQuery(
@@ -145,6 +152,43 @@ final class TeamSchema {
                     statement.execute("UPDATE agents SET name = 'Lead' WHERE id = 'manager' AND name = 'Manager'");
                     statement.execute("UPDATE settings SET value = '1' WHERE name = 'team.lead_named'");
                 }
+            }
+        }
+    }
+
+    /**
+     * Every agent's colour (the owner, Nov 15): the lead wears the Agent app's own, and each staff agent with none,
+     * oldest first, takes the one a create would ({@link TeamStore#nextColor}) against the colours already stored. A
+     * no-op once done, and it catches rows a rolled-back desk-agent wrote meanwhile. A guild member's own agent (role
+     * {@code manager}, id {@code gm-*}) and Desk Maia (id {@code maia}, {@code MaiaAgent.ID}) are no team agents: they
+     * get none and count for none.
+     */
+    private static void colors(Connection connection, Statement statement) throws SQLException {
+        statement.execute("UPDATE agents SET color = '" + TeamStore.LEAD_COLOR
+                + "' WHERE id = 'manager' AND color IS NULL");
+        List<String> used = new ArrayList<>(List.of(TeamStore.LEAD_COLOR));
+        List<String> missing = new ArrayList<>();
+        try (ResultSet rows = statement.executeQuery(
+                "SELECT id, color FROM agents WHERE role = 'staff' AND id <> 'maia' ORDER BY created_at, rowid")) {
+            while (rows.next()) {
+                if (rows.getString(2) == null) {
+                    missing.add(rows.getString(1));
+                } else {
+                    used.add(rows.getString(2));
+                }
+            }
+        }
+        if (missing.isEmpty()) {
+            return;
+        }
+        try (PreparedStatement set = connection.prepareStatement(
+                "UPDATE agents SET color = ? WHERE id = ? AND color IS NULL")) {
+            for (String id : missing) {
+                String color = TeamStore.nextColor(used);
+                set.setString(1, color);
+                set.setString(2, id);
+                set.executeUpdate();
+                used.add(color);
             }
         }
     }

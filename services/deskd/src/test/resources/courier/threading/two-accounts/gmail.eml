@@ -1,0 +1,10 @@
+From: Dana Smith <dana@example.com>
+To: me@desk.example, me@gmail.example
+Subject: Both
+Date: Fri, 13 Nov 2026 10:00:00 +0000
+Message-ID: <both@example.com>
+Delivered-To: me@gmail.example
+MIME-Version: 1.0
+Content-Type: text/plain; charset=utf-8
+
+Hello.

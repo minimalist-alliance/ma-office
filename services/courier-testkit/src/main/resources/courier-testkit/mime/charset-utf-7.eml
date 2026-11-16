@@ -1,0 +1,12 @@
+From: Kitchen <kitchen@example.com>
+To: me@desk.example
+Date: Fri, 13 Nov 2026 10:00:00 +0000
+Subject: Menu in UTF-7
+Message-ID: <charset-utf-7@corpus.example>
+MIME-Version: 1.0
+X-Corpus-Note: text/plain in utf-7 (no JDK charset; ASCII letters stay direct)
+Content-Type: text/plain; charset=utf-7
+Content-Transfer-Encoding: 7bit
+
+Caf+AOk menu: cr+AOg-me br+APs-l+AOk-e and na+AO8-ve tea.
+Ordering closes on Friday.

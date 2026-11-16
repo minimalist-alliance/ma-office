@@ -1,18 +1,22 @@
-// The tones: the tile color behind an agent's mark. 12 of them, one row each, spread around the hue circle plus one
-// neutral (`graphite`, the default). Each row gives its color for the three themes.
+// The tones: the tile color behind an agent's mark. 7 of them, one row each, all in the brand's cool band (the owner's
+// rule: no green, brown or warm tints anywhere in the UI), the neutral `graphite` (the default) first. Each row gives its color
+// for the three themes. The Product Designer's set (Nov 14, `~/ma-coord/design-drafts/agent-tones/tones.py`): within HSL
+// hue 195 to 290, with the mark's 4.5:1 and a delta E of 9 or more, seven is the most that fit, at two depths.
 //
 // How to change it:
 //  - A color is `lch(lightness, chroma, hue)` below (CIE L*C*h, D65). Edit the numbers, not hex strings (the Desk's lint rule
 //    keeps hex literals in `web/src/theme/tokens.ts`, and `lch()` here is a function that returns a hex string at load time).
 //    LCh keeps the strength of colour even across hues, which HSL does not (HSL saturation 30 ran from chroma 16 to 48).
-//  - Keep every color dark enough for FOREGROUND (foreground.ts) to read at 4.5:1: lightness 43 to 47.5 at this chroma.
-//    `npm test` checks that, and that no two tones in a theme are closer than a color difference (delta E 2000) of 9 (look.test.ts).
+//  - Keep every color dark enough for FOREGROUND (foreground.ts) to read at 4.5:1: lightness 43 to 46.5 (graphite in Zen) at this chroma,
+//    and the deep row at 31.5 to 35. `npm test` checks that, that no two tones in a theme are closer than a color difference
+//    (delta E 2000) of 9, and that every one is cool (look.test.ts).
 //  - Why the lightness differs by theme: Light tiles sit on white tiles, so the tones can be the deepest (43). Dusk's ground
-//    is a mid gray (#585E68, its tile #50565F), so its tones run lighter (46.5; graphite 47.5 so the default does not
+//    is a mid gray (#585E68, its tile #50565F), so its tones run lighter (46.5; graphite 46.5, down from 47.5, because the mark is #F1F3F7 since ADR 0093 and needs 4.5:1; it still does not
 //    vanish into the tile) to stand off it. Dark's ground is near black, and 45.5 stands off it. Hue and chroma stay the same
 //    in all three, so an agent keeps its color identity.
-//  - To add a tone, add a row; to retire one, delete it and map its id to the nearest kept one in RETIRED_TONES.
-//  - Chroma 21 to 26 is the calm part: this is MA's muted palette, not a rainbow. Raise it for brighter tones.
+//  - To add a tone, add a row; to retire one, delete it and map its id to the nearest kept one in RETIRED_TONES (and
+//    desk-agent's `TeamStore.RETIRED_TONES`, which moves stored rows once; `LookIdsTest` checks the lists agree).
+//  - Chroma 7 to 26 is the calm part: this is MA's muted palette, not a rainbow.
 //  - The ring order of ToneWheel is the order of this table.
 import { toHex } from './foreground';
 
@@ -48,18 +52,13 @@ export function lch(l: number, c: number, h: number): string {
 type Row = readonly [id: string, label: string, hue: number, chroma: number, lightness: readonly [number, number, number]];
 
 const ROWS: readonly Row[] = [
-  ['graphite', 'Graphite', 262, 7, [43, 47.5, 45.5]],
-  ['rose', 'Rose', 14, 26, [43, 46.5, 45.5]],
-  ['clay', 'Clay', 48, 24, [43, 46.5, 45.5]],
-  ['amber', 'Amber', 80, 24, [43, 46.5, 45.5]],
-  ['olive', 'Olive', 110, 25, [43, 46.5, 45.5]],
-  ['green', 'Green', 145, 24, [43, 46.5, 45.5]],
-  ['teal', 'Teal', 180, 21, [43, 46.5, 45.5]],
-  ['cyan', 'Cyan', 214, 21, [43, 46.5, 45.5]],
-  ['blue', 'Blue', 250, 24, [43, 46.5, 45.5]],
-  ['indigo', 'Indigo', 280, 26, [43, 46.5, 45.5]],
-  ['violet', 'Violet', 308, 26, [43, 46.5, 45.5]],
-  ['plum', 'Plum', 338, 25, [43, 46.5, 45.5]],
+  ['graphite', 'Graphite', 262, 7, [43, 46.5, 45.5]],
+  ['steel', 'Steel', 234, 20, [43, 46.5, 45.5]],
+  ['blue', 'Blue', 266, 26, [43, 46.5, 45.5]],
+  ['indigo', 'Indigo', 286, 20, [43, 46.5, 45.5]],
+  ['harbor', 'Harbor', 238, 20, [31.5, 35, 34]],
+  ['navy', 'Navy', 270, 20, [31.5, 35, 34]],
+  ['iris', 'Iris', 298, 20, [31.5, 35, 34]],
 ];
 
 export const TONES: readonly Tone[] = ROWS.map(([id, label, h, c, [light, dusk, dark]]) => ({
@@ -70,8 +69,23 @@ export const TONES: readonly Tone[] = ROWS.map(([id, label, h, c, [light, dusk, 
   dark: lch(dark, c, h),
 }));
 
-/** Tones that were retired, and the kept one each now shows as. A saved agent keeps its stored id; it renders as the replacement. */
-export const RETIRED_TONES: Readonly<Record<string, string>> = { moss: 'green', sky: 'blue' };
+/**
+ * Tones that were retired, and the kept one each now shows as (the nearest of the seven): a saved agent renders as the
+ * replacement, and desk-agent moves its stored id once (`TeamSchema`). The warm and green ones went on Nov 14.
+ */
+export const RETIRED_TONES: Readonly<Record<string, string>> = {
+  rose: 'iris',
+  clay: 'navy',
+  amber: 'steel',
+  olive: 'harbor',
+  green: 'harbor',
+  teal: 'harbor',
+  cyan: 'steel',
+  violet: 'iris',
+  plum: 'iris',
+  moss: 'harbor',
+  sky: 'blue',
+};
 
 /** The tone id to use for a stored one: a retired id becomes its replacement, anything else stays. */
 export function currentTone(toneId: string): string {

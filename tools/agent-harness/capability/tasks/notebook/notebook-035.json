@@ -1,0 +1,94 @@
+{
+  "id": "notebook-035",
+  "area": "notebook",
+  "title": "Replace a whole sentence",
+  "prompt": "On my Bio page, replace the sentence about Denver with: I live in Portland and work as a nurse.",
+  "setup": {
+    "notebook": [
+      {
+        "tab": "Harness",
+        "title": "Bio",
+        "markdown": "# Bio\n\nI live in Denver and work as a teacher.\n\nI like climbing.\n"
+      }
+    ]
+  },
+  "approve": "all",
+  "checks": [
+    {
+      "kind": "page",
+      "tab": "Harness",
+      "title": "Bio",
+      "contains": [
+        "Portland",
+        "nurse",
+        "I like climbing"
+      ],
+      "notContains": [
+        "Denver"
+      ]
+    },
+    {
+      "kind": "cards",
+      "tools": [
+        "notebook_write"
+      ]
+    }
+  ],
+  "policy": {
+    "tools": [
+      "notebook_search",
+      "notebook_read",
+      "notebook_write"
+    ]
+  },
+  "standIn": [
+    {
+      "calls": [
+        {
+          "name": "notebook_search",
+          "input": {
+            "query": "Bio"
+          }
+        }
+      ]
+    },
+    {
+      "calls": [
+        {
+          "name": "notebook_read",
+          "input": {
+            "pageId": {
+              "$re": {
+                "step": 0,
+                "call": 0,
+                "pattern": "\"pageId\":\"([^\"]+)\",\"title\":\"Bio\""
+              }
+            }
+          }
+        }
+      ]
+    },
+    {
+      "calls": [
+        {
+          "name": "notebook_write",
+          "input": {
+            "pageId": {
+              "$re": {
+                "step": 0,
+                "call": 0,
+                "pattern": "\"pageId\":\"([^\"]+)\",\"title\":\"Bio\""
+              }
+            },
+            "op": "replace_text",
+            "find": "I live in Denver and work as a teacher.",
+            "markdown": "I live in Portland and work as a nurse."
+          }
+        }
+      ]
+    },
+    {
+      "text": "Updated your Bio."
+    }
+  ]
+}

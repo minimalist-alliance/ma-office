@@ -9,7 +9,7 @@
 // headless Chromium on the harness office (`?fixture=one`, Light, 1440x900):
 //   1. frames during a 3 s canvas pan and a 3 s wheel zoom: median fps and 5th-percentile fps (from the
 //      requestAnimationFrame deltas; p5 fps = 1000 / the 95th-percentile delta);
-//   2. the time to open a window from its tile: pointer up to the window's first animation frame (the Chat window,
+//   2. the time to open a window from its tile: pointer up to the window's first animation frame (the Courier window,
 //      which has no chunk of its own to wait for), median of RUNS opens.
 // The interaction numbers come from the e2e bundle, not the release one, because only it carries the mock desk
 // (`__maDesk`, the tiles' apps); it is the same code and the same build tool. The release bundle gives the sizes.
@@ -122,10 +122,10 @@ try {
     const end = Date.now() + 3000;
     for (let i = 0; Date.now() < end; i += 1) { await page.mouse.wheel(0, Math.floor(i / 20) % 2 ? 60 : -60); await page.waitForTimeout(14); }
   });
-  // Opening a window from its tile (Chat): the Enter key to the window's first animation frame. The first open warms the code and is dropped.
+  // Opening a window from its tile (Courier): the Enter key to the window's first animation frame. The first open warms the code and is dropped.
   await page.keyboard.press('0');
   await page.waitForTimeout(900);
-  const tile = page.getByRole('group', { name: 'Personal desk' }).getByRole('button', { name: /^Chat/ });
+  const tile = page.getByRole('group', { name: 'Personal desk' }).getByRole('button', { name: /^Courier/ });
   const opens = [];
   for (let i = 0; i < RUNS + 1; i += 1) {
     await tile.focus();

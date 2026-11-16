@@ -1,0 +1,12 @@
+From: =?windows-1252?B?UmV2aWV3IERlc2s=?= <review@example.com>
+To: me@desk.example
+Date: Fri, 13 Nov 2026 10:00:00 +0000
+Subject: =?windows-1252?Q?=93Quarterly=94_review_=96_draft?=
+Message-ID: <charset-windows-1252-qp@corpus.example>
+MIME-Version: 1.0
+X-Corpus-Note: text/plain in windows-1252, quoted-printable, subject and sender name as encoded words in the same charset
+Content-Type: text/plain; charset="windows-1252"
+Content-Transfer-Encoding: quoted-printable
+
+The =93quarterly=94 review is ready =97 comments by Friday, please. Cost: =
+=8040.

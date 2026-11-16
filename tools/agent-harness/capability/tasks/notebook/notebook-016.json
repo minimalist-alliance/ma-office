@@ -1,0 +1,84 @@
+{
+  "id": "notebook-016",
+  "area": "notebook",
+  "title": "Create a page in another tab",
+  "prompt": "Create a page Sprint goals in my Harness Work tab with three goals: ship search, fix the importer, write the release notes.",
+  "setup": {
+    "notebook": [
+      {
+        "tab": "Harness Work",
+        "title": "Standup",
+        "markdown": "# Standup\n\nDaily notes.\n"
+      },
+      {
+        "tab": "Harness",
+        "title": "Inbox",
+        "markdown": "# Inbox\n\nThings to sort later.\n"
+      }
+    ]
+  },
+  "approve": "all",
+  "checks": [
+    {
+      "kind": "page",
+      "tab": "Harness Work",
+      "title": "Sprint goals",
+      "contains": [
+        "ship search",
+        "importer",
+        "release notes"
+      ]
+    },
+    {
+      "kind": "noPage",
+      "tab": "Harness",
+      "title": "Sprint goals"
+    },
+    {
+      "kind": "cards",
+      "tools": [
+        "notebook_write"
+      ]
+    }
+  ],
+  "policy": {
+    "tools": [
+      "notebook_list",
+      "notebook_write"
+    ]
+  },
+  "standIn": [
+    {
+      "calls": [
+        {
+          "name": "notebook_list",
+          "input": {}
+        }
+      ]
+    },
+    {
+      "calls": [
+        {
+          "name": "notebook_write",
+          "input": {
+            "op": "create",
+            "new": {
+              "tabId": {
+                "$re": {
+                  "step": 0,
+                  "call": 0,
+                  "pattern": "\"tabId\":\"([^\"]+)\",\"title\":\"Harness Work\""
+                }
+              },
+              "title": "Sprint goals"
+            },
+            "markdown": "- Ship search\n- Fix the importer\n- Write the release notes"
+          }
+        }
+      ]
+    },
+    {
+      "text": "Made Sprint goals in your Harness Work tab."
+    }
+  ]
+}

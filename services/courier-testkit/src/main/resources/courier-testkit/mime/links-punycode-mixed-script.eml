@@ -1,0 +1,10 @@
+From: Security <security@account-check.example>
+To: me@desk.example
+Date: Fri, 13 Nov 2026 10:00:00 +0000
+Subject: Renew your account
+Message-ID: <links-punycode-mixed-script@corpus.example>
+MIME-Version: 1.0
+X-Corpus-Note: punycode hosts and a raw mixed-script host (Cyrillic letters standing in for Latin)
+Content-Type: text/html; charset=utf-8
+
+<html><body><p>Please renew your account today.</p><a href="https://xn--pypal-4ve.example/login">paypal.example</a> <a href="https://xn--80ak6aa92e.example/">apple.example</a> <a href="https://pаypal.example/verify">verify</a> <a href="https://xn--bcher-kva.example/">bücher</a></body></html>

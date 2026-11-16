@@ -1,8 +1,14 @@
 // The bars at the widths where they once broke (task 34 item 3): at 375 px with four desks the bottom bar ran Fit off
 // the right edge, at 320 px the scope switch reached the edge, and at 1024 px the hints wrapped to two lines. Every
-// control in both bars is checked wholly on screen and on top, nothing scrolls sideways, and the bars don't meet.
+// control in both bars is checked wholly on screen and on top, nothing scrolls sideways, and the bars don't meet. And
+// the top bar is one row (`sub/topbar-narrow`): on screen and on top wasn't enough, as at 390 px with two desks it took
+// three rows, every control still on screen; so each control's middle is checked level with the others'.
+import { readFileSync } from 'node:fs';
+import { createRequire } from 'node:module';
 import { expect, test, type APIRequestContext, type Page } from '@playwright/test';
 import { canvasPainted, harness, setTheme, signIn, type ThemeId } from './helpers';
+
+const AXE = readFileSync(createRequire(import.meta.url).resolve('axe-core/axe.min.js'), 'utf8');
 
 const FLEET = [
   { deskId: 'd-personal00001', name: 'Personal', kind: 'personal', state: 'running' },
@@ -96,18 +102,253 @@ test.describe('375 px', () => {
 
 test.describe('320 px', () => {
   for (const desks of [3, 4]) {
-    test(`${desks} desks: the scope switch keeps clear of the edge, whichever scope is chosen`, async ({ page, request }) => {
+    test(`${desks} desks: the scope's button keeps clear of the edge on one row, whichever scope is chosen`, async ({ page, request }) => {
       await arriveWith(page, request, desks, { width: 320, height: 640 });
       for (const scope of ['Personal', 'Work', 'Guild', 'All']) {
-        await page.getByRole('radio', { name: scope }).click();
+        await page.locator('.scope-menu .chip-btn').click();
+        await page.getByRole('menuitemradio', { name: scope }).click();
+        await expect(page.getByRole('button', { name: `Scope: ${scope}` })).toBeVisible();
         await page.waitForTimeout(150);
-        const sw = await box(page, '.segmented.scope');
+        const sw = await box(page, '.scope-menu .chip-btn');
         expect(sw.left, scope).toBeGreaterThanOrEqual(16);
-        expect(sw.right, scope).toBeLessThanOrEqual(320 - 16);
+        expect(sw.right, scope).toBeLessThanOrEqual((await box(page, '.top-actions .icon-btn')).left);
         await everyControlShown(page);
+        await oneRow(page, scope);
       }
       await page.screenshot({ path: `test-results/shots/bars-320-${desks}.png` });
     });
+  }
+});
+
+// ---------------------------------------------------------------- the top bar is one row (`sub/topbar-narrow`)
+// From 320 px, with one desk to four, in a plain narrow window and on a phone (touch, the phone layout): where the whole
+// scope switch doesn't fit one row beside the buttons it folds into one menu button naming the scope (`useScopeFolds`,
+// `chrome/TopBar.tsx`), as short-viewport mode's does, decided before the first paint, so the bar never shows a second
+// row first. At 390 px with two desks it took three: the switch under the mark, then the shield and full screen, then the
+// bell and the account. The right group keeps a whole 44 px target each with a finger.
+const WIDTHS = [320, 360, 375, 390, 1024];
+
+/** Every control in the top bar (the mark, every button; not a menu's) and its middle: one row is one middle. */
+async function oneRow(page: Page, when: string): Promise<void> {
+  const seen = await page.evaluate(() => {
+    const bar = document.querySelector<HTMLElement>('.topbar')!;
+    const els = [...bar.querySelectorAll<HTMLElement>('.home-mark > *, button')].filter((el) => !el.closest('.menu') && el.getBoundingClientRect().width > 0);
+    return {
+      height: bar.getBoundingClientRect().height,
+      mids: els.map((el) => {
+        const r = el.getBoundingClientRect();
+        return { name: el.getAttribute('aria-label') ?? el.textContent?.trim() ?? el.tagName, mid: r.top + r.height / 2 };
+      }),
+    };
+  });
+  expect(seen.mids.length, when).toBeGreaterThanOrEqual(5);
+  const first = seen.mids[0]!.mid;
+  expect(seen.mids.filter((m) => Math.abs(m.mid - first) > 1).map((m) => `${m.name} at ${m.mid}`), when).toEqual([]);
+  expect(seen.height, when).toBeLessThanOrEqual(66);
+}
+
+/** Records the top bar at every frame from the page's start, so a second row shown first and then folded is caught. */
+async function watchFrames(page: Page): Promise<void> {
+  await page.addInitScript(() => {
+    const seen: string[] = [];
+    (window as unknown as { __topFrames: string[] }).__topFrames = seen;
+    const tick = (): void => {
+      const bar = document.querySelector('.topbar');
+      if (bar) {
+        const now = `${Math.round(bar.getBoundingClientRect().height)}px ${bar.className}`;
+        if (seen[seen.length - 1] !== now) seen.push(now);
+      }
+      requestAnimationFrame(tick);
+    };
+    requestAnimationFrame(tick);
+  });
+}
+const frames = (page: Page): Promise<string[]> => page.evaluate(() => (window as unknown as { __topFrames: string[] }).__topFrames);
+
+/** The narrowest press each of the right group's buttons and the scope's button takes, from its middle out, as a press lands. */
+function targets(page: Page): Promise<string[]> {
+  return page.evaluate(() => {
+    const out: string[] = [];
+    for (const el of document.querySelectorAll<HTMLElement>('.top-actions button, .topbar .chip-btn')) {
+      const b = el.getBoundingClientRect();
+      const [cx, cy] = [b.left + b.width / 2, b.top + b.height / 2];
+      const on = (x: number, y: number): boolean => {
+        if (x < 0 || y < 0 || x >= innerWidth || y >= innerHeight) return false;
+        const h = document.elementFromPoint(x, y);
+        return !!h && el.contains(h);
+      };
+      let [l, r, t, d] = [0, 0, 0, 0];
+      while (l < 30 && on(cx - l - 1, cy)) l++;
+      while (r < 30 && on(cx + r + 1, cy)) r++;
+      while (t < 30 && on(cx, cy - t - 1)) t++;
+      while (d < 30 && on(cx, cy + d + 1)) d++;
+      if (l + r + 1 < 44 || t + d + 1 < 44) out.push(`${el.getAttribute('aria-label') ?? el.textContent?.trim()} ${l + r + 1}x${t + d + 1}`);
+    }
+    return out;
+  });
+}
+
+async function axeViolations(page: Page): Promise<string[]> {
+  await page.evaluate((src) => { (0, eval)(src); }, AXE);
+  return page.evaluate(async () => {
+    const r = await (window as unknown as { axe: { run: (c: unknown, o: unknown) => Promise<{ violations: { id: string; nodes: { target: string[] }[] }[] }> } }).axe.run(document, { runOnly: ['wcag2a', 'wcag2aa', 'wcag21a', 'wcag21aa', 'wcag22aa'] });
+    return r.violations.filter((v) => v.id !== 'color-contrast').map((v) => `${v.id}: ${v.nodes.map((n) => n.target.join(' ')).join(', ')}`);
+  });
+}
+
+for (const phone of [false, true]) {
+  test.describe(phone ? 'one row, on a phone' : 'one row, in a narrow window', () => {
+    if (phone) test.use({ hasTouch: true, isMobile: true });
+    for (const desks of [1, 2, 3, 4]) {
+      test(`${desks} desk${desks > 1 ? 's' : ''}: the top bar is one row at ${WIDTHS.join(', ')} px, from its first paint and as the window changes`, async ({ page, request }) => {
+        await arriveWith(page, request, desks, { width: 390, height: 844 });
+        await watchFrames(page);
+        for (const width of WIDTHS) {
+          const at = `${width} px`;
+          await page.setViewportSize({ width, height: width >= 1024 ? 768 : 700 });
+          await page.reload();
+          await canvasPainted(page);
+          // One look from the first frame the bar is drawn in: never a second row, then folded.
+          expect(await frames(page), at).toHaveLength(1);
+          await oneRow(page, at);
+          await everyControlShown(page);
+          // Folded on a phone's width with a scope to choose, the whole switch where it fits.
+          const folds = desks > 1 && width < 1024;
+          await expect(page.locator('.scope-menu .chip-btn'), at).toHaveCount(folds ? 1 : 0);
+          await expect(page.getByRole('radiogroup', { name: 'Scope' }), at).toHaveCount(desks > 1 && !folds ? 1 : 0);
+          if (folds) await expect(page.getByRole('button', { name: 'Scope: All' }), at).toBeVisible();
+          if (phone) expect(await targets(page), at).toEqual([]);
+        }
+        // The window changing under it: one row at every step, folding and unfolding as it goes.
+        for (const width of [1024, 700, 610, 600, 505, 500, 390, 375, 360, 320, 390, 1024]) {
+          await page.setViewportSize({ width, height: 700 });
+          await page.waitForTimeout(100);
+          await oneRow(page, `resized to ${width} px`);
+          expect(await noSideScroll(page), `resized to ${width} px`).toBe(true);
+        }
+        if (desks === 4) await page.screenshot({ path: `test-results/shots/bars-one-row-${phone ? 'phone' : 'window'}.png` });
+      });
+    }
+
+    test('390 px, four desks: the folded scope opens its list, a pick or Esc shuts it and the keyboard goes back to its button; axe finds nothing', async ({ page, request }) => {
+      await arriveWith(page, request, 4, { width: 390, height: 844 });
+      const btn = page.getByRole('button', { name: 'Scope: All' });
+      await expect(btn).toHaveAttribute('aria-haspopup', 'menu');
+      await expect(btn).toHaveAttribute('aria-expanded', 'false');
+      expect(await axeViolations(page), 'shut').toEqual([]);
+      const menu = page.getByRole('menu', { name: 'Scope' });
+      const items = menu.getByRole('menuitemradio');
+      // The keyboard: Enter opens it on the current one, Down moves, Enter picks, and the keyboard is back on the button.
+      await btn.focus();
+      await page.keyboard.press('Enter');
+      await expect(menu).toBeVisible();
+      await expect(btn).toHaveAttribute('aria-expanded', 'true');
+      await expect(items).toHaveText(['Personal', 'Work', 'Guild', 'All']);
+      await expect(items.nth(3)).toBeFocused();
+      expect(await axeViolations(page), 'open').toEqual([]);
+      const list = await box(page, '#scope-list');
+      expect(list.left).toBeGreaterThanOrEqual(0);
+      expect(list.right).toBeLessThanOrEqual(390);
+      expect(list.top).toBeGreaterThanOrEqual((await box(page, '.scope-menu .chip-btn')).bottom);
+      await page.screenshot({ path: `test-results/shots/bars-390-scope-open-${phone ? 'phone' : 'window'}.png` });
+      await page.keyboard.press('ArrowDown');
+      await expect(items.nth(0)).toBeFocused();
+      await page.keyboard.press('ArrowDown');
+      await expect(items.nth(1)).toBeFocused();
+      await page.keyboard.press('Enter');
+      await expect(menu).toHaveCount(0);
+      const work = page.getByRole('button', { name: 'Scope: Work' });
+      await expect(work).toBeFocused();
+      await expect(work).toHaveAttribute('aria-expanded', 'false');
+      await expect(page.locator('.desk-nav-label')).toContainText('Work');
+      await oneRow(page, 'Work chosen');
+      // Esc shuts it, the keyboard back on its button, the scope as it was.
+      await page.keyboard.press('Space');
+      await expect(items.nth(1)).toBeFocused();
+      await page.keyboard.press('Escape');
+      await expect(menu).toHaveCount(0);
+      await expect(work).toBeFocused();
+      await expect(work).toHaveAttribute('aria-expanded', 'false');
+      // A press (a tap on a phone) opens it and picks; the keyboard is back on the button.
+      if (phone) await work.tap();
+      else await work.click();
+      await expect(menu).toBeVisible();
+      const all = menu.getByRole('menuitemradio', { name: 'All' });
+      if (phone) await all.tap();
+      else await all.click();
+      await expect(menu).toHaveCount(0);
+      await expect(btn).toBeFocused();
+      await oneRow(page, 'All chosen');
+    });
+  });
+}
+
+// The mark's menu open (its spec §3 and §9): nothing in the bar moves (the mark's button takes back its own padding), the
+// bar stays one row, and the panel is wholly on screen, scrolling inside where the screen is short.
+test.describe('the mark\'s menu open', () => {
+  const where = (page: Page): Promise<{ mark: number[] | null; scope: number[] | null; folded: boolean }> =>
+    page.evaluate(() => {
+      const at = (s: string): number[] | null => {
+        const e = document.querySelector(s);
+        if (!e) return null;
+        const r = e.getBoundingClientRect();
+        return [r.left, r.top, r.width, r.height];
+      };
+      return { mark: at('.home-mark > h1'), scope: at('.topbar > .scope-menu'), folded: !!document.querySelector('.topbar.folded') };
+    });
+  for (const size of [{ width: 320, height: 640 }, { width: 360, height: 740 }, { width: 375, height: 812 }, { width: 390, height: 844 }, { width: 360, height: 225 }]) {
+    test(`${size.width} x ${size.height}, one to four desks: the mark and the folded scope button stay put, one row, the panel on screen`, async ({ page, request }) => {
+      for (let desks = 1; desks <= 4; desks++) {
+        await arriveWith(page, request, desks, size);
+        const before = await where(page);
+        await page.getByRole('button', { name: 'Minimalist Alliance', exact: true }).focus();
+        await page.keyboard.press('Enter');
+        await expect(page.getByRole('navigation', { name: 'Minimalist Alliance' })).toBeVisible();
+        await page.waitForTimeout(300);
+        expect(await where(page), `${desks} desk(s)`).toEqual(before);
+        if (desks > 1 && size.width <= 390) expect(before.folded, `${desks} desks fold the scope`).toBe(true);
+        const middles = await page.evaluate(() =>
+          [...document.querySelectorAll('.topbar > .home-mark, .topbar > .scope-menu, .topbar .top-actions > *')]
+            .map((e) => e.getBoundingClientRect())
+            .filter((r) => r.width > 0)
+            .map((r) => r.top + r.height / 2),
+        );
+        expect(Math.max(...middles) - Math.min(...middles), `${desks} desk(s): one row`).toBeLessThanOrEqual(1);
+        const pop = await box(page, '.mark-pop');
+        expect(pop.left, 'the panel on screen').toBeGreaterThanOrEqual(0);
+        expect(pop.top).toBeGreaterThanOrEqual(0);
+        expect(pop.right).toBeLessThanOrEqual(size.width);
+        expect(pop.bottom).toBeLessThanOrEqual(size.height);
+        await page.keyboard.press('Escape');
+        await expect(page.locator('.mark-pop')).toHaveCount(0);
+      }
+    });
+  }
+});
+
+// With the office tour on (ADR 0056), "Take the tour" is one row more in the menu's first group: the panel is still wholly on
+// screen, scrolling inside where the screen is short.
+test('the mark\'s menu with Take the tour: one row more, the panel still wholly on screen', async ({ page, request }) => {
+  await page.addInitScript(() => {
+    if (window === window.top) localStorage.setItem('ma.tour.v1', JSON.stringify({ who: 'u-test', off: true }));
+  });
+  for (const size of [{ width: 320, height: 640 }, { width: 390, height: 844 }, { width: 360, height: 225 }, { width: 1440, height: 900 }]) {
+    for (const desks of [1, 2]) {
+      await arriveWith(page, request, desks, size, '/', { walkthrough: null });
+      await page.getByRole('button', { name: 'Minimalist Alliance', exact: true }).focus();
+      await page.keyboard.press('Enter');
+      const nav = page.getByRole('navigation', { name: 'Minimalist Alliance' });
+      await expect(nav.getByRole('button', { name: 'Take the tour' })).toBeVisible();
+      await page.waitForTimeout(300);
+      const pop = await box(page, '.mark-pop');
+      const at = `${size.width} x ${size.height}, ${desks} desk(s)`;
+      expect(pop.left, at).toBeGreaterThanOrEqual(0);
+      expect(pop.top, at).toBeGreaterThanOrEqual(0);
+      expect(pop.right, at).toBeLessThanOrEqual(size.width);
+      expect(pop.bottom, at).toBeLessThanOrEqual(size.height);
+      await page.keyboard.press('Escape');
+      await expect(page.locator('.mark-pop')).toHaveCount(0);
+    }
   }
 });
 

@@ -1,6 +1,7 @@
 // Calls to Support Maia's member routes (ma-platform contract maia.md), on `maia.url`, a Function URL that isn't api.
 // Same token as every other call, refreshed once after a 401, as `platform/api.ts` does. Nothing else rides along:
 // no cookies, and never anything from a desk.
+import { heardAccountClosed } from '../platform/accountClosed';
 import { getAccessToken } from '../platform/auth';
 
 export async function maiaFetch(base: string, path: string, init: RequestInit = {}): Promise<Response> {
@@ -10,8 +11,11 @@ export async function maiaFetch(base: string, path: string, init: RequestInit = 
     headers.set('Authorization', `Bearer ${token}`);
     return fetch(`${base}${path}`, { ...init, headers, credentials: 'omit', cache: 'no-store' });
   };
-  const res = await send(false);
-  return res.status === 401 ? send(true) : res;
+  const first = await send(false);
+  const res = first.status === 401 ? await send(true) : first;
+  // Her routes answer a closed account `403 account_closed` (ma-platform contract moderation.md section 8): the office hears it.
+  if (res.status === 403) void errorCode(res.clone()).then(heardAccountClosed);
+  return res;
 }
 
 /** The error envelope's `code` (contract errors.md), if the body has one. */

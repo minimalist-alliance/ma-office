@@ -1,0 +1,13 @@
+From: =?utf-8?B?QsO8cm8=?= <buero@example.com>
+To: me@desk.example
+Date: Fri, 13 Nov 2026 10:00:00 +0000
+Subject: =?utf-8?B?U3RyYcOfZW5zcGVycmU=?=
+Message-ID: <charset-utf-16le-bom@corpus.example>
+MIME-Version: 1.0
+X-Corpus-Note: text/plain in utf-16 with a byte-order mark, base64
+Content-Type: text/plain; charset=utf-16
+Content-Transfer-Encoding: base64
+
+//5HAHUAdABlAG4AIABUAGEAZwAsAA0ACgANAAoAZABpAGUAIABTAHQAcgBhAN8AZQAgAHYAbwBy
+ACAAZABlAG0AIABCAPwAcgBvACAAaQBzAHQAIABtAG8AcgBnAGUAbgAgAGcAZQBzAHAAZQByAHIA
+dAAuAA0ACgA=

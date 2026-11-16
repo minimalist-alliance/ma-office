@@ -205,6 +205,18 @@ final class SafeTree implements AutoCloseable {
 
         Dir sub(String name) throws TreeException {
             try {
+                // Only a directory is opened as one: openat with O_RDONLY on a FIFO blocks until a writer comes, which
+                // would hold the carrier thread for good (the JDK has no O_DIRECTORY or O_NONBLOCK here). Only deskd's uid
+                // writes this tree, so nothing swaps the entry between the look and the open.
+                BasicFileAttributes a;
+                try {
+                    a = attrs(name);
+                } catch (NoSuchFileException e) {
+                    throw new TreeException(Kind.NOT_FOUND);
+                }
+                if (!a.isDirectory() || a.isSymbolicLink()) {
+                    throw new TreeException(a.isRegularFile() ? Kind.NOT_A_DIR : Kind.NOT_FOUND);
+                }
                 SecureDirectoryStream<Path> child = stream.newDirectoryStream(Path.of(name), NOFOLLOW);
                 return new Dir(child, real.resolve(name), true);
             } catch (IOException | RuntimeException e) {

@@ -1,0 +1,33 @@
+From: Announcements <announce@lists.example.org>
+To: me@desk.example
+Date: Fri, 13 Nov 2026 10:00:00 +0000
+Subject: Announcements digest, Vol 12, Issue 3
+Message-ID: <digest@corpus.example>
+MIME-Version: 1.0
+X-Corpus-Note: multipart/digest: parts default to message/rfc822
+Content-Type: multipart/mixed; boundary="dg-0"
+
+--dg-0
+Content-Type: text/plain; charset=us-ascii
+
+Today's announcements: two messages.
+--dg-0
+Content-Type: multipart/digest; boundary="dg-1"
+
+--dg-1
+
+From: office@example.org
+Subject: Office closed Monday
+Date: Thu, 12 Nov 2026 08:00:00 +0000
+
+The office is closed on Monday.
+--dg-1
+
+From: kitchen@example.org
+Subject: Coffee machine
+Date: Thu, 12 Nov 2026 09:00:00 +0000
+
+The coffee machine is fixed.
+--dg-1--
+
+--dg-0--

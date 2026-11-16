@@ -1,0 +1,14 @@
+From: Envíos <envios@example.com>
+To: me@desk.example
+Date: Fri, 13 Nov 2026 10:00:00 +0000
+Subject: Base64 wrapped
+Message-ID: <cte-base64-wrapped@corpus.example>
+MIME-Version: 1.0
+X-Corpus-Note: base64 with the usual 76-character lines
+Content-Type: text/plain; charset=utf-8
+Content-Transfer-Encoding: base64
+
+TGEgZW50cmVnYSBsbGVnYXLDoSBtYcOxYW5hIHBvciBsYSB0YXJkZS4gR3JhY2lhcyBwb3Igc3Ug
+cGFjaWVuY2lhLg0KTGEgZW50cmVnYSBsbGVnYXLDoSBtYcOxYW5hIHBvciBsYSB0YXJkZS4gR3Jh
+Y2lhcyBwb3Igc3UgcGFjaWVuY2lhLg0KTGEgZW50cmVnYSBsbGVnYXLDoSBtYcOxYW5hIHBvciBs
+YSB0YXJkZS4gR3JhY2lhcyBwb3Igc3UgcGFjaWVuY2lhLg0K

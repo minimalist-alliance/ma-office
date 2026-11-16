@@ -1,6 +1,7 @@
 // Which notice an account with no desks sees. "Your desk is on its way" is a promise and "not active" is a verdict, so
 // nothing shows until `GET /v1/me` has said what the membership is: a paying member whose answer is slow sees the
 // canvas as it is while loading, never a card. The desk list can't stand in for it, even when it says unpaid.
+import { isAccountClosed } from '../platform/accountClosed';
 import { awaitingParent } from '../platform/age';
 import type { Me } from '../platform/api';
 import type { DeskListStatus } from '../state/deskStore';
@@ -10,10 +11,12 @@ import type { DeskListStatus } from '../state/deskStore';
  * `paused` is C (a payment failed and the desks stopped), `kept` is D (they cancelled, and their desks are kept until a
  * date), `welcomeBack` is E (that date has passed), and `inactive` is F (ended or suspended by us, held, or anything
  * `/v1/me` doesn't explain plainly). `parent` isn't a status of its own: it's a teen who'd be `unpaid` and whose parent
- * or guardian hasn't agreed yet.
+ * or guardian hasn't agreed yet. `accountClosed` isn't one either: an account the platform closed (ma-platform contract
+ * moderation.md section 8), which `/v1/me` says is ended and stopped by `other`, as F's are, but whose card offers the
+ * download and never Rejoin.
  */
 export type StopCard = 'paused' | 'kept' | 'welcomeBack';
-export type MembershipCard = 'welcome' | 'waitlist' | StopCard | 'inactive';
+export type MembershipCard = 'welcome' | 'waitlist' | StopCard | 'inactive' | 'accountClosed';
 export type NoDeskNotice = MembershipCard | 'parent' | 'empty' | 'error';
 
 export interface NoDeskInput {
@@ -24,6 +27,8 @@ export interface NoDeskInput {
   hasDesks?: boolean;
   /** For tests; the clock otherwise. D becomes E once the deletion date has passed. */
   now?: number;
+  /** An API answered `403 account_closed` (`platform/accountClosed.ts`), whatever `/v1/me` has said so far. */
+  closedHeard?: boolean;
 }
 
 /**
@@ -62,7 +67,10 @@ export function membershipCard(status: string | undefined): MembershipCard | nul
   }
 }
 
-export function noDeskNotice({ list, me, meFailed, hasDesks = false, now = Date.now() }: NoDeskInput): NoDeskNotice | null {
+export function noDeskNotice({ list, me, meFailed, hasDesks = false, now = Date.now(), closedHeard = false }: NoDeskInput): NoDeskNotice | null {
+  // A closed account's card comes before everything, the list included, and over its desks: whatever else it is (ended,
+  // stopped by `other`, a teen waiting on a parent, free), it is never F, D's Rejoin or any offer.
+  if (isAccountClosed(me, closedHeard)) return 'accountClosed';
   if (list === 'loading') return null;
   // A suspended or ended member still has desks, stopped. C and D say why they don't wake, over the desks; E and F
   // (and every other state) stay what they are: nothing over desks. An active member's office is untouched.

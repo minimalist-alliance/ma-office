@@ -1,0 +1,14 @@
+From: Facilities <facilities@example.org>
+To: me@desk.example
+Date: Fri, 13 Nov 2026 10:00:00 +0000
+Subject: x-uuencode body
+Message-ID: <cte-x-uuencode@corpus.example>
+MIME-Version: 1.0
+X-Corpus-Note: Content-Transfer-Encoding: x-uuencode
+Content-Type: text/plain; charset=us-ascii
+Content-Transfer-Encoding: x-uuencode
+
+begin 644 memo.txt
+J365M;SH@=&AE(&)O:6QE<B!S97)V:6-E(&ES(&]N(%1H=7)S9&%Y+@T*
+`
+end

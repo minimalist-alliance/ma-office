@@ -461,6 +461,46 @@ class BrowserViewTest {
         assertThat(gesture).containsEntry("scaleFactor", 0.5).doesNotContainKey("relativeSpeed");
     }
 
+    /** CDP's input is in the page's CSS pixels at its zoom (docs/sub-status/browser-zoom.md): the screen's over the Browser's zoom. */
+    @Test
+    void aPinchOnTheDesksOwnViewAtTheBrowsersZoomIsInThePagesPixels() throws Exception {
+        start(QUICK, "a");
+        rig.module.view().zoomFrom(() -> 200, () -> 2.0);
+        TestClient desk = rig.connect("cs-desk");
+        assertThat(desk.subscribe("browser.view", null)).containsEntry("_kind", "RES");
+        assertThat(awaitView(desk, BrowserViewTest::deskMode)).containsEntry("zoom", 200);
+        stream(desk, "live");
+        looks(desk, true, null);
+
+        assertThat(rig.call(desk, "browser.pinch", Map.of("x", 65535, "y", 65535, "scale", 2))).containsEntry("_kind", "RES");
+
+        Map<String, Object> gesture = on("Input.synthesizePinchGesture", "a").get(0).params();
+        assertThat(((Number) gesture.get("x")).doubleValue()).isCloseTo(960, within(0.01));
+        assertThat(((Number) gesture.get("y")).doubleValue()).isCloseTo(540, within(0.01));
+    }
+
+    /** The Browser's zoom reads no tab while a phone's view is wanted, shown, or still on a tab. */
+    @Test
+    void aPhonesViewIsInPlayFromWantedUntilEveryTabIsTheDesksAgain() throws Exception {
+        start(QUICK, "a", "b");
+        rig.module.view().zoomFrom(() -> 150, () -> 1.5);
+        TestClient desk = rig.connect("cs-desk");
+        assertThat(desk.subscribe("browser.view", null)).containsEntry("_kind", "RES");
+        stream(desk, "live");
+        looks(desk, true, null);
+        assertThat(rig.module.view().phoneInPlay()).isFalse();
+
+        phoneLooks();
+        assertThat(rig.module.view().phoneInPlay()).isTrue();
+        awaitView(desk, view -> phoneMode(view) && Integer.valueOf(150).equals(view.get("zoom")));
+        awaitPhoneOn("a", "b");
+
+        rig.sessions.close("cs-phone", 1000, "closed_by_client");
+        awaitView(desk, BrowserViewTest::deskMode);
+        awaitDeskOn("a", "b");
+        assertThat(rig.module.view().phoneInPlay()).isFalse();
+    }
+
     // ---- the simplified view
 
     @Test

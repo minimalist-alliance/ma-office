@@ -1,0 +1,73 @@
+{
+  "id": "notebook-010",
+  "area": "notebook",
+  "title": "A page trash the member declines",
+  "prompt": "Move my Holiday card list page to the trash.",
+  "setup": {
+    "notebook": [
+      {
+        "tab": "Harness",
+        "title": "Holiday card list",
+        "markdown": "# Holiday card list\n\n- the Garcias\n- the Lees\n"
+      }
+    ]
+  },
+  "approve": {
+    "decline": [
+      "notebook_trash"
+    ]
+  },
+  "checks": [
+    {
+      "kind": "page",
+      "tab": "Harness",
+      "title": "Holiday card list",
+      "contains": [
+        "the Garcias"
+      ]
+    },
+    {
+      "kind": "cards",
+      "tools": [
+        "notebook_trash"
+      ]
+    }
+  ],
+  "policy": {
+    "tools": [
+      "notebook_search",
+      "notebook_trash"
+    ]
+  },
+  "standIn": [
+    {
+      "calls": [
+        {
+          "name": "notebook_search",
+          "input": {
+            "query": "Holiday card list"
+          }
+        }
+      ]
+    },
+    {
+      "calls": [
+        {
+          "name": "notebook_trash",
+          "input": {
+            "pageId": {
+              "$re": {
+                "step": 0,
+                "call": 0,
+                "pattern": "\"pageId\":\"([^\"]+)\",\"title\":\"Holiday card list\""
+              }
+            }
+          }
+        }
+      ]
+    },
+    {
+      "text": "You declined, so Holiday card list stays."
+    }
+  ]
+}

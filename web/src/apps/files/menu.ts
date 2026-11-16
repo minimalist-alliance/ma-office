@@ -3,7 +3,7 @@
 // left out here. Nothing in this file decides how an action is done: `FilesBody` does that, as for the bar.
 import type { Sel } from './selection';
 
-export type MenuAction = 'open' | 'download' | 'rename' | 'move' | 'delete' | 'restore' | 'deleteForever' | 'emptyTrash' | 'uploadFiles' | 'uploadFolder' | 'newFolder';
+export type MenuAction = 'view' | 'open' | 'download' | 'rename' | 'move' | 'delete' | 'restore' | 'deleteForever' | 'emptyTrash' | 'uploadFiles' | 'uploadFolder' | 'newFolder';
 
 export interface MenuItem {
   id: MenuAction;
@@ -15,6 +15,7 @@ export interface MenuItem {
 }
 
 export const LABELS: Record<MenuAction, string> = {
+  view: 'View',
   open: 'Open',
   download: 'Download',
   rename: 'Rename',
@@ -51,8 +52,11 @@ export interface MenuWorld {
   rowCount: number;
 }
 
-/** The menu on `rows` (the selection the click leaves), or on the list's empty space when `rows` is null. */
-export function menuItems(world: MenuWorld, rows: readonly { type: 'file' | 'dir' }[] | null): MenuItem[] {
+/**
+ * The menu on `rows` (the selection the click leaves), or on the list's empty space when `rows` is null. A file Documents can show
+ * (`viewable`, decided by `FilesBody`: Documents is on this desk and the name is a kind its viewer draws) has View first.
+ */
+export function menuItems(world: MenuWorld, rows: readonly { type: 'file' | 'dir'; viewable?: boolean }[] | null): MenuItem[] {
   if (world.locked) return [];
   const { mode } = world;
   if (!rows) {
@@ -66,6 +70,8 @@ export function menuItems(world: MenuWorld, rows: readonly { type: 'file' | 'dir
   const out: MenuAction[] = [];
   // The bar has no Open (Enter and a double click are it); a folder's menu offers it, as a file manager's does.
   if (one && rows[0]!.type === 'dir') out.push('open');
+  // Documents' viewer, in the office (the documents concept §8.1): View first, with Download kept as it is.
+  if (one && rows[0]!.type === 'file' && rows[0]!.viewable) out.push('view');
   if (one) out.push('download', 'rename');
   out.push('move', 'delete');
   return items(...out);

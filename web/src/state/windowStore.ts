@@ -1,6 +1,7 @@
 // windows of design 3.13: one window per app per desk, up to 4 per desk. Rects are per device.
 import { create } from 'zustand';
 import { readJson, writeJson } from '../lib/util';
+import { recordFromStored, recordToStored } from '../canvas/storedIds';
 import { baseApp, type AppId, type BaseAppId, type Rect } from '../canvas/layout';
 import { host } from '../deskapps/door';
 import { adultOnly, mayHaveApp } from '../platform/age';
@@ -31,7 +32,8 @@ interface WindowsState {
 export const windowKey = (deskId: string, app: AppId): string => `${deskId}:${app}`;
 
 const RECTS_KEY = 'ma.windows.v1';
-const savedRects = readJson<Record<string, { rect: Rect; mode: WindowMode }>>(RECTS_KEY) ?? {};
+// Keyed by `windowKey`, Courier's `<desk>:chat` as every build stores it (`canvas/storedIds.ts`).
+const savedRects = recordFromStored(readJson<Record<string, { rect: Rect; mode: WindowMode }>>(RECTS_KEY) ?? {});
 
 export const useWindowStore = create<WindowsState>(() => ({ windows: {}, active: null }));
 
@@ -44,11 +46,13 @@ export const TOP_BAR = 72;
 
 const DEFAULT_SIZE: Record<BaseAppId, { w: number; h: number | 'full'; side?: 'right'; mode?: WindowMode }> = {
   notebook: { w: 880, h: 640 },
-  chat: { w: 720, h: 640 },
+  courier: { w: 720, h: 640 },
   agent: { w: 480, h: 'full', side: 'right' },
   browser: { w: 1120, h: 780, mode: 'full' },
   commons: { w: 960, h: 680 },
   files: { w: 880, h: 640 },
+  todo: { w: 760, h: 680 },
+  documents: { w: 880, h: 720 },
   // An installed app opens at its manifest's own size where its desk has said it (the desk app host's `windowSize`), the title bar on top.
   deskapp: { w: 480, h: 440 },
 };
@@ -82,7 +86,7 @@ export function clampRect(r: Rect): Rect {
 function saveRects(): void {
   const { windows } = useWindowStore.getState();
   for (const w of Object.values(windows)) savedRects[w.key] = { rect: w.rect, mode: w.mode };
-  writeJson(RECTS_KEY, savedRects);
+  writeJson(RECTS_KEY, recordToStored(savedRects));
 }
 
 /**
@@ -164,6 +168,19 @@ export function removeWindow(key: string): void {
     ? (Object.values(rest).filter((w) => !w.closing).sort((a, b) => b.z - a.z)[0]?.key ?? null)
     : active;
   useWindowStore.setState({ windows: rest, active: next });
+}
+
+/**
+ * This tab's tokens became another account's (a sign-in in another tab; ISS-89's follow-up): every window goes at once,
+ * full-screen and closing ones too, with no animation, nothing asked and nothing saved. Each was the last member's, on a
+ * desk their list had, so its tile went with that list and there's nowhere of theirs for focus to go back to: focus leaves
+ * the window now, before a key can land in it, and the office's tab stop starts over (`session.ts`).
+ */
+export function closeAllWindows(): void {
+  if (!Object.keys(useWindowStore.getState().windows).length) return;
+  const el = typeof document === 'undefined' ? null : document.activeElement;
+  if (el?.closest('.window-layer') && 'blur' in el) (el as HTMLElement).blur();
+  useWindowStore.setState({ windows: {}, active: null });
 }
 
 /** `/v1/me` has just said this member is a teen: an adults-only app's window goes, at once and with nothing said. */

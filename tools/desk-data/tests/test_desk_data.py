@@ -232,6 +232,9 @@ def build_desk(t):
     t.write("browser/downloads/report.pdf", b"%PDF" + b"d" * 96)
     t.write("browser/home/.pki/nssdb/cert9.db", b"n")
     t.write("desk/volume.json", b'{"volumeId":"vol-x"}')
+    t.write("courier/keys/master.key", b"k" * 32)
+    t.write("courier/keys/imap-1.sealed", b"MAKV-sealed")
+    t.write("courier/blobs/ab/cd/x.eml.gz", b"gz")
     t.write("desk/notebook/volume.json", b"member's own file of that name")
     t.make_db("desk/deskd.db", rows=4)
     t.write("agent/memory.json", b"{}")
@@ -243,6 +246,8 @@ def build_desk(t):
     t.write("apps/tally/data/counts.json", b"[1,2,3]")
     t.write("files/photo.jpg", b"\xff\xd8" + b"p" * 998)
     t.write("rtc/key.pem", b"secret", 0o600)
+    t.write("keys/identity.key", b"MAIK-seed", 0o600)
+    t.write("keys/box-00112233445566778899aabbccddeeff.key", b"MABK-secret", 0o600)
     t.write("selfhost/key.pem", b"ed25519", 0o600)
     t.write("selfhost/pairing.json", b"{}")
     t.write("desk-egress/state.json", b"{}")
@@ -366,10 +371,10 @@ class TestParts(Base):
         self.assertEqual(r.header["helperVersion"], dd.HELPER_VERSION)
         parts = {p["part"]: p for p in r.header["parts"]}
         self.assertEqual([p["part"] for p in r.header["parts"]],
-                         ["agent", "apps", "browser", "browser-readable", "desk", "files", "zeta"])
+                         ["agent", "apps", "browser", "browser-readable", "courier", "desk", "files", "zeta"])
         self.assertEqual({k: v["label"] for k, v in parts.items()}, {
             "agent": "Agent", "apps": "Apps", "browser": "Browser", "browser-readable": "Bookmarks and history",
-            "desk": "Desk settings and Chat", "files": "Files", "zeta": "zeta"})
+            "courier": "Courier", "desk": "Desk settings and Chat", "files": "Files", "zeta": "zeta"})
         cookies = os.path.getsize(self.p("browser/profile/Default/Network/Cookies"))
         history = os.path.getsize(self.p("browser/profile/Default/History"))
         browser_files = {"Local State": 2, "Last Version": 13, "Preferences": 7, "000003.log": 2, "LOCK": 0,
@@ -381,6 +386,7 @@ class TestParts(Base):
         self.assertEqual((parts["desk"]["files"], parts["desk"]["bytes"]), (2, deskdb + 30))
         self.assertEqual((parts["files"]["files"], parts["files"]["bytes"]), (1, 1000))
         self.assertEqual((parts["zeta"]["files"], parts["zeta"]["bytes"]), (1, 7))
+        self.assertEqual((parts["courier"]["files"], parts["courier"]["bytes"]), (1, 2))   # keys/ left out
         self.assertEqual(parts["browser-readable"]["files"], 1)   # History only: no Bookmarks in this profile
 
     def test_notebook_is_a_part_of_its_own(self):
@@ -441,8 +447,18 @@ class TestManifest(Base):
         apps = self.all_paths("apps")
         self.assertEqual(apps, ["tally", "tally/data", "tally/data/counts.json"])
 
+    def test_courier_keys_never_leave(self):
+        courier = self.all_paths("courier")
+        self.assertIn("blobs/ab/cd/x.eml.gz", courier)
+        self.assertFalse([p for p in courier if p == "keys" or p.startswith("keys/")])
+
+    def test_desk_keys_never_leave(self):
+        parts = [p["part"] for p in self.call(op="parts").header["parts"]]
+        self.assertNotIn("keys", parts)
+        self.assertEqual(self.read("keys", "identity.key").code, "not_found")
+
     def test_machine_parts_not_found(self):
-        for part in ("rtc", "selfhost", "desk-egress", "lost+found", ".ma-move", ".ma-export-tmp", "nope",
+        for part in ("rtc", "selfhost", "desk-egress", "keys", "lost+found", ".ma-move", ".ma-export-tmp", "nope",
                      "files-link"):
             with self.subTest(part):
                 self.assertEqual(self.call(op="manifest", part=part).code, "not_found")
@@ -594,11 +610,15 @@ class TestPathSafety(Base):
                            ("browser", "profile/SingletonLock"),
                            ("browser", "profile/Default/Network/Cookies-journal"),
                            ("desk", "volume.json"),
+                           ("courier", "keys/master.key"),
+                           ("courier", "keys/imap-1.sealed"),
                            ("apps", "registry.json"),
                            ("apps", "tally/releases/1.0.0/bin/tally"),
                            ("apps", "tally/cache/c.bin"),
                            ("apps", "tally/current"),
                            ("rtc", "key.pem"),
+                           ("keys", "identity.key"),
+                           ("keys", "box-00112233445566778899aabbccddeeff.key"),
                            ("selfhost", "key.pem"),
                            ("selfhost", "pairing.json"),
                            ("desk-egress", "state.json"),

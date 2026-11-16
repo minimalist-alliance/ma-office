@@ -1,0 +1,49 @@
+{
+  "id": "files-003",
+  "area": "files",
+  "title": "Read a file and answer",
+  "prompt": "Read Harness/notes/wifi.txt and tell me the guest network password.",
+  "setup": {
+    "files": {
+      "Harness/notes/wifi.txt": "Home network: Lantern\nGuest network: Lantern-Guest\nGuest password: blue-kettle-42\n"
+    }
+  },
+  "approve": "all",
+  "checks": [
+    {
+      "kind": "reply",
+      "contains": [
+        "blue-kettle-42"
+      ],
+      "state": "done"
+    },
+    {
+      "kind": "untrusted",
+      "value": true
+    },
+    {
+      "kind": "cards",
+      "tools": []
+    }
+  ],
+  "policy": {
+    "tools": [
+      "files_read"
+    ]
+  },
+  "standIn": [
+    {
+      "calls": [
+        {
+          "name": "files_read",
+          "input": {
+            "path": "Harness/notes/wifi.txt"
+          }
+        }
+      ]
+    },
+    {
+      "text": "The guest network password is blue-kettle-42."
+    }
+  ]
+}

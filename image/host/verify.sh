@@ -36,6 +36,13 @@
 #      0.1.14's slot code (its mutation) fails links out and the policy, a desk-browser-start without the switch fails jxl.
 #   9. a start on a slot with no record (verify-wake.sh) prepares it and starts it, and deskd's and desk-agent's JVMs map their AppCDS
 #      archives; 0.1.15's desk-host (its mutation) ends that start silently, and app jars at a new time run the JVMs without them.
+#   10. the Agent's attachment reader in a slot (verify-parse.sh, ADR 0097): its config from the host's side, a text file and a PDF through
+#      it as the slot's uid 1103 (others refused), -clean, the memory limit, and desk-parse following desk-agent's switch; three mutations.
+#   11. Chromium's histogram directory on a tmpfs in a slot (verify-metrics.sh, ISS-96): one tmpfs at /data/browser/profile/BrowserMetrics,
+#      kiosk's, 0700, nosuid,nodev,noexec, 32 MiB, from mounts.py; the step turned off (METRICS_TMPFS=off, its mutation) fails it.
+#   12. Courier's mail reader in a slot (verify-courier.sh): desk-parse-courier's config from the host's side, a message through it as the
+#      slot's uid 1100 (others refused), its tracker list against blocker.pin, and it following desk-agent's switch; then deskd's egress for
+#      linked mailboxes (MX through its resolver, TCP 993, 465 and 587) from slot 1's network namespace as uid 1100; seven mutations.
 # This is SlotMode=address (choice A, no SlotMode tag); SLOT_MODE=port runs verify-port.sh, SlotMode=port's own run.
 # Evidence: image/host/evidence/verify-<ami>.txt (addresses replaced). Creates only tagged temporary resources, removed on exit.
 set -euo pipefail
@@ -622,18 +629,19 @@ else:
 sys.exit(0 if r == 0 else ctypes.get_errno() or 1)
 P
 }
-fmut() {   # fmut break|fix: slot 1's deskd with 0.1.10's /data/files (a root-owned mode 000 tmpfs over the volume's: its placeholder), and back
-  python3 -I - "$1" "$(runc state dh-svc-1-deskd | python3 -I -c 'import json,sys; print(json.load(sys.stdin)["pid"])')" <<'P'
+fmut() {   # fmut break|fix [dir]: slot 1's deskd with 0.1.10's /data/files, or another of its /data directories (a root-owned mode 000 tmpfs
+  # over the volume's: its placeholder), and back
+  python3 -I - "$1" "$(runc state dh-svc-1-deskd | python3 -I -c 'import json,sys; print(json.load(sys.stdin)["pid"])')" "${2:-/data/files}" <<'P'
 import ctypes, os, sys
-what, pid = sys.argv[1:]
+what, pid, d = sys.argv[1:]
 libc = ctypes.CDLL(None, use_errno=True)
 # the sandbox's mounts, read from the host's /proc before setns: inside, /proc is the sandbox's own and has no /proc/self for this process
-top = [l.split() for l in open(f"/proc/{pid}/mountinfo") if l.split()[4] == "/data/files"]
+top = [l.split() for l in open(f"/proc/{pid}/mountinfo") if l.split()[4] == d]
 os.setns(os.open(f"/proc/{pid}/ns/mnt", os.O_RDONLY), os.CLONE_NEWNS)
 if what == "break":
-    r = libc.mount(b"h5-mutation", b"/data/files", b"tmpfs", 0x2 | 0x4 | 0x8, b"mode=000,size=4k")   # nosuid, nodev, noexec
+    r = libc.mount(b"h5-mutation", d.encode(), b"tmpfs", 0x2 | 0x4 | 0x8, b"mode=000,size=4k")   # nosuid, nodev, noexec
 else:   # only the mutation's own tmpfs, if it's the top mount there: never the volume's
-    r = libc.umount2(b"/data/files", 0) if top and top[-1][top[-1].index("-") + 2] == "h5-mutation" else -1
+    r = libc.umount2(d.encode(), 0) if top and top[-1][top[-1].index("-") + 2] == "h5-mutation" else -1
 sys.exit(0 if r == 0 else ctypes.get_errno() or 1)
 P
 }
@@ -657,6 +665,10 @@ sleep 8
 m svc-dns "rmut break" "rmut fix"
 m oom "omut 0" "omut -500"
 m files "fmut break" "fmut fix"
+m courier-dirs "fmut break /data/courier" "fmut fix /data/courier"
+# the readers' (ADR 0097's desk-parse and Courier's desk-parse-courier): each socket open to everyone, and back
+m parse "chmod 0666 /run/desk-host/share/1/desk-parse/sock/parse.sock" "chmod 0660 /run/desk-host/share/1/desk-parse/sock/parse.sock"
+m courier-parse "chmod 0666 /run/desk-host/share/1/desk-parse-courier/sock/parse.sock" "chmod 0660 /run/desk-host/share/1/desk-parse-courier/sock/parse.sock"
 m shaper "systemctl kill -s SIGSTOP desk-host-egress@1.service; nsenter --net=/run/desk-host/ns/1/net tc qdisc del dev eth0 root" "desk-host shaper 1 on; sleep 1"
 desk-host stop 1 >/dev/null 2>&1
 systemctl start desk-host-link; sleep 5
@@ -807,6 +819,55 @@ result "a start on a slot with no record (its record moved aside, as a prepare r
 R "sudo bash -s -- mutation $D1 $VOL1 $EIP1" < "$HERE/verify-wake.sh" > $WORKDIR/k2 2>&1 && rc=0 || rc=$?
 { grep -q '^MUTATED NORECORD FAIL' $WORKDIR/k2 && grep -q '^MUTATED CDS FAIL' $WORKDIR/k2 && grep -qx 'RESTORE PASS' $WORKDIR/k2; } || rc=1
 result "those checks fail with 0.1.15's desk-host (the start ends with nothing on stderr) and with the slot's app jars at a new time (both JVMs without their archives); put back, they pass again" $rc < $WORKDIR/k2
+
+# ---- 10. the Agent's attachment reader in a slot (verify-parse.sh, ADR 0097): slot 1 started by hand; desk-host-check parse, svc-spec,
+# oom and uids; a text file and a PDF through desk-parse as the slot's uid 1103, uid 1100 refused at the directory, the host's root
+# answered err denied, only desk-svc left after, no word of a file in its log; a process and a file left as uid 1113 gone after the next
+# parse (-clean); 256 MiB in the 160 MiB sandbox killed by the kernel; desk-parse made again with desk-agent's resandbox. Needs a
+# desk-agent release with /app/parse.options (release N, ADR 0097 section 4) in the host's store. Then the mutations: parse.sock 0666
+# must fail the config, desk-parse's sandbox killed must fail the parse, a switch adding a capability must fail the config, and put
+# back, every part passes again.
+R "sudo bash -s -- real $D1 $VOL1 $EIP1" < "$HERE/verify-parse.sh" > $WORKDIR/q1 2>&1 && rc=0 || rc=$?
+grep -qx 'PARSE PASS' $WORKDIR/q1 || rc=1
+result "desk-parse in a slot (ADR 0097): desk-host-check parse, svc-spec, oom and uids; text and PDF through it as the slot's uid 1103, uid 1100 and the host's root refused, nothing left after and no word in its log; -clean removes a left process and file; 256 MiB killed by the kernel; made again with desk-agent's resandbox" $rc < $WORKDIR/q1
+R "sudo bash -s -- mutation $D1 $VOL1 $EIP1" < "$HERE/verify-parse.sh" > $WORKDIR/q2 2>&1 && rc=0 || rc=$?
+{ grep -q '^MUTATED CONFIG FAIL' $WORKDIR/q2 && grep -q '^MUTATED PARSE FAIL' $WORKDIR/q2 && grep -q '^MUTATED CAP FAIL' $WORKDIR/q2 && grep -qx 'RESTORE PASS' $WORKDIR/q2; } || rc=1
+result "those checks fail with parse.sock 0666 (config), desk-parse's sandbox killed (parse) and a switch that adds a capability (config); put back, they pass again" $rc < $WORKDIR/q2
+
+# ---- 11. Chromium's histogram directory on a tmpfs in a slot (ISS-96, verify-metrics.sh, sub/browser-metrics-tmpfs): slot 1 started by
+# hand; from its process 1's mountinfo, one tmpfs from "desk-metrics" at /data/browser/profile/BrowserMetrics, rw,nosuid,nodev,noexec,
+# size=32768k, mode=700, uid and gid the slot's kiosk; mounts.json and the start's line say so. Then the mutation: the step turned off
+# (METRICS_TMPFS=off) for one start must fail it, and with desk-host.conf put back it passes again. No link is planted on a host: the
+# refusals are image/tests/test_host_metrics_tmpfs.py's.
+R "sudo bash -s -- real $D1 $VOL1 $EIP1" < "$HERE/verify-metrics.sh" > $WORKDIR/m1 2>&1 && rc=0 || rc=$?
+grep -qx 'METRICS PASS' $WORKDIR/m1 || rc=1
+result "Chromium's histogram directory in a slot (ISS-96): one tmpfs at /data/browser/profile/BrowserMetrics, kiosk's (the slot's base + 1102), 0700, rw,nosuid,nodev,noexec, 32 MiB, from mounts.py before any desk process; mounts.json and the start say tmpfs" $rc < $WORKDIR/m1
+R "sudo bash -s -- mutation $D1 $VOL1 $EIP1" < "$HERE/verify-metrics.sh" > $WORKDIR/m2 2>&1 && rc=0 || rc=$?
+{ grep -q '^MUTATED METRICS FAIL' $WORKDIR/m2 && grep -qx 'RESTORE PASS' $WORKDIR/m2; } || rc=1
+result "that check fails with the step turned off (METRICS_TMPFS=off: no mount there); desk-host.conf put back, it passes again" $rc < $WORKDIR/m2
+
+# ---- 12. Courier's mail reader in a slot, and a slot's deskd egress for linked mailboxes (verify-courier.sh, docs/sub-status/courier-slot.md):
+# slot 1 started by hand; desk-host-check courier-parse, courier-dirs, svc-spec, oom and uids; the message through desk-parse-courier as the
+# slot's uid 1100 answering OK with its word, uid 1103 refused at the directory, uid 1101 with the desk group and the host's root answered
+# err denied, only desk-svc left after, no word in its log; the list the reader sees the template's, its first line naming blocker.pin's
+# sha256; desk-parse-courier made again with desk-agent's resandbox. Needs a desk-agent release with /app/courier-parse.options (Courier's
+# mode) in the host's store and a template from desk recipe 0.3.9 on (its tracker list). Then deskd's egress from slot 1's network namespace
+# as its uid 1100: gmail.com's MX through the resolver deskd's sandbox reads, and TCP to imap.gmail.com:993, smtp.gmail.com:465 and :587.
+# Then the mutations (the socket 0666, the sandbox made by hand with /run/desk, in the desk's network or as uid 1100, killed, a list naming
+# another sha256, DNS and the three ports dropped on the slot's way out): each fails its part, and put back, every part passes again.
+PIN=$(sed -n 's/^sha256=//p' "$HERE/../recipe/adblock/blocker.pin")
+R "sudo bash -s -- real $D1 $VOL1 $EIP1 $PIN" < "$HERE/verify-courier.sh" > $WORKDIR/c1 2>&1 && rc=0 || rc=$?
+grep -qx 'COURIER PASS' $WORKDIR/c1 || rc=1
+result "desk-parse-courier in a slot (Courier's mail reader): desk-host-check courier-parse, courier-dirs, svc-spec, oom and uids; a message through it as the slot's uid 1100 answers OK with its word, uid 1103 refused at the directory, uid 1101 with the desk group and the host's root answered err denied, nothing left after and no word in its log; its tracker list the template's with blocker.pin's sha256; made again with desk-agent's resandbox" $rc < $WORKDIR/c1
+rc=0; grep -qx 'EGRESS PASS' $WORKDIR/c1 || rc=1
+result "a slot's deskd reaches linked mailboxes: from slot 1's network namespace as its uid 1100, gmail.com's MX through deskd's resolver (169.254.169.253 on 53) and TCP to imap.gmail.com:993, smtp.gmail.com:465 and smtp.gmail.com:587" $rc < $WORKDIR/c1
+R "sudo bash -s -- mutation $D1 $VOL1 $EIP1 $PIN" < "$HERE/verify-courier.sh" > $WORKDIR/c2 2>&1 && rc=0 || rc=$?
+{ grep -q '^MUTATED SOCKET FAIL' $WORKDIR/c2 && grep -q '^MUTATED MOUNTS FAIL' $WORKDIR/c2 && grep -q '^MUTATED NETWORK FAIL' $WORKDIR/c2 \
+  && grep -q '^MUTATED IDENTITY FAIL' $WORKDIR/c2 && grep -q '^MUTATED PARSE FAIL' $WORKDIR/c2 && grep -q '^MUTATED LIST FAIL' $WORKDIR/c2 \
+  && grep -qx 'RESTORE PASS' $WORKDIR/c2; } || rc=1
+result "those checks fail with parse.sock 0666, the sandbox made with the slot's /run/desk, in the desk's network or as uid 1100 (config), the sandbox killed (parse) and a list naming another sha256 (list); put back, they pass again" $rc < $WORKDIR/c2
+rc=0; { grep -q '^MUTATED EGRESS FAIL' $WORKDIR/c2 && grep -qx 'EGRESS RESTORE PASS' $WORKDIR/c2; } || rc=1
+result "that egress check fails with DNS, 465, 587 and 993 dropped on slot 1's way out of the host; put back, it passes again" $rc < $WORKDIR/c2
 
 say "RESULT: $PASS passed, $FAILN failed ($AMI on $TYPE)"
 [ "$FAILN" = 0 ]

@@ -137,6 +137,23 @@ final class CdpClient implements AutoCloseable {
         void onDisplaced();
     }
 
+    /**
+     * A test's look at every command as it goes out (the real-Chromium ITs' {@code CdpRecorder}): never set on a desk. It runs on the
+     * caller's thread, before the command is sent, and must not block or make a call.
+     */
+    interface Tap {
+        /**
+         * @param agent whether {@link AgentCdp} sent it, so it passed the Agent's allow-list
+         */
+        void sent(String sessionId, String method, Map<String, Object> params, boolean agent);
+    }
+
+    /** Null except in a test that records the commands ({@link Tap}). */
+    static volatile Tap tap;
+
+    /** Set by {@link AgentCdp} on its own thread while it sends, for {@link #tap} alone. */
+    static final ThreadLocal<Boolean> AGENT = new ThreadLocal<>();
+
     /** Whoever is on the port isn't to be trusted. Not an error of the port's, so it has its own log line. */
     private static final class ListenerRefused extends IOException {
         private static final long serialVersionUID = 1L;
@@ -749,6 +766,10 @@ final class CdpClient implements AutoCloseable {
         }
 
         private static String command(long id, String sessionId, String method, Map<String, Object> params) {
+            Tap t = tap;
+            if (t != null) {
+                t.sent(sessionId, method, params, AGENT.get() != null);
+            }
             Map<String, Object> command = new LinkedHashMap<>();
             command.put("id", id);
             command.put("method", method);

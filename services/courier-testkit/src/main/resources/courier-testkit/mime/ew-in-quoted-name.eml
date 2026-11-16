@@ -1,0 +1,10 @@
+From: "=?utf-8?Q?Caf=C3=A9_Team?=" <cafe@example.com>
+To: me@desk.example
+Date: Fri, 13 Nov 2026 10:00:00 +0000
+Subject: Opening hours
+Message-ID: <ew-in-quoted-name@corpus.example>
+MIME-Version: 1.0
+X-Corpus-Note: an encoded word inside a quoted display name (not allowed, often seen)
+Content-Type: text/plain; charset=utf-8
+
+We open at eight.

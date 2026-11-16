@@ -5,7 +5,7 @@ import { trafficStopOf } from '../trafficStop';
 import { api, ApiError } from '../../platform/api';
 import { SignInRequired } from '../../platform/auth';
 import type { GuildAccess } from '../../guild/access';
-import { ATTENTION_DEADLINE_MS, AttentionSignal } from '../attention';
+import { ATTENTION_DEADLINE_MS, AttentionSignal } from './attentionSignal';
 import { DeskNotConnected, type BrowserInput, type BrowserMedia, type PhoneDevice, type BulkChannel, type CollabChannel, type DeskLink, type DeskRefusal, type DeskRpc, type LinkDetails, type LinkState, type LinkTopics, type RawTopicEvent, type RpcOptions } from '../deskLink';
 import { backoffMs } from './backoff';
 import { gateway, GatewayError, type GatewayListener, type GatewayMessage } from './gateway';

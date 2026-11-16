@@ -10,8 +10,11 @@ hold, or nothing is installed:
      /opt/ma/etc/selfhost-release-keys/), holds exactly the one file its committed anchor, selfhost/release-keys.sha256
      ("<sha256>  <name>.pem", sha256sum's format, one line), names, with that sha256, a P-256 public key, and nothing else.
   1. bundle.pin starts with the line "# ma-selfhost-bundle/1", is at most 4096 bytes, and has only these lines besides
-     comments: one per release (desk-rtc, desk-stream, deskd, desk-agent-filter, and optionally desk-agent and
-     desk-notebook) and one "installer", each "<name> <version> <sha256>", and "batch-baseline" when the bundle has one.
+     comments: one per release (desk-rtc, desk-stream, deskd, desk-agent-filter, and optionally desk-agent and desk-notebook)
+     and one "installer", each "<name> <version> <sha256>", and "batch-baseline" when the bundle has one. There is no
+     desk-svc line: desk-svc, the amd64 build of image/host/desk-svc that desk-parse's container runs as its process 1
+     (ADR 0097), is a file of the installer (DESK_SVC below), so installer.sha256 and the signature cover it, and a
+     checker from before it existed (releases 1 and 2's) takes the same bundle.pin.
   2. bundle.pin.sig is an ECDSA P-256 SHA-256 signature over bundle.pin's exact bytes, DER, by a trusted key:
      - with --installed (an update, and `sudo ma-selfhost verify`): the release key this desk already holds,
        /opt/ma/etc/selfhost-release-keys/*.pem (root's, P-256, nothing else in the folder), and the folder's release key
@@ -43,6 +46,9 @@ PIN, SIG, MANIFEST, BASELINE = "bundle.pin", "bundle.pin.sig", "installer.sha256
 MAX_PIN, MAX_SIG, MAX_MANIFEST, MAX_KEY, MAX_BASELINE, MAX_ANCHOR = 4096, 256, 256 * 1024, 4096, 4096, 512
 RELEASES = ("desk-rtc", "desk-stream", "deskd", "desk-agent", "desk-agent-filter", "desk-notebook")
 REQUIRED = ("desk-rtc", "desk-stream", "deskd", "desk-agent-filter", "installer")
+# desk-parse's process 1 (ADR 0097): built for amd64 from the installer's commit by build-bundle.sh, which puts it here before the
+# installer is hashed. Not in git; the installer must carry it, as signed.
+DESK_SVC = "selfhost/files/usr/local/lib/ma/desk-svc"
 INSTALLED_KEYS = "/opt/ma/etc/selfhost-release-keys"
 FOLDER_KEYS = "selfhost/files/opt/ma/etc/selfhost-release-keys"
 ANCHOR = "selfhost/release-keys.sha256"
@@ -280,6 +286,8 @@ def check_installer(folder, data):
         listed[rel] = sha
     if "selfhost/install.sh" not in listed:
         raise Refused("installer.sha256 doesn't name selfhost/install.sh")
+    if DESK_SVC not in listed:
+        raise Refused(f"the installer carries no {DESK_SVC} (desk-parse's process 1, ADR 0097): installer.sha256 doesn't name it")
     for rel, sha in sorted(listed.items()):
         path = os.path.join(folder, rel)
         try:

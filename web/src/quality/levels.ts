@@ -29,7 +29,7 @@ export const upTo = (level: Level): string => `Up to ${LEVEL_INFO[level].upToGb.
 
 export const isLevel = (v: unknown): v is Level => typeof v === 'string' && (LEVELS as readonly string[]).includes(v);
 
-/** Apps that reach the member as video from the desk. Notebook, Chat and Agent don't, and get no setting. */
+/** Apps that reach the member as video from the desk. Notebook, Courier and Agent don't, and get no setting. */
 export const STREAMING_APPS: readonly string[] = ['browser'];
 
 export const streams = (app: string): boolean => STREAMING_APPS.includes(app);

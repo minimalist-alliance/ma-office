@@ -7,7 +7,12 @@ the host watches, for up to 90 s per component (180 s on a `free` slot, whose CP
 - deskd: also a fresh idle.json in the slot's /run share, owned by the slot's uid 1100 and written after the switch began;
 - desk-rtc: its UDP port and its TCP listener in the slot's network namespace, read from the host's /proc/<pid>/net/ (the
   kernel's tables, owned by the slot's rtc uid; nothing is entered);
-- desk-stream: its desk-svc running and waiting, its PID the same for 20 s. Stopped is healthy, as its own `health` says.
+- desk-stream: its desk-svc running and waiting, its PID the same for 20 s. Stopped is healthy, as its own `health` says;
+- desk-agent: also, where the slot has desk-parse's share (ADR 0097), desk-parse's sandbox running (it
+  roots in desk-agent's release, so it's made again with it), its desk-svc alive and its socket in the share, the slot's uid 1113's;
+  and the same of desk-parse-courier (Courier's mail reader, deskd's, on the same root) where the slot has its share.
+  Their workers come and go per request, so desk-svc is what's watched; a parse through one is the desk's own smoke test's (the host
+  never speaks for a desk uid).
 Every reader takes a proc root and a runc function, so the unit tests run it on fake /proc trees.
 """
 import json
@@ -111,6 +116,12 @@ def probe(k, svc, since, base, proc="/proc", runc=runc_state, share="/run/desk-h
         ok, why = idle_fresh(f"{share}/{k}/desk/idle.json", since, base + 1100)
         if not ok:
             return False, why, None
+    if svc == "desk-agent":   # the readers on its release root, each where the slot has its share
+        for reader in READERS:
+            if os.path.isdir(f"{share}/{k}/{reader}"):
+                ok, why = parse_ready(k, base, proc, runc, share, reader)
+                if not ok:
+                    return False, why, None
     if svc == "desk-rtc":
         have = sockets(child, base + 1101, proc)
         udp, tcp = rtc_ports
@@ -118,6 +129,24 @@ def probe(k, svc, since, base, proc="/proc", runc=runc_state, share="/run/desk-h
         if missing:
             return False, f"no listener on {', '.join(missing)}", None
     return True, f"service pid {child}", child
+
+
+READERS = ("desk-parse", "desk-parse-courier")   # on desk-agent's release root: ADR 0097's reader and Courier's
+
+
+def parse_ready(k, base, proc="/proc", runc=runc_state, share="/run/desk-host/share", reader="desk-parse"):
+    """A reader beside desk-agent (desk-parse, ADR 0097, or desk-parse-courier): its sandbox running, its desk-svc alive, parse.sock in
+    its share a socket of the slot's uid 1113."""
+    status, pid = runc(f"dh-svc-{k}-{reader}")
+    if status != "running" or not pid or not alive(pid, proc):
+        return False, f"{reader}'s sandbox is {status or 'gone'}"
+    try:
+        st = os.lstat(f"{share}/{k}/{reader}/sock/parse.sock")
+    except OSError:
+        return False, f"{reader} has no socket"
+    if (st.st_mode & 0o170000) != 0o140000 or st.st_uid != base + 1113:
+        return False, f"{reader}'s socket isn't the slot's uid 1113's"
+    return True, f"{reader} listening"
 
 
 def check(k, svc, since, timeout, base=None, proc="/proc", runc=runc_state, share="/run/desk-host/share", rtc_ports=(443, 443),

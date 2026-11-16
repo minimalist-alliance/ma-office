@@ -477,6 +477,9 @@ for (const theme of THEMES) {
       await page.getByTestId('new-page').click();
       await expect.poll(() => pageIdNow(page)).not.toBe(full);
       await expect(editor(page)).toBeEditable();
+      // The new page takes the focus a frame after it shows (`Editor.tsx`'s autofocus), as the new-page test above waits for:
+      // a key typed before that went to the New page button, and the desk got "resh page" or nothing (1 run in 15, on main too).
+      await expect(editor(page)).toBeFocused();
       await page.keyboard.type('Fresh page');
       await expect.poll(async () => onDesk(page, deskId, await pageIdNow(page))).toContain('Fresh page');
       await expect(line(page)).toHaveCount(0);

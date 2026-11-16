@@ -15,6 +15,13 @@ COPY . .
 RUN ./mvnw -q -DskipTests -pl deskd -am package \
     && java -Djarmode=tools -jar deskd/target/deskd.jar extract --destination /extracted
 
+# SQLite's native library for Courier's store, for this machine's architecture, out of the jar ahead of time, as
+# desk-agent's image does. Left to itself, sqlite-jdbc extracts it into /tmp at each start, and in the container /tmp is a
+# tmpfs Docker mounts noexec, where it can't load.
+RUN mkdir /extracted/native \
+    && unzip -q -j -d /extracted/native /extracted/lib/sqlite-jdbc-*.jar \
+      "org/sqlite/native/Linux/$(uname -m)/libsqlitejdbc.so"
+
 
 # The first-party apps deskd hosts itself until the System Engineer's app helper exists (API.md section 19, "Bundled
 # apps"), each built into exactly what a package unpacks to: ma-app.json, with every file's SHA-256, size and mode, and
@@ -74,7 +81,7 @@ COPY deskd/docker/jvm.options deskd/docker/heap-guild.options /app/
 ARG VERSION
 RUN set -eu; \
     printf 'deskd.version=%s\n' "${VERSION:?build with --build-arg VERSION=...}" > /app/deskd.properties; \
-    chmod 0644 /app/jvm.options /app/heap-guild.options /app/deskd.properties; \
+    chmod 0644 /app/jvm.options /app/heap-guild.options /app/deskd.properties /app/native/libsqlitejdbc.so; \
     grep -v '^-XX:SharedArchiveFile=' /app/jvm.options > /tmp/train.options; \
     java @/tmp/train.options -XX:ArchiveClassesAtExit=/app/deskd.jsa -Dma.cds.train=true -jar /app/deskd.jar; \
     rm -f /tmp/train.options; \

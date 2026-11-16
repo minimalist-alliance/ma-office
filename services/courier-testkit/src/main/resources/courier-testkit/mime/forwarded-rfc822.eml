@@ -1,0 +1,19 @@
+From: Dana <dana@example.com>
+To: me@desk.example
+Date: Mon, 2 Nov 2026 09:00:00 +0000
+Subject: Fwd: Old thread
+MIME-Version: 1.0
+Content-Type: multipart/mixed; boundary=f1
+
+--f1
+Content-Type: text/plain
+
+See below.
+--f1
+Content-Type: message/rfc822
+
+From: x@y.example
+Subject: Old thread
+
+Original words.
+--f1--

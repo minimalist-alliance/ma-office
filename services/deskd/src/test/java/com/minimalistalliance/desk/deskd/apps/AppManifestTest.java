@@ -121,7 +121,7 @@ class AppManifestTest {
 
     @Test
     void reservedNamespacesCantBeTaken() throws Exception {
-        for (String name : List.of("desk.clear", "browser.cookies", "apps.install", "agent.run", "notebook.read", "files.list")) {
+        for (String name : List.of("desk.clear", "browser.cookies", "apps.install", "agent.run", "notebook.read", "files.list", "courier.message.send", "chat.message.send")) {
             assertThat(problems(m -> m.put("methods", List.of(Map.of("name", name, "mutation", false))), AppManifest.COMMUNITY))
                     .as(name).anyMatch(p -> p.startsWith("methods:"));
         }

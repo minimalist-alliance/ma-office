@@ -1,0 +1,11 @@
+From: =?utf8?B?S2FuY2Vsw6HFmQ==?= <office@example.net>
+To: me@desk.example
+Date: Fri, 13 Nov 2026 10:00:00 +0000
+Subject: =?utf8?B?UMWZw61sb2hhIGtlIHNtbG91dsSb?=
+Message-ID: <charset-utf8-alias@corpus.example>
+MIME-Version: 1.0
+X-Corpus-Note: text/plain in utf8, 8bit, subject and sender name as encoded words in the same charset
+Content-Type: text/plain; charset="utf8"
+Content-Transfer-Encoding: 8bit
+
+Dobrý den, příloha ke smlouvě je hotová.

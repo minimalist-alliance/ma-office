@@ -24,7 +24,7 @@ export function BarMenu({ panel, children, ...more }: { panel: 'ScopeList' | 'Zo
   const zoom = panel === 'ZoomPanel';
   return (
     <div className={zoom ? 'menu-wrap zoom-menu' : 'menu-wrap scope-menu'}>
-      <button ref={btn} type="button" className="chip-btn" aria-haspopup={zoom ? 'dialog' : 'menu'} aria-expanded={open} onClick={() => setOpen(!open)}>
+      <button ref={btn} type="button" className="chip-btn ma-glass" aria-haspopup={zoom ? 'dialog' : 'menu'} aria-expanded={open} onClick={() => setOpen(!open)}>
         {children}
       </button>
       {open && Panel && <Panel btn={btn} shut={() => setOpen(false)} {...more} />}

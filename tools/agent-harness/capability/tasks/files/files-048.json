@@ -1,0 +1,49 @@
+{
+  "id": "files-048",
+  "area": "files",
+  "title": "List a folder that is not there",
+  "prompt": "List what's in Harness/vacation-2019.",
+  "setup": {
+    "files": {
+      "Harness/vacation-2024/beach.txt": "Sand.\n"
+    }
+  },
+  "approve": "all",
+  "checks": [
+    {
+      "kind": "reply",
+      "contains": [
+        "vacation-2019"
+      ],
+      "state": "done"
+    },
+    {
+      "kind": "noFile",
+      "path": "Harness/vacation-2019/"
+    },
+    {
+      "kind": "cards",
+      "tools": []
+    }
+  ],
+  "policy": {
+    "tools": [
+      "files_list"
+    ]
+  },
+  "standIn": [
+    {
+      "calls": [
+        {
+          "name": "files_list",
+          "input": {
+            "path": "Harness/vacation-2019"
+          }
+        }
+      ]
+    },
+    {
+      "text": "There's no folder Harness/vacation-2019 in your Files. There is a vacation-2024 folder."
+    }
+  ]
+}

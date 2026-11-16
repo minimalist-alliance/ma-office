@@ -11,6 +11,7 @@ import { MENU_AFTER, MENU_SETUP, offerTitle, SHOW_CIRCLE, WHATS_NEW } from './la
 import { useSetupAvailable, useSetupModel, type SetupModel } from './model';
 import { readHidden, setCircleHidden, useMirrorTick } from './prefs';
 import { setupLabel, type Circle } from './steps';
+import type { SetupMenuPart } from './door';
 import { useLayoutPrefs } from '../shell/layoutPrefs';
 import './setup.css';
 
@@ -135,7 +136,7 @@ export function SetupCircle() {
       <button
         ref={btnRef}
         type="button"
-        className="su-btn"
+        className="su-btn ma-glass"
         aria-label={label}
         aria-expanded={open}
         aria-controls={open ? panelId : undefined}
@@ -150,22 +151,19 @@ export function SetupCircle() {
 }
 
 /**
- * In the account menu: "Show setup and what's new", on by default, for anyone with a tier where the circle is on. Off is
- * the circle hidden, everywhere the member signs in. Under 360 px, a row above it opens the same panel in the menu.
+ * In the account menu: "Show setup and what's new" (`part` `switch`, under the menu's Appearance), on by default, for anyone
+ * with a tier where the circle is on. Off is the circle hidden, everywhere the member signs in. Under 360 px, a row (`part`
+ * `row`, in the menu's first view) opens the same panel in the menu.
  */
-export function SetupMenuItems() {
+export function SetupMenuItems({ part }: { part: SetupMenuPart }) {
   const available = useSetupAvailable();
   const doc = useLayoutPrefs();
   useMirrorTick((s) => s.n);
   const hidden = readHidden(doc);
   const narrow = useNarrow();
   if (!available) return null;
-  return (
-    <>
-      {narrow && !hidden && <SetupMenuRow />}
-      <Switch id="pref-setup-circle" label={SHOW_CIRCLE} checked={!hidden} onChange={(v) => setCircleHidden(!v)} />
-    </>
-  );
+  if (part === 'row') return narrow && !hidden ? <SetupMenuRow /> : null;
+  return <Switch id="pref-setup-circle" label={SHOW_CIRCLE} checked={!hidden} onChange={(v) => setCircleHidden(!v)} />;
 }
 
 function SetupMenuRow() {

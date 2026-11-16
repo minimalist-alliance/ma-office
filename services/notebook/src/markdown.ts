@@ -1,14 +1,17 @@
 // Markdown into a page body, for the Agent's Notebook tools (agent.ts): the CommonMark and GFM that the Notebook's
 // schema can hold, as ProseMirror JSON. Blocks: ATX and setext headings (levels past 3 are 3), paragraphs, bulleted,
 // numbered and task lists, nested, quotes, fenced code with its language, rules. Inline: bold, italic, strikethrough,
-// code, links, <u>, <mark>, <br> and the other few tags export.ts writes, backslash escapes and hard breaks. What the
-// schema has no node for stays as text: a table's rows as paragraphs, an image as its alt text, other HTML as written,
-// indented code as a paragraph. It reads what `toMarkdown` (model/export.ts) writes back as the same page.
+// code, links with their titles, <u>, <mark> and <span> with the Notebook's colors' names, <br> and the other few tags
+// pageMarkdown.ts writes, backslash escapes, entities and hard breaks. A block's color is a line `{color=blue}` just before
+// it, or `{color=blue}` just after a list item's marker; `<p></p>` alone on a line is an empty line of the page. What the
+// schema has no node for is converted and said so (`readMarkdown`'s `converted`): a table's rows become paragraphs, an
+// image a link to it (its alt text the link's text), other HTML stays as written, levels past 3 are 3. It reads what
+// pageMarkdown.ts writes back as exactly the same page.
 //
 // Pure, and it never throws on any input. Nothing it makes reaches a page before cleanDoc checks it against the schema
 // and drops links that aren't http, https or mailto. Its work is linear in the input, apart from emphasis, which is
 // skipped past MAX_DELIMS delimiters in one block, and nesting, which stops at MAX_DEPTH.
-import type { PMNode } from './model.ts';
+import { isPaletteId, type PMNode } from './model.ts';
 
 type Mark = NonNullable<PMNode['marks']>[number];
 
@@ -33,21 +36,51 @@ const SETEXT = /^ {0,3}(=+|-+)[ \t]*$/;
 const TABLE_SEP = /^ {0,3}\|?[ \t]*:?-+:?[ \t]*(?:\|[ \t]*:?-+:?[ \t]*)*\|?[ \t]*$/;
 const TASK = /^\[([ xX])\](?:[ \t]+|$)/;
 
-/** Leading tabs to spaces, to the next multiple of 4, so indentation can be counted. The rest of the line is as written. */
-function expandTabs(line: string): string {
-  if (!line.includes('\t')) return line;
-  let out = '';
-  let i = 0;
-  for (; i < line.length; i += 1) {
-    const ch = line[i];
-    if (ch === '\t') out += ' '.repeat(4 - (out.length % 4));
-    else if (ch === ' ') out += ' ';
+/** A line `{color=blue}` just before a block gives it that color; just after a list item's marker, the item. */
+const COLOR_LINE = /^ {0,3}\{color=([a-z]{1,16})\}[ \t]*$/;
+const COLOR_AFTER_MARKER = /^\{color=([a-z]{1,16})\}(?:[ \t]+|$)/;
+/** An empty line of the page, which Markdown has no other way to say. */
+const EMPTY_PARAGRAPH = /^ {0,3}<p\s*\/?>(?:\s*<\/p>)?[ \t]*$/i;
+/** Blocks that take a color (ADR 0091). A list's items take theirs after the marker. */
+const COLORED = new Set(['paragraph', 'heading', 'blockquote', 'codeBlock', 'bulletList', 'orderedList', 'taskList']);
+
+/**
+ * How far in a line's text starts, in columns: a tab to the next multiple of 4. Lines are kept as written, so a tab in a
+ * code block stays a tab; only indentation is counted this way.
+ */
+function leading(line: string): number {
+  let col = 0;
+  for (const ch of line) {
+    if (ch === ' ') col += 1;
+    else if (ch === '\t') col += 4 - (col % 4);
     else break;
   }
-  return out + line.slice(i);
+  return col;
 }
 
-const leading = (line: string): number => line.length - line.trimStart().length;
+/** The line less its first `n` columns of indentation. A tab across the cut leaves the rest of its width as spaces. */
+function dropColumns(line: string, n: number): string {
+  let col = 0;
+  let i = 0;
+  while (i < line.length && col < n) {
+    const ch = line[i];
+    if (ch === ' ') col += 1;
+    else if (ch === '\t') {
+      const width = 4 - (col % 4);
+      if (col + width > n) return ' '.repeat(col + width - n) + line.slice(i + 1);
+      col += width;
+    } else break;
+    i += 1;
+  }
+  return line.slice(i);
+}
+
+/** What a parse converted because the schema has nothing for it, for `readMarkdown`. Set only while one runs. */
+let converted: Set<Conversion> | null = null;
+export type Conversion = 'table' | 'image' | 'html' | 'heading_level';
+const note = (what: Conversion): void => {
+  converted?.add(what);
+};
 
 /** A fence that opens a code block. A backtick fence's info string can't hold a backtick. */
 function fenceOf(line: string): { indent: number; fence: string; info: string } | null {
@@ -90,10 +123,17 @@ function tableAt(lines: string[], i: number): boolean {
 /** Whether a line starts a block, so it ends a paragraph rather than continuing it. */
 function interrupts(line: string): boolean {
   if (BLANK.test(line)) return true;
-  if (ATX.test(line) || HR.test(line) || QUOTE.test(line) || fenceOf(line)) return true;
+  if (ATX.test(line) || HR.test(line) || QUOTE.test(line) || fenceOf(line) || EMPTY_PARAGRAPH.test(line)) return true;
   const item = itemOf(line);
   return item !== null && item.rest.trim() !== '';
 }
+
+/** Spaces and tabs only: a no-break space or any other is text, as CommonMark has it. */
+const trimStartSpaces = (s: string): string => s.replace(/^[ \t]+/, '');
+const trimSpaces = (s: string): string => s.replace(/^[ \t]+|[ \t]+$/g, '');
+
+/** What keeps a list going: the same bullet, or the same delimiter after a number (CommonMark). */
+const markerKey = (marker: string): string => (/^\d/.test(marker) ? marker.slice(-1) : marker);
 
 function paragraph(content: PMNode[]): PMNode {
   return content.length ? { type: 'paragraph', content } : { type: 'paragraph' };
@@ -121,10 +161,30 @@ function cells(row: string): string[] {
 
 function parseBlocks(lines: string[], depth: number): PMNode[] {
   const out: PMNode[] = [];
+  // A `{color=…}` line gives the next block its color.
+  let color: string | null = null;
+  const push = (block: PMNode): void => {
+    if (color && COLORED.has(block.type)) block.attrs = { ...(block.attrs ?? {}), color };
+    color = null;
+    out.push(block);
+  };
   let i = 0;
   while (i < lines.length) {
     const line = lines[i] as string;
     if (BLANK.test(line)) {
+      i += 1;
+      continue;
+    }
+
+    const colorLine = COLOR_LINE.exec(line);
+    if (colorLine && isPaletteId(colorLine[1]) && i + 1 < lines.length && !BLANK.test(lines[i + 1] as string)) {
+      color = colorLine[1] as string;
+      i += 1;
+      continue;
+    }
+
+    if (EMPTY_PARAGRAPH.test(line)) {
+      push(paragraph([]));
       i += 1;
       continue;
     }
@@ -135,26 +195,28 @@ function parseBlocks(lines: string[], depth: number): PMNode[] {
       i += 1;
       while (i < lines.length && !closesFence(lines[i] as string, fence.fence)) {
         const l = lines[i] as string;
-        body.push(l.slice(Math.min(fence.indent, leading(l))));
+        body.push(dropColumns(l, Math.min(fence.indent, leading(l))));
         i += 1;
       }
       i += 1; // the closing fence, or the end
       const language = fence.info.split(/\s+/)[0] || null;
       const text = body.join('\n');
-      out.push({ type: 'codeBlock', attrs: { language }, ...(text ? { content: [{ type: 'text', text }] } : {}) });
+      push({ type: 'codeBlock', attrs: { language }, ...(text ? { content: [{ type: 'text', text }] } : {}) });
       continue;
     }
 
     const atx = ATX.exec(line);
     if (atx) {
-      const text = (atx[2] as string).trim().replace(/(?:^|[ \t]+)#+$/, '').trim();
-      out.push({ type: 'heading', attrs: { level: Math.min(MAX_LEVEL, (atx[1] as string).length) }, content: inline(text) });
+      const text = trimSpaces(trimSpaces(atx[2] as string).replace(/(?:^|[ \t]+)#+$/, ''));
+      const hashes = (atx[1] as string).length;
+      if (hashes > MAX_LEVEL) note('heading_level');
+      push({ type: 'heading', attrs: { level: Math.min(MAX_LEVEL, hashes) }, content: inline(text) });
       i += 1;
       continue;
     }
 
     if (HR.test(line)) {
-      out.push({ type: 'horizontalRule' });
+      push({ type: 'horizontalRule' });
       i += 1;
       continue;
     }
@@ -169,19 +231,20 @@ function parseBlocks(lines: string[], depth: number): PMNode[] {
         i += 1;
       }
       const content = parseBlocks(inner, depth + 1);
-      out.push({ type: 'blockquote', content: content.length ? content : [paragraph([])] });
+      push({ type: 'blockquote', content: content.length ? content : [paragraph([])] });
       continue;
     }
 
     const first = itemOf(line);
     if (first && depth < MAX_DEPTH) {
       const kind = kindOf(first);
+      const key = markerKey(first.marker);
       const items: PMNode[] = [];
       const start = kind === 'ordered' ? Number.parseInt(first.marker, 10) : 1;
       while (i < lines.length) {
         // A rule ends the list, though `- - -` reads as an item too.
         const item = HR.test(lines[i] as string) ? null : itemOf(lines[i] as string);
-        if (!item || kindOf(item) !== kind || item.indent >= 4) break;
+        if (!item || kindOf(item) !== kind || markerKey(item.marker) !== key || item.indent >= 4) break;
         // The item's content starts after its marker and up to 4 spaces; past that, one space, and the rest is the text's.
         const gap = item.spaces.length === 0 ? 1 : item.spaces.length > 4 ? 1 : item.spaces.length;
         const width = item.indent + item.marker.length + gap;
@@ -192,62 +255,73 @@ function parseBlocks(lines: string[], depth: number): PMNode[] {
           checked = box[1] !== ' ';
           firstLine = item.rest.slice(box[0].length);
         }
+        let itemColor: string | null = null;
+        const colorAt = COLOR_AFTER_MARKER.exec(firstLine);
+        if (colorAt && isPaletteId(colorAt[1])) {
+          itemColor = colorAt[1] as string;
+          firstLine = firstLine.slice(colorAt[0].length);
+        }
         const body: string[] = [firstLine];
         i += 1;
         while (i < lines.length) {
           const l = lines[i] as string;
           if (BLANK.test(l)) {
-            body.push('');
+            // A line of spaces past the item's indent is a code block's line of spaces.
+            body.push(dropColumns(l, width));
             i += 1;
             continue;
           }
           if (leading(l) >= width) {
-            body.push(l.slice(width));
+            body.push(dropColumns(l, width));
             i += 1;
             continue;
           }
           // A lazy line: it carries on the paragraph just above it.
           const prev = body[body.length - 1] as string;
           if (prev !== '' && !interrupts(l) && !itemOf(l)) {
-            body.push(l.trimStart());
+            body.push(trimStartSpaces(l));
             i += 1;
             continue;
           }
           break;
         }
-        while (body.length > 1 && body[body.length - 1] === '') body.pop();
+        while (body.length > 1 && BLANK.test(body[body.length - 1] as string)) body.pop();
         const content = parseBlocks(body, depth + 1);
         // An item's first child is a paragraph in this schema.
         const head = content[0];
         if (!head) content.push(paragraph([]));
         else if (head.type === 'heading') content[0] = paragraph(head.content ?? []);
         else if (head.type !== 'paragraph') content.unshift(paragraph([]));
-        items.push(kind === 'task' ? { type: 'taskItem', attrs: { checked }, content } : { type: 'listItem', content });
+        const attrs: Record<string, unknown> = kind === 'task' ? { checked } : {};
+        if (itemColor) attrs['color'] = itemColor;
+        const type = kind === 'task' ? 'taskItem' : 'listItem';
+        items.push(Object.keys(attrs).length ? { type, attrs, content } : { type, content });
         // Blank lines between items keep the list going.
         let j = i;
         while (j < lines.length && BLANK.test(lines[j] as string)) j += 1;
         const next = j < lines.length && !HR.test(lines[j] as string) ? itemOf(lines[j] as string) : null;
-        if (!next || kindOf(next) !== kind || next.indent >= 4) break;
+        if (!next || kindOf(next) !== kind || markerKey(next.marker) !== key || next.indent >= 4) break;
         i = j;
       }
-      if (kind === 'ordered') out.push({ type: 'orderedList', attrs: { start }, content: items });
-      else out.push({ type: kind === 'task' ? 'taskList' : 'bulletList', content: items });
+      if (kind === 'ordered') push({ type: 'orderedList', attrs: { start }, content: items });
+      else push({ type: kind === 'task' ? 'taskList' : 'bulletList', content: items });
       continue;
     }
 
     if (tableAt(lines, i)) {
       // The schema has no tables: each row is a paragraph, its cells apart, and the delimiter row goes.
-      out.push(paragraph(inline(cells(line).join(' | '))));
+      note('table');
+      push(paragraph(inline(cells(line).join(' | '))));
       i += 2;
       while (i < lines.length && !BLANK.test(lines[i] as string) && (lines[i] as string).includes('|') && !interrupts(lines[i] as string)) {
-        out.push(paragraph(inline(cells(lines[i] as string).join(' | '))));
+        push(paragraph(inline(cells(lines[i] as string).join(' | '))));
         i += 1;
       }
       continue;
     }
 
     // A paragraph: until a blank line or another block, or a setext underline that makes it a heading.
-    const text: string[] = [line.trimStart()];
+    const text: string[] = [trimStartSpaces(line)];
     i += 1;
     let level = 0;
     while (i < lines.length) {
@@ -259,20 +333,38 @@ function parseBlocks(lines: string[], depth: number): PMNode[] {
         break;
       }
       if (interrupts(l) || tableAt(lines, i)) break;
-      text.push(l.trimStart());
+      text.push(trimStartSpaces(l));
       i += 1;
     }
     const body = text.join('\n');
-    if (level) out.push({ type: 'heading', attrs: { level }, content: inline(body.trim()) });
-    else out.push(paragraph(inline(body)));
+    if (level) push({ type: 'heading', attrs: { level }, content: inline(trimSpaces(body)) });
+    else push(paragraph(inline(body)));
   }
   return out;
 }
 
+const linesOf = (md: string): string[] => md.replace(/\r\n?/g, '\n').replace(/\u0000/g, '�').split('\n');
+
 /** A whole document. The blocks may be none, for Markdown with nothing in it. */
 export function fromMarkdown(md: string): PMNode {
-  const lines = md.replace(/\r\n?/g, '\n').replace(/\u0000/g, '�').split('\n').map(expandTabs);
-  return { type: 'doc', content: parseBlocks(lines, 0) };
+  return { type: 'doc', content: parseBlocks(linesOf(md), 0) };
+}
+
+/** A whole document, and what in the Markdown the schema has nothing for, so was converted (in this order). */
+export function readMarkdown(md: string): { doc: PMNode; converted: Conversion[] } {
+  const seen = new Set<Conversion>();
+  converted = seen;
+  try {
+    const doc = fromMarkdown(md);
+    return { doc, converted: (['table', 'image', 'html', 'heading_level'] as Conversion[]).filter((c) => seen.has(c)) };
+  } finally {
+    converted = null;
+  }
+}
+
+/** The blocks of a few lines, as a block in a page holds them: for pageMarkdown.ts's check of what it writes. */
+export function blocksOf(md: string): PMNode[] {
+  return parseBlocks(linesOf(md), 0);
 }
 
 /** A node's text, inline content joined, hard breaks as spaces, blocks on their own lines. */
@@ -291,14 +383,36 @@ const PUNCT = /[\p{P}\p{S}]/u;
 const SPACE = /\s/u;
 
 type Item =
-  | { kind: 'text'; text: string; marks: Mark[] }
+  // `keep`: a space an entity wrote, which the block's trimming leaves.
+  | { kind: 'text'; text: string; marks: Mark[]; keep?: boolean }
   | { kind: 'delim'; char: string; count: number; length: number; canOpen: boolean; canClose: boolean; marks: Mark[] }
   | { kind: 'nodes'; nodes: PMNode[] }
-  | { kind: 'break' }
-  | { kind: 'tag'; mark: string; open: boolean; raw: string; marks: Mark[] };
+  // `html`: a `<br>`, which HTML shows even at a block's end; a backslash's or two spaces' there is nothing (CommonMark).
+  | { kind: 'break'; html?: boolean }
+  | { kind: 'tag'; mark: string; attrs?: Record<string, unknown>; open: boolean; raw: string; marks: Mark[] };
 
-/** HTML tags that become marks or breaks, as export.ts writes some of them. Any other tag stays as text. */
-const TAGS: Record<string, string> = { u: 'underline', ins: 'underline', mark: 'highlight', s: 'strike', del: 'strike', strike: 'strike', b: 'bold', strong: 'bold', i: 'italic', em: 'italic', code: 'code', span: '' };
+/** HTML tags that become marks or breaks, as pageMarkdown.ts and export.ts write them. Any other tag stays as text. */
+const TAGS: Record<string, string> = { u: 'underline', ins: 'underline', mark: 'highlight', s: 'strike', del: 'strike', strike: 'strike', b: 'bold', strong: 'bold', i: 'italic', em: 'italic', code: 'code', span: 'textColor' };
+/** A color's name in a tag, as pageMarkdown.ts writes it: `<mark data-color="blue">`, `<span data-text-color="blue">`. */
+const DATA_COLOR = /\sdata-color\s*=\s*(?:"([a-z]{1,16})"|'([a-z]{1,16})')/;
+const DATA_TEXT_COLOR = /\sdata-text-color\s*=\s*(?:"([a-z]{1,16})"|'([a-z]{1,16})')/;
+/** The only highlight value before colors' names, kept as it is (colors.ts). */
+const LEGACY_HIGHLIGHT = 'yellow';
+
+/** A tag's mark attributes: a highlight's or a text color's name, when it's one of the palette's. */
+function tagAttrs(mark: string, raw: string): Record<string, unknown> | undefined {
+  if (mark === 'highlight') {
+    const m = DATA_COLOR.exec(raw);
+    const name = m ? (m[1] ?? m[2]) : undefined;
+    return name && (isPaletteId(name) || name === LEGACY_HIGHLIGHT) ? { color: name } : undefined;
+  }
+  if (mark === 'textColor') {
+    const m = DATA_TEXT_COLOR.exec(raw);
+    const name = m ? (m[1] ?? m[2]) : undefined;
+    return name && isPaletteId(name) ? { color: name } : undefined;
+  }
+  return undefined;
+}
 // Sticky, so each is tried where it stands without copying the rest of the text.
 const TAG = /<(\/?)([a-zA-Z]{1,16})\b[^<>]{0,512}?\/?>/y;
 const AUTOLINK = /<([a-zA-Z][a-zA-Z0-9+.-]{1,31}:[^\s<>]{0,2048})>/y;
@@ -320,7 +434,8 @@ function stickyAt(re: RegExp, src: string, at: number): RegExpExecArray | null {
 const NAMED: Record<string, string> = { amp: '&', lt: '<', gt: '>', quot: '"', apos: "'", nbsp: ' ' };
 const LINK_SCHEMES = new Set(['http', 'https', 'mailto']);
 
-function safeHref(href: string): string | null {
+/** An http, https or mailto address, trimmed, or null: the only links a page holds. */
+export function safeHref(href: string): string | null {
   const m = /^([a-z][a-z0-9+.-]*):/i.exec(href.trim());
   return m && LINK_SCHEMES.has((m[1] as string).toLowerCase()) ? href.trim() : null;
 }
@@ -356,8 +471,8 @@ function backtickRuns(src: string): Map<number, number[]> {
   return runs;
 }
 
-/** A link's `(destination "title")` at `at`, just after its `]`: the destination and where it ends, or null. */
-function destinationAt(src: string, at: number): { href: string; end: number } | null {
+/** A link's `(destination "title")` at `at`, just after its `]`: the destination, its title and where it ends, or null. */
+function destinationAt(src: string, at: number): { href: string; title: string | null; end: number } | null {
   if (src[at] !== '(') return null;
   let i = at + 1;
   while (src[i] === ' ' || src[i] === '\n') i += 1;
@@ -388,15 +503,17 @@ function destinationAt(src: string, at: number): { href: string; end: number } |
   }
   while (src[i] === ' ' || src[i] === '\n') i += 1;
   const q = src[i];
+  let title: string | null = null;
   if (q === '"' || q === "'" || q === '(') {
     const closer = q === '(' ? ')' : q;
     const close = within(src, closer, i + 1, limit);
     if (close < 0) return null;
+    title = src.slice(i + 1, close);
     i = close + 1;
     while (src[i] === ' ' || src[i] === '\n') i += 1;
   }
   if (src[i] !== ')') return null;
-  return { href, end: i + 1 };
+  return { href, title, end: i + 1 };
 }
 
 function flanking(before: string, after: string): { left: boolean; right: boolean } {
@@ -417,11 +534,12 @@ function tokenize(src: string, depth: number): Item[] {
     if (text) items.push({ kind: 'text', text, marks: [] });
     text = '';
   };
-  const linkNodes = (inner: string, href: string | null, plain: boolean): PMNode[] => {
-    const nodes = depth < MAX_INLINE_DEPTH ? inline(inner, depth + 1) : [{ type: 'text', text: inner }];
-    if (plain) return nodes.filter((n) => n.type === 'text').map((n) => ({ type: 'text', text: n.text ?? '' }));
-    if (!href) return nodes;
-    return nodes.map((n) => (n.type === 'text' && !(n.marks ?? []).some((m) => m.type === 'link') ? { ...n, marks: [...(n.marks ?? []), { type: 'link', attrs: { href } }] } : n));
+  // A link's text keeps its own spaces: only a block's ends are trimmed.
+  const linkNodes = (inner: string, link: Mark | null, plain: boolean): PMNode[] => {
+    let nodes = depth < MAX_INLINE_DEPTH ? parseInline(inner, depth + 1, false) : [{ type: 'text', text: inner }];
+    if (plain) nodes = nodes.filter((n) => n.type === 'text').map((n) => ({ type: 'text', text: n.text ?? '' }));
+    if (!link) return nodes;
+    return nodes.map((n) => (n.type === 'text' && !(n.marks ?? []).some((m) => m.type === 'link') ? { ...n, marks: [...(n.marks ?? []), link] } : n));
   };
   let i = 0;
   while (i < src.length) {
@@ -498,8 +616,17 @@ function tokenize(src: string, depth: number): Item[] {
       if (dest) {
         flush();
         const inner = src.slice(open + 1, close);
-        // An image has no node here: its alt text stays, as plain text.
-        items.push({ kind: 'nodes', nodes: linkNodes(inner, c === '!' ? null : safeHref(dest.href), c === '!') });
+        const href = safeHref(dest.href);
+        if (c === '!') {
+          // An image has no node here: it's a link to the image, its alt text the link's text (the address if none).
+          note('image');
+          const image = href && /^https?:/i.test(href) ? href : null;
+          const alt = linkNodes(inner, image ? { type: 'link', attrs: { href: image } } : null, true);
+          items.push({ kind: 'nodes', nodes: alt.length || !image ? alt : [{ type: 'text', text: image, marks: [{ type: 'link', attrs: { href: image } }] }] });
+        } else {
+          const link: Mark | null = href ? { type: 'link', attrs: dest.title ? { href, title: dest.title } : { href } } : null;
+          items.push({ kind: 'nodes', nodes: linkNodes(inner, link, false) });
+        }
         i = dest.end;
         continue;
       }
@@ -524,17 +651,29 @@ function tokenize(src: string, depth: number): Item[] {
       const name = tag ? (tag[2] as string).toLowerCase() : '';
       if (tag && (name === 'br' || Object.hasOwn(TAGS, name))) {
         flush();
-        if (name === 'br') items.push({ kind: 'break' });
-        else if (TAGS[name]) items.push({ kind: 'tag', mark: TAGS[name] as string, open: tag[1] !== '/', raw: tag[0], marks: [] });
+        if (name === 'br') items.push({ kind: 'break', html: true });
+        else {
+          const mark = TAGS[name] as string;
+          const open = tag[1] !== '/';
+          const attrs = open ? tagAttrs(mark, tag[0]) : undefined;
+          items.push({ kind: 'tag', mark, ...(attrs ? { attrs } : {}), open, raw: tag[0], marks: [] });
+        }
         i += tag[0].length;
         continue;
       }
+      // Any other tag stays as written, as text.
+      if (tag) note('html');
     }
     if (c === '&') {
       const e = stickyAt(ENTITY, src, i);
       if (e) {
         const code = e[1] ? Number.parseInt(e[1], 10) : e[2] ? Number.parseInt(e[2], 16) : -1;
-        text += code >= 0 ? (code > 0 && code <= 0x10ffff && (code < 0xd800 || code > 0xdfff) ? String.fromCodePoint(code) : '�') : (NAMED[e[3] as string] as string);
+        const ch = code >= 0 ? (code > 0 && code <= 0x10ffff && (code < 0xd800 || code > 0xdfff) ? String.fromCodePoint(code) : '\uFFFD') : (NAMED[e[3] as string] as string);
+        // A space or a line break an entity wrote is text, and stays where the block's own are trimmed or joined.
+        if (SPACE.test(ch)) {
+          flush();
+          items.push({ kind: 'text', text: ch, marks: [], keep: true });
+        } else text += ch;
         i += e[0].length;
         continue;
       }
@@ -604,7 +743,9 @@ function tags(items: Item[]): void {
     let o = c - 1;
     while (o >= 0 && !((items[o] as Item).kind === 'tag' && (items[o] as Extract<Item, { kind: 'tag' }>).open && (items[o] as Extract<Item, { kind: 'tag' }>).mark === close.mark)) o -= 1;
     if (o < 0) continue;
-    for (let k = o + 1; k < c; k += 1) addMark(items[k] as Item, { type: close.mark });
+    const opener = items[o] as Extract<Item, { kind: 'tag' }>;
+    const mark: Mark = opener.attrs ? { type: close.mark, attrs: opener.attrs } : { type: close.mark };
+    for (let k = o + 1; k < c; k += 1) addMark(items[k] as Item, mark);
     items[o] = { kind: 'text', text: '', marks: [] };
     items[c] = { kind: 'text', text: '', marks: [] };
   }
@@ -617,7 +758,29 @@ function normalMarks(marks: Mark[]): Mark[] | undefined {
   return marks;
 }
 
-function flatten(items: Item[]): PMNode[] {
+function flatten(raw: Item[], block: boolean): PMNode[] {
+  const items = raw.map(asText);
+  if (block) {
+    // A block's text starts and ends with no space it wrote as one, and a break at its end is nothing unless it's a
+    // `<br>`. Only an entity keeps a space there (pageMarkdown.ts writes one so).
+    while (items.length) {
+      const end = items[items.length - 1] as Item;
+      if (end.kind === 'break' && !end.html) items.pop();
+      else if (end.kind === 'text' && !end.text) items.pop();
+      else break;
+    }
+    for (const it of items) {
+      if (it.kind !== 'text' || it.keep) break;
+      it.text = it.text.replace(/^[ \t]+/, '');
+      if (it.text) break;
+    }
+    for (let k = items.length - 1; k >= 0; k -= 1) {
+      const it = items[k] as Item;
+      if (it.kind !== 'text' || it.keep) break;
+      it.text = it.text.replace(/[ \t]+$/, '');
+      if (it.text) break;
+    }
+  }
   const out: PMNode[] = [];
   const push = (n: PMNode): void => {
     if (n.type === 'text') {
@@ -631,25 +794,22 @@ function flatten(items: Item[]): PMNode[] {
       out.push(marks ? { type: 'text', text: n.text, marks } : { type: 'text', text: n.text });
     } else out.push(n);
   };
-  for (const raw of items) {
-    const it = asText(raw);
+  for (const it of items) {
     if (it.kind === 'text') push({ type: 'text', text: it.text, marks: it.marks });
     else if (it.kind === 'break') push({ type: 'hardBreak' });
     else if (it.kind === 'nodes') it.nodes.forEach(push);
   }
-  // A block's text starts and ends with no space, and a break at its end is nothing.
-  while (out.length && out[out.length - 1]?.type === 'hardBreak') out.pop();
-  const first = out[0];
-  if (first?.type === 'text') first.text = (first.text ?? '').replace(/^[ \t]+/, '');
-  const last = out[out.length - 1];
-  if (last?.type === 'text') last.text = (last.text ?? '').replace(/[ \t]+$/, '');
   return out.filter((n) => n.type !== 'text' || n.text);
+}
+
+function parseInline(src: string, depth: number, block: boolean): PMNode[] {
+  const items = tokenize(src, depth);
+  tags(items);
+  emphasis(items);
+  return flatten(items, block);
 }
 
 /** One block's inline Markdown as text nodes and hard breaks. */
 export function inline(src: string, depth = 0): PMNode[] {
-  const items = tokenize(src, depth);
-  tags(items);
-  emphasis(items);
-  return flatten(items);
+  return parseInline(src, depth, true);
 }

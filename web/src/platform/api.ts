@@ -1,6 +1,8 @@
 // Bearer calls to api. (contract auth.md section 3, errors.md).
-import { getAccessToken, SignInRequired } from './auth';
-import { getClientConfig } from './clientConfig';
+import { heardAccountClosed } from './accountClosed';
+import { endRevoked, getAccessToken, SignInRequired } from './auth';
+import { getClientConfig, type ClientConfig } from './clientConfig';
+import { ssoOrigin } from './hosts';
 import { decodeJwtPayload } from './pkce';
 
 export class ApiError extends Error {
@@ -59,15 +61,29 @@ export interface ApiResult<T> {
   retryAfter: string | null;
 }
 
+let kept: Promise<void> | undefined;
+
 /**
- * Refreshes once after a 401; a second 401 means the session is over. `onToken` sees each token as it's about to go,
- * and may throw to stop it, for a call that's only right for one member.
+ * Step 1 of the shared sign-in (ma-platform contract auth.md §2.8), once a page load where it's on: with a sign-in's own
+ * first token (`/auth/callback`), else the first good call's, not waited for. Its answer changes nothing here.
+ */
+export function keepShared(cfg: ClientConfig, token: string): Promise<void> {
+  const origin = ssoOrigin(cfg);
+  return (kept ??= origin ? import('./sso').then((m) => m.keepSharedSignIn(origin, token), () => {}) : Promise.resolve());
+}
+
+/**
+ * Refreshes once after a 401; a second 401 means the session is over, and where the shared sign-in is on, a second
+ * `session_revoked` revokes its refresh token too (`endRevoked`). `onToken` sees each token as it's about to go, and may
+ * throw to stop it, for a call that's only right for one member.
  */
 export async function api<T>(path: string, init: RequestInit & { etag?: string | null; onToken?: (token: string) => void } = {}): Promise<ApiResult<T>> {
   const cfg = await getClientConfig();
+  let sent = '';
   const send = async (force: boolean): Promise<Response> => {
     const token = await getAccessToken(force);
     init.onToken?.(token);
+    sent = token;
     const headers = new Headers(init.headers);
     headers.set('Authorization', `Bearer ${token}`);
     if (init.etag) headers.set('If-None-Match', init.etag);
@@ -75,15 +91,26 @@ export async function api<T>(path: string, init: RequestInit & { etag?: string |
   };
   let res = await send(false);
   if (res.status === 401) res = await send(true);
-  if (res.status === 401) throw new SignInRequired();
+  if (res.status === 401) {
+    if (ssoOrigin(cfg) && (await toError(res)).code === 'session_revoked') await endRevoked(sent);
+    throw new SignInRequired();
+  }
+  if (res.status < 400) void keepShared(cfg, sent);
   if (res.status === 304) return { status: 304, data: null, etag: init.etag ?? null, retryAfter: null };
-  if (!res.ok) throw await toError(res);
+  if (!res.ok) {
+    const err = await toError(res);
+    // A closed account, from whichever API says so first (`accountClosed.ts`).
+    if (res.status === 403) heardAccountClosed(err.code);
+    throw err;
+  }
   const text = res.status === 204 ? '' : await res.text();
   return { status: res.status, data: text ? (JSON.parse(text) as T) : null, etag: res.headers.get('ETag'), retryAfter: res.headers.get('Retry-After') };
 }
 
 export interface Me {
   userId: string;
+  /** Maia Mode for this account (ma-platform contract desks.md "Maia Mode"): `enabled` only for a listed adult, not Free, while it's on. Read only through `allowedFor` in `maiamode/prefs.ts`. */
+  maiaMode?: { enabled?: boolean };
   email?: string;
   displayName?: string | null;
   /** The checked profile picture's address, or null (ma-platform profile-picture.md). Read through `pictureOf` in `chrome/avatar.ts`. */
@@ -121,11 +148,36 @@ export interface Me {
     cardExpiresSoon?: unknown;
     /** Not built by Platform yet: `{kind: 'payment_failed', stopsAt}` while a payment has failed. Read only through `menuNoteOf`. */
     billingNote?: unknown;
+    /**
+     * `true` for an account the platform closed (ma-platform contract moderation.md section 8), absent otherwise: no app
+     * offers Rejoin. It comes with `status: ended` and `stoppedBy: other`. Read only through `platform/accountClosed.ts`.
+     */
+    closed?: boolean;
+    /**
+     * A closed account's download window's end (contract moderation.md section 8, 0.3.117 draft amended Nov 12): the users
+     * row's `ban_export_until`, or `null` when the ban held the export. Absent for every other member. Read only through
+     * `exportUntilOf`.
+     */
+    exportUntil?: string | null;
+    /** With `exportUntil`: `true` when the ban held the export (then `exportUntil` is `null`). Read only through `exportUntilOf`. */
+    held?: boolean;
   };
   /** Platform groups, such as `owner` (contract desks.md). Read only to show the owner what only he sees, never for access. */
   roles?: string[];
-  /** `staySignedIn`: `30d`, `7d`, `1d` or `browser`, the member's "Stay signed in" (ma-platform `auth.md`). Read only through `placeTokenFor` in `tokenStore.ts`. */
-  preferences?: { staySignedIn?: unknown; staySignedInSince?: unknown } | null;
+  /** The guilds the member is in, with their role now (contract tiers.md section 5). Read only by card D (`chrome/endedCard.tsx`): a Founder who leads one. */
+  guilds?: Array<{ guildId?: unknown; role?: unknown } | null>;
+  /**
+   * `staySignedIn`: `30d`, `7d`, `1d` or `browser`, the member's "Stay signed in" (ma-platform `auth.md`). Read only through `placeTokenFor` in
+   * `tokenStore.ts`. `officeTour` (`{off}`, proposed to Platform, ADR 0056): the office tour's setting, absent until Platform
+   * sends it; read only through `tour/door.ts`.
+   */
+  preferences?: { staySignedIn?: unknown; staySignedInSince?: unknown; officeTour?: unknown } | null;
+  /**
+   * What the member hears about until they dismiss it (ma-platform contract auth.md section 2.7): today only
+   * `close_hold_cancelled`, a request to close the account that its use stopped. Absent from an older Platform: none.
+   * Read only through `closeHoldOf` in `closehold/words.ts`; `shell/Shell.tsx` only looks for the kind.
+   */
+  notices?: Array<{ kind?: unknown; at?: unknown; requestedAt?: unknown } | null>;
 }
 
 /** The Desk object fields the app reads (contract desks.md). Unknown fields and enum values are safe. */
@@ -204,16 +256,15 @@ export const patchDeskName = (deskId: string, name: string) =>
     body: JSON.stringify({ name }),
   });
 /**
- * Step 1 of sign-out (contract auth.md section 6). `everywhere` ends every session the member has, on every device and
- * app, this one included; otherwise only this one. `keepalive`, so sign-out can go on to the revoke and the logout
- * without cutting this off.
+ * Step 1 of sign-out (contract auth.md section 6): this session only (`everywhere` is the account's own, in Account
+ * settings). `keepalive`, so sign-out can go on to the revoke and the logout without cutting this off.
  */
-export const postSignOut = (everywhere = false) =>
+export const postSignOut = () =>
   api<void>('/v1/me/sign-out', {
     method: 'POST',
     keepalive: true,
     headers: { 'Content-Type': 'application/json' },
-    body: JSON.stringify({ everywhere }),
+    body: '{"everywhere":false}',
   });
 
 /** The signed-in member's `sub`, read from the access token; null when it has none. */

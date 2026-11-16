@@ -175,13 +175,13 @@ test.beforeEach(async ({ request }) => {
 });
 
 test.describe('the Desk style chooser', () => {
-  test('the shipped styles: Light oak is the default, then White ash, Walnut, Linoleum and Plain; the label shows the chosen name, and Saved takes its place for 1.5 s', async ({ page, request }) => {
+  test('the shipped styles: Light oak is the default, then White oak, White ash, Walnut, Linoleum and Plain; the label shows the chosen name, and Saved takes its place for 1.5 s', async ({ page, request }) => {
     const errors = await open(page, request, 'light', true);
     expect(await drawnLook(page, A)).toBe('oak.light');
     await openDeskMenu(page, A);
     await expect(styleGroup(page)).toBeVisible();
     const names = await styleGroup(page).getByRole('menuitemradio').evaluateAll((els) => els.map((e) => e.getAttribute('aria-label')));
-    expect(names).toEqual(['Light oak', 'White ash', 'Walnut', 'Linoleum', 'Plain']);
+    expect(names).toEqual(['Light oak', 'White oak', 'White ash', 'Walnut', 'Linoleum', 'Plain']);
     await expect(swatch(page, 'Light oak')).toHaveAttribute('aria-checked', 'true');
     const name = deskMenu(page).getByTestId('desk-style-name');
     const status = deskMenu(page).getByTestId('desk-style-status');

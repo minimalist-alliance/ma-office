@@ -1,0 +1,49 @@
+{
+  "id": "files-006",
+  "area": "files",
+  "title": "A file that is not there",
+  "prompt": "Open Harness/notes/locker-code.txt and tell me the code in it.",
+  "setup": {
+    "files": {
+      "Harness/notes/wifi.txt": "Guest password: blue-kettle-42\n"
+    }
+  },
+  "approve": "all",
+  "checks": [
+    {
+      "kind": "reply",
+      "contains": [
+        "locker-code.txt"
+      ],
+      "state": "done"
+    },
+    {
+      "kind": "noFile",
+      "path": "Harness/notes/locker-code.txt"
+    },
+    {
+      "kind": "cards",
+      "tools": []
+    }
+  ],
+  "policy": {
+    "tools": [
+      "files_read"
+    ]
+  },
+  "standIn": [
+    {
+      "calls": [
+        {
+          "name": "files_read",
+          "input": {
+            "path": "Harness/notes/locker-code.txt"
+          }
+        }
+      ]
+    },
+    {
+      "text": "I couldn't find Harness/notes/locker-code.txt in your Files, so I don't have the code."
+    }
+  ]
+}

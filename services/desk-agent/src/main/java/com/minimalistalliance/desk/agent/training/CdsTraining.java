@@ -103,6 +103,24 @@ public final class CdsTraining {
                 result(desk.call("agent.key.models", Map.of("keyId", keyId)));
                 result(desk.call("agent.bind",
                         Map.of("agentId", "manager", "keyId", keyId, "model", TrainingAnthropic.MODEL)));
+                // The agent's setup screen, saved as a member does before its first run (the tools and approvals
+                // draft, section 16): no run starts before it. The screen's defaults: every app but Courier, every
+                // auto-approve switch off.
+                Map<String, Object> apps = new LinkedHashMap<>();
+                apps.put("notebook", true);
+                apps.put("files", true);
+                apps.put("browser", true);
+                apps.put("courier", false);
+                apps.put("todos", true);
+                Map<String, Object> auto = new LinkedHashMap<>();
+                auto.put("notebook", null);
+                auto.put("files", null);
+                auto.put("todos", false);
+                Map<String, Object> access = new LinkedHashMap<>();
+                access.put("agentId", "manager");
+                access.put("apps", apps);
+                access.put("auto", auto);
+                result(desk.call("agent.access.set", access));
                 // What deskd pushes on connecting, and a member's zone: a desk's every period then runs through tzdb.
                 try (InputStream table = CdsTraining.class.getResourceAsStream("/pricing.json")) {
                     Map<String, Object> pushed = result(desk.call("desk.prices.set",

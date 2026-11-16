@@ -2,7 +2,7 @@
 // overview, a drag pans. Signed in as desk-1; only the test desk (RT_DESK) is ever focused; start:true is refused
 // for every desk. What a screenshot shows is judged by reading it: this script only measures.
 import { mkdirSync } from 'node:fs';
-import { ALLOWED, createLayoutStandIn, CONNECTED, events, getDesk, log, logConfig, openSession, OTHER, S, shot, shutdown, wait, waitPanel } from './rt-lib.mjs';
+import { ALLOWED, closeTour, createLayoutStandIn, CONNECTED, events, getDesk, log, logConfig, openSession, OTHER, S, shot, shutdown, wait, waitPanel } from './rt-lib.mjs';
 
 const EXPECTED = process.env.MA_EXPECT_VERSION;
 if (!EXPECTED) throw new Error('Set MA_EXPECT_VERSION to the bundle version you expect on staging');
@@ -114,6 +114,9 @@ const bareCanvas = () =>
 // ----- 1. The overview, with the desk online
 
 const onlineOk = await waitPanel(/online/, 60000);
+// The layout stand-in is a first visit, so the office tour starts by itself and takes the keyboard: closed with its own
+// button (rt-lib closeTour), which writes nothing
+await closeTour(15_000).catch(() => false);
 const v1 = await pageVersion(p).catch(() => null);
 log(`bundle after sign-in ${v1}`);
 log(`view ${JSON.stringify(await view())}`);

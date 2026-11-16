@@ -389,7 +389,7 @@ async function runCamera(browser, fixture, theme, w, h, dpr) {
   }
 
   // Dragging one app around its desk, over its neighbors: a clamp and a move on every pointer event, nothing else.
-  const firstApp = page.getByRole('group', { name: load.group }).getByRole('button', { name: /^(Chat|Notebook|Browser|Agent)/ }).first();
+  const firstApp = page.getByRole('group', { name: load.group }).getByRole('button', { name: /^(Courier|Notebook|Browser|Agent)/ }).first();
   if (wants('appDrag')) {
     await overview(page);
     await page.waitForTimeout(300);

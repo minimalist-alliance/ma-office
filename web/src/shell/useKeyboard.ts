@@ -15,6 +15,7 @@ import { hiddenProxyId } from './hidden';
 import { appsInOrder } from './order';
 import { backToDesk, carouselProxyId } from '../carousel/actions';
 import { carouselOn } from '../carousel/model';
+import { useMaiaMode } from '../maiamode/door';
 
 function isEditable(el: Element | null): boolean {
   if (!el) return false;
@@ -86,6 +87,9 @@ export function useKeyboard(): void {
       // ProseMirror marks every Esc as handled and does nothing with it, so an editor would keep the member in.
       const editorEsc = e.key === 'Escape' && (e.target as Element | null)?.closest?.('.ProseMirror');
       if ((e.defaultPrevented && !editorEsc) || e.altKey || e.metaKey || e.ctrlKey) return;
+      // Maia Mode's room (or its disclosure) is over the office: the keys are the room's, and the office under it, hidden and
+      // inert, doesn't move, so "Show my desks" gives it back exactly as it was.
+      if (useMaiaMode.getState().layer) return;
       if (editKey(e)) return;
       const el = document.activeElement;
       // An open tile's app has its keys (ADR 0053); one Esc it didn't use goes back to its tile (`opentile/`).

@@ -1,0 +1,11 @@
+From: Warehouse <warehouse@example.org>
+To: me@desk.example
+Date: Fri, 13 Nov 2026 10:00:00 +0000
+Subject: Unknown charset
+Message-ID: <charset-unknown@corpus.example>
+MIME-Version: 1.0
+X-Corpus-Note: a charset no decoder knows; the ASCII text must still read
+Content-Type: text/plain; charset="x-klingon-pIqaD"
+Content-Transfer-Encoding: 8bit
+
+The warehouse opens at seven ¤ sharp.

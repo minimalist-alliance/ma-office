@@ -12,7 +12,9 @@ import { useFree } from '../free/door';
 import { focusProxy } from '../shell/actions';
 import { reducedMotion } from '../lib/util';
 import { useLayoutStore } from '../state/layoutStore';
-import { MIN_H, MIN_W, raiseWindow, removeWindow, requestClose, setWindowRect, toggleFull, type AppWindowState } from '../state/windowStore';
+import { MIN_H, MIN_W, raiseWindow, removeWindow, requestClose, setWindowRect, toggleFull, useWindowStore, type AppWindowState } from '../state/windowStore';
+import { ZoomButton } from '../zoom/ZoomButton';
+import { bodyZoom, useAppLevel } from '../zoom/store';
 
 const FOCUSABLE = 'a[href], button:not([disabled]), input:not([disabled]), select:not([disabled]), textarea:not([disabled]), [contenteditable="true"], [tabindex]:not([tabindex="-1"])';
 const OPEN_MS = 240;
@@ -60,6 +62,8 @@ export function AppWindow({ win, deskName, active, parked, forceFull }: {
   const opened = useRef(false);
   // A free member's time ring, while this Browser covers the office's (walk L13): nothing for anyone else, so no shift.
   const FreeRing = useFree((s) => (win.app === 'browser' ? s.WindowRing : undefined));
+  // The app's own zoom (ADR 0055): null for a Browser whose desk has none, and then nothing zooms here.
+  const level = useAppLevel(win.app, win.deskId);
 
   // Open: a FLIP from the tile. This runs in the same task as the click, so the first animation
   // frame is the next frame (budget B4).
@@ -85,8 +89,10 @@ export function AppWindow({ win, deskName, active, parked, forceFull }: {
     const finish = (): void => {
       if (done) return;
       done = true;
+      // Gone from the store already (a change of account closes every window at once): nothing of it to go back to.
+      const here = !!useWindowStore.getState().windows[win.key];
       removeWindow(win.key);
-      focusProxy(win.itemId);
+      if (here) focusProxy(win.itemId);
     };
     if (reducedMotion()) {
       finish();
@@ -214,6 +220,8 @@ export function AppWindow({ win, deskName, active, parked, forceFull }: {
         data-app={win.app}
         // What covers the office's corner, by this name (`free/cover.ts`).
         data-cover={win.key}
+        // A pinch, Ctrl or Cmd with the wheel over it zooms its app (`canvas/pinch.ts`).
+        data-zoom-app={level !== null ? win.app : undefined}
         onPointerDown={() => raiseWindow(win.key)}
         onKeyDown={onKeyDown}
       >
@@ -230,6 +238,7 @@ export function AppWindow({ win, deskName, active, parked, forceFull }: {
           </h2>
           {FreeRing && <FreeRing cover={win.key} />}
           <div className="window-controls">
+            <ZoomButton app={win.app} deskId={win.deskId} label={def.name} />
             <button type="button" className="icon-btn sm hide-narrow" onClick={() => toggleFull(win.key)} aria-label={full ? 'Restore window' : 'Fill the screen'} title={full ? 'Restore' : 'Fill the screen'}>
               <Icon name={full ? 'windowRestore' : 'windowFull'} />
             </button>
@@ -238,7 +247,7 @@ export function AppWindow({ win, deskName, active, parked, forceFull }: {
             </button>
           </div>
         </div>
-        <div className="window-body">
+        <div className="window-body" style={bodyZoom(win.app, level)}>
           <Body deskId={win.deskId} deskName={deskName} parked={parked} app={win.app} />
         </div>
         {!full && EDGES.map((edge) => <div key={edge} className={`window-edge ${edge}`} onPointerDown={onEdgePointerDown(edge)} />)}

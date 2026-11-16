@@ -2,6 +2,8 @@ import { describe, expect, it, vi } from 'vitest';
 import { AgentError, newIdem } from './agentClient';
 import { KeySecret } from './keySecret';
 import { RpcAgentClient, toAgentError, type DeskTransport, type TopicEvent } from './rpcAgentClient';
+import type { ConversationEvent } from './types';
+import { applyEvents, EMPTY_THREAD } from '../model/conversation';
 
 const KEY = 'sk-ant-TEST-not-a-real-key-0000-RPC';
 
@@ -273,6 +275,98 @@ describe('RpcAgentClient: threads longer than one event', () => {
   });
 });
 
+describe('RpcAgentClient: the whole thread, read while events still come (release 3, bug A)', () => {
+  const card = (id: string, state: string) => ({ id, messageId: 'm2', state, createdAt: 2, sha256: 'h', tool: 'files_write' });
+  const msg = (id: string, over: Record<string, unknown> = {}) => ({ id, role: 'assistant', text: id, at: id === 'm1' ? 1 : 2, state: 'done', ...over });
+
+  /** A link whose `agent.thread.get` answers what the desk had when it was asked, and hands it over only when the test says. */
+  function slowRead(answer: unknown) {
+    let release: () => void = () => undefined;
+    const fake = fakeLink((m) => (m === 'agent.thread.get' ? new Promise((ok) => (release = () => ok(answer))) : {}));
+    return { ...fake, release: () => release() };
+  }
+
+  it('a card that changed while the read was out keeps its change: the read is older than the event (the kill with a call in flight)', async () => {
+    // After desk-agent's restart: a cut snapshot (a long thread), the read it asks for, and meanwhile the resumed call ends.
+    const { link, subs, release } = slowRead({ agentId: 'a', messages: [msg('m1'), msg('m2', { state: 'streaming' })], approvals: [card('ap-1', 'approved')], seq: 1 });
+    const events: ConversationEvent[] = [];
+    new RpcAgentClient(link).watchConversation('a', (e) => events.push(e));
+    subs[0]!.fn({ type: 'snapshot', seq: 5, messages: [msg('m2', { state: 'streaming' })], approvals: [card('ap-1', 'approved')], omitted: 1 });
+    subs[0]!.fn({ type: 'approval', seq: 6, approval: card('ap-1', 'done') });
+    subs[0]!.fn({ type: 'message', seq: 7, message: msg('m2', { text: 'Saved.' }) });
+    release();
+    await vi.waitFor(() => expect(events).toHaveLength(4));
+    const t = applyEvents(EMPTY_THREAD, events);
+    // The older message the cut left out is back, and what the events said since stands.
+    expect(t.messages.map((m) => m.id)).toEqual(['m1', 'm2']);
+    expect(t.approvals).toEqual([expect.objectContaining({ id: 'ap-1', state: 'done' })]);
+    expect(t.messages[1]).toMatchObject({ state: 'done', text: 'Saved.' });
+    // And the next event still lands.
+    expect(applyEvents(t, [{ type: 'approval', seq: 8, approval: card('ap-1', 'done') as never }]).seq).toBe(8);
+  });
+
+  it('a streaming reply keeps the text its deltas brought, and what nothing touched comes from the read', async () => {
+    const { link, subs, release } = slowRead({ agentId: 'a', messages: [msg('m1', { text: 'm1 whole' }), msg('m2', { state: 'streaming', text: 'Hel' })], seq: 1 });
+    const events: ConversationEvent[] = [];
+    new RpcAgentClient(link).watchConversation('a', (e) => events.push(e));
+    subs[0]!.fn({ type: 'snapshot', seq: 5, messages: [msg('m1', { text: 'm1 cut', truncated: true }), msg('m2', { state: 'streaming', text: 'Hel' })] });
+    subs[0]!.fn({ type: 'delta', seq: 6, messageId: 'm2', runId: 'r', text: 'lo' });
+    release();
+    await vi.waitFor(() => expect(events).toHaveLength(3));
+    const t = applyEvents(EMPTY_THREAD, events);
+    expect(t.messages.map((m) => m.text)).toEqual(['m1 whole', 'Hello']);
+  });
+
+  it('a snapshot while the read is out wins, and a cut one asks again, after it', async () => {
+    let n = 0;
+    const releases: (() => void)[] = [];
+    const { link, subs, calls } = fakeLink((m) => {
+      if (m !== 'agent.thread.get') return {};
+      n += 1;
+      const answer = { agentId: 'a', messages: n === 1 ? [msg('m1'), msg('m2', { state: 'streaming' })] : [msg('m1'), msg('m2', { text: 'after' })], seq: n };
+      return new Promise((ok) => releases.push(() => ok(answer)));
+    });
+    const events: ConversationEvent[] = [];
+    new RpcAgentClient(link).watchConversation('a', (e) => events.push(e));
+    subs[0]!.fn({ type: 'snapshot', seq: 5, messages: [msg('m2', { state: 'streaming' })], omitted: 1 });
+    subs[0]!.fn({ type: 'snapshot', seq: 9, messages: [msg('m2', { text: 'after' })], omitted: 1 });
+    releases[0]!();
+    await vi.waitFor(() => expect(calls.filter((c) => c.method === 'agent.thread.get')).toHaveLength(2));
+    releases[1]!();
+    await vi.waitFor(() => expect(events).toHaveLength(3));
+    const t = applyEvents(EMPTY_THREAD, events);
+    expect(t.messages.map((m) => [m.id, m.state, m.text])).toEqual([['m1', 'done', 'm1'], ['m2', 'done', 'after']]);
+  });
+});
+
+describe('RpcAgentClient: a waiting card after a reload or a restart (API.md section 18)', () => {
+  const card = (id: string, messageId: string, state = 'pending') => ({ id, messageId, state, createdAt: 1, sha256: 'h', tool: 'files_write' });
+  const reply = (id: string, approvals?: unknown[]) => ({ id, role: 'assistant', text: id, at: 1, state: 'awaiting_approval', ...(approvals ? { approvals } : {}) });
+
+  it('a snapshot whose desk put each card only in its reply (desk-agent before the fix) still carries the card', () => {
+    const { link, subs } = fakeLink();
+    const events: { type: string; approvals?: { id: string }[] }[] = [];
+    new RpcAgentClient(link).watchConversation('a', (e) => events.push(e as never));
+    subs[0]!.fn({ type: 'snapshot', seq: 4, messages: [reply('m1', [card('ap-1', 'm1')])] });
+    expect(events[0]!.approvals?.map((a) => a.id)).toEqual(['ap-1']);
+  });
+
+  it('the page\'s own approvals and each reply\'s, once each, the page\'s copy first', () => {
+    const { link, subs } = fakeLink();
+    const events: { approvals?: { id: string; state: string }[] }[] = [];
+    new RpcAgentClient(link).watchConversation('a', (e) => events.push(e as never));
+    subs[0]!.fn({ type: 'snapshot', seq: 4, approvals: [card('ap-1', 'm1', 'done')], messages: [reply('m1', [card('ap-1', 'm1'), card('ap-2', 'm1')])] });
+    expect(events[0]!.approvals).toEqual([expect.objectContaining({ id: 'ap-1', state: 'done' }), expect.objectContaining({ id: 'ap-2' })]);
+  });
+
+  it('agent.thread.get does the same, and a desk before approvals says nothing of them', async () => {
+    const { link } = fakeLink(() => ({ agentId: 'a', messages: [reply('m1', [card('ap-9', 'm1')])], seq: 3 }));
+    expect((await new RpcAgentClient(link).getThread('a')).approvals?.map((a) => a.id)).toEqual(['ap-9']);
+    const { link: older } = fakeLink(() => ({ agentId: 'a', messages: [reply('m1')], seq: 3 }));
+    expect((await new RpcAgentClient(older).getThread('a')).approvals).toBeUndefined();
+  });
+});
+
 describe('RpcAgentClient: deadlines', () => {
   it('the two calls that reach the provider get deskd\'s 30 s', async () => {
     const { link, calls } = fakeLink(() => ({ models: [] }));
@@ -421,5 +515,48 @@ describe('RpcAgentClient: S-14 on the wire (API.md section 18, desk-agent memory
       ['agent.memory.delete', { agentId: 'scout', memoryId: 'mem-1' }],
       ['agent.memory.clear', { agentId: 'scout' }],
     ]);
+  });
+});
+
+describe('RpcAgentClient: auto-approve on the wire (API.md section 18, "Done without asking")', () => {
+  it('undoes with agent.approval.undo, the approval id alone and the mutation key', async () => {
+    const { link, calls } = fakeLink(() => ({ approval: { id: 'ap-1', state: 'done', decidedBy: 'auto', undoneAt: 5, undoneBy: 'owner' } }));
+    const idem = newIdem();
+    const a = await new RpcAgentClient(link).undoApproval('ap-1', { idem });
+    expect(a).toMatchObject({ id: 'ap-1', undoneAt: 5 });
+    expect(calls.map((x) => [x.method, x.params])).toEqual([['agent.approval.undo', { approvalId: 'ap-1' }]]);
+    expect(calls[0]?.options).toEqual({ idem, deadlineMs: 15_000 });
+  });
+
+  it('reads an undo’s refusals: changed with the version from before, undone, not_done, trashed', async () => {
+    const refusals: Record<string, Record<string, unknown>> = {
+      'ap-c': { reason: 'changed', versionId: 'v-pre-agent' },
+      'ap-u': { reason: 'undone' },
+      'ap-n': { reason: 'not_done' },
+      'ap-t': { reason: 'trashed' },
+    };
+    const { link } = fakeLink((_m, p) => Object.assign(new Error('conflict'), { code: 'conflict', details: refusals[p['approvalId'] as string] }));
+    const c = new RpcAgentClient(link);
+    const got: unknown[] = [];
+    for (const id of Object.keys(refusals)) {
+      const err = await c.undoApproval(id, { idem: newIdem() }).catch((e: unknown) => e);
+      expect(err).toBeInstanceOf(AgentError);
+      const e = err as AgentError;
+      got.push([e.code, e.reason, e.versionId]);
+    }
+    expect(got).toEqual([
+      ['conflict', 'changed', 'v-pre-agent'],
+      ['conflict', 'undone', null],
+      ['conflict', 'not_done', null],
+      ['conflict', 'trashed', null],
+    ]);
+  });
+
+  it('turns a switch on with only the switch it names', async () => {
+    const { link, calls } = fakeLink(() => ({ access: {} }));
+    const c = new RpcAgentClient(link);
+    await c.setAccess('scout', { auto: { files: { folder: 'Research' } } }, { idem: newIdem() });
+    await c.setAccess('scout', { auto: { notebook: { tabId: 'tab-1' } } }, { idem: newIdem() });
+    expect(calls.map((x) => x.json)).toEqual([JSON.stringify({ agentId: 'scout', auto: { files: { folder: 'Research' } } }), JSON.stringify({ agentId: 'scout', auto: { notebook: { tabId: 'tab-1' } } })]);
   });
 });

@@ -11,28 +11,23 @@ import com.minimalistalliance.desk.agent.provider.ModelInfo;
 import com.minimalistalliance.desk.agent.provider.ProviderException;
 import com.minimalistalliance.desk.agent.provider.ProviderId;
 import com.minimalistalliance.desk.agent.provider.ProviderInfo;
-import com.minimalistalliance.desk.agent.provider.ToolCall;
 import com.minimalistalliance.desk.agent.provider.Usage;
+import com.minimalistalliance.desk.agent.provider.chat.ChatCompletions;
 import com.minimalistalliance.desk.agent.provider.http.HttpTransport;
-import com.minimalistalliance.desk.agent.provider.http.Messages;
-import com.minimalistalliance.desk.agent.provider.http.SseReader;
 import java.io.IOException;
 import java.math.BigDecimal;
 import java.math.RoundingMode;
 import java.net.URI;
 import java.net.http.HttpRequest;
-import java.nio.charset.StandardCharsets;
 import java.time.Duration;
 import java.util.ArrayList;
 import java.util.HashMap;
-import java.util.HashSet;
 import java.util.LinkedHashMap;
 import java.util.List;
 import java.util.Locale;
 import java.util.Map;
 import java.util.Objects;
 import java.util.Set;
-import java.util.TreeMap;
 import java.util.concurrent.ConcurrentHashMap;
 import java.util.regex.Pattern;
 
@@ -98,7 +93,6 @@ public final class OpenRouterProvider implements ChatProvider {
     static final long MAX_REPORTED_MICRO_USD = 10_000L * 1_000_000L;
 
     private static final Pattern MODEL = Pattern.compile("[A-Za-z0-9][A-Za-z0-9._:/@-]{0,127}");
-    private static final int BYTES_PER_TOKEN = 3;
 
     /** What the public catalog says of one model. */
     record Listed(String id, String label, boolean tools) {}
@@ -156,7 +150,7 @@ public final class OpenRouterProvider implements ChatProvider {
         }
         Map<String, Object> body = new LinkedHashMap<>();
         body.put("model", request.model());
-        body.put("messages", ChatCompletions.messages(system, request.messages(), tools));
+        body.put("messages", ChatCompletions.messages(system, request.messagesWithNote(), tools));
         if (tools) {
             body.put("tools", ChatCompletions.tools(request.tools()));
         }
@@ -183,176 +177,17 @@ public final class OpenRouterProvider implements ChatProvider {
         }
     }
 
-    /** A call's turn being streamed: its id and name from the first delta, its arguments from all of them. */
-    private static final class Parts {
-        String id;
-        String name;
-        final StringBuilder arguments = new StringBuilder();
-    }
-
     private static ChatResult read(HttpTransport.Stream stream, ChatRequest request, DeltaSink sink, boolean tools,
             boolean free) throws ProviderException {
-        StringBuilder text = new StringBuilder();
-        TreeMap<Integer, Parts> calls = new TreeMap<>();
-        String model = request.model();
-        String finish = null;
-        Map<String, Object> usage = null;
-        boolean done = false;
-        SseReader events = new SseReader(stream);
-        try {
-            SseReader.Event event;
-            while ((event = events.next()) != null) {
-                if (event.data().equals("[DONE]")) {
-                    done = true;
-                    break;
-                }
-                Map<String, Object> chunk = parse(event.data().getBytes(StandardCharsets.UTF_8), true);
-                Map<String, Object> error = Json.object(chunk, "error");
-                if (error != null) {
-                    throw streamError(error, free);
-                }
-                String named = Json.string(chunk, "model");
-                if (named != null && MODEL.matcher(named).matches()) {
-                    model = named;
-                }
-                Map<String, Object> reported = Json.object(chunk, "usage");
-                if (reported != null) {
-                    usage = reported;
-                }
-                Map<String, Object> choice = first(chunk.get("choices"));
-                if (choice == null) {
-                    continue;
-                }
-                Map<String, Object> delta = Json.object(choice, "delta");
-                if (delta != null) {
-                    String piece = Json.string(delta, "content");
-                    if (piece != null && !piece.isEmpty()) {
-                        text.append(piece);
-                        sink.delta(piece);
-                    }
-                    if (tools && delta.get("tool_calls") instanceof List<?> parts) {
-                        take(parts, calls);
-                    }
-                }
-                String reason = Json.string(choice, "finish_reason");
-                if ("error".equals(reason)) {
-                    throw new ProviderException(ProviderException.Kind.UNAVAILABLE, true);
-                }
-                if (reason != null) {
-                    finish = reason;
-                }
-            }
-        } catch (IOException e) {
-            throw HttpTransport.readError(stream);
-        }
-        if (!done && finish == null) {
-            // Cut before the model said it was done.
-            throw new ProviderException(ProviderException.Kind.UNAVAILABLE, true);
-        }
-        List<ToolCall> made = calls(calls);
-        Usage used = usage != null ? usage(usage) : estimate(request, text, calls);
-        Long billed = usage == null ? null : microUsd(usage.get("cost"));
-        return new ChatResult(text.toString(), used, model,
-                stopReason(finish, text.isEmpty() && made.isEmpty(), used.outputTokens(), request.maxOutputTokens()),
-                made, billed);
-    }
-
-    /** Tool-call deltas: by {@code index}, or a new call when one comes without it and with a new id. */
-    private static void take(List<?> parts, TreeMap<Integer, Parts> calls) throws ProviderException {
-        for (Object item : parts) {
-            if (!(item instanceof Map<?, ?> raw)) {
-                continue;
-            }
-            @SuppressWarnings("unchecked")
-            Map<String, Object> part = (Map<String, Object>) raw;
-            String id = Json.string(part, "id");
-            int index;
-            if (part.get("index") instanceof Number n && n.intValue() >= 0
-                    && n.intValue() <= Messages.MAX_TOOL_CALLS) {
-                index = n.intValue();
-            } else if (calls.isEmpty() || (id != null && !id.equals(calls.lastEntry().getValue().id))) {
-                index = calls.isEmpty() ? 0 : calls.lastKey() + 1;
-            } else {
-                index = calls.lastKey();
-            }
-            Parts call = calls.get(index);
-            if (call == null) {
-                Messages.checkCount(calls.size() + 1);
-                call = new Parts();
-                calls.put(index, call);
-            }
-            if (call.id == null && id != null && !id.isEmpty()) {
-                call.id = id;
-            }
-            Map<String, Object> function = Json.object(part, "function");
-            if (function != null) {
-                String name = Json.string(function, "name");
-                if (call.name == null && name != null && !name.isEmpty()) {
-                    call.name = name;
-                }
-                String arguments = Json.string(function, "arguments");
-                if (arguments != null) {
-                    call.arguments.append(arguments);
-                    Messages.checkArguments(call.arguments);
-                }
-            }
-        }
-    }
-
-    private static List<ToolCall> calls(TreeMap<Integer, Parts> calls) throws ProviderException {
-        List<ToolCall> out = new ArrayList<>();
-        Set<String> ids = new HashSet<>();
-        for (Map.Entry<Integer, Parts> entry : calls.entrySet()) {
-            Parts call = entry.getValue();
-            if (call.name == null) {
-                throw new ProviderException(ProviderException.Kind.UNAVAILABLE, true);
-            }
-            // Its result names it, so it needs one, and one no other call of the turn has.
-            String id = call.id != null ? call.id : "call_" + entry.getKey();
-            while (!ids.add(id)) {
-                id = id + "_" + entry.getKey();
-            }
-            out.add(Messages.toolCall(id, call.name, call.arguments.toString()));
-        }
-        return out;
-    }
-
-    /**
-     * Why it stopped, in the words the loop reads: {@code max_tokens} for {@code length} or an empty reply that used its
-     * whole cap, {@code refusal} for the content filter, {@code tool_calls}, else {@code completed}.
-     */
-    static String stopReason(String finish, boolean empty, long output, int cap) {
-        return switch (finish == null ? "stop" : finish) {
-            case "length" -> "max_tokens";
-            case "content_filter" -> "refusal";
-            case "tool_calls" -> "tool_calls";
-            default -> empty && output >= cap ? "max_tokens" : "completed";
-        };
-    }
-
-    static Usage usage(Map<String, Object> usage) {
-        long prompt = Messages.number(usage, "prompt_tokens");
-        Map<String, Object> details = Json.object(usage, "prompt_tokens_details");
-        long cached = Math.min(prompt, details == null ? 0 : Messages.number(details, "cached_tokens"));
-        long written = Math.min(prompt - cached, details == null ? 0 : Messages.number(details, "cache_write_tokens"));
-        long completion = Messages.number(usage, "completion_tokens");
-        Map<String, Object> out = Json.object(usage, "completion_tokens_details");
-        long reasoning = out == null ? 0 : Messages.number(out, "reasoning_tokens");
-        long total = Messages.number(usage, "total_tokens");
-        long output = Math.max(completion, total > prompt ? total - prompt : 0);
-        return new Usage(Math.max(0, prompt - cached - written), Math.max(0, cached), Math.max(0, written),
-                Math.max(0, output), Math.max(0, Math.min(output, reasoning)));
-    }
-
-    /** No usage came: the input as the gateway estimates it, and the output's bytes over 3. */
-    private static Usage estimate(ChatRequest request, CharSequence text, TreeMap<Integer, Parts> calls) {
-        long bytes = text.toString().getBytes(StandardCharsets.UTF_8).length;
-        for (Parts call : calls.values()) {
-            bytes += call.arguments.toString().getBytes(StandardCharsets.UTF_8).length
-                    + (call.name == null ? 0 : call.name.length());
-        }
-        return new Usage(Math.ceilDiv(request.inputBytes(), BYTES_PER_TOKEN) + request.extraInputTokens(), 0, 0,
-                Math.ceilDiv(bytes, BYTES_PER_TOKEN), 0);
+        ChatCompletions.Streamed read = ChatCompletions.read(stream, request, sink, tools,
+                ChatCompletions.Dialect.PLAIN, error -> streamError(error, free),
+                named -> named != null && MODEL.matcher(named).matches() ? named : null);
+        Usage used = read.usage() != null ? ChatCompletions.usage(read.usage())
+                : ChatCompletions.estimate(request, read.outputBytes());
+        Long billed = read.usage() == null ? null : microUsd(read.usage().get("cost"));
+        return new ChatResult(read.text(), used, read.model(), ChatCompletions.stopReason(read.finish(),
+                read.text().isEmpty() && read.calls().isEmpty(), used.outputTokens(), request.maxOutputTokens()),
+                read.calls(), billed);
     }
 
     /** {@code usage.cost}, dollars, as µ$ rounded up; null when it's absent, negative or past any real call. */
@@ -659,12 +494,6 @@ public final class OpenRouterProvider implements ChatProvider {
 
     private URI api(String path) {
         return base.resolve(base.getPath() + "/api/v1" + path);
-    }
-
-    @SuppressWarnings("unchecked")
-    private static Map<String, Object> first(Object choices) {
-        return choices instanceof List<?> list && !list.isEmpty() && list.getFirst() instanceof Map<?, ?> map
-                ? (Map<String, Object>) map : null;
     }
 
     private static Map<String, Object> parse(byte[] json, boolean mayHaveBilled) throws ProviderException {

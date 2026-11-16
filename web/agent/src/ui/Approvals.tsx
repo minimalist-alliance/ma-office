@@ -5,8 +5,10 @@
 // card's `sha256`, and the yes carries that hash. Afterwards the card says what happened, in one line.
 import { useEffect, useId, useMemo, useRef, useState, type KeyboardEvent } from 'react';
 import { AgentError, newIdem, type AgentClient } from '../client/agentClient';
-import type { Agent, Approval } from '../client/types';
+import type { Agent, AgentAccess, Approval } from '../client/types';
+import type { OtherDesk } from '../model/access';
 import { approvalChecks, answerByText, ARM_MS, cardOf, decideErrorText, egressText, futureWhen, mismatchText, stateOf, type CardView } from '../model/approvals';
+import { DONT_ASK_BUSY, DONT_ASK_FAILED, dontAskDone, dontAskNote, dontAskOf, type DontAsk, type NotebookTab } from '../model/auto';
 import { when } from '../model/format';
 import { Icon } from './icons';
 
@@ -20,6 +22,15 @@ export interface ApprovalContext {
   offline: boolean;
   /** The polite status line. */
   announce: (text: string) => void;
+  /** The member's own desk list, which names another desk by its id on W6's cards. */
+  desks?: readonly OtherDesk[];
+  // ----- "Don't ask again" (API.md section 18, "Done without asking"). Without these, no card offers it.
+  /** The shown agent's access (`agent.access.get`), read while one of its cards could offer it. */
+  access?: { agentId: string; access: AgentAccess } | null;
+  /** The Notebook's tabs, from the office (`places`): a tab is offered by its title (and its notebook's, when another shares it) or not at all. */
+  tabs?: readonly NotebookTab[] | null;
+  /** A card switched one on: the app keeps the desk's answer, so no other card offers it again. */
+  onAccess?: (agentId: string, access: AgentAccess) => void;
 }
 
 function Rows({ view }: { view: CardView }) {
@@ -75,14 +86,15 @@ export function ApprovalCard({ approval, agentName, egressCount = 0, ctx }: { ap
   // What the desk answered, or a fetch brought, until the thread's own event says the same or more.
   const [local, setLocal] = useState<Approval | null>(null);
   const a = local && local.id === approval.id && RANK[local.state] >= RANK[approval.state] && (local.payload || !approval.payload) ? local : approval;
-  const view = useMemo(() => cardOf(a, ctx.agents), [a, ctx.agents]);
+  const view = useMemo(() => cardOf(a, ctx.agents, ctx.desks), [a, ctx.agents, ctx.desks]);
   const [checked, setChecked] = useState<boolean | null>(null);
-  const [busy, setBusy] = useState<'yes' | 'no' | null>(null);
+  const [busy, setBusy] = useState<'yes' | 'no' | 'auto' | null>(null);
   const [error, setError] = useState<string | null>(null);
   const [why, setWhy] = useState<string | null>(null);
   const [now, setNow] = useState(() => Date.now());
   const armedAt = useRef(Date.now());
   const answerKey = useRef<{ key: string; idem: string } | null>(null);
+  const accessKey = useRef<{ key: string; idem: string } | null>(null);
   const stateRef = useRef<HTMLParagraphElement>(null);
   const focusState = useRef(false);
   const whyRef = useRef<HTMLTextAreaElement>(null);
@@ -138,9 +150,21 @@ export function ApprovalCard({ approval, agentName, egressCount = 0, ctx }: { ap
     }
   }, [state]);
 
-  const decide = async (approve: boolean, note?: string): Promise<void> => {
-    if (approve && Date.now() - armedAt.current < ARM_MS) return;
-    if (approve && checked !== true) return;
+  // "Don't ask again": only on a waiting card whose payload checks, by the rules in `dontAskOf`.
+  const access = ctx.access && ctx.access.agentId === a.agentId ? ctx.access.access : null;
+  const dontAsk = useMemo(() => (checked === true ? dontAskOf(a, access, ctx.tabs) : null), [checked, a, access, ctx.tabs]);
+  // Held while it runs, so the button stays where it was until the card says how it went.
+  const [asking, setAsking] = useState<DontAsk | null>(null);
+  const offered = asking ?? dontAsk;
+  // The offer comes once the agent's switches are read, and moves the card's buttons: arm again, as for a new payload, so a press
+  // meant for what was there a moment ago does nothing (spec 1.8).
+  useEffect(() => {
+    if (dontAsk) armedAt.current = Date.now();
+  }, [dontAsk?.words]); // eslint-disable-line react-hooks/exhaustive-deps
+
+  const decide = async (approve: boolean, note?: string, opts: { armed?: boolean; said?: string } = {}): Promise<boolean> => {
+    if (approve && !opts.armed && Date.now() - armedAt.current < ARM_MS) return false;
+    if (approve && checked !== true) return false;
     // The same answer again (after a lost reply) keeps its key, so the desk gives the first answer back.
     const key = `${approve}\u0000${note ?? ''}`;
     const idem = answerKey.current?.key === key ? answerKey.current.idem : newIdem();
@@ -153,7 +177,8 @@ export function ApprovalCard({ approval, agentName, egressCount = 0, ctx }: { ap
       focusState.current = true;
       setLocal(next);
       setWhy(null);
-      ctx.announce(approve ? 'Approved.' : 'Declined.');
+      ctx.announce(opts.said ?? (approve ? 'Approved.' : 'Declined.'));
+      return true;
     } catch (err) {
       const e = err instanceof AgentError ? err : null;
       if (e?.code === 'bad_request' && e.detail === 'sha256') {
@@ -165,9 +190,40 @@ export function ApprovalCard({ approval, agentName, egressCount = 0, ctx }: { ap
         if (e && !e.mayHaveApplied && e.code !== 'unavailable' && e.code !== 'deadline_exceeded') answerKey.current = null;
         setError(decideErrorText(e, agentName));
       }
+      return false;
     } finally {
       setBusy(null);
     }
+  };
+
+  /**
+   * "Don't ask again" (API.md section 18): the member's own `agent.access.set` turns on this one switch with this card's place,
+   * and only once that's done is this card approved, through the same path as Approve, with the same hash. The switch never
+   * rides on the decision. If it doesn't go on, the card says so and still waits.
+   */
+  const dontAskAgain = async (d: DontAsk): Promise<void> => {
+    if (busy !== null || Date.now() - armedAt.current < ARM_MS || checked !== true) return;
+    const key = JSON.stringify(d.change);
+    const idem = accessKey.current?.key === key ? accessKey.current.idem : newIdem();
+    accessKey.current = { key, idem };
+    setAsking(d);
+    setBusy('auto');
+    setError(null);
+    let next: AgentAccess;
+    try {
+      next = await ctx.client.setAccess(a.agentId, d.change, { idem });
+      accessKey.current = null;
+    } catch (err) {
+      const e = err instanceof AgentError ? err : null;
+      if (e && !e.mayHaveApplied && e.code !== 'unavailable' && e.code !== 'deadline_exceeded') accessKey.current = null;
+      setError(DONT_ASK_FAILED);
+      setAsking(null);
+      setBusy(null);
+      return;
+    }
+    await decide(true, undefined, { armed: true, said: dontAskDone(agentName, d) });
+    setAsking(null);
+    ctx.onAccess?.(a.agentId, next);
   };
 
   if (state) {
@@ -259,6 +315,16 @@ export function ApprovalCard({ approval, agentName, egressCount = 0, ctx }: { ap
               <Icon name="out" size={14} />
               <span>{egressText(egressCount)}</span>
             </p>
+          )}
+          {offered && (
+            <div className="ag-approval-auto" data-testid="approval-dont-ask">
+              <button type="button" className="ag-btn sm" onClick={() => void dontAskAgain(offered)} disabled={blocked} aria-describedby={`${ids}-auto`} data-testid="approval-dont-ask-btn">
+                {busy === 'auto' || asking ? DONT_ASK_BUSY : offered.words}
+              </button>
+              <p id={`${ids}-auto`} className="ag-approval-auto-note">
+                {dontAskNote(agentName)}
+              </p>
+            </div>
           )}
         </>
       ) : (

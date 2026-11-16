@@ -175,8 +175,8 @@ listeners=$(ss -Hltnup | grep -w "pid=$pid" | awk '{print $5}' | LC_ALL=C sort -
 want F-UNIT "its listeners" "$listeners" '127\.0\.0\.1:14053 127\.0\.0\.1:14443( \[::1\]:14053 \[::1\]:14443)?'
 out=$(RELEASE_DIR=/opt/ma/desk-agent-filter/current /opt/ma/desk-agent-filter/current/health 2>&1) && echo "F-UNIT health: ok" || bad F-UNIT "health: $out"
 want F-UNIT "agent-egress.conf" "$(stat -c '%U %G %a' /etc/ma/agent-egress.conf)" 'root root 644'
-# The names, exactly: the four providers desk-agent calls (services/desk-agent/docker/desk-agent.env), and nothing else.
-want F-UNIT "names in agent-egress.conf" "$(grep -v -e '^#' -e '^[[:space:]]*$' /etc/ma/agent-egress.conf | LC_ALL=C sort | paste -sd' ')" 'api\.anthropic\.com api\.openai\.com api\.x\.ai openrouter\.ai'
+# The names, exactly: the six providers desk-agent calls (services/desk-agent/docker/desk-agent.env), and nothing else.
+want F-UNIT "names in agent-egress.conf" "$(grep -v -e '^#' -e '^[[:space:]]*$' /etc/ma/agent-egress.conf | LC_ALL=C sort | paste -sd' ')" 'api\.anthropic\.com api\.moonshot\.ai api\.openai\.com api\.x\.ai generativelanguage\.googleapis\.com openrouter\.ai'
 
 echo "--- F-BUF each connection's buffers are set, not left to TCP to grow into MemoryMax: from desk-agent 16 KiB and to it 256 KiB, from the provider 256 KiB and to it 64 KiB, each doubled by the kernel"
 as 1103 python3 -I /var/tmp/afprobe.py hold api.anthropic.com $PLACEHOLDER 6 > $LOG/hold.txt 2>&1 & HP=$!
@@ -193,11 +193,12 @@ grep -q 'agent_https\|agent_dns' <<<"$rules" && bad F-RULES "the old address set
 grep -q 'type nat hook output priority' <<<"$rules" || bad F-RULES "no redirect chain"
 
 echo "--- F-PROV uid 1103 reaches each provider, with no key: a 401 or the like is the success"
-for u in https://api.anthropic.com/v1/models https://api.openai.com/v1/models https://api.x.ai/v1/models https://openrouter.ai/api/v1/key; do
+for u in https://api.anthropic.com/v1/models https://api.openai.com/v1/models https://api.x.ai/v1/models https://openrouter.ai/api/v1/key \
+         https://generativelanguage.googleapis.com/v1beta/openai/models https://api.moonshot.ai/v1/models; do
   c=$(http 1103 $u); want F-PROV "$u" "$c" '[2-4][0-9][0-9]'
 done
 echo "--- F-PLACE and by the placeholder address DNS gives it, with the provider's certificate"
-for h in api.anthropic.com api.openai.com api.x.ai openrouter.ai; do want F-PLACE "$h" "$(p 1103 tls $h $PLACEHOLDER)" "$OK"; done
+for h in api.anthropic.com api.openai.com api.x.ai openrouter.ai generativelanguage.googleapis.com api.moonshot.ai; do want F-PLACE "$h" "$(p 1103 tls $h $PLACEHOLDER)" "$OK"; done
 echo "--- F-ADDR the address uid 1103 aims at doesn't matter: aimed at 8.8.8.8, which doesn't serve it, a listed name still gets its own provider"
 want F-ADDR "control: desk (1100), api.anthropic.com at 8.8.8.8" "$(p 1100 tls api.anthropic.com 8.8.8.8)" 'badcert .*|alert .*'
 want F-ADDR "agent, api.anthropic.com at 8.8.8.8" "$(p 1103 tls api.anthropic.com 8.8.8.8)" "$OK"
@@ -217,7 +218,14 @@ want F-CF "agent to $CF on its own address" "$(p 1103 tls $CF "$aC")" "$REFUSED"
 want F-CF "agent to https://$CF/" "$(http 1103 https://$CF/)" 000
 want F-CF "control: desk (1100) to https://$CF/" "$(http 1100 https://$CF/)" '[2-4][0-9][0-9]'
 want F-CF "agent to a name under a listed one" "$(p 1103 tls foo.api.openai.com "$aO")" "$REFUSED"
-want F-CF "agent to a name under openrouter.ai, the one listed name that isn't an api. host" "$(p 1103 tls www.openrouter.ai "$aR")" "$REFUSED"
+want F-CF "agent to a name under openrouter.ai, a listed name that isn't an api. host" "$(p 1103 tls www.openrouter.ai "$aR")" "$REFUSED"
+# Google's front end serves every Google site on every address, so the same check with a Google site that isn't listed
+# (from the sixth name, 2026-11-15; ADR 0070's addendum). Moonshot's host isn't on a shared front end we know of.
+G=www.google.com; aG=$(first generativelanguage.googleapis.com)
+[ -n "$aG" ] || bad F-CF "no address for generativelanguage.googleapis.com to test with"
+want F-CF "control: desk (1100) to $G on generativelanguage.googleapis.com's address" "$(p 1100 tls $G "$aG")" "$OK"
+want F-CF "agent to $G on generativelanguage.googleapis.com's address" "$(p 1103 tls $G "$aG")" "$REFUSED"
+want F-CF "agent to a name under googleapis.com that isn't listed" "$(p 1103 tls storage.googleapis.com "$aG")" "$REFUSED"
 
 echo "--- F-NOSNI no SNI, and F-IP direct by IP"
 want F-NOSNI "control: desk (1100), no SNI, 1.1.1.1" "$(p 1100 tls - 1.1.1.1)" "$OK"

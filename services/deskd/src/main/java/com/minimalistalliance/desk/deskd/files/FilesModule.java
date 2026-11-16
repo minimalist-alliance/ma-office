@@ -262,6 +262,14 @@ public final class FilesModule {
         return new AgentFiles(tree, trash, quota, feed, methods);
     }
 
+    /**
+     * Documents' way in (deskd {@code API.md} §24): reading the tree to index it, hearing every folder change, and a file's
+     * bytes for the sandbox. Null while the tree can't be used.
+     */
+    public DocsFiles docsAccess() {
+        return tree == null ? null : new DocsFiles(tree, feed, agentAccess());
+    }
+
     /** Ends running uploads (their partials stay) and stops the sweep. */
     public void close() {
         if (tree == null) {

@@ -27,7 +27,8 @@ public final class AttachException extends Exception {
      * One of: {@code too_many}, {@code too_large}, {@code total_too_large}, {@code unsupported_type},
      * {@code legacy_office}, {@code binary}, {@code empty}, {@code encrypted}, {@code no_text}, {@code unreadable},
      * {@code too_complex}, {@code timeout}, {@code busy}, {@code image_too_big}, {@code no_vision}, {@code missing},
-     * {@code bad_upload}, {@code staging_full}.
+     * {@code bad_upload}, {@code staging_full}, {@code unavailable} (the parse sidecar is required and can't read,
+     * ADR 0097).
      */
     public String reason() {
         return reason;

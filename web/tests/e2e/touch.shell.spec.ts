@@ -5,7 +5,7 @@
 // On a phone held upright an app opens in its desk's carousel (the Thumb row), full screen, so that's where it's measured.
 // Chromium with each device's size, touch and mobile viewport (the iPhone and iPad profiles are WebKit's own sizes).
 import { expect, test, type Page } from '@playwright/test';
-import { canvasPainted, harness, setTheme, signIn, watchConsole, type ThemeId } from './helpers';
+import { canvasPainted, harness, setTheme, signIn, watchConsole, type ThemeId, openMenuSection } from './helpers';
 
 const THEMES: ThemeId[] = ['light', 'dusk', 'dark'];
 const DEVICES = [
@@ -36,6 +36,16 @@ function smallTargets(page: Page, within = 'body'): Promise<string[]> {
         return !!h && (h === el || el.contains(h));
       };
       if (!on(cx, cy)) continue; // covered, or off screen: not a target now
+      // Partly scrolled out of a scrolling panel (a phone on its side, the account menu's last rows): not a target until it's
+      // scrolled to; measured where it's whole (release 6: the theme sliders' second row at the menu's edge).
+      let clipped = false;
+      for (let a = el.parentElement; a && !clipped; a = a.parentElement) {
+        const o = getComputedStyle(a);
+        if (!/(auto|scroll|hidden|clip)/.test(o.overflowY + o.overflowX)) continue;
+        const ar = a.getBoundingClientRect();
+        clipped = r.top < ar.top - 1 || r.bottom > ar.bottom + 1 || r.left < ar.left - 1 || r.right > ar.right + 1;
+      }
+      if (clipped || r.top < 0 || r.bottom > innerHeight) continue;
       let [l, rt, t, b] = [0, 0, 0, 0];
       while (l < 30 && on(cx - l - 1, cy)) l++;
       while (rt < 30 && on(cx + rt + 1, cy)) rt++;
@@ -148,6 +158,15 @@ for (const [name, viewport] of DEVICES) {
       await expect(page.locator('#account-panel')).toBeVisible();
       expect(await smallTargets(page, '#account-panel')).toEqual([]);
       await page.screenshot({ path: `test-results/shots/touch-${name}-menu.png` });
+      // Its tucked sections and the Keyboard shortcuts modal (the owner's Nov 16 tidy): a finger's 44 px there too.
+      for (const id of ['menu-appearance'] as const) {
+        await openMenuSection(page, id);
+        await page.waitForTimeout(200);
+        expect(await smallTargets(page, '#account-panel'), id).toEqual([]);
+      }
+      await page.locator('#account-panel').getByRole('button', { name: 'Keyboard shortcuts' }).click();
+      await expect(page.getByTestId('shortcuts-dialog')).toBeVisible();
+      expect(await smallTargets(page, '[data-testid="shortcuts-dialog"]')).toEqual([]);
     });
   });
 }

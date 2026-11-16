@@ -1,0 +1,15 @@
+From: Travel <travel@example.com>
+To: me@desk.example
+Date: Fri, 13 Nov 2026 10:00:00 +0000
+Subject: Quoted-printable
+Message-ID: <cte-qp-soft-breaks@corpus.example>
+MIME-Version: 1.0
+X-Corpus-Note: quoted-printable with soft breaks (one inside a word), =3D, =20 and encoded UTF-8
+Content-Type: text/plain; charset=utf-8
+Content-Transfer-Encoding: quoted-printable
+
+Our rende=
+zvous point is the caf=C3=A9 by the station; tickets cost 2 =3D 1 pass.=20
+Line with trailing space encoded=20
+A very long line that a careful mailer soft-wraps so it stays under seventy-six=
+ characters per line on the wire.

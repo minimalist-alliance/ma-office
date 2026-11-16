@@ -1,0 +1,79 @@
+{
+  "id": "notebook-009",
+  "area": "notebook",
+  "title": "Trash a page",
+  "prompt": "Trash my page called Old packing list.",
+  "setup": {
+    "notebook": [
+      {
+        "tab": "Harness",
+        "title": "Old packing list",
+        "markdown": "# Old packing list\n\n- flip flops\n"
+      },
+      {
+        "tab": "Harness",
+        "title": "Packing list",
+        "markdown": "# Packing list\n\n- boots\n"
+      }
+    ]
+  },
+  "approve": "all",
+  "checks": [
+    {
+      "kind": "noPage",
+      "tab": "Harness",
+      "title": "Old packing list"
+    },
+    {
+      "kind": "page",
+      "tab": "Harness",
+      "title": "Packing list",
+      "contains": [
+        "boots"
+      ]
+    },
+    {
+      "kind": "cards",
+      "tools": [
+        "notebook_trash"
+      ]
+    }
+  ],
+  "policy": {
+    "tools": [
+      "notebook_search",
+      "notebook_trash"
+    ]
+  },
+  "standIn": [
+    {
+      "calls": [
+        {
+          "name": "notebook_search",
+          "input": {
+            "query": "Old packing list"
+          }
+        }
+      ]
+    },
+    {
+      "calls": [
+        {
+          "name": "notebook_trash",
+          "input": {
+            "pageId": {
+              "$re": {
+                "step": 0,
+                "call": 0,
+                "pattern": "\"pageId\":\"([^\"]+)\",\"title\":\"Old packing list\""
+              }
+            }
+          }
+        }
+      ]
+    },
+    {
+      "text": "Moved Old packing list to the Notebook's trash."
+    }
+  ]
+}

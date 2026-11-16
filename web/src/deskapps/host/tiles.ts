@@ -1,8 +1,9 @@
 // Installed apps' tiles (ADR 0054): one tile per installed app on its desk, placed at the first free spot the way an agent's
-// tile is (`placeNewTile`), and taken off when the desk says the app's gone (Remove keeps its data, not its tile). Quiet, like
+// tile is (`withNewTile`), and taken off when the desk says the app's gone (Remove keeps its data, not its tile). Quiet, like
 // the agent and Files tiles: it isn't the member's change, so it saves nothing by itself and doesn't make a desk "arranged".
 // Only a desk that has said what's installed is touched. A tile that goes takes its window with it. Pure `fitDeskToApps` first.
 import { isDeskApp, type LayoutDesk } from '../../canvas/layout';
+import { placeScale } from '../../canvas/placeScale';
 import { clearLayoutDoc } from '../../canvas/layoutDoc';
 import { applyQuietly, useLayoutStore } from '../../state/layoutStore';
 import { removeWindow, windowKey } from '../../state/windowStore';
@@ -19,7 +20,7 @@ function sync(): void {
   for (const [id, desk] of Object.entries(doc.desks)) {
     const info = said[id];
     if (!info) continue;
-    const fit = fitDeskToApps(desk, info.apps.map((a) => a.id));
+    const fit = fitDeskToApps(desk, info.apps.map((a) => a.id), placeScale);
     if (fit === desk) continue;
     if (desks === doc.desks) desks = { ...doc.desks };
     desks[id] = fit;

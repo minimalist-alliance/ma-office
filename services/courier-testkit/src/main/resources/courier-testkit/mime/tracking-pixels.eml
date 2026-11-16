@@ -1,0 +1,11 @@
+From: Catalogue <news@catalogue.example>
+To: me@desk.example
+Date: Fri, 13 Nov 2026 10:00:00 +0000
+Subject: Autumn catalogue
+Message-ID: <tracking-pixels@corpus.example>
+MIME-Version: 1.0
+X-Corpus-Note: tracking pixels: 1x1, width=0, display:none, visibility hidden, known open-tracking paths
+Content-Type: text/html; charset=utf-8
+List-Unsubscribe: <https://catalogue.example/u/1>
+
+<html><body><p>Our autumn catalogue is here with forty new designs.</p><img src="https://track.example.com/open.gif?u=8f2a" width="1" height="1" alt=""><img src="https://mail.example.net/wf/open?upn=abc123" width="0" height="0" style="border:0"><img src="https://news.example.org/e/o/eyJ1IjoxfQ" style="display:none"><img src="https://stats.example.com/track/open.php?u=1&amp;id=2" style="width:1px;height:1px;visibility:hidden"><img src="https://pixel.example.net/pixel.gif" border="0"><img src="https://img.example.com/beacon.png" height="1" width="1" style="opacity:0"></body></html>

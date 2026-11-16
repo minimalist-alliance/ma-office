@@ -1,0 +1,50 @@
+{
+  "id": "files-026",
+  "area": "files",
+  "title": "Save text with an emoji",
+  "prompt": "Save Harness/party/ideas.md listing these party ideas: treasure hunt, pizza making and a 🎈 balloon race.",
+  "setup": {
+    "files": {
+      "Harness/party/guests.txt": "Twelve kids.\n"
+    }
+  },
+  "approve": "all",
+  "checks": [
+    {
+      "kind": "file",
+      "path": "Harness/party/ideas.md",
+      "contains": [
+        "treasure hunt",
+        "pizza making",
+        "balloon race"
+      ]
+    },
+    {
+      "kind": "cards",
+      "tools": [
+        "files_write"
+      ]
+    }
+  ],
+  "policy": {
+    "tools": [
+      "files_write"
+    ]
+  },
+  "standIn": [
+    {
+      "calls": [
+        {
+          "name": "files_write",
+          "input": {
+            "path": "Harness/party/ideas.md",
+            "text": "# Party ideas\n\n- treasure hunt\n- pizza making\n- 🎈 balloon race\n"
+          }
+        }
+      ]
+    },
+    {
+      "text": "Saved Harness/party/ideas.md."
+    }
+  ]
+}

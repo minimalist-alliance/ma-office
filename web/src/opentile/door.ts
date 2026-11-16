@@ -1,5 +1,6 @@
 // The way in to open tiles (ADR 0053) from the shell, all that's in the first load: the kill switch, and whether the layer's
 // chunk is needed yet. Everything else is the chunk's (`OpenTileLayer.tsx`).
+import { withWindows } from '../apps/chunks';
 import { carouselOn } from '../carousel/model';
 import { detailLevel, setOpenLevel } from '../canvas/layout';
 import { useIsPhone } from '../canvas/phone';
@@ -8,8 +9,8 @@ import { useSession } from '../platform/session';
 import { useLayoutStore } from '../state/layoutStore';
 import { useViewStore } from '../state/viewStore';
 
-/** The layer's own chunk: fetched when a tile first reaches `open` on the shown desk, or on a load with one. */
-export const loadOpenTiles = () => import('./OpenTileLayer');
+/** The layer's own chunk: fetched when a tile first reaches `open` on the shown desk, or on a load with one, with every app's window beside it. */
+export const loadOpenTiles = withWindows(() => import('./OpenTileLayer'));
 
 /**
  * From `Shell`, before the desks render: client-config `openTiles: { enabled: false }` is the kill switch (absent is on, as it

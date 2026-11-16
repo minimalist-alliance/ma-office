@@ -5,21 +5,24 @@ import { expect, test, type APIRequestContext, type Page } from '@playwright/tes
 import { canvasPainted, harness, setTheme, signIn, watchConsole, type ThemeId } from './helpers';
 
 const GB = 1e9;
-const DAY = 86_400_000;
 
-/** A meter as services/desks answers it, for this week and month, with `weekGb` used of 30 (and of 100 this month). */
+/**
+ * A meter as services/desks answers it, for this week and month, with `weekGb` used of 30 (and of 100 this month). The week
+ * is Monday 00:00 to Monday 00:00 in the member's own zone (TD-226, web/CLAUDE.md `src/bandwidth/`): this browser's, which
+ * is this process's (the config sets no `timezoneId`), so local dates here. It was Monday 00:00 UTC, which the app then said
+ * as "Sun 5:00 PM" in Denver, and in the first half-day of a UTC week as "Nov 22 5:00 PM", which the specs didn't expect.
+ */
 function meter(weekGb: number, over: Record<string, unknown> = {}): Record<string, unknown> {
   const now = new Date();
-  const day = Date.UTC(now.getUTCFullYear(), now.getUTCMonth(), now.getUTCDate());
-  const weekStart = day - ((new Date(day).getUTCDay() + 6) % 7) * DAY;
-  const monthStart = Date.UTC(now.getUTCFullYear(), now.getUTCMonth(), 1);
-  const nextMonth = Date.UTC(now.getUTCFullYear(), now.getUTCMonth() + 1, 1);
+  const weekStart = new Date(now.getFullYear(), now.getMonth(), now.getDate() - ((now.getDay() + 6) % 7));
+  const monthStart = new Date(now.getFullYear(), now.getMonth(), 1).getTime();
+  const nextMonth = new Date(now.getFullYear(), now.getMonth() + 1, 1).getTime();
   const used = Math.round(weekGb * GB);
   const state = weekGb >= 30 ? 'limit' : weekGb >= 24 ? 'warn' : 'ok';
-  const weekEnd = new Date(weekStart + 7 * DAY).toISOString();
+  const weekEnd = new Date(weekStart.getFullYear(), weekStart.getMonth(), weekStart.getDate() + 7).toISOString();
   return {
     tier: 'officer',
-    week: { usedBytes: used, usedGb: weekGb, limitGb: 30, startsAt: new Date(weekStart).toISOString(), resetsAt: weekEnd },
+    week: { usedBytes: used, usedGb: weekGb, limitGb: 30, startsAt: weekStart.toISOString(), resetsAt: weekEnd },
     month: { usedBytes: used, usedGb: weekGb, limitGb: 100, startsAt: new Date(monthStart).toISOString(), resetsAt: new Date(nextMonth).toISOString() },
     state,
     limitedBy: state === 'limit' ? 'week' : null,
@@ -42,6 +45,24 @@ const mock = <T>(page: Page, fn: (c: MockControl, arg: unknown) => T, arg: unkno
   page.evaluate(`(${fn.toString()})(window.__maDeskMock, ${JSON.stringify(arg)})`) as Promise<T>;
 const streamCalls = (page: Page): Promise<string[]> =>
   page.evaluate(`(${((c: MockControl) => c.rpc.filter((r) => r.m === 'browser.stream.set').map((r) => r.p['state'] as string)).toString()})(window.__maDeskMock)`) as Promise<string[]>;
+
+/** When the meter's week resets: its `resetsAt`, which is also `resumesAt` while the week's limit pauses the Browser. */
+const weekEnd = (m: Record<string, unknown>): string => (m['week'] as { resetsAt: string }).resetsAt;
+
+/**
+ * A time as the app says it (`formatReset`, the bandwidth words), in this browser's zone: "Mon 12:00 AM" within 6.5 days, its
+ * date further out ("Nov 23"), with the time unless it's midnight there. So the week's reset, at Monday 00:00 (TD-226), reads
+ * "Mon 12:00 AM" but in the week's first half-day, when it's more than 6.5 days off and reads as its date.
+ */
+const said = (page: Page, iso: string): Promise<string> =>
+  page.evaluate((t) => {
+    const at = Date.parse(t);
+    const soon = at - Date.now() < 6.5 * 86_400_000;
+    const date = new Intl.DateTimeFormat(undefined, soon ? { weekday: 'short' } : { month: 'short', day: 'numeric' }).format(at);
+    const time = new Intl.DateTimeFormat(undefined, { hour: 'numeric', minute: '2-digit' }).format(at);
+    const midnight = new Intl.DateTimeFormat('en-GB', { hour: '2-digit', minute: '2-digit', hourCycle: 'h23' }).format(at) === '00:00';
+    return soon || !midnight ? `${date} ${time}` : date;
+  }, iso);
 
 const circle = (page: Page) => page.getByTestId('bandwidth-button');
 const panel = (page: Page) => page.getByTestId('bandwidth-panel');
@@ -73,8 +94,9 @@ for (const theme of ['light', 'dusk', 'dark'] as ThemeId[]) {
   test(`${theme}: the circle sits bottom right, says the numbers, and opens on hover`, async ({ page, request }) => {
     const errors = watchConsole(page);
     await setTheme(page, theme);
-    await arrive(page, request, meter(12.34));
-    await expect(circle(page)).toHaveAccessibleName(/^Bandwidth: 12\.3 GB of 30 GB used this week\. Resets \w{3} \d{1,2}:\d{2} [AP]M\.$/);
+    const m = meter(12.34);
+    await arrive(page, request, m);
+    await expect(circle(page)).toHaveAccessibleName(`Bandwidth: 12.3 GB of 30 GB used this week. Resets ${await said(page, weekEnd(m))}.`);
     await expect(circle(page)).toHaveAttribute('aria-expanded', 'false');
 
     // Bottom right, level with the zoom control and clear of it.
@@ -112,10 +134,11 @@ for (const theme of ['light', 'dusk', 'dark'] as ThemeId[]) {
     await expect.poll(() => streamCalls(page)).toContain('live');
 
     // The limit: Platform says paused. The picture goes, the desk is told `off`, and the window says when it's back.
-    await harness(request, { bandwidth: meter(30.2) });
+    const limit = meter(30.2);
+    await harness(request, { bandwidth: limit });
     const paused = page.getByTestId('bandwidth-paused');
     await expect(paused).toBeVisible();
-    await expect(paused.getByRole('heading')).toHaveText(/^Browser is paused until \w{3} \d{1,2}:\d{2} [AP]M$/);
+    await expect(paused.getByRole('heading')).toHaveText(`Browser is paused until ${await said(page, weekEnd(limit))}`);
     await expect(paused).toContainText("You've used this week's 30 GB of bandwidth. Notebook and Agent keep working, and your tabs are safe.");
     await expect(page.getByTestId('browser-video')).toHaveCount(0);
     await expect.poll(async () => (await streamCalls(page)).at(-1)).toBe('off');
@@ -177,11 +200,12 @@ test("the heads-up and the pause are said through the shell's live region, there
   // A window open as the pause comes.
   await openApp(page, 'Browser');
   await expect(page.getByTestId('browser-video')).toBeVisible();
-  await harness(request, { bandwidth: meter(30.2) });
+  const limit = meter(30.2);
+  await harness(request, { bandwidth: limit });
   const paused = page.getByTestId('bandwidth-paused');
   await expect(paused).toBeVisible();
   await expect(paused).not.toHaveAttribute('role', 'status');
-  const pauseSaid = /^Browser is paused until \w{3} \d{1,2}:\d{2} [AP]M\. You've used this week's 30 GB of bandwidth\. Notebook and Agent keep working, and your tabs are safe\.$/;
+  const pauseSaid = `Browser is paused until ${await said(page, weekEnd(limit))}. You've used this week's 30 GB of bandwidth. Notebook and Agent keep working, and your tabs are safe.`;
   await expect(shellRegion(page)).toHaveText(pauseSaid);
 
   // A window that opens already paused says it too (after the shell's "window opened", which it replaces).
@@ -277,13 +301,6 @@ async function deskRefuses(page: Page, resumesAt: string | null): Promise<void> 
     c.refuseDetails = { reason: 'bandwidth_limit', resumesAt: at };
   }, resumesAt);
 }
-
-/** "Mon 5:00 PM", as the app says a time within the coming week, in this browser's zone. */
-const said = (page: Page, iso: string): Promise<string> =>
-  page.evaluate((t) => {
-    const at = Date.parse(t);
-    return `${new Intl.DateTimeFormat(undefined, { weekday: 'short' }).format(at)} ${new Intl.DateTimeFormat(undefined, { hour: 'numeric', minute: '2-digit' }).format(at)}`;
-  }, iso);
 
 for (const theme of ['light', 'dusk', 'dark'] as ThemeId[]) {
   test(`${theme}: finding 6, the desk refuses live with bandwidth_limit: the pause shows the desk's time, and nothing asks again`, async ({ page, request }) => {
@@ -456,9 +473,10 @@ for (const theme of ['light', 'dusk', 'dark'] as ThemeId[]) {
     await harness(request, { membership: ALLIANCE_ADULT, ageRules: AGE_ON, tierAllowances: OFFICER_30 });
     await arrive(page, request, meter(0, { tier: 'alliance' }));
     await openApp(page, 'Browser');
-    await harness(request, { bandwidth: meter(30.2, { tier: 'alliance' }) });
+    const limit = meter(30.2, { tier: 'alliance' });
+    await harness(request, { bandwidth: limit });
     const paused = page.getByTestId('bandwidth-paused');
-    await expect(paused.getByRole('heading')).toHaveText(/^Browser is paused until \w{3} \d{1,2}:\d{2} [AP]M$/);
+    await expect(paused.getByRole('heading')).toHaveText(`Browser is paused until ${await said(page, weekEnd(limit))}`);
     await expect(paused).toContainText("You've used this week's 30 GB of bandwidth. Notebook and Agent keep working, and your tabs are safe.");
     await expect(paused.getByRole('link')).toHaveText('Officer has 30 GB a week');
     await expect(paused.getByRole('link')).toHaveAttribute('href', 'https://platform.localhost/account');

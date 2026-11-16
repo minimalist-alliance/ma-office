@@ -1,0 +1,28 @@
+# Draft. Courier at launch: email two ways, iMessage, and lanes (amends ADR 0016)
+
+**Status:** Proposed (draft amendment; the integrator numbers it, from the Desk range 0110 to 0119, and adds an "Amended by" line to [0016](0016-chat-channels-and-delivery.md) when it's accepted). Two points wait on the owner's decisions D2 and D4 of the Courier launch plan; this draft writes their recommended defaults and marks them.
+**Date:** 2026-11-12
+**Decision:** the owner, Nov 12: Courier is prelaunch, at the production bar, and its id is `courier` everywhere. The owner's stance on Apple: "We don't want to take any options off the table yet to support apple users."
+**Amends:** [0016](0016-chat-channels-and-delivery.md). Its channel model, `medium` separate from `author_kind`, and the default delivery (the medium last received from the other party) stand.
+**See also:** [draft-courier-store](draft-courier-store.md) (the store, built), [draft-courier-address](draft-courier-address.md), [draft-courier-relay](draft-courier-relay.md).
+
+## Context
+ADR 0016 put email at Phase 4, ruled out AWS mail infrastructure and SES mailboxes, and called iMessage impossible. The launch plan changes all three, for members who expect their email and their family's texts in one place, without giving up "kept on the desk".
+
+## Decision
+1. **The app is Courier, id `courier`;** its store is `/data/courier/courier.db` ([draft-courier-store](draft-courier-store.md)), its methods `courier.*` and its topic `courier.changed`. deskd keeps `chat.` reserved too.
+2. **Email is at launch, in two forms.**
+   - **Linked mailboxes:** the member's own IMAP and SMTP or JMAP accounts (Gmail, iCloud Mail, Outlook.com and Microsoft 365, Fastmail, Yahoo, any IMAP), up to 5 a desk. The desk connects out to the provider itself (desk egress allows 465, 587 and 993, ADR 0014); MA's platform is never in that path. Sign-ins are sealed on the desk as ADR 0042 seals LLM keys.
+   - **The desk's own address,** received through Platform's mail door: SES receiving, sealed to the desk within seconds, the plaintext never stored ([draft-courier-relay](draft-courier-relay.md)). It's sent through Platform's provider-neutral `courier-send`.
+   - **"No AWS mail infrastructure" and the rejection of "SES mailboxes" are replaced for the desk's address only:** Platform holds no mailbox, only a door that seals.
+3. **Sending from the desk's address waits on a provider (the owner's decision D2, open; the default is written here).** *Recommended default:* a provider built for mail that customers write, MailChannels Outbound Filtering, after its written OK; a separate Resend account if it says no, only with Resend's written OK and never the account that sends sign-up codes; SES asked again after about three months of history. **Until a provider is live, desk addresses receive only,** and the composer offers the other media: deskd's queue refuses a medium with no transport before doing anything ([draft-courier-store](draft-courier-store.md) §8).
+4. **Media add `imessage` and `sms`.** "iMessage is impossible" is replaced: **iMessage and iPhone texts arrive through the member's own Mac (the owner's decision D4, open; the default is written here).** *Recommended default:* BlueBubbles Server on the member's Mac at launch, in whichever of its modes the member picks, with plain words on what each means; MA Connector for Mac and for Android, our own, soon after, through the sealed relay as paired devices; AirMessage, mautrix-imessage and paid services kept open behind the same adapter contract, not built. Anything that copies Apple's login stays off the table. Testing needs a real Mac signed in to a test Apple ID.
+5. **Lanes are added to the channel model:** People, Requests, Updates, Other, Spam and Trash, kept per message ([draft-courier-store](draft-courier-store.md) §6). A stranger's first message is a Request through this desk's address, the member address or iMessage, and Other through a linked mailbox. Nothing in Requests, Spam or Trash reaches an agent.
+6. **Courier never sends by itself:** no auto-replies, vacation replies or read receipts at launch, and no message an agent wrote. That rules out mail loops.
+7. **Each channel has its own kill switch, and ships on** (the owner's prelaunch rule): `/data/desk/courier-switch` with `off`, `send-off` or `<medium>-off`.
+
+## Consequences
+- "Text my wife" works at launch for a member with a Mac; Android texts follow with our connector.
+- A member's email and the platform: linked mailboxes never touch it; mail to the desk's address passes the door for seconds, sealed. The honest words for this are the owner's decision D5 (open). *Recommended default:* "Email isn't end-to-end encrypted anywhere. Mail to your desk's address passes through MA's mail door, which seals it to your desk within seconds and keeps no readable copy. Mail you send from it passes through it once on the way out. Your linked mailboxes stay between your desk and your provider. Messages between members' desks are sealed, and MA can't read them." It follows ADR 0074: never "end-to-end encrypted" for email.
+- Not at launch: sending by agents (`courier_send`, always asked, is Maia Mode's), Telegram, Slack and Discord (soon after), gray bridges (off), IMAP access to the desk's own address from other apps, a member's own domain, scheduled send, PGP and S/MIME.
+- **Rejected:** a hosted mailbox partner for desk addresses (mail at rest in plaintext with a third party breaks "kept on this desk"); our own mail servers before launch (port 25, IP warm-up and an abuse desk); building sending on SES after its refusal.

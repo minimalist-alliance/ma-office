@@ -1,0 +1,34 @@
+From: Release Team <release@example.org>
+To: me@desk.example
+Date: Fri, 13 Nov 2026 10:00:00 +0000
+Subject: Release checksums
+Message-ID: <signed-pgp@corpus.example>
+MIME-Version: 1.0
+X-Corpus-Note: multipart/signed (PGP/MIME, RFC 3156): text and an application/pgp-signature attachment
+Content-Type: multipart/signed; micalg=pgp-sha256; protocol="application/pgp-signature"; boundary="sig-1"
+
+This is an OpenPGP/MIME signed message (RFC 4880 and 3156)
+--sig-1
+Content-Type: text/plain; charset=utf-8
+Content-Transfer-Encoding: quoted-printable
+
+The release checksums are listed below.
+
+sha256 4f1c...e09a  tool-4.2.tar.gz
+--sig-1
+Content-Type: application/pgp-signature; name="signature.asc"
+Content-Description: OpenPGP digital signature
+Content-Disposition: attachment; filename="signature.asc"
+
+-----BEGIN PGP SIGNATURE-----
+
+MIIBGOfu52Fe818w5JtILhXK51AHIB4SYXsP7afhZHeW/wIr6o7QKoKhdZMPIzfN
+N5TFIggAbWsa8MDL1iVliqwsn6oH0TxEfjMFHu75WmDlYUPWxDvK12wAipsKa1/J
+MxVKbeKEBKiXxSUmLmp8B7y+6EH3RcVdTp90f2FRZMb3KNcYNTcTgnrIg9f7llkj
+QHT1JY9saAgjidLkfx4XWpC8Qy+5RuapRxEJ87efEQom9iKfo0UlJue8FkKutCvy
+J9UP/wfDwgYkKS47g9Wpxurh7CoPniz2C3U5/viCBbyaSWdWr+L/e6fPgGXcZm3E
+cKJrRUT+sxQgjVY55vGMbdPD/KHnpCYQjhWPtZ4JRc/oYQyIeUgYO+Q3vCc=
+=Xq3a
+-----END PGP SIGNATURE-----
+
+--sig-1--

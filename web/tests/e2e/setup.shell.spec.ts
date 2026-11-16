@@ -7,7 +7,7 @@
 import { readFileSync } from 'node:fs';
 import { createRequire } from 'node:module';
 import { expect, test, type APIRequestContext, type Locator, type Page } from '@playwright/test';
-import { canvasPainted, harness, setTheme, signIn, watchConsole, type ThemeId } from './helpers';
+import { canvasPainted, harness, setTheme, signIn, watchConsole, type ThemeId, openMenuSection } from './helpers';
 
 const AXE = readFileSync(createRequire(import.meta.url).resolve('axe-core/axe.min.js'), 'utf8');
 const MIRROR = 'ma.setup.prefs.v1';
@@ -250,6 +250,7 @@ test.describe('the setup circle', () => {
     await expect(usage).toBeFocused();
     // The account menu's switch says what it does, and that it's off.
     await page.getByRole('button', { name: 'Account' }).click();
+    await openMenuSection(page, 'menu-appearance'); // under Appearance since the owner's Nov 16 tidy
     const sw = page.getByRole('switch', { name: 'Show setup and what\'s new' });
     await expect(sw).not.toBeChecked();
     await sw.focus();
@@ -278,6 +279,7 @@ test.describe('the setup circle', () => {
     await page2.waitForTimeout(800);
     await expect(page2.getByTestId('setup-circle')).toHaveCount(0);
     await page2.getByRole('button', { name: 'Account' }).click();
+    await openMenuSection(page2, 'menu-appearance');
     const sw = page2.getByRole('switch', { name: 'Show setup and what\'s new' });
     await expect(sw).not.toBeChecked();
     await sw.check();
@@ -384,6 +386,7 @@ test.describe('the setup circle', () => {
     await page.waitForTimeout(800);
     await expect(page.getByTestId('setup-circle')).toHaveCount(0);
     await page.getByRole('button', { name: 'Account' }).click();
+    await openMenuSection(page, 'menu-appearance');
     await expect(page.getByRole('switch', { name: 'Show setup and what\'s new' })).toHaveCount(0);
   });
 

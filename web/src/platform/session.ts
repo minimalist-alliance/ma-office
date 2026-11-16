@@ -3,25 +3,31 @@
 import { create } from 'zustand';
 import { dropLastMeter, showLastMeter } from '../bandwidth/store';
 import { initialsOf } from '../chrome/avatar';
-import { closeAllLinks, dropAdultOnlySummaries, syncLinks } from '../desk/liveStore';
+import { closeAllLinks, dropAdultOnlySummaries, forgetLinks, syncLinks } from '../desk/liveStore';
+import { forgetSaid } from '../deskapps/door';
 import { clearDeskMirror, dropDeskList, dropMirroredDesks, guildDeskIds, renameDeskInStore, setDeskList, setDeskListDirect, setDeskListError, setUnpaid, useDeskStore, type DeskInfo } from '../state/deskStore';
 import { fitLayoutToBand, forgetLayoutMirror, layoutMirrorFor, mirrorFollowsToken, reconcileLayout, useLayoutStore } from '../state/layoutStore';
-import { closeAdultOnlyWindows } from '../state/windowStore';
+import { forgetDeskFocus } from '../state/viewStore';
+import { closeAdultOnlyWindows, closeAllWindows } from '../state/windowStore';
+import { ACCOUNT_CLOSED, forgetAccountClosed, whenClosedHeard } from './accountClosed';
 import { ageBandOf, ageRulesOn, awaitingParent, currentBand, setCurrentBand } from './age';
-import { ApiError, getDesks, getMe, postSignOut, type DesksResponse, type Me } from './api';
-import { answeredWithin, endSession, EVERYWHERE_WAIT_MS, finishSignIn, forAtMost, hasStoredSession, onMemberChange, ownSignInPath, retryRefreshNow, sessionWasRefused, SignInRequired, takeEndedChoice, startSignIn, usesManagedLogin } from './auth';
+import { ApiError, getDesks, getMe, keepShared, postSignOut, type DesksResponse, type Me } from './api';
+import { endSession, finishSignIn, forAtMost, hasStoredSession, onMemberChange, ownSignInPath, retryRefreshNow, sessionWasRefused, SignInRequired, takeEndedChoice, takeRevoked, startSignIn, usesManagedLogin } from './auth';
 import { accountUrl, getClientConfig, loadedConfig, type ClientConfig } from './clientConfig';
 import { dropExportSoon, keepExportFor } from './exportSweep';
+import { ssoOrigin } from './hosts';
 import { linkFromAddress, linksOn } from '../open/intent';
-import { clearLastScreens, keepLastScreens } from '../browser/lastScreen';
+import { clearLastScreens, keepLastScreens } from '../browser/lastScreenGate';
 import { checkedConfig, checkedLastMe, forgetLastKnown, lastKnownFor, lastMeOf, readLastKnown, rememberLastKnown } from './lastKnown';
 import { signInAddress } from './signInAddress';
 import { hasStoredToken, onTokenGoneElsewhere, placeTokenFor } from './tokenStore';
+import { rereadOnReturn, returnGapMs } from './meReread';
+import { useSettingsStore } from '../settings/settingsStore';
 import { announce } from '../shell/announce';
 
 export type SessionStatus = 'booting' | 'signedOut' | 'signedIn' | 'refused';
 
-interface SessionState {
+export interface SessionState {
   status: SessionStatus;
   /** A calm line for the sign-in screen, such as "You're signed out." */
   notice: string | null;
@@ -49,6 +55,12 @@ const set = (p: Partial<SessionState>): void => useSession.setState(p);
  * or roles, so the no-desk cards, the tier and the owner's rows still wait for `/v1/me`.
  */
 let meIsLastKnown = false;
+
+/**
+ * `GET /v1/me` has answered or failed this page, so `me` is Platform's word, not the last visit's record: the loading
+ * overlay waits for it (ADR 0058). A selector: `meIsLastKnown` only ever changes beside a `set`, so it re-reads with it.
+ */
+export const meAnswered = (s: SessionState): boolean => s.meFailed || (s.me !== null && !meIsLastKnown);
 
 async function loadConfig(): Promise<ClientConfig | null> {
   try {
@@ -91,6 +103,7 @@ mirrorFollowsToken(hasStoredToken);
 function goSignedOut(notice: string | null): void {
   stopPolling();
   closeAllLinks();
+  forgetAccountClosed();
   meIsLastKnown = false;
   set({ status: 'signedOut', notice, me: null, meFailed: false });
   void forgetMember();
@@ -136,8 +149,12 @@ function mayLeaveForSignIn(): boolean {
  * Anything else gets the card: with no token left, the likely cause is a sign-out in another tab, and a 401 with a
  * good token wouldn't be mended by signing in. So does the setting being on with its route not there yet.
  */
+/** The card's line when another app's Sign out in this browser ended this session (§2.8; Sales' words, Nov 12). */
+export const REVOKED_LINE = 'You were signed out. Please sign in again.';
+
 async function sessionOver(): Promise<void> {
   if (leaving) return;
+  const revoked = takeRevoked();
   const cfg = sessionWasRefused() ? await loadConfig() : null;
   if (leaving) return;
   const own = cfg && ownSignInPath(cfg);
@@ -154,7 +171,7 @@ async function sessionOver(): Promise<void> {
     else await startSignIn(cfg, undefined, 'replace');
     return;
   }
-  goSignedOut('Please sign in again.');
+  goSignedOut(revoked ? REVOKED_LINE : 'Please sign in again.');
 }
 
 // ----- the desk list: GET /v1/desks with If-None-Match (contract desks.md, polling)
@@ -240,6 +257,8 @@ async function pollOnce(): Promise<number> {
       await sessionOver();
       return -1;
     }
+    // A closed account (`accountClosed.ts`, heard by `api.ts`) shows its card over the office, not the refusal.
+    if (err instanceof ApiError && err.status === 403 && err.code === ACCOUNT_CLOSED) return (lastList?.pollAfterSeconds ?? 60) * 1000;
     if (err instanceof ApiError && err.status === 403) {
       refused();
       return -1;
@@ -339,13 +358,31 @@ onMemberChange((sub, before) => {
   if (!lastKnownFor(sub)) dropLastKnown();
   // Another account's saved layout goes, from storage and from this tab (ISS-67). The desks the list shows now keep a
   // layout of their own, at a new desk's places, so any the new account's list names again draw at once.
-  layoutMirrorFor(sub, useDeskStore.getState().desks.map((d) => d.id));
+  const ours = layoutMirrorFor(sub, useDeskStore.getState().desks.map((d) => d.id));
+  // And the pictures kept of the last account's desks, as the rest of their storage goes (ISS-89's rule; every signed-out
+  // state takes them too, `forgetMember`). A save already on its way lands nowhere, and the new member's may be kept.
+  if (!ours) {
+    void clearLastScreens();
+    keepLastScreens();
+  }
   if (before === null || useSession.getState().status !== 'signedIn') return;
   // The last member's desk list goes from the tab at once, and an answer asked for them is dropped (ISS-89).
   members += 1;
   renamedHere.clear();
   dropDeskList();
   announce(''); // the shell's live region keeps its last line, which can name the last member's desk
+  // The bell goes with `me` (`chrome/Bell.tsx`): its count and an open list are dropped, and the new member's count is
+  // asked as soon as `/v1/me` says who they are. Their windows go too, with no animation and nothing asked, and every
+  // desk's session in this tab with what it said (the panels' words, tab and page titles among them, the agents' names,
+  // the installed apps): the new member's list opens their own. Nothing here writes storage. The apps in chunks of their
+  // own forget theirs in their own listeners: the Notebook's pages (`notebook/deskBackend.ts`), Files' transfers
+  // (`apps/files/engines.ts`), the Browser's dismissed notes (`browser/protectedPlayback.ts`) and Send to my desk's lines
+  // (`open/OpenLayer.tsx`). ISS-89's follow-up.
+  closeAllWindows();
+  forgetDeskFocus();
+  forgetLinks(() => true);
+  forgetSaid();
+  forgetAccountClosed();
   if (polling) startPolling();
   meIsLastKnown = false;
   set({ me: null, meFailed: false });
@@ -354,9 +391,28 @@ onMemberChange((sub, before) => {
 
 /** Each read of `me`: an answer to an older one, for the member before, is dropped. */
 let meReads = 0;
+/** When `/v1/me` was last asked for, by any read: coming back to the tab asks again only a minute or more after it. */
+let meAskedAt = 0;
 
 /** `/v1/me` again: the free tier's chunk asks on coming back to the tab, to notice an upgrade made in another one. */
 export const rereadMe = (): Promise<void> => loadMe();
+
+// What the member changed in Account settings (their avatar, their name) shows as it closes, with no reload: the account
+// page in its frame saves to Platform, and only `/v1/me` says so. Every close, whatever was done there.
+useSettingsStore.subscribe((s, was) => {
+  if (was.open && !s.open && useSession.getState().status === 'signedIn') void loadMe();
+});
+
+// And what changed in another tab (the account site, another office) shows on coming back to this one, at most once a
+// minute (`meReread.ts`). The answer goes through `loadMe`'s guards like any other: an older answer is dropped, and a
+// token that's become someone else's is that change's to handle.
+document.addEventListener('visibilitychange', () => {
+  const { status, me } = useSession.getState();
+  if (rereadOnReturn({ hidden: document.hidden, signedIn: status === 'signedIn', known: !!me && !meIsLastKnown, now: Date.now(), askedAt: meAskedAt, gap: returnGapMs() })) void loadMe();
+});
+
+// An API said the account is closed: `/v1/me` again, for `membership.closed` and its window's end.
+whenClosedHeard(() => void loadMe());
 
 /**
  * A returning visit (a token kept here): draw what this member's last visit drew, at once, while client-config, the
@@ -407,6 +463,7 @@ function preconnect(urls: string[]): void {
 
 async function loadMe(): Promise<void> {
   const read = ++meReads;
+  meAskedAt = Date.now();
   try {
     const r = await getMe();
     if (read !== meReads) return;
@@ -422,6 +479,9 @@ async function loadMe(): Promise<void> {
     if (waitingForBand && lastList) applyDesks(lastList);
   } catch (err) {
     if (read !== meReads) return;
+    // `/v1/me` answers a closed account (contract moderation.md section 8); if it ever says `account_closed` instead, that
+    // was heard (`accountClosed.ts`), and the closed card needs nothing more from it.
+    if (err instanceof ApiError && err.status === 403 && err.code === ACCOUNT_CLOSED) return;
     if (err instanceof ApiError && err.status === 403) refused();
     // Anything else: the account menu shows less, and an empty desk list can't say why it's empty.
     else meUnknown();
@@ -487,7 +547,16 @@ export async function bootSession(): Promise<void> {
   }
   if (path === '/signed-out') {
     window.history.replaceState(null, '', '/');
-    goSignedOut("You're signed out.");
+    // What Sign out noted for this page, where the shared sign-in is on (`sso.ts`): a step 3 to try once more, a Sign out
+    // everywhere that didn't hear yes. With no note, nothing to wait for, client-config included.
+    let noted = false;
+    try {
+      noted = sessionStorage.getItem('ma-sso-sign-out-note') !== null;
+    } catch {
+      /* storage refused: nothing was noted */
+    }
+    const line = noted && (await import('./sso').then(async (m) => m.signedOutLine(ssoOrigin(await loadConfig())), () => null));
+    goSignedOut(line || "You're signed out.");
     return;
   }
   if (path === '/auth/callback') {
@@ -496,7 +565,9 @@ export async function bootSession(): Promise<void> {
     // A sign-in can come straight from the sign-in pages over someone else's stored session: none of their pictures stay.
     await forAtMost(clearLastScreens());
     try {
-      await finishSignIn(search);
+      const token = await finishSignIn(search);
+      // The shared sign-in's step 1 with this sign-in's own token, before anything a member wrote is shown (§2.8).
+      await keepShared(await getClientConfig(), token);
       enterApp();
     } catch (err) {
       // With our own pages on, only Google comes back here, and they say what happened, in their words.
@@ -563,45 +634,33 @@ export function onBeforeSignOut(fn: () => Promise<void>): () => void {
   return () => beforeSignOut.delete(fn);
 }
 
-/** "Sign out everywhere" didn't hear yes from Platform. Nothing ended: the member is still signed in here and elsewhere. */
-export class SignOutEverywhereFailed extends Error {}
-
 /**
  * Contract auth.md section 6. Each step is best effort: the browser ends up signed out either way. Each call is waited
- * for, up to `SIGN_OUT_WAIT_MS`, as Platform's sign-out does, and is `keepalive`, so leaving never cuts one off.
- *
- * `everywhere` is the one exception: step 1 ends every session the member has, and it must hear yes, up to
- * `EVERYWHERE_WAIT_MS`. If it doesn't, this throws `SignOutEverywhereFailed` and the office carries on as it was, the
- * list's poll included, since saying "signed out everywhere" when it may not be so is the one wrong answer. A session
- * that died meanwhile then ends as any dead session does, on that poll. With a yes, this browser signs out as usual.
+ * for, up to `SIGN_OUT_WAIT_MS`, as Platform's sign-out does, and is `keepalive`, so leaving never cuts one off. Where the
+ * shared sign-in is on (§2.8), its step 3 comes before them all, once the last words are said: it signs this browser out of
+ * every MA app, so a silent sign-in on another can't undo this one. This session only (`{"everywhere": false}`): signing
+ * out every session the member has is the account's own, in Account settings (the Platform app's Account menu; release 6.11).
  */
-export async function signOut(opts: { everywhere?: boolean } = {}): Promise<void> {
+export async function signOut(): Promise<void> {
   if (signingOut) return; // a second press: a second run would leave for the logout before the first's revoke is done
   signingOut = true;
   leaving = true;
-  const wasPolling = polling;
   stopPolling();
   const lastWords = Promise.all([...beforeSignOut].map((fn) => fn().catch(() => {})));
-  if (opts.everywhere) {
-    // Last words first, while this session still works: once every session has ended, this one's tokens are refused too.
-    // An unfinished export stays until the yes, since a failure leaves the member where they were.
-    await lastWords;
-    if (!(await answeredWithin(postSignOut(true), EVERYWHERE_WAIT_MS))) {
-      signingOut = false;
-      leaving = false;
-      if (wasPolling) startPolling();
-      throw new SignOutEverywhereFailed('sign-out everywhere was not confirmed');
-    }
-    await dropExportSoon();
-  } else {
-    await Promise.all([lastWords, dropExportSoon()]);
-    await forAtMost(postSignOut()); // tokens still get revoked below
-  }
+  const cfg = useSession.getState().config ?? (await loadConfig());
+  const sso = ssoOrigin(cfg);
+  // Where the shared sign-in is on, its step 3 comes first of sign-out's calls (contract auth.md §2.8, §6): every MA app in
+  // this browser is signed out, and our sign-in pages here don't sign this tab back in for 60 s. After the last words,
+  // which need this session, since step 3 ends it.
+  const chunk = sso ? import('./sso').catch(() => null) : null;
+  await Promise.all([lastWords, dropExportSoon()]);
+  const m = await chunk;
+  if (m && sso) await m.endSharedSignIn(sso).catch(() => {});
+  await forAtMost(postSignOut()); // tokens still get revoked below
   closeAllLinks();
   clearDeskMirror();
   forgetLastKnown();
   forgetLayoutMirror(); // after the last words, which saved the layout; nothing writes it again from this page
   await forAtMost(clearLastScreens()); // the next person on this computer sees none of the kept pictures
-  const cfg = useSession.getState().config ?? (await loadConfig());
-  await endSession(cfg);
+  await endSession(cfg ?? (await loadConfig()));
 }

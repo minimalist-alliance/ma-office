@@ -41,9 +41,13 @@ public final class AppManifest {
     /** The closed list of appApi 1.0 (section 4). None reaches the Browser's session, and none ever will. */
     public static final Set<String> PERMISSIONS = Set.of(BACKGROUND, NET, FILES_PICK, BROWSER_OPEN, DISPLAY);
 
-    /** Method and topic names an app may not take: deskd's own families and the contract's. */
+    /**
+     * Method and topic names an app may not take: deskd's own families and the contract's. Courier's is {@code courier.};
+     * {@code chat.} was its family until its id changed (Nov 12, docs/sub-status/courier-id.md) and stays taken, so no app
+     * can answer to Courier's old name.
+     */
     static final List<String> RESERVED = List.of(
-            "app.", "desk.", "apps.", "browser.", "files.", "notebook.", "chat.", "agent.", "guild.", "data.", "commons.");
+            "app.", "desk.", "apps.", "browser.", "files.", "notebook.", "courier.", "chat.", "agent.", "guild.", "data.", "commons.");
 
     public record Run(List<String> exec, String start, int startTimeoutSec, int stopTimeoutSec) {
         public boolean background() {

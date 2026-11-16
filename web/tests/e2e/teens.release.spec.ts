@@ -18,7 +18,7 @@ const card = (page: Page): Locator => page.locator('.desk-notice');
 const reportRow = (page: Page): Locator => page.getByRole('link', { name: 'Report a safety concern', exact: true });
 const appNames = async (page: Page): Promise<string[]> => {
   const names = await page.getByRole('group', { name: 'Personal desk' }).getByRole('button').evaluateAll((els) => els.map((e) => e.getAttribute('aria-label') ?? ''));
-  return ['Chat', 'Notebook', 'Browser', 'Agent'].filter((app) => names.some((n) => n.startsWith(app)));
+  return ['Courier', 'Notebook', 'Browser', 'Agent'].filter((app) => names.some((n) => n.startsWith(app)));
 };
 
 /** A browser's own line for a failed request isn't the app's, and the harness has no real desk behind `connect`. */
@@ -31,7 +31,7 @@ test("prod's defaults: no ageRules and no band, so every app and no report row",
   await canvasPainted(page);
   const config = await page.evaluate(async () => (await fetch('/v1/client-config?app=desk-web')).json());
   expect(config).not.toHaveProperty('ageRules');
-  expect(await appNames(page)).toEqual(['Chat', 'Notebook', 'Browser', 'Agent']);
+  expect(await appNames(page)).toEqual(['Courier', 'Notebook', 'Browser', 'Agent']);
   await page.getByRole('button', { name: 'Account', exact: true }).click();
   await expect(reportRow(page)).toHaveCount(0);
   expect(ownErrors(errors)).toEqual([]);
@@ -42,7 +42,7 @@ test('a teen on the shipping bundle: no Agent, under the default CSP, and the re
   await harness(request, { age: 'teen', fleet });
   await signIn(page);
   await canvasPainted(page);
-  expect(await appNames(page)).toEqual(['Chat', 'Notebook', 'Browser']);
+  expect(await appNames(page)).toEqual(['Courier', 'Notebook', 'Browser']);
   await page.getByRole('button', { name: 'Account', exact: true }).click();
   await expect(reportRow(page)).toHaveAttribute('href', REPORT);
   await expect(reportRow(page)).toHaveAttribute('target', '_blank');
@@ -57,14 +57,14 @@ test('a teen on the shipping bundle, by address: /agent is the office, with no w
   await signIn(page, '/agent');
   await canvasPainted(page);
   await expect(page.locator('.ma-window')).toHaveCount(0);
-  expect(await appNames(page)).toEqual(['Chat', 'Notebook', 'Browser']);
+  expect(await appNames(page)).toEqual(['Courier', 'Notebook', 'Browser']);
 });
 
 test('the shipping bundle ignores the mock\'s and dev\'s own switches', async ({ page, request }) => {
   await harness(request, { fleet });
   await signIn(page, '/?age=teen&agent=needs-you');
   await canvasPainted(page);
-  expect(await appNames(page)).toEqual(['Chat', 'Notebook', 'Browser', 'Agent']);
+  expect(await appNames(page)).toEqual(['Courier', 'Notebook', 'Browser', 'Agent']);
 });
 
 test('a teen waiting on a parent on the shipping bundle: the calm card and its link', async ({ page, request }) => {
@@ -92,7 +92,7 @@ test('an adult on the shipping bundle: every app, card A, and the report row', a
   await harness(request, { age: 'adult', fleet });
   await signIn(page);
   await canvasPainted(page);
-  expect(await appNames(page)).toEqual(['Chat', 'Notebook', 'Browser', 'Agent']);
+  expect(await appNames(page)).toEqual(['Courier', 'Notebook', 'Browser', 'Agent']);
   await page.getByRole('button', { name: 'Account', exact: true }).click();
   await expect(reportRow(page)).toHaveAttribute('href', REPORT);
 });
@@ -112,6 +112,6 @@ test('a slow /v1/me on a new browser, on the shipping bundle: the Agent never re
   });
   await signIn(page);
   await expect(page.getByRole('group', { name: 'Personal desk' })).toHaveCount(1, { timeout: 8_000 });
-  expect(await appNames(page)).toEqual(['Chat', 'Notebook', 'Browser']);
+  expect(await appNames(page)).toEqual(['Courier', 'Notebook', 'Browser']);
   expect(await page.evaluate(() => (window as unknown as { __agentSeen: boolean }).__agentSeen)).toBe(false);
 });

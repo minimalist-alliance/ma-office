@@ -127,7 +127,7 @@ describe('inline', () => {
     expect(inline('<b>bold</b> <div>raw</div> &amp; &lt;x&gt; &#169;')).toEqual([t('bold', 'bold'), t(' <div>raw</div> & <x> ©')]);
   });
 
-  it('links: the scheme decides; an image is its alt text', () => {
+  it('links: the scheme decides, and the title is kept; an image is a link to it, its alt text the link', () => {
     expect(inline('[site](https://example.com/a_(b)) and <https://example.org> and <me@example.com>')).toEqual([
       { type: 'text', text: 'site', marks: [{ type: 'link', attrs: { href: 'https://example.com/a_(b)' } }] },
       t(' and '),
@@ -135,10 +135,15 @@ describe('inline', () => {
       t(' and '),
       { type: 'text', text: 'me@example.com', marks: [{ type: 'link', attrs: { href: 'mailto:me@example.com' } }] },
     ]);
-    expect(inline('[click](javascript:alert(1)) ![a cat](https://example.com/cat.png) [no link]')).toEqual([t('click a cat [no link]')]);
+    // An image has no node in the Notebook. Its address is kept as a link (only http and https), so nothing is lost.
+    expect(inline('[click](javascript:alert(1)) ![a cat](https://example.com/cat.png) ![a dog](javascript:x) [no link]')).toEqual([
+      t('click '),
+      { type: 'text', text: 'a cat', marks: [{ type: 'link', attrs: { href: 'https://example.com/cat.png' } }] },
+      t(' a dog [no link]'),
+    ]);
     expect(inline('[**bold** link](https://example.com "title")')).toEqual([
-      { type: 'text', text: 'bold', marks: [{ type: 'bold' }, { type: 'link', attrs: { href: 'https://example.com' } }] },
-      { type: 'text', text: ' link', marks: [{ type: 'link', attrs: { href: 'https://example.com' } }] },
+      { type: 'text', text: 'bold', marks: [{ type: 'bold' }, { type: 'link', attrs: { href: 'https://example.com', title: 'title' } }] },
+      { type: 'text', text: ' link', marks: [{ type: 'link', attrs: { href: 'https://example.com', title: 'title' } }] },
     ]);
   });
 

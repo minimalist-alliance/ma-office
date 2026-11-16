@@ -73,7 +73,7 @@ class HiddenCharsTest {
             Usage usage = new Usage(100, 0, 0, 20, 0);
             desk.provider.then(Step.calls(usage, List.of(
                     call("t1", "propose_agent", "name", "Scout", "purpose", "Watch.​", "icon", "nodes", "tone",
-                            "teal"),
+                            "harbor"),
                     call("t2", "propose_links", "agent", a, "links", List.of(m("to", b, "rules", "‮Hi."))))))
                     .then(Step.answer(usage, "None."));
             desk.ask(AgentStore.MANAGER, "Set up.");

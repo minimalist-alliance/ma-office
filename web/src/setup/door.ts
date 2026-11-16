@@ -13,9 +13,14 @@ import { useDeskStore } from '../state/deskStore';
 export interface SetupParts {
   /** The circle, in the bottom bar. */
   Circle?: ComponentType;
-  /** The account menu's "Show setup and what's new", and its row on a narrow phone. */
-  MenuItems?: ComponentType;
+  /**
+   * The account menu's parts: `row`, the panel's row on a phone too narrow for the circle, in the menu's first view; `switch`,
+   * "Show setup and what's new", under the menu's Appearance (the owner, Nov 16: configs tucked away).
+   */
+  MenuItems?: ComponentType<{ part: SetupMenuPart }>;
 }
+
+export type SetupMenuPart = 'row' | 'switch';
 
 export const useSetupDoor = create<SetupParts>(() => ({}));
 
@@ -48,8 +53,8 @@ export function SetupMount() {
   return Circle ? createElement(Circle) : null;
 }
 
-/** In the account menu. */
-export function SetupMenuSlot() {
+/** In the account menu: `row` in its first view, `switch` under its Appearance. */
+export function SetupMenuSlot({ part }: { part: SetupMenuPart }) {
   const MenuItems = useSetupDoor((s) => s.MenuItems);
-  return MenuItems ? createElement(MenuItems) : null;
+  return MenuItems ? createElement(MenuItems, { part }) : null;
 }

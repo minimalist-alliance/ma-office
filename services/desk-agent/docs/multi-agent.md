@@ -21,7 +21,7 @@ whose manager still has the old default name `Manager` is renamed `Lead` once, b
   "binding": { "keyId": "…", "provider": "anthropic", "providerName": "Anthropic", "model": "claude-sonnet-4-5" },
   "badgeHidden": false, "badgeNotice": false, "unseen": 0,
   "purpose": "Find sources for the member's questions and keep notes in the workspace.",
-  "look": { "icon": "compass", "tone": "teal", "png": null },
+  "look": { "icon": "hat", "tone": "harbor", "color": "sage", "png": null },
   "solo": false,
   "links": [ { "to": "ag-7m2…", "rules": "Ask only for summaries. Never forward the member's notes." } ],
   "workspace": { "quotaBytes": 52428800, "usedBytes": 18233, "sharedWith": [] },
@@ -34,8 +34,9 @@ whose manager still has the old default name `Manager` is renamed `Lead` once, b
 |---|---|
 | `purpose` | The agent's instructions, up to 4000 characters. `""` uses the built-in default for its role |
 | `status`, `statusDetail` | `online`, `offline`, and so on as before; `paused` with `statusDetail: "agent_cap"` for an agent over the desk's cap (section 2) |
-| `look.icon` | One of the 24 icon ids (section 7), or `png` when the member uploaded one. Default `nodes` |
-| `look.tone` | One of the 12 tone ids (section 7). Unknown ids render as the neutral tone. Default: see "Names and looks" |
+| `look.icon` | One of the 24 icon ids (section 7), or `png` when the member uploaded one. Default `hat`, the Agent app's own icon |
+| `look.color` | One of the 7 colour ids (section 7): what the app draws the agent in. The lead's, and a guild member's own agent's, is always `indigo`. Default: see "Names and looks" |
+| `look.tone` | One of the 7 tone ids (section 7), still stored and accepted; the app no longer draws it. Default: see "Names and looks" |
 | `look.png` | The upload's version, a counter, or `null`: a client refetches `agent.icon.get` when it changes |
 | `solo` | `true` (the default): the agent **sends** no messages to other agents. It still receives from any agent whose link names it, under that link's rules |
 | `links` | Which agents this one may message, each with the member's rules of engagement, 1 to 500 characters, in the order the member gave them |
@@ -54,11 +55,18 @@ whose manager still has the old default name `Manager` is renamed `Lead` once, b
 - **Hidden characters** (Unicode format and bidi controls, also Hangul fillers; a zero-width joiner between two emoji is
   allowed) are refused in names, purposes, rules, timer labels and prompts, and in workspace paths: `bad_request`,
   `detail` the field, `reason: "hidden_chars"` (paths: `detail: "path"`).
+- **Without an `icon`,** a create wears `hat`, the Agent app's own icon (the owner, Nov 15). Every agent wears it unless
+  the member picks another.
+- **Without a `color`,** a create takes the first colour in section 7's order that no agent on the desk has (the lead's
+  `indigo` counts; a guild member's own agent and Desk Maia don't); when all are used, the least used one (that order
+  breaks ties). Agents stored before colours take theirs once at open, oldest first, the same way, so a desk's first two
+  helpers become `sage` and `amber`.
 - **Without a `tone`,** a create takes the first tone in wheel order that no agent on the desk uses, skipping `graphite`;
-  when all are used, the least used one (wheel order breaks ties). Without an `icon`: `nodes`.
-- **Retired ids** are mapped wherever one comes in (create, update, proposals) and migrated once at open: tones
-  `moss` to `green`, `sky` to `blue`; icons `globe` to `plane`, `chat` to `person`, `heart` to `wallet`, `star` to
-  `bulb`, `puzzle` to `terminal`, `briefcase` to `document`.
+  when all are used, the least used one (wheel order breaks ties).
+- **Retired ids** are mapped wherever one comes in (create, update, proposals; icons in every view too) and migrated
+  once at open: tones as section 7 lists; icons `globe` to `plane`, `chat` to `person`, `heart` to `wallet`, `star` to `bulb`,
+  `puzzle` to `terminal`, `briefcase` to `document`, and `nodes` (the old "Team" mark and default, which read as a
+  snowflake) and `spark` to `hat`.
 - **Team methods refuse a guild member's agent id** (`gm-*`) everywhere; for guild members deskd refuses every team
   method but `agent.get` (`forbidden`, `reason: permission`).
 
@@ -67,11 +75,18 @@ whose manager still has the old default name `Manager` is renamed `Lead` once, b
 | Method | Params | Answer | Refusals |
 |---|---|---|---|
 | `agent.get` | `{agentId}` | `{agent}` | `not_found` |
-| `agent.create` | `{name, purpose?, icon?, tone?, keyId?, model?, solo?, workspaceMb?}` | `{agent}` | `precondition_failed` `reason: agent_cap`, `disk_budget`, `disk_low`; `bad_request` with `detail` the field, `name_taken`, `hidden_chars` |
-| `agent.update` | `{agentId, name?, purpose?, icon?, tone?, solo?, workspaceMb?, badgeHidden?, dismissBadgeNotice?}` | `{agent}` | `bad_request` with `detail`, `name_taken`, `hidden_chars`; `precondition_failed` `reason: workspace_full` when a smaller quota is under its use, `disk_budget` when a larger one passes the desk's budget (section 5) |
+| `agent.create` | `{name, purpose?, icon?, color?, tone?, keyId?, model?, solo?, workspaceMb?, ifRunnable?}` | `{agent}` | `precondition_failed` `reason: agent_cap`, `disk_budget`, `disk_low`, `cant_run`; `bad_request` with `detail` the field (`color` for an id not in section 7's list), `name_taken`, `hidden_chars` |
+| `agent.update` | `{agentId, name?, purpose?, icon?, color?, tone?, solo?, workspaceMb?, badgeHidden?, dismissBadgeNotice?}` | `{agent}` | `bad_request` with `detail`, `name_taken`, `hidden_chars` (`detail: "color"` for an unknown id, and for the lead, which keeps the Agent app's own colour); `precondition_failed` `reason: workspace_full` when a smaller quota is under its use, `disk_budget` when a larger one passes the desk's budget (section 5) |
 | `agent.delete` | `{agentId}` | `{}` | `bad_request` `detail: lead`; `conflict` `reason: busy` while it runs |
 | `agent.links.set` | `{agentId, solo, links: [{to, rules}]}` | `{agent}` | `bad_request` `detail: links` (self, unknown agent, duplicate, rules empty or over 500) |
 | `agent.caps` | `{}` | `{caps}` | |
+
+**`ifRunnable: true`** (the welcome's helpers, deskd `API.md` §24): with no `keyId`, the agent is made only if it can run
+now on the member's MA credits (deskd offers them, not a Guild Desk, and the credits are usable: some left, or the
+lighter model's share for today), and it is made bound to `ma-credits`/`auto`. Otherwise it is refused
+`precondition_failed`, `reason: "cant_run"`, and nothing is made, so no helper sits on the desk unable to run. With a
+`keyId` it changes nothing. Not a boolean: `bad_request`, `detail: "ifRunnable"`. Absent or `false`: as before (a create
+with no key still goes on the credits when they are usable, else waits for a key).
 
 `agent.bind`, `agent.message.send`, `agent.thread.get`, `agent.seen`, `agent.run.stop` and the limits now work for
 every agent, not only the manager. Deleting an agent removes its thread, workspace, timers, icon, its links both ways
@@ -111,13 +126,14 @@ always free for the member. On a Guild Desk, guild members' runs never count aga
 
 ## 3. The lead sets agents up: proposals
 
-The lead has tools to read the desk's agents and the choices (icons, tones, models on the member's keys, the caps), and
+The lead has tools to read the desk's agents and the choices (icons, colours, tones, models on the member's keys, the
+caps), and
 to **propose** changes. A proposal never applies itself: it shows in the lead's thread as a card on the reply that made
 it, and applies only when the member says yes.
 
 A reply's `proposals`:
 ```json
-{ "id": "pr-…", "action": "agent.create", "summary": "Create “Researcher”, compass on teal, Claude Sonnet",
+{ "id": "pr-…", "action": "agent.create", "summary": "Create the agent \"Researcher\" (hat in sage, claude-sonnet-4-5), solo",
   "payload": { … }, "sha256": "hex of the payload's canonical JSON", "state": "pending",
   "origin": { "kind": "member" }, "before": null,
   "detail": null, "answeredAt": null, "expiresAt": 1762686400000, "result": null }
@@ -125,8 +141,8 @@ A reply's `proposals`:
 
 | `action` | `payload` |
 |---|---|
-| `agent.create` | `{name, purpose, icon, tone, keyId?, model?, solo?, workspaceMb?, links?: [{to, rules}], timers?: [timer]}` |
-| `agent.update` | `{agentId, name?, purpose?, icon?, tone?, keyId?, model?, workspaceMb?}` |
+| `agent.create` | `{name, purpose, icon, color, tone, keyId?, model?, solo?, workspaceMb?, links?: [{to, rules}], timers?: [timer]}` |
+| `agent.update` | `{agentId, name?, purpose?, icon?, color?, tone?, keyId?, model?, workspaceMb?}` |
 | `agent.delete` | `{agentId}` |
 | `agent.links` | `{agentId, solo, links: [{to, rules}]}` |
 | `timer.set` | `{agentId, timer}` (section 6; with `id` to change one) |
@@ -139,7 +155,8 @@ A reply's `proposals`:
 - **`before`** is the state of what the proposal changes, read when it was made (not part of the hash): `agent.update`,
   the current values of the payload's fields, plus `usedBytes` when `workspaceMb` is there; `agent.links`,
   `{solo, links}`; `timer.set` with an id and `timer.delete`, `{timer}` (the full timer view); `agent.delete`,
-  `{name, look: {icon, tone, png}, usedBytes, timers: [timer views], links: [{to, rules}], incoming: [{from, rules}]}`;
+  `{name, look: {icon, tone, color, png}, usedBytes, timers: [timer views], links: [{to, rules}], incoming: [{from,
+  rules}]}`;
   `null` for a create.
 - **Checked whole, applied whole.** A proposal is checked before anything is written (timer ids refused in a create,
   duplicate links, link targets, the key, the caps, a one-shot already past), then applied whole, or a create is undone.
@@ -151,7 +168,11 @@ A reply's `proposals`:
   at apply.
 - **The lead's tools take ids.** A name is accepted only when it matches exactly one agent; an ambiguous name is
   `bad_request`, `detail: "agent"`, `reason: "ambiguous"`. `desk_agents` lists ids.
-- **Without a `tone`,** a created agent takes the next unused tone (see "Names and looks").
+- **Looks.** `propose_agent` needs only `name` and `purpose`. Without an `icon` the payload has `hat`; without a `color`,
+  the next free colour as the card was made, and without a `tone`, the next unused tone (see "Names and looks"); the
+  member confirms those. `propose_agent_change` may give a `color`, but never for the lead (`bad_request`,
+  `detail: "color"`). When another agent here already has that icon in that colour (the lead in `indigo` included), the
+  lead's tool result says so.
 - **`agent.proposal.answer` `{proposalId, accept, sha256}`** → `{proposal}`. `sha256` must be the card's, so the member
   confirms exactly what they saw (`bad_request` `detail: sha256` otherwise). Yes applies the payload, checked again as if
   the member had made the change by hand: `state` becomes `applied`, with `result` (`{agentId}` for a create), or
@@ -279,14 +300,25 @@ with its prompt. Its runs count toward every spending limit, as any run does.
   or a limit: `lastState` says so (`busy` retries a minute later, up to 10 times), and a one-shot timer ends. A timer's
   run stops at 3 of the desk's 4 run slots (section 2).
 
-## 7. Looks: icons, tones and uploads
+## 7. Looks: icons, colours, tones and uploads
 
-- **Tones,** 12 ids in wheel order: `graphite, rose, clay, amber, olive, green, teal, cyan, blue, indigo, violet, plum`.
-  `graphite` is the neutral default.
-- **Icons,** 24 ids in this order: `nodes, compass, book, pen, calendar, clock, chart, code, mail, person, search, leaf,
-  flask, document, music, camera, plane, shield, wallet, bulb, home, bell, list, terminal`. The drawings and tone values
-  are in `web/agent/src/look/`; `LookIdsTest` keeps the Java and web lists equal.
-- **Library:** `agent.update {icon: "<id>"}`.
+- **The hat.** Every agent wears the Agent app's own icon, "the guy with the hat" (`hat`), in its own colour, unless the
+  member picks another icon (the owner, Nov 15). It replaced `nodes`, the old "Team" mark, which read as a snowflake.
+- **Colours,** 7 ids, in the order new agents take them: `sage, amber, rose, blue, harbor, clay, indigo`
+  (`TeamStore.COLORS`; `web/agent/src/look/colors.ts`, whose values are app accents in `web/src/theme/tokens.ts`). The
+  lead is always `indigo`, the Agent app's own accent, and its colour can't be changed; a guild member's own agent shows
+  `indigo` too, never stored or counted. The column is nullable (a rolled-back desk-agent still writes rows), and a row
+  still without one shows `sage` until the next open gives it its own. Ids are stored: never reuse or rename one.
+- **Tones,** 7 ids in wheel order, all cool (the Product Designer, Nov 14): `graphite, steel, blue, indigo, harbor, navy,
+  iris`. `graphite` is the neutral default. Tones are still stored and accepted everywhere, but the app no longer draws
+  them: the colour took their place. Retired ids come in as the nearest kept one, and stored rows move once at open
+  (`TeamStore.RETIRED_TONES`): `rose`, `violet` and `plum` to `iris`; `clay` to `navy`; `amber` and `cyan` to `steel`;
+  `olive`, `green`, `teal` and `moss` to `harbor`; `sky` to `blue`. (A tone id and a colour id may be spelled the same,
+  as `blue`; they are separate lists.)
+- **Icons,** 24 ids in this order: `hat, compass, book, pen, calendar, clock, chart, code, mail, person, search, leaf,
+  flask, document, music, camera, plane, shield, wallet, bulb, home, bell, list, terminal`. The drawings, tone and
+  colour values are in `web/agent/src/look/`; `LookIdsTest` keeps the Java and web lists equal, the colours in order.
+- **Library:** `agent.update {icon: "<id>"}`; **colour:** `agent.update {color: "<id>"}` (never the lead's).
 - **Upload:** `agent.icon.upload` `{agentId, png}`, `png` in base64. desk-agent decodes it as a PNG (every chunk's CRC,
   the image data inflated and unfiltered), refuses one over 256 KiB or 512 by 512 pixels, and keeps only a mask. The
   mask's coverage comes from alpha, or for an image with no transparency from the distance of each pixel from the median
@@ -296,7 +328,7 @@ with its prompt. Its runs count toward every spending limit, as any run does.
   `bad_request` `detail: png` with `reason` `not_png`, `too_large`, `too_many_pixels`, `corrupt`, `no_shape` (nothing
   left after trimming) or `too_thin`. The Agent app scales a PNG over 512 px down to 512 before sending.
 - **`agent.icon.get`** `{agentId}` → `{png, version}`. Like every `agent.*` method, deskd answers it for the desk's
-  owner only. The client fits the mask into a square and renders it in the standard foreground on the agent's tone.
+  owner only. The client fits the mask into a square and renders it in the standard foreground on the agent's tile.
 
 ## 8. Tools the agents have
 
@@ -305,11 +337,13 @@ with its prompt. Its runs count toward every spending limit, as any run does.
 | `workspace_list`, `workspace_read`, `workspace_write` | Every agent | Its own workspace, and read-only those shared with it (`workspace`: the owner agent's id or name). `workspace_read` takes `offset` and `length` (64 Ki characters by default, 128 Ki at most) and says how many characters remain. A run started by a message sees only its own workspace |
 | `message_agent` | An agent with links that is not solo | Section 4. The tool's description lists whom it may message and each pairing's rules |
 | `memory_save`, `memory_forget` | Every agent, and a guild member's own, in every run but one answering another agent's message | Section 9 |
-| `desk_agents`, `desk_choices` | The lead | The agents (no keys, threads or workspaces), and the icons, tones, models on the member's keys and the caps |
+| `desk_agents`, `desk_choices` | The lead | The agents (no keys, threads or workspaces; each with its `icon`, `color` and `tone`), and the icons, `colors`, tones, models on the member's keys and the caps |
 | `propose_agent`, `propose_agent_change`, `propose_agent_removal`, `propose_links`, `propose_timer`, `propose_timer_removal` | The lead | Section 3 |
 
-The lead's instructions say: the desk is the member's at Minimalist Alliance; tools take ids; names and looks are unique
-(with the caps and the card's origin); a change keeps the agent's key; solo sends no messages; and spending limits,
+The lead's instructions say: the desk is the member's at Minimalist Alliance; tools take ids; names are unique (with the
+caps and the card's origin); the icon and colour are left out unless the member asks (every agent wears the hat, a new
+one takes the next free colour, and the lead's own colour can't change); a change keeps the agent's key; solo sends no
+messages; and spending limits,
 workspace sharing and uploaded icons are the member's to set in each agent's settings, so tell them where.
 
 Tool calling works with every provider desk-agent has: Anthropic's Messages API (`tool_use`, `tool_result`) and the

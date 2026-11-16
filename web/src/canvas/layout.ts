@@ -2,13 +2,15 @@
 // apps have positions and sizes inside it, in the desk's coordinates. Below them runs a 44-unit strip.
 // Phones keep the old cell grid: there, positions come from first-fit, row-major packing of the
 // ordered list and aren't read at all. A cell pitch of 92 is a 76 tile plus a 16 gap.
+import { courierOn } from '../apps/courier/door';
+
 /** `open` is the live app docked to its tile (ADR 0053), above `large`; the phone grid draws it as `large`. */
 export type DetailLevel = 'icon' | 'small' | 'wide' | 'large' | 'open';
 /**
  * The apps a desk's panel can hold. `agent` is the lead agent's, which opens the whole desk team. `commons` is a Guild
  * Desk's room (task 48): only a guild's panel has it, as only a member's own desks have a Browser.
  */
-export type CoreAppId = 'notebook' | 'browser' | 'chat' | 'agent' | 'commons' | 'files';
+export type CoreAppId = 'notebook' | 'browser' | 'courier' | 'agent' | 'commons' | 'files' | 'todo' | 'documents';
 /** Every other agent is its own app (task 49 item 6): `agent:<agentId>`. See `agentTiles.ts`. */
 export type AgentAppId = `agent:${string}`;
 /** An app installed from the Apps sheet (the desk app contract, S-97): `app:<manifest id>`. See `deskapps/door.ts`. */
@@ -124,6 +126,58 @@ export function detailLevel(w: number, h: number, app?: AppId): DetailLevel {
 /** An icon's glyph is about 60% of the tile, as in the mockup: 48 on a 76 tile. */
 export const iconGlyphSize = (w: number, h: number): number => Math.round((Math.min(w, h) * 48) / 76);
 
+/** A larger tile's centred glyph: about this share of its shorter side (the Designer's brand review, Nov 12). */
+export const FACE_GLYPH_SHARE = 0.45;
+/** Where the icon's 63% gives way to `FACE_GLYPH_SHARE`, the glyph holds at this size, so it never shrinks as a tile grows. */
+export const FACE_GLYPH_HOLD = 128;
+/** The most it grows to, so a window-sized tile never gets a cartoon-sized glyph. */
+export const FACE_GLYPH_MAX = 256;
+/**
+ * The centred glyph's size on a tile of any size: min(63% of the shorter side, max(128, 45% of it), 256). An icon and a medium
+ * tile keep the icon's 63% (106 on a 2 x 2 tile); it holds at 128 from a shorter side of about 203 to 284; then a larger tile
+ * eases to 45% (158 on a 4 x 4 tile, 200 on a 6 x 5 one); and from a shorter side of about 569 it stops at 256.
+ */
+export const faceGlyphSize = (w: number, h: number): number =>
+  Math.min(iconGlyphSize(w, h), Math.max(FACE_GLYPH_HOLD, Math.round(Math.min(w, h) * FACE_GLYPH_SHARE)), FACE_GLYPH_MAX);
+
+/**
+ * What a tile draws when it isn't live (the owner, Nov 11: "the page is zoomed out too much to show the real app but the icon
+ * doesn't show big and instead its like a blank page with the tiny icon on the top left"). A tile never draws a card with
+ * nothing readable on it:
+ * - `widget`: the card with its head glyph, name and the summary's lines (ADR 0062). Only past icon size, with a title or text
+ *   to read, at the zoom that shows text (`lod` `full`).
+ * - `glyph`: the icon's look at any size, its glyph centred (`faceGlyphSize`): an icon, and a larger tile with nothing to read
+ *   at this zoom, its text hidden (`glyph`, `card`), the privacy shield's, or no summary at all.
+ * - `plain`: an icon-sized tile at the farthest zoom (`card`, under 20 px a cell), a plain card as design 3.10 has it.
+ */
+export type TileFace = 'widget' | 'glyph' | 'plain';
+export function tileFace(level: DetailLevel, lod: 'full' | 'glyph' | 'card', readable: boolean): TileFace {
+  if (level === 'icon') return lod === 'card' ? 'plain' : 'glyph';
+  return readable && lod === 'full' ? 'widget' : 'glyph';
+}
+
+/** The words for an app that comes after the first release, as the landing marks it (`index.astro`'s `later`, ADR 0047 there). */
+export const LATER = 'Coming later';
+/**
+ * An app that comes after the first release: Courier, until its switch is on (`apps/courier/door.ts`). Its tile then wears the
+ * glyph, never a widget (a real desk sends it no words), and the chip.
+ */
+export const comingLater = (app: AppId): boolean => app === 'courier' && !courierOn();
+/**
+ * Whether a coming-later tile shows its "Coming later" chip: by the widget words' own rule (`tileFace`), past icon size at the
+ * zoom that shows text, so it's never drawn too small to read. Not at icon size or a farther zoom.
+ */
+export const laterShows = (level: DetailLevel, lod: 'full' | 'glyph' | 'card'): boolean => level !== 'icon' && lod === 'full';
+/**
+ * An app's count as the office shows it, on its tile and in its name: the desk's word, else Platform's. A coming-later app has
+ * none, whatever is said (the Designer, Nov 12): it has nothing to count yet. To-do's (overdue plus due today, deskd's `badge`)
+ * shows unless the member turned it off (`todoCount`, the layout pref `todoTileCount`).
+ */
+export const appCount = (app: AppId, said: number | undefined, platform: number | undefined, todoCount = true): number => (comingLater(app) || (app === 'todo' && !todoCount) ? 0 : (said ?? platform ?? 0));
+
+/** Whether a widget's summary has words to read: a title or text. A foot alone is a caption, not content. */
+export const readableWidget = (w: { title?: string; text?: string } | undefined): boolean => !!(w?.title?.trim() || w?.text?.trim());
+
 export const levelSize = (level: DetailLevel): { w: number; h: number } => ({ w: span(CELLS[level].w), h: span(CELLS[level].h) });
 
 const SMALLER: Record<DetailLevel, DetailLevel | null> = { open: 'large', large: 'wide', wide: 'small', small: 'icon', icon: null };
@@ -237,15 +291,32 @@ export function deskFromGrid(d: {
   return { id: d.id, x: d.x, y: d.y, w: Math.max(panelW(cols), G.minDeskW), h: panelH(Math.max(d.rows, rows, 1)), items };
 }
 
-export const DEFAULT_ITEMS: readonly CoreAppId[] = ['chat', 'notebook', 'browser', 'agent'];
+export const DEFAULT_ITEMS: readonly CoreAppId[] = ['courier', 'notebook', 'browser', 'agent'];
 
 /**
- * A new primary desk: 584 x 236, with the four apps as icons in a row of six at the top. Two rows is 168 of
- * work height, so there's a free band under them to move through and room to reach widget height (ADR 0062).
- * Only a desk with nothing saved gets this: a saved or migrated one keeps its own size.
+ * A new desk's size (ADR 0057, the owner, Nov 12): 860 x 480, about 16:9 (1.79:1), the proportions of a real desk's top.
+ * 860 is nine cells across, and its framing by the owner's rule (`deskFramingScale` in `camera.ts`) lands near 100 % on the
+ * common laptop and desktop screens: 88 % at 1440 x 900, 112 % at 1920 x 1080. It holds a member's apps as icons along its top
+ * with a free field under them to move and grow them in: a 4 x 4 widget fits under the row's top without the desk growing.
+ */
+export const DEFAULT_DESK = { w: panelW(9), h: 480 } as const;
+/** The size a new desk had before ADR 0057 (584 x 236, six cells by two), which an untouched one from then still has. */
+export const OLD_DEFAULT_DESK = { w: panelW(6), h: panelH(2) } as const;
+
+/**
+ * A desk still as the office introduced it (ADR 0057): the size a new desk gets, which only `freshDesk` gives (a new member,
+ * a desk added later, the next member in this browser). While it keeps that size it is framed by the owner's rule; once the
+ * member resizes it, it's their arrangement and is framed as any saved desk. Moving its apps changes nothing here.
+ */
+export const asIntroduced = (d: { w: number; h: number }): boolean => d.w === DEFAULT_DESK.w && d.h === DEFAULT_DESK.h;
+
+/**
+ * A new primary desk: `DEFAULT_DESK`, with its apps as icons in a row along the top, in the list's order, where ADR 0062's
+ * default put them. Only a desk with nothing saved gets this: a saved or migrated one keeps its own size.
  */
 export function defaultDesk(id: string, x: number, y: number, apps: readonly AppId[] = DEFAULT_ITEMS): LayoutDesk {
-  return deskFromGrid({ id, x, y, cols: 6, rows: 2, items: apps.map((app) => ({ id: `${id}:${app}`, app, level: 'icon' })) });
+  const grid = deskFromGrid({ id, x, y, cols: 9, rows: 1, items: apps.map((app) => ({ id: `${id}:${app}`, app, level: 'icon' })) });
+  return { ...grid, w: Math.max(grid.w, DEFAULT_DESK.w), h: Math.max(grid.h, DEFAULT_DESK.h) };
 }
 
 /** New desks go to the first free slot right of the last desk in the bottom row (design 3.7). */

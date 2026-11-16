@@ -32,7 +32,6 @@ import java.util.concurrent.TimeUnit;
 import java.util.concurrent.locks.Condition;
 import java.util.concurrent.locks.ReentrantLock;
 import java.util.function.Predicate;
-import java.util.regex.Matcher;
 import java.util.regex.Pattern;
 import org.slf4j.Logger;
 import org.slf4j.LoggerFactory;
@@ -52,9 +51,10 @@ import org.slf4j.LoggerFactory;
  *
  * <p><b>Waiting.</b> {@link #admit} asks every call of the step that needs it at once, then blocks the run's thread
  * until each is decided or past its time (1 hour in a run the member started, 24 in one a timer or another agent
- * started). A stop interrupts it, and its pending approvals expire {@code stopped} (or {@code age_band}, or
- * {@code restart} on the way down). Nothing about a wait survives the process: {@link #restore} sweeps what a restart
- * left.
+ * started). A stop interrupts it, and its pending approvals expire {@code stopped} (or {@code age_band}). On the way
+ * down ({@link #pausing}) nothing expires: the run pauses, and at the next start {@link #resume} makes its cards live
+ * again, still answerable until their own time (durable runs). {@link #restore} sweeps what a restart left of runs
+ * that don't resume.
  */
 public final class Approvals implements ApprovalGate {
 
@@ -69,6 +69,9 @@ public final class Approvals implements ApprovalGate {
     static final int PENDING_ON_DESK = 20;
     static final int DECLINES_PER_RUN = 3;
     static final int SITES_PER_RUN = 2;
+    /** Calls done without asking (the draft ADR's §15): a run, and an agent a day by the member's midnight. */
+    static final int AUTO_PER_RUN = 20;
+    static final int AUTO_PER_DAY = 100;
     /** Over this much JSON a payload is left out of events, snapshots, pages and lists. */
     static final int EVENT_PAYLOAD_MAX = 32 << 10;
     /** The most JSON a payload may be, so {@code agent.approval.get} always fits deskd's RES. */
@@ -83,7 +86,6 @@ public final class Approvals implements ApprovalGate {
 
     private static final Pattern ID = Pattern.compile("ap-[a-z2-7]{20}");
     private static final Pattern AGENT_ID = Pattern.compile("[A-Za-z0-9_-]{1,64}");
-    private static final Pattern RESULT_WORD = Pattern.compile("(?:Refused|Failed): ([a-z][a-z0-9_]{0,31})\\.");
     private static final SecureRandom RANDOM = new SecureRandom();
     private static final char[] BASE32 = "abcdefghijklmnopqrstuvwxyz234567".toCharArray();
 
@@ -107,10 +109,24 @@ public final class Approvals implements ApprovalGate {
         int declines;
         int egress;
         final Set<String> declinedHashes = new HashSet<>();
+        /** Calls done without asking in this run, reserved as they're let through. */
+        int autoCount;
+        /** Payloads deskd refused to run unasked in this run: the model's next try asks on a card instead. */
+        final Set<String> autoRefused = new HashSet<>();
         final Set<String> sites = new HashSet<>();
         final Map<String, Entry> entries = new LinkedHashMap<>();
         /** Why the desk is ending this run, when it is: {@code age_band}, {@code restart}; null for a member's stop. */
         String endDetail;
+        /**
+         * After a restart (durable runs): the approvals this run asked in the step it picks up inside, oldest first. That
+         * step is admitted again, and a call whose hash is here takes this approval, as it was or as it is now, rather
+         * than being asked twice.
+         */
+        final List<ApprovalStore.Row> prior = new ArrayList<>();
+        /** How many steps' asks this book has counted: a checkpoint's book says whether it holds a step's already. */
+        int admits;
+        /** A resumed step whose counts the book already holds: admitted again without counting them twice. */
+        boolean counted;
 
         Book(RunContext run) {
             this.run = run;
@@ -126,6 +142,12 @@ public final class Approvals implements ApprovalGate {
         final String tool;
         final String sha256;
         final long expiresAt;
+        /** Its class, as asked: an {@code egress} call counts on the run as it starts. */
+        String risk = "";
+        /** For a call done without asking, its group; null for a card. */
+        String autoGroup;
+        /** For a call done without asking, whether its run was one the member didn't start. */
+        boolean unattended;
         String state = "pending";
         String detail;
         String note;
@@ -167,6 +189,29 @@ public final class Approvals implements ApprovalGate {
     };
     /** Whether {@code agent.db} has any approval or mark, so a desk that never asked reads nothing for them. */
     private volatile boolean any;
+    /** Told, with the run's id, when a run's counts changed outside a step's checkpoint (durable runs). */
+    private volatile java.util.function.Consumer<String> bookChanged = runId -> {};
+    /**
+     * The process is going down and its runs pause (durable runs): a wait that ends now expires nothing, and a run's end
+     * interrupts nothing; its approvals stay as they are, and its run picks them up at the next start.
+     */
+    private volatile boolean pausing;
+    /** Ask, or the member's setting for an agent: ask always until the ADR's access record holds the switches. */
+    private volatile ApprovalPolicy policy = ApprovalPolicy.ASK_ALWAYS;
+    /**
+     * The low-risk class the gate checks again for every call a policy lets through (Security's ATC-L1): the ADR's, so
+     * however a policy is wired, it can only narrow it. Tests put a class of their own here.
+     */
+    private volatile LowRisk lowRisk = LowRisk.ADR;
+    /** The member's zone, whose midnight ends an agent's day of calls done without asking (ADR 0043's day). */
+    private volatile java.util.function.Supplier<java.time.ZoneId> zone = () -> java.time.ZoneOffset.UTC;
+    /** Each agent's calls done without asking today: {dayStart, count}. Under {@link #lock}. */
+    private final Map<String, long[]> autoDays = new HashMap<>();
+    /**
+     * Each agent's calls done without asking in runs the member didn't start, done, not undone and not yet seen: what its
+     * tile counts (the draft ADR's §15). Kept in {@code approvals.auto_seen}; this is its count.
+     */
+    private final Map<String, Integer> autoUnseen = new java.util.concurrent.ConcurrentHashMap<>();
 
     public Approvals(AgentStore agents, AuditLog audit, Clock clock) {
         this.store = new ApprovalStore(agents);
@@ -178,6 +223,68 @@ public final class Approvals implements ApprovalGate {
         this.host = newHost;
     }
 
+    /** Whether a call that would ask is asked, or done without asking under its agent's switches. Null is ask, always. */
+    public void policy(ApprovalPolicy newPolicy) {
+        this.policy = newPolicy == null ? ApprovalPolicy.ASK_ALWAYS : newPolicy;
+    }
+
+    /**
+     * The class the gate checks a policy's answer against, in place of the ADR's. For tests only: a desk keeps
+     * {@link LowRisk#ADR}. Null puts the ADR's back.
+     */
+    public void lowRiskForTest(LowRisk newClass) {
+        this.lowRisk = newClass == null ? LowRisk.ADR : newClass;
+    }
+
+    /** The member's zone, for the day's count of calls done without asking. Null is UTC. */
+    public void zone(java.util.function.Supplier<java.time.ZoneId> memberZone) {
+        this.zone = memberZone == null ? () -> java.time.ZoneOffset.UTC : memberZone;
+    }
+
+    /** The start of today in the member's zone, ms. */
+    private long dayStart(long now) {
+        java.time.ZoneId in;
+        try {
+            in = zone.get();
+        } catch (RuntimeException e) {
+            in = null;
+        }
+        if (in == null) {
+            in = java.time.ZoneOffset.UTC;
+        }
+        return java.time.Instant.ofEpochMilli(now).atZone(in).toLocalDate().atStartOfDay(in).toInstant().toEpochMilli();
+    }
+
+    /** Under {@link #lock}: this agent's count today, from {@code today}. */
+    private long[] autoDay(String agentId, long today) {
+        long[] day = autoDays.computeIfAbsent(agentId, id -> new long[] {today, 0});
+        if (day[0] != today) {
+            day[0] = today;
+            day[1] = 0;
+        }
+        return day;
+    }
+
+    /**
+     * The policy's answer for one call that would ask, kept only when the gate's own low-risk class puts the call in that
+     * same group; any failure of either asks. Called under {@link #lock}, so a policy must answer from memory and never
+     * call back into the gate.
+     */
+    private String allowedBy(Classified call, RunContext run) {
+        try {
+            String group = policy.allows(call, run);
+            if (group == null || group.isBlank()) {
+                return null;
+            }
+            // Whatever the policy says, a call is done unasked only inside the class: never a follow_up, a memory save,
+            // anything but an adding write in the agent's own context, or anything after U (LowRisk's rules).
+            return group.equals(lowRisk.groupOf(call, run)) ? group : null;
+        } catch (RuntimeException e) {
+            log.warn("the approval policy failed, so it asks: {}", e.getClass().getSimpleName());
+            return null;
+        }
+    }
+
     // ---------------------------------------------------------------- the run's side
 
     /**
@@ -186,13 +293,225 @@ public final class Approvals implements ApprovalGate {
      * become {@code interrupted}, as deskd finishes a call it already began. Nothing re-runs.
      */
     public void restore() throws SQLException {
+        restore(Set.of());
+    }
+
+    /**
+     * {@link #restore()}, leaving the approvals of runs that resume ({@code resuming}) as they are: a pending card stays
+     * pending and answerable ({@link #resume}), until its own {@code expiresAt}.
+     */
+    public void restore(Set<String> resuming) throws SQLException {
         long now = clock.millis();
-        for (ApprovalStore.Row row : store.sweepAtOpen(now)) {
+        for (ApprovalStore.Row row : store.sweepAtOpen(now, resuming)) {
             boolean interrupted = row.state().equals("approved") && row.startedAt() != null;
             audit("agent:" + row.agentId(), interrupted ? "approval.interrupt" : "approval.expire",
                     target(row.id(), row.tool(), row.runId()), null, "restart");
         }
         any = !store.newestFirst(null, false, null, now, 1).isEmpty() || store.anyMarks();
+        autoUnseen.clear();
+        autoUnseen.putAll(store.autoUnseen(null));
+        // Today's calls done without asking count after a restart too.
+        long today = dayStart(now);
+        Map<String, Integer> counts = store.autoCountsSince(today);
+        lock.lock();
+        try {
+            autoDays.clear();
+            counts.forEach((agentId, n) -> autoDays.put(agentId, new long[] {today, n}));
+        } finally {
+            lock.unlock();
+        }
+    }
+
+    /**
+     * At open, before {@link #restore}: an approved call whose record says it came back ({@code run.RunCalls}) settles
+     * {@code done} or {@code failed} with its word, rather than {@code interrupted}: the process ended between the call
+     * and its approval's outcome. @return whether this moved it
+     */
+    public boolean settledFromRecord(String approvalId, boolean ok, String word) throws SQLException {
+        if (approvalId == null) {
+            return false;
+        }
+        Map<String, Object> outcome = new LinkedHashMap<>();
+        outcome.put("ok", ok);
+        if (!ok) {
+            outcome.put("error", word == null ? "failed" : word);
+        }
+        return store.settle(approvalId, ok ? "done" : "failed", text(outcome));
+    }
+
+    /**
+     * A step of the run is being written down (its reply's text and chips so far, durable runs' seam): the reply's marks
+     * so far go first, so a reply a kill leaves with its text never reads unmarked to a later run in the thread
+     * (Security's DS-M1). The run's end writes them again ({@link #ended}); both only ever raise them.
+     *
+     * @return whether the reply's marks are down (or there are none), so its text may be written
+     */
+    public boolean stepMarks(RunContext run) {
+        if (run.messageId() == null) {
+            return true;
+        }
+        int egress;
+        lock.lock();
+        try {
+            Book book = books.get(run.runId());
+            egress = book == null ? 0 : book.egress;
+        } finally {
+            lock.unlock();
+        }
+        if (!run.untrusted() && !run.privateData() && egress == 0) {
+            return true;
+        }
+        try {
+            store.putMarks(run.messageId(), run.agentId(), run.runId(),
+                    new ApprovalStore.Marks(run.untrusted(), run.privateData(), egress));
+            any = true;
+            return true;
+        } catch (SQLException e) {
+            log.warn("a reply's marks weren't recorded: {}", e.getClass().getSimpleName());
+            return false;
+        }
+    }
+
+    /**
+     * The run's gate counts as a checkpoint keeps them (durable runs): calls, asks, declines, egress, declined hashes and
+     * sites. None of them may reset at a restart, or a run could ask past its caps or ask again what was declined.
+     */
+    public Map<String, Object> book(String runId) {
+        lock.lock();
+        try {
+            Book book = books.get(runId);
+            if (book == null) {
+                return Map.of();
+            }
+            Map<String, Object> m = new LinkedHashMap<>();
+            m.put("toolCalls", book.toolCalls);
+            m.put("asked", book.asked);
+            m.put("declines", book.declines);
+            m.put("egress", book.egress);
+            m.put("declinedHashes", new ArrayList<>(new java.util.TreeSet<>(book.declinedHashes)));
+            m.put("sites", new ArrayList<>(new java.util.TreeSet<>(book.sites)));
+            m.put("admits", book.admits);
+            // The draft ADR's §15: calls done without asking in this run (20 at most), and payloads deskd refused unasked.
+            m.put("autoCount", book.autoCount);
+            m.put("autoRefused", new ArrayList<>(new java.util.TreeSet<>(book.autoRefused)));
+            return m;
+        } finally {
+            lock.unlock();
+        }
+    }
+
+    /**
+     * A run picks up after a restart (durable runs): its book back as its checkpoint kept it, and its approvals live
+     * again: a pending card stays pending and answerable (and expires at its own time), an approved one is the call's
+     * verdict, one in flight settles as its call does. Those asked in the step it resumes inside (created at or after
+     * {@code pendingSince}) are found again by their hash when that step is admitted again, never asked twice.
+     */
+    public void resume(RunContext run, Map<String, Object> saved, long pendingSince) throws SQLException {
+        resume(run, saved, pendingSince, false);
+    }
+
+    /**
+     * {@link #resume(RunContext, Map, long)}; {@code counted} when the book already holds the asks of the step it
+     * resumes inside, which is then admitted again without counting them twice.
+     */
+    public void resume(RunContext run, Map<String, Object> saved, long pendingSince, boolean counted)
+            throws SQLException {
+        List<ApprovalStore.Row> rows = store.ofRun(run.runId());
+        lock.lock();
+        try {
+            Book book = new Book(run);
+            book.toolCalls = count(saved.get("toolCalls"));
+            book.asked = count(saved.get("asked"));
+            book.declines = count(saved.get("declines"));
+            book.egress = count(saved.get("egress"));
+            book.admits = count(saved.get("admits"));
+            book.autoCount = count(saved.get("autoCount"));
+            if (saved.get("autoRefused") instanceof List<?> refused) {
+                refused.forEach(h -> book.autoRefused.add(String.valueOf(h)));
+            }
+            book.counted = counted;
+            if (saved.get("declinedHashes") instanceof List<?> hashes) {
+                hashes.forEach(h -> book.declinedHashes.add(String.valueOf(h)));
+            }
+            if (saved.get("sites") instanceof List<?> sites) {
+                sites.forEach(site -> book.sites.add(String.valueOf(site)));
+            }
+            for (ApprovalStore.Row row : rows) {
+                if (row.state().equals("pending") || row.state().equals("approved")) {
+                    Entry e = new Entry(row.id(), row.agentId(), row.runId(), row.messageId(), row.tool(),
+                            row.sha256(), row.expiresAt());
+                    e.state = row.state();
+                    e.started = row.startedAt() != null;
+                    e.risk = row.risk();
+                    e.autoGroup = row.autoGroup();
+                    e.unattended = run.unattended();
+                    book.entries.put(e.id, e);
+                    live.put(e.id, e);
+                }
+                if (row.createdAt() >= pendingSince) {
+                    book.prior.add(row);
+                }
+            }
+            books.put(run.runId(), book);
+            changed.signalAll();
+        } finally {
+            lock.unlock();
+        }
+        any = any || !rows.isEmpty();
+    }
+
+    /**
+     * Where a run's counts go when they change between its checkpoints: asks recorded, a decline, an expiry (durable
+     * runs). Called outside the gate's lock.
+     */
+    public void bookChanged(java.util.function.Consumer<String> sink) {
+        this.bookChanged = sink == null ? runId -> {} : sink;
+    }
+
+    /** A run whose agent is gone ends with nothing written: its book goes (durable runs, Security's DR-L6). */
+    public void forget(String runId) {
+        lock.lock();
+        try {
+            Book book = books.remove(runId);
+            if (book != null) {
+                for (Entry e : book.entries.values()) {
+                    live.remove(e.id);
+                }
+            }
+            changed.signalAll();
+        } finally {
+            lock.unlock();
+        }
+    }
+
+    /** The process is going down: its runs pause, and nothing they wait on expires (durable runs). */
+    public void pausing() {
+        pausing = true;
+    }
+
+    private static int count(Object value) {
+        return value instanceof Number n ? n.intValue() : 0;
+    }
+
+    /** This run's own approval for this call, asked before a restart in the step being admitted again, or null. */
+    private ApprovalStore.Row prior(Book book, RunContext run, Classified call) {
+        if (book.prior.isEmpty()) {
+            return null;
+        }
+        String sha;
+        try {
+            sha = hash(run.agentId(), run.runId(), call.decl().name(), call.context(), call.payload());
+        } catch (IllegalArgumentException | ClassCastException e) {
+            return null;
+        }
+        for (java.util.Iterator<ApprovalStore.Row> it = book.prior.iterator(); it.hasNext(); ) {
+            ApprovalStore.Row row = it.next();
+            if (row.sha256().equals(sha) && row.tool().equals(call.decl().name())) {
+                it.remove();
+                return row;
+            }
+        }
+        return null;
     }
 
     /** A run begins: its book, before any of its steps. */
@@ -217,6 +536,29 @@ public final class Approvals implements ApprovalGate {
     }
 
     /**
+     * The tools whose results never add {@code U} to a run (draft ADR §11): a listing of the member's own Files, a write's
+     * or a trash's receipt, the agent's own workspace listing and writes, the desk's agents and choices, a proposal, the
+     * plan, a follow-up, a memory saved or forgotten, a closed tab. None declares {@code U}, deskd
+     * marks none of their results as it runs them, and desk-agent adds none. Every other tool's result can: one deskd may
+     * mark as it runs (a marked page or tab, an untrusted to-do, a page's text, a message), a workspace file written while
+     * reading untrusted content, another agent's answer, and any tool not named here, a new one included.
+     */
+    static final Set<String> NEVER_ADDS_UNTRUSTED = Set.of("files_list", "files_search", "files_write", "files_mkdir",
+            "files_move", "files_trash", "browser_close", "desk_answer", "todo_add",
+            "todo_update", "todo_close", "workspace_list", "workspace_write", "workspace_delete", "desk_agents",
+            "desk_choices", "propose_agent", "propose_agent_change", "propose_agent_removal", "propose_links",
+            "propose_timer", "propose_timer_removal", "plan_update", "follow_up", "memory_save", "memory_forget");
+
+    /**
+     * Whether this call's result can add {@code U} to its run once it runs: its declaration says so, or it isn't one of
+     * {@link #NEVER_ADDS_UNTRUSTED}. A write after such a call in the same step asks, as the gate can't yet see what it
+     * will add (Security's ATC-I1); after any other, the run is as clean as the gate sees it (API.md §18).
+     */
+    static boolean mayAddUntrusted(Classified call) {
+        return call.decl().taints().contains(Taint.U) || !NEVER_ADDS_UNTRUSTED.contains(call.decl().name());
+    }
+
+    /**
      * Whether a run's calls need the member: every {@code write}, {@code delete}, {@code send}, {@code spend} and
      * {@code egress} in every run, and a memory save in a run that has read untrusted content.
      */
@@ -238,10 +580,30 @@ public final class Approvals implements ApprovalGate {
 
     @Override
     public List<Verdict> admit(RunContext run, List<Classified> step) throws InterruptedException {
+        return admit(run, step, false);
+    }
+
+    /**
+     * {@link #admit} for calls desk-agent's own code makes (Desk Maia's notes, API.md §23), which never put a card in
+     * front of the member: a call done without asking under the agent's switch is {@link Verdict.Allowed} as in a run,
+     * with its row and Undo; one that would ask is {@link Verdict.Refused} {@code would_ask}, and nothing is asked.
+     */
+    public List<Verdict> admitUnasked(RunContext run, List<Classified> step) throws InterruptedException {
+        return admit(run, step, true);
+    }
+
+    private List<Verdict> admit(RunContext run, List<Classified> step, boolean neverAsk) throws InterruptedException {
         Verdict[] out = new Verdict[step.size()];
         List<Integer> asking = new ArrayList<>();
+        // After a restart: calls this step asked before it, matched by hash (durable runs).
+        Map<Integer, ApprovalStore.Row> found = new HashMap<>();
+        List<Integer> unasked = new ArrayList<>();
         Map<Integer, String> hashes = new HashMap<>();
         Map<Integer, String> payloads = new HashMap<>();
+        long today = dayStart(clock.millis());
+        // The agent's switches read now, outside the gate's lock, so the policy answers from memory under it (a first
+        // read may reach SQLite: Security's AAW-I6).
+        switchesOf(run.agentId());
         lock.lock();
         try {
             Book book = books.computeIfAbsent(run.runId(), id -> new Book(run));
@@ -256,10 +618,22 @@ public final class Approvals implements ApprovalGate {
                 }
             }
             boolean spendAsked = false;
+            // Whether a call before this one in the step will (or may) run, isn't itself done unasked, and has a result that
+            // can add U before this call runs, which the run's flags don't show yet. deskd checks taint as each call runs,
+            // so a write after it is asked here rather than refused there (Security's ATC-I1). One whose result never adds
+            // U (a listing, the plan) leaves the run as clean as it is now (API.md §18; release 3's bug E).
+            boolean earlierRuns = false;
             Set<String> sites = new HashSet<>(book.sites);
+            // A step resumed whose asks the book already counted: nothing of it is counted again (durable runs).
+            boolean recount = !book.counted;
+            book.counted = false;
             for (int i = 0; i < step.size(); i++) {
                 Classified call = step.get(i);
-                book.toolCalls++;
+                earlierRuns |= i > 0 && !(out[i - 1] instanceof Verdict.Refused)
+                        && !(out[i - 1] instanceof Verdict.Allowed) && mayAddUntrusted(step.get(i - 1));
+                if (recount) {
+                    book.toolCalls++;
+                }
                 if (book.toolCalls > TOOL_CALLS_PER_RUN) {
                     out[i] = new Verdict.Refused("tool_cap");
                     continue;
@@ -270,6 +644,52 @@ public final class Approvals implements ApprovalGate {
                 }
                 if (!asks(call, run)) {
                     out[i] = Verdict.Auto.INSTANCE;
+                    continue;
+                }
+                ApprovalStore.Row before = prior(book, run, call);
+                if (before != null) {
+                    // Asked before the restart: as it was decided, or still waiting for the member.
+                    if (AUTO.equals(before.decidedBy()) && before.autoGroup() != null) {
+                        // Done without asking before the restart, and not run yet: the same unasked call on its own row
+                        // (the draft ADR's §15), counted once.
+                        if (recount) {
+                            book.autoCount++;
+                        }
+                        out[i] = "approved".equals(before.state()) && before.startedAt() == null
+                                ? new Verdict.Allowed(before.autoGroup(), before.id())
+                                : new Verdict.Expired(before.id(), "restart", before.expiresAt());
+                        continue;
+                    }
+                    found.put(i, before);
+                    if (recount) {
+                        book.asked++;
+                    }
+                    if (SESSION_TOOL.equals(before.tool()) && parse(before.payload()).get("site") instanceof String s) {
+                        book.sites.add(s);
+                        sites.add(s);
+                    }
+                    // A decline or expiry counts once: unless the book's hashes show it was counted before the restart.
+                    boolean uncounted = !book.declinedHashes.contains(before.sha256());
+                    switch (before.state()) {
+                        case "pending" -> {}
+                        case "approved" -> out[i] = new Verdict.Approved(before.id(), before.sha256());
+                        case "declined" -> {
+                            out[i] = new Verdict.Declined(before.id(), before.note());
+                            if (uncounted) {
+                                book.declines++;
+                                book.declinedHashes.add(before.sha256());
+                            }
+                        }
+                        case "expired" -> {
+                            out[i] = new Verdict.Expired(before.id(), before.detail() == null ? "timeout"
+                                    : before.detail(), before.expiresAt());
+                            if (before.startedAt() == null && uncounted) {
+                                book.declines++;
+                                book.declinedHashes.add(before.sha256());
+                            }
+                        }
+                        default -> out[i] = new Verdict.Expired(before.id(), "restart", before.expiresAt());
+                    }
                     continue;
                 }
                 String reason = null;
@@ -285,6 +705,24 @@ public final class Approvals implements ApprovalGate {
                         sha = hash(run.agentId(), run.runId(), call.decl().name(), call.context(), call.payload());
                     } catch (IllegalArgumentException | ClassCastException e) {
                         reason = "payload";
+                    }
+                }
+                if (reason == null && !book.declinedHashes.contains(sha)) {
+                    // The member's setting for this agent, if they switched a group on: a low-risk write in its place is
+                    // done without asking. Asked only here, after every refusal before asking and after the run's
+                    // declines (a payload the member declined is never done unasked: Security's AAW-L1), within the
+                    // counts; ask by default. A payload deskd refused to run unasked in this run asks.
+                    long[] day = autoDay(run.agentId(), today);
+                    String group = earlierRuns || book.autoRefused.contains(sha) || book.autoCount >= AUTO_PER_RUN
+                            || day[1] >= AUTO_PER_DAY ? null : allowedBy(call, run);
+                    if (group != null) {
+                        book.autoCount++;
+                        day[1]++;
+                        out[i] = new Verdict.Allowed(group, newId());
+                        unasked.add(i);
+                        hashes.put(i, sha);
+                        payloads.put(i, payload);
+                        continue;
                     }
                 }
                 if (reason == null) {
@@ -306,6 +744,9 @@ public final class Approvals implements ApprovalGate {
                         sites.add(site);
                     }
                 }
+                if (reason == null && neverAsk) {
+                    reason = "would_ask";
+                }
                 if (reason != null) {
                     out[i] = new Verdict.Refused(reason);
                     continue;
@@ -318,7 +759,29 @@ public final class Approvals implements ApprovalGate {
         } finally {
             lock.unlock();
         }
-        if (asking.isEmpty()) {
+        if (!unasked.isEmpty()) {
+            recordUnasked(run, step, unasked, hashes, payloads, out);
+        }
+        // Cards asked before a restart that still wait: waited on with any asked now, never asked again.
+        List<Integer> waitingAgain = new ArrayList<>();
+        List<Entry> mine = new ArrayList<>();
+        lock.lock();
+        try {
+            for (Map.Entry<Integer, ApprovalStore.Row> f : found.entrySet()) {
+                if (out[f.getKey()] == null) {
+                    Entry e = live.get(f.getValue().id());
+                    if (e == null) {
+                        out[f.getKey()] = new Verdict.Expired(f.getValue().id(), "restart", f.getValue().expiresAt());
+                    } else {
+                        waitingAgain.add(f.getKey());
+                        mine.add(e);
+                    }
+                }
+            }
+        } finally {
+            lock.unlock();
+        }
+        if (asking.isEmpty() && waitingAgain.isEmpty()) {
             return List.of(out);
         }
 
@@ -334,22 +797,28 @@ public final class Approvals implements ApprovalGate {
                     "pending", null, now, expiresAt, null, null, null, null, null));
         }
         try {
-            store.insert(rows);
-            any = true;
+            if (!rows.isEmpty()) {
+                store.insert(rows);
+                any = true;
+            }
         } catch (SQLException e) {
             log.warn("approvals weren't recorded: {}", e.getClass().getSimpleName());
             for (int i : asking) {
                 out[i] = new Verdict.Refused("storage");
             }
-            return List.of(out);
+            if (waitingAgain.isEmpty()) {
+                return List.of(out);
+            }
+            asking.clear();
+            rows.clear();
         }
-        List<Entry> mine = new ArrayList<>();
         lock.lock();
         try {
             Book book = books.computeIfAbsent(run.runId(), id -> new Book(run));
             for (ApprovalStore.Row row : rows) {
                 Entry e = new Entry(row.id(), row.agentId(), row.runId(), row.messageId(), row.tool(), row.sha256(),
                         row.expiresAt());
+                e.risk = row.risk();
                 book.entries.put(e.id, e);
                 live.put(e.id, e);
                 mine.add(e);
@@ -361,6 +830,17 @@ public final class Approvals implements ApprovalGate {
         } finally {
             lock.unlock();
         }
+        lock.lock();
+        try {
+            Book book = books.get(run.runId());
+            if (book != null) {
+                book.admits++;
+            }
+        } finally {
+            lock.unlock();
+        }
+        // The step's counts and its asks, kept before anyone can answer them (durable runs).
+        bookChanged.accept(run.runId());
         for (ApprovalStore.Row row : rows) {
             audit("agent:" + row.agentId(), "approval.ask", target(row.id(), row.tool(), row.runId()),
                     HexFormat.of().parseHex(row.sha256()), "ask:" + row.risk());
@@ -372,6 +852,10 @@ public final class Approvals implements ApprovalGate {
         try {
             await(mine);
         } catch (InterruptedException e) {
+            if (pausing) {
+                // On the way down: the cards stay pending, and the run picks them up at the next start.
+                throw e;
+            }
             String detail;
             lock.lock();
             try {
@@ -392,9 +876,11 @@ public final class Approvals implements ApprovalGate {
 
         lock.lock();
         try {
-            for (int k = 0; k < asking.size(); k++) {
+            List<Integer> order = new ArrayList<>(waitingAgain);
+            order.addAll(asking);
+            for (int k = 0; k < order.size(); k++) {
                 Entry e = mine.get(k);
-                out[asking.get(k)] = switch (e.state) {
+                out[order.get(k)] = switch (e.state) {
                     case "approved" -> new Verdict.Approved(e.id, e.sha256);
                     case "declined" -> new Verdict.Declined(e.id, e.note);
                     default -> new Verdict.Expired(e.id, e.detail == null ? "timeout" : e.detail, e.expiresAt);
@@ -404,6 +890,88 @@ public final class Approvals implements ApprovalGate {
             lock.unlock();
         }
         return List.of(out);
+    }
+
+    /**
+     * The approval rows of the calls a step does without asking (the draft ADR's §15): {@code approved} by
+     * {@code auto} now, before any of them runs, so a restart while one runs makes it {@code interrupted}, as a card's;
+     * each becomes {@code done} or {@code failed} when it settles. A row that can't be kept is a call that doesn't run
+     * ({@code storage}).
+     */
+    private void recordUnasked(RunContext run, List<Classified> step, List<Integer> unasked, Map<Integer, String> hashes,
+            Map<Integer, String> payloads, Verdict[] out) {
+        long now = clock.millis();
+        String origin = text(run.origin());
+        List<ApprovalStore.Row> rows = new ArrayList<>();
+        LowRisk.Switches places = switchesOf(run.agentId());
+        for (int i : unasked) {
+            Classified call = step.get(i);
+            Verdict.Allowed allowed = (Verdict.Allowed) out[i];
+            Map<String, Object> place = new LinkedHashMap<>();
+            place.put("group", allowed.group());
+            if ("notebook".equals(allowed.group()) && places.notebookTab() != null) {
+                place.put("tabId", places.notebookTab());
+            } else if ("files".equals(allowed.group()) && places.filesFolder() != null) {
+                place.put("folder", places.filesFolder());
+            }
+            rows.add(new ApprovalStore.Row(allowed.approvalId(), run.agentId(), run.runId(), run.messageId(),
+                    call.decl().name(), call.risk().wireName(), call.title(), call.context(), text(call.target()),
+                    payloads.get(i), call.before() == null ? null : text(call.before()), hashes.get(i),
+                    run.untrusted(), origin, "approved", null, now, now, now, AUTO, null, null, null,
+                    allowed.group(), text(place), null, null));
+        }
+        try {
+            store.insert(rows);
+            any = true;
+            if (run.unattended()) {
+                // A run the member didn't start: its tile counts what it did until they look (the ADR's §15).
+                store.markUnseen(rows.stream().map(ApprovalStore.Row::id).toList());
+            }
+        } catch (SQLException e) {
+            log.warn("calls done without asking weren't recorded: {}", e.getClass().getSimpleName());
+            for (int i : unasked) {
+                out[i] = new Verdict.Refused("storage");
+            }
+            return;
+        }
+        lock.lock();
+        try {
+            Book book = books.computeIfAbsent(run.runId(), id -> new Book(run));
+            for (ApprovalStore.Row row : rows) {
+                Entry e = new Entry(row.id(), row.agentId(), row.runId(), row.messageId(), row.tool(), row.sha256(),
+                        row.expiresAt());
+                e.state = "approved";
+                e.autoGroup = row.autoGroup();
+                e.unattended = run.unattended();
+                book.entries.put(e.id, e);
+                live.put(e.id, e);
+            }
+        } finally {
+            lock.unlock();
+        }
+        for (ApprovalStore.Row row : rows) {
+            host.approval(row.agentId(), view(row, false));
+        }
+    }
+
+    /** {@code decidedBy} of a call done without asking. */
+    static final String AUTO = "auto";
+
+    /** The places of an agent's switches, for its rows: from the policy's source, or none. */
+    private volatile java.util.function.Function<String, LowRisk.Switches> switches = id -> LowRisk.Switches.OFF;
+
+    /** Where the agent's switches and their places come from, for the rows of calls done without asking. */
+    public void switches(java.util.function.Function<String, LowRisk.Switches> source) {
+        this.switches = source == null ? id -> LowRisk.Switches.OFF : source;
+    }
+
+    private LowRisk.Switches switchesOf(String agentId) {
+        try {
+            LowRisk.Switches on = switches.apply(agentId);
+            return on == null ? LowRisk.Switches.OFF : on;
+        } catch (RuntimeException e) {
+            return LowRisk.Switches.OFF;
+        }
     }
 
     /** Blocks until none of these is pending, expiring each that passes its time. */
@@ -484,6 +1052,9 @@ public final class Approvals implements ApprovalGate {
         } finally {
             lock.unlock();
         }
+        if (counts) {
+            bookChanged.accept(e.runId);
+        }
         audit("agent:" + e.agentId, "approval.expire", target(e.id, e.tool, e.runId), null, detail);
         publish(e.id);
     }
@@ -491,20 +1062,28 @@ public final class Approvals implements ApprovalGate {
     /** Just before an approved call's tool runs: from here a restart makes it {@code interrupted}, not expired. */
     @Override
     public void starting(Verdict verdict) {
-        if (!(verdict instanceof Verdict.Approved approved)) {
+        String id = verdict instanceof Verdict.Approved approved ? approved.approvalId()
+                : verdict instanceof Verdict.Allowed allowed ? allowed.approvalId() : null;
+        if (id == null) {
             return;
         }
         lock.lock();
         try {
-            Entry e = live.get(approved.approvalId());
+            Entry e = live.get(id);
             if (e != null) {
                 e.started = true;
+                // An egress call counts as it starts, so the count a step's checkpoint keeps is never behind a call
+                // that may have happened (durable runs).
+                Book book = books.get(e.runId);
+                if (book != null && Risk.EGRESS.wireName().equals(e.risk)) {
+                    book.egress++;
+                }
             }
         } finally {
             lock.unlock();
         }
         try {
-            store.started(approved.approvalId(), clock.millis());
+            store.started(id, clock.millis());
         } catch (SQLException e) {
             log.warn("an approval's start wasn't recorded: {}", e.getClass().getSimpleName());
         }
@@ -512,7 +1091,9 @@ public final class Approvals implements ApprovalGate {
 
     @Override
     public void settle(Verdict verdict, ToolResult result) {
-        if (!(verdict instanceof Verdict.Approved approved)) {
+        String id = verdict instanceof Verdict.Approved approved ? approved.approvalId()
+                : verdict instanceof Verdict.Allowed allowed ? allowed.approvalId() : null;
+        if (id == null) {
             return;
         }
         String error = result.error() ? errorWord(result) : null;
@@ -521,26 +1102,47 @@ public final class Approvals implements ApprovalGate {
         if (error != null) {
             outcome.put("error", error);
         }
+        // A call deskd may have run that its key couldn't confirm (a lost link): interrupted, as at a restart, never
+        // failed, since it may have happened (durable runs' seam).
+        boolean interrupted = com.minimalistalliance.desk.agent.tool.Restart.interrupted(result);
+        String state = interrupted ? "interrupted" : result.error() ? "failed" : "done";
         try {
-            store.settle(approved.approvalId(), result.error() ? "failed" : "done", text(outcome));
+            store.settle(id, state, interrupted ? null : text(outcome));
         } catch (SQLException e) {
             log.warn("an approval's outcome wasn't recorded: {}", e.getClass().getSimpleName());
         }
+        String unseenOf = null;
         lock.lock();
         try {
-            Entry e = live.remove(approved.approvalId());
+            Entry e = live.remove(id);
             if (e != null) {
-                e.state = result.error() ? "failed" : "done";
+                e.state = state;
                 Book book = books.get(e.runId);
                 if (book != null) {
                     book.entries.remove(e.id);
+                    if (e.autoGroup != null && e.unattended && error == null) {
+                        autoUnseen.merge(e.agentId, 1, Integer::sum);
+                        unseenOf = e.agentId;
+                    }
+                    if (e.autoGroup != null && error != null && DESKD_REFUSED_AUTO.contains(error)) {
+                        // deskd's own check didn't hold (its record, place, class, taint or counts): the model's next try
+                        // of the same payload in this run asks on a card, as the ADR's "the model asks again".
+                        book.autoRefused.add(e.sha256);
+                    }
                 }
             }
         } finally {
             lock.unlock();
         }
-        publish(approved.approvalId());
+        publish(id);
+        if (unseenOf != null) {
+            // Its tile's count, published outside the gate's lock.
+            host.state(unseenOf);
+        }
     }
+
+    /** deskd's refusals of a call done without asking, after which the same payload asks in this run. */
+    static final Set<String> DESKD_REFUSED_AUTO = Set.of("approval_unknown", "approval_used", "place");
 
     /**
      * The call's audit row and its approval's outcome: {@code tool.call} with the payload's hash, and
@@ -551,10 +1153,11 @@ public final class Approvals implements ApprovalGate {
         String decision;
         String approvalId = null;
         switch (verdict) {
-            case Verdict.Auto a -> decision = result.error() ? "error:" + errorWord(result) : "ok";
+            case Verdict.Auto a -> decision = outcome(result);
+            case Verdict.Allowed a -> decision = outcome(result);
             case Verdict.Approved a -> {
                 approvalId = a.approvalId();
-                decision = result.error() ? "error:" + errorWord(result) : "ok";
+                decision = outcome(result);
             }
             case Verdict.Declined d -> {
                 approvalId = d.approvalId();
@@ -567,18 +1170,16 @@ public final class Approvals implements ApprovalGate {
             case Verdict.Refused r -> decision = "refused:" + r.reason();
         }
         String target = "tool:" + call.decl().name() + " run:" + run.runId()
-                + (approvalId == null ? "" : " approval:" + approvalId);
+                + (approvalId == null ? "" : " approval:" + approvalId)
+                + (verdict instanceof Verdict.Allowed allowed ? " auto:" + word(allowed.group()) : "");
         audit("agent:" + run.agentId(), "tool.call", target, payloadHash(call), decision);
-        if (verdict.runs() && call.risk() == Risk.EGRESS) {
-            lock.lock();
-            try {
-                Book book = books.get(run.runId());
-                if (book != null) {
-                    book.egress++;
-                }
-            } finally {
-                lock.unlock();
-            }
+        if (verdict instanceof Verdict.Allowed allowed) {
+            // The draft ADR's §7: every unasked call has its own row, the switch's group, its own approval id (which
+            // deskd heard as autoApprovalId, and the Notebook keys its edit by) and the payload's hash. The tool.call row
+            // names no approval, so Activity never reads it as the member's yes.
+            audit("agent:" + run.agentId(), "approval.auto", "tool:" + call.decl().name() + " run:" + run.runId()
+                    + " approval:" + allowed.approvalId() + " group:" + word(allowed.group()), payloadHash(call),
+                    decision);
         }
         if (verdict instanceof Verdict.Approved && !result.error() && SESSION_TOOL.equals(call.decl().name())) {
             audit("agent:" + run.agentId(), "browser.session.grant", "site:" + clip(String.valueOf(
@@ -593,6 +1194,14 @@ public final class Approvals implements ApprovalGate {
      * The reply keeps the run's flags and its egress count.
      */
     public void ended(String runId) {
+        ended(runId, false);
+    }
+
+    /**
+     * {@link #ended(String)}; {@code paused} for a run SIGTERM paused (durable runs), whose cards and calls stay as they
+     * are for its resume. Its reply's marks are written either way (Security's DR-L2).
+     */
+    public void ended(String runId, boolean paused) {
         Book book;
         List<Entry> open = new ArrayList<>();
         List<Entry> interrupted = new ArrayList<>();
@@ -602,7 +1211,7 @@ public final class Approvals implements ApprovalGate {
             if (book == null) {
                 return;
             }
-            for (Entry e : book.entries.values()) {
+            for (Entry e : paused ? List.<Entry>of() : book.entries.values()) {
                 if (e.pending() || (e.state.equals("approved") && !e.started)) {
                     open.add(e);
                 } else if (e.state.equals("approved")) {
@@ -718,9 +1327,17 @@ public final class Approvals implements ApprovalGate {
         }
     }
 
-    /** The approvals and marks of a page's replies, read at once. */
-    public record Decor(Map<String, List<Map<String, Object>>> approvals, Map<String, ApprovalStore.Marks> marks) {
-        static final Decor NONE = new Decor(Map.of(), Map.of());
+    /**
+     * The approvals and marks of a page's replies, read at once: the cards, the calls done without asking (each reply's
+     * {@code auto}), and the runs' marks.
+     */
+    public record Decor(Map<String, List<Map<String, Object>>> approvals, Map<String, ApprovalStore.Marks> marks,
+            Map<String, List<Map<String, Object>>> auto) {
+        static final Decor NONE = new Decor(Map.of(), Map.of(), Map.of());
+
+        public Decor(Map<String, List<Map<String, Object>>> approvals, Map<String, ApprovalStore.Marks> marks) {
+            this(approvals, marks, Map.of());
+        }
     }
 
     /** What these replies carry: their approvals (payloads over 32 KiB left out) and their runs' marks. */
@@ -739,14 +1356,26 @@ public final class Approvals implements ApprovalGate {
         }
         try {
             Map<String, List<Map<String, Object>>> views = new HashMap<>();
+            Map<String, List<Map<String, Object>>> autos = new HashMap<>();
             for (Map.Entry<String, List<ApprovalStore.Row>> entry : store.forMessages(ids).entrySet()) {
                 List<Map<String, Object>> list = new ArrayList<>();
+                List<Map<String, Object>> unasked = new ArrayList<>();
                 for (ApprovalStore.Row row : entry.getValue()) {
+                    // A call done without asking is in the reply's approvals too, decidedBy auto, so the app has its
+                    // place and payload for its line and its Undo; never a card.
                     list.add(view(row, false));
+                    if (row.auto()) {
+                        unasked.add(autoLine(row));
+                    }
                 }
-                views.put(entry.getKey(), list);
+                if (!list.isEmpty()) {
+                    views.put(entry.getKey(), list);
+                }
+                if (!unasked.isEmpty()) {
+                    autos.put(entry.getKey(), unasked);
+                }
             }
-            return new Decor(views, store.marks(ids));
+            return new Decor(views, store.marks(ids), autos);
         } catch (SQLException e) {
             log.warn("approvals weren't read: {}", e.getClass().getSimpleName());
             return Decor.NONE;
@@ -765,6 +1394,10 @@ public final class Approvals implements ApprovalGate {
         List<Map<String, Object>> approvals = d.approvals().get(row.id());
         if (approvals != null) {
             view.put("approvals", approvals);
+        }
+        List<Map<String, Object>> unasked = d.auto().get(row.id());
+        if (unasked != null) {
+            view.put("auto", unasked);
         }
         boolean untrusted = false;
         int egress = 0;
@@ -834,14 +1467,18 @@ public final class Approvals implements ApprovalGate {
 
     public static boolean handles(String method) {
         return method.equals("agent.approvals.list") || method.equals("agent.approval.get")
-                || method.equals("agent.approval.decide");
+                || method.equals("agent.approval.decide") || method.equals(UNDO);
     }
+
+    /** The member's undo of a call done without asking, as deskd relays it once it has done it (the draft ADR's §15). */
+    public static final String UNDO = "agent.approval.undo";
 
     public Map<String, Object> call(String method, Map<String, Object> p, Caller caller) throws RpcError, SQLException {
         return switch (method) {
             case "agent.approvals.list" -> list(p, caller);
             case "agent.approval.get" -> Map.of("approval", view(visible(id(p), caller), true));
             case "agent.approval.decide" -> decide(p, caller);
+            case UNDO -> undone(p, caller);
             default -> throw RpcError.of("not_found", "detail", "method");
         };
     }
@@ -992,11 +1629,79 @@ public final class Approvals implements ApprovalGate {
         if (!moved) {
             throw RpcError.of("conflict", "reason", "answered");
         }
+        if (!approve) {
+            bookChanged.accept(row.runId());
+        }
         audit(caller.isMember() ? "member" : "user", "approval.decide", target(id, row.tool(), row.runId()),
                 HexFormat.of().parseHex(row.sha256()), state);
         Map<String, Object> view = publish(id);
         host.state(row.agentId());
         return Map.of("approval", view == null ? view(store.get(id), true) : withPayload(view, id));
+    }
+
+    /**
+     * {@code agent.approval.undo}, as deskd relays it: deskd has taken the call back itself, from its own ledger, through
+     * the tool host (Files' trash, desk-notebook's undo of the edit), and says how that went: {@code outcome} {@code ok},
+     * or the word it refused with ({@code changed}, {@code trashed}, …). This stamps the row once and audits it either
+     * way; deskd builds these params itself and answers the member. Only a call done without asking by an agent the caller
+     * may see.
+     */
+    private Map<String, Object> undone(Map<String, Object> p, Caller caller) throws RpcError, SQLException {
+        String id = id(p);
+        if (!(p.get("outcome") instanceof String outcome) || outcome.isBlank() || outcome.length() > 32) {
+            throw RpcError.badRequest("outcome");
+        }
+        ApprovalStore.Row row = visible(id, caller);
+        if (!row.auto()) {
+            throw RpcError.notFound("approval");
+        }
+        String actor = caller.isMember() ? "member" : "user";
+        if (!"ok".equals(outcome)) {
+            audit(actor, "approval.undo", target(id, row.tool(), row.runId()), null, "refused:" + outcome);
+            return Map.of("approval", view(row, true));
+        }
+        if (row.undoneAt() != null) {
+            throw RpcError.of("conflict", "reason", "undone");
+        }
+        String by = caller.isMember() ? caller.memberId() : "owner";
+        if (!store.undone(id, clock.millis(), by)) {
+            throw RpcError.of("conflict", "reason", "undone");
+        }
+        audit(actor, "approval.undo", target(id, row.tool(), row.runId()), HexFormat.of().parseHex(row.sha256()), "ok");
+        recountUnseen(row.agentId());
+        Map<String, Object> view = publish(id);
+        return Map.of("approval", view == null ? view(store.get(id), true) : withPayload(view, id));
+    }
+
+    /** How many calls done without asking in runs the member didn't start wait to be seen: the agent's {@code autoUnseen}. */
+    public int autoUnseen(String agentId) {
+        return autoUnseen.getOrDefault(agentId, 0);
+    }
+
+    /** The member has seen the agent's thread: its calls done without asking aren't counted any more. */
+    public void seen(String agentId) {
+        if (autoUnseen.remove(agentId) == null) {
+            return;
+        }
+        try {
+            store.markSeen(agentId);
+        } catch (SQLException e) {
+            log.warn("calls done without asking weren't marked seen: {}", e.getClass().getSimpleName());
+        }
+    }
+
+    private void recountUnseen(String agentId) {
+        try {
+            Integer n = store.autoUnseen(agentId).get(agentId);
+            if (n == null || n == 0) {
+                autoUnseen.remove(agentId);
+            } else {
+                autoUnseen.put(agentId, n);
+            }
+        } catch (SQLException e) {
+            log.warn("an agent's unseen calls weren't counted: {}", e.getClass().getSimpleName());
+        }
+        host.state(agentId);
     }
 
     // ---------------------------------------------------------------- views
@@ -1059,15 +1764,52 @@ public final class Approvals implements ApprovalGate {
         v.put("decidedBy", row.decidedBy());
         v.put("note", row.note());
         v.put("result", row.result() == null ? null : parse(row.result()));
+        v.put("auto", row.auto() ? autoOf(row) : null);
+        v.put("undoneAt", row.undoneAt());
+        v.put("undoneBy", row.undoneBy());
         return v;
+    }
+
+    /** A call done without asking's {@code auto}: {@code {group, tabId?, folder?}}. */
+    private static Map<String, Object> autoOf(ApprovalStore.Row row) {
+        Map<String, Object> out = new LinkedHashMap<>();
+        Map<String, Object> place = parse(row.autoPlace());
+        out.put("group", row.autoGroup());
+        if (place != null && place.get("tabId") instanceof String tab) {
+            out.put("tabId", tab);
+        }
+        if (place != null && place.get("folder") instanceof String folder) {
+            out.put("folder", folder);
+        }
+        return out;
+    }
+
+    /** One line of a reply's {@code auto}: {@code {approvalId, tool, target, group, state, undoneAt}}. */
+    private Map<String, Object> autoLine(ApprovalStore.Row row) {
+        Map<String, Object> out = new LinkedHashMap<>();
+        out.put("approvalId", row.id());
+        out.put("tool", row.tool());
+        out.put("target", parse(row.target()));
+        out.put("group", row.autoGroup());
+        out.put("state", row.state());
+        out.put("undoneAt", row.undoneAt());
+        return out;
     }
 
     // ---------------------------------------------------------------- helpers
 
-    /** The word a failed tool's text starts with ("Refused: changed."), or {@code failed}. Never content. */
+    /** The word a failed tool's text starts with ("Refused: changed.", "Interrupted: lost."), or {@code failed}. */
     static String errorWord(ToolResult result) {
-        Matcher m = RESULT_WORD.matcher(result.content());
-        return m.lookingAt() ? m.group(1) : "failed";
+        return com.minimalistalliance.desk.agent.tool.Restart.word(result);
+    }
+
+    /** A run call's audit decision: {@code ok}, {@code error:<word>}, or {@code interrupted:<word>} when it may have happened. */
+    private static String outcome(ToolResult result) {
+        if (!result.error()) {
+            return "ok";
+        }
+        return (com.minimalistalliance.desk.agent.tool.Restart.interrupted(result) ? "interrupted:" : "error:")
+                + errorWord(result);
     }
 
     private static byte[] payloadHash(Classified call) {

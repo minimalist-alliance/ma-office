@@ -1,0 +1,10 @@
+From: Diagrams <diagrams@example.net>
+To: me@desk.example
+Date: Fri, 13 Nov 2026 10:00:00 +0000
+Subject: Diagram
+Message-ID: <html-svg-mathml@corpus.example>
+MIME-Version: 1.0
+X-Corpus-Note: inline SVG with script, xlink:href javascript, animate and foreignObject; MathML with a javascript link
+Content-Type: text/html; charset=utf-8
+
+<html><body><p>The network diagram is below.</p><svg xmlns="http://www.w3.org/2000/svg" xmlns:xlink="http://www.w3.org/1999/xlink" width="100" height="40"><script>alert(1)</script><a xlink:href="javascript:alert(2)"><text x="5" y="20">Click</text></a><animate attributeName="href" to="javascript:alert(3)"/><image xlink:href="https://img.example.com/s.png" width="1" height="1"/><foreignObject width="10" height="10"><iframe src="https://frame.example.com/"></iframe></foreignObject></svg><math><mtext><a href="javascript:alert(4)">x</a></mtext><maction actiontype="statusline" xlink:href="javascript:alert(5)">y</maction></math></body></html>

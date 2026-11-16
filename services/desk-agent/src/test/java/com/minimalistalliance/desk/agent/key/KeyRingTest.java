@@ -153,4 +153,36 @@ class KeyRingTest {
     private static byte[] bytes(String key) {
         return key.getBytes(StandardCharsets.US_ASCII);
     }
+
+    /**
+     * Desk Maia's "key" (the owner, Nov 14: "Maia ALWAYS runs on the company account"): always there as provider ma, lent
+     * empty, never held, counted or listed, and nothing can be added under its id or for that provider.
+     */
+    @Test
+    void theCompanyKeyIsAlwaysThereEmptyAndNothingCanBePutUnderIt() {
+        assertThat(ring.providerOf(KeyRing.COMPANY)).isEqualTo(ProviderId.MA);
+        try (KeyLease lease = ring.lend(KeyRing.COMPANY)) {
+            assertThat(lease.provider()).isEqualTo(ProviderId.MA);
+            assertThat(lease.keyId()).isEqualTo(KeyRing.COMPANY);
+            assertThat(lease.bytes()).isEmpty();
+        }
+        assertThat(ring.size()).isZero();
+        byte[] key = "sk-test-0123456789abcdef".getBytes(StandardCharsets.US_ASCII);
+        assertThatThrownBy(() -> ring.put(KeyRing.COMPANY, ProviderId.ANTHROPIC, key.clone()))
+                .isInstanceOf(IllegalArgumentException.class);
+        assertThatThrownBy(() -> ring.put("k1", ProviderId.MA, key.clone())).isInstanceOf(IllegalArgumentException.class);
+        assertThatThrownBy(() -> ring.restore("k1", ProviderId.MA, key.clone()))
+                .isInstanceOf(IllegalArgumentException.class);
+        ByteBuffer direct = ByteBuffer.allocateDirect(key.length).put(key).flip();
+        assertThatThrownBy(() -> ring.put(KeyRing.COMPANY, ProviderId.OPENAI, direct))
+                .isInstanceOf(IllegalArgumentException.class);
+        for (int i = 0; i < key.length; i++) {
+            assertThat(direct.get(i)).isZero();
+        }
+        assertThat(ring.size()).isZero();
+        assertThat(recorded).noneMatch(r -> r.contains(KeyRing.COMPANY));
+        // Dropping it does nothing: it was never held.
+        assertThat(ring.drop(KeyRing.COMPANY)).isFalse();
+        assertThat(ring.providerOf(KeyRing.COMPANY)).isEqualTo(ProviderId.MA);
+    }
 }

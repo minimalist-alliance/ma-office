@@ -22,7 +22,9 @@ final class NotebookMethods {
 
     static final List<String> READS = List.of(
             "notebook.tree", "notebook.page.content", "notebook.version.list", "notebook.version.get",
-            "notebook.version.asOf", "notebook.activity", "notebook.activity.days", "notebook.search");
+            "notebook.version.asOf", "notebook.activity", "notebook.activity.days", "notebook.search",
+            // The Agent's edits of a page, for its foot and history: "Edited by {agent}", and their undo below.
+            "notebook.page.agentEdits");
     static final List<String> MUTATIONS = List.of(
             "notebook.notebook.create", "notebook.notebook.rename", "notebook.tab.create", "notebook.tab.rename",
             "notebook.tab.recolor", "notebook.tab.addAtPage", "notebook.page.create", "notebook.page.move",
@@ -30,7 +32,10 @@ final class NotebookMethods {
             "notebook.settings.set",
             // ADR 0091: a page's label, a copy of a page, and a page from a notebook file. Anyone who may make or move a
             // page may do these, so the guild's rules for them are desk-notebook's, as for the rest.
-            "notebook.page.label", "notebook.page.duplicate", "notebook.page.import");
+            "notebook.page.label", "notebook.page.duplicate", "notebook.page.import",
+            // The member's own undo of an agent's edit (draft ADR "the Agent's tools and approvals" section 15):
+            // desk-notebook decides, as for their own edit, and on a guild desk only for their agent's or a moderator.
+            "notebook.page.agentUndo");
 
     private final NotebookLinks links;
 

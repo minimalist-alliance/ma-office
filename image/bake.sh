@@ -94,6 +94,14 @@ done
 [ -x "$HERE/recipe/files/usr/local/bin/xdg-open" ] || die "recipe/files/usr/local/bin/xdg-open isn't executable"
 [ -z "$(find "$HERE/recipe" -type l -print -quit)" ] || die "recipe/ holds a link, which the self-hosted bundle can't name: make it in build.sh"
 log "links out: the recipe's stand-in and tmpfiles line match services/deskd/desk-tools"
+# Courier's tracker list (docs/sub-status/mm-courier-parse.md, "The image change" 3): courier-trackers.py is courier-parse's
+# (services/courier-parse/scripts), copied into recipe/adblock the same way, so build.sh reads the same release with it.
+if ! cmp -s "$REPO/services/courier-parse/scripts/courier-trackers.py" "$HERE/recipe/adblock/courier-trackers.py"; then
+  cp "$REPO/services/courier-parse/scripts/courier-trackers.py" "$HERE/recipe/adblock/courier-trackers.py" \
+    || die "couldn't copy services/courier-parse/scripts/courier-trackers.py over recipe/adblock/courier-trackers.py"
+  log "Courier: copied services/courier-parse/scripts/courier-trackers.py over recipe/adblock/courier-trackers.py (commit it)"
+fi
+log "Courier: the recipe's courier-trackers.py matches services/courier-parse/scripts"
 
 BASE_AMI=$(aws ssm get-parameter --name /aws/service/debian/release/13/latest/arm64 --query Parameter.Value --output text)
 log "base AMI $BASE_AMI ($(aws ec2 describe-images --image-ids "$BASE_AMI" --query 'Images[0].Name' --output text))"
@@ -113,6 +121,14 @@ wait_ssh "$IP" "$KEY_FILE" || die "builder never accepted ssh"
 
 # Stage the recipe. desk-rtc comes from releases.pin now, never from a local desk-rtc/dist build.
 STAGE=$WORKDIR/ma-recipe; cp -r "$HERE/recipe" "$STAGE"
+# desk-svc (image/host/desk-svc), process 1 of desk-parse's container (ADR 0097): built here with the pinned Go, static, the same
+# bytes for the same source (as image/host/bake.sh builds the host's), its tests first; build.sh checks the hash and installs it.
+GO=${GO:-$HOME/.local/go/bin/go}
+(cd "$REPO/image/host/desk-svc" && "$GO" test -count=1 ./... >&2) || die "desk-svc's tests fail"
+install -d "$STAGE/desk-svc"
+(cd "$REPO/image/host/desk-svc" && CGO_ENABLED=0 GOOS=linux GOARCH=arm64 "$GO" build -trimpath -ldflags='-s -w -buildid=' -o "$STAGE/desk-svc/desk-svc" .) || die "desk-svc didn't build"
+(cd "$STAGE/desk-svc" && sha256sum desk-svc > desk-svc.sha256)
+log "desk-svc $(cut -c1-12 "$STAGE/desk-svc/desk-svc.sha256") ($("$GO" version | awk '{print $3}'))"
 scp "${SSH_OPTS[@]}" -i "$KEY_FILE" -r "$STAGE" "admin@$IP:/home/admin/ma-recipe" >/dev/null
 # The builder fetches the pinned artifacts straight from S3 with 1-hour presigned URLs. They go over ssh's stdin, so
 # they're in no argument list, log or file; build.sh checks each hash against releases.pin and deletes the artifact.

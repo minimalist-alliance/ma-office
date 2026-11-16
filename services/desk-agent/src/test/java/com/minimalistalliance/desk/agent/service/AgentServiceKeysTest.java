@@ -88,6 +88,7 @@ class AgentServiceKeysTest {
 
         void bind(String keyId) throws Exception {
             service.call("agent.bind", Map.of("agentId", AgentStore.MANAGER, "keyId", keyId, "model", Rig.MODEL));
+            com.minimalistalliance.desk.agent.testing.Setups.setUp(service, AgentStore.MANAGER);
         }
 
         Map<String, Object> listedKey() throws Exception {

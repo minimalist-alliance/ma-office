@@ -1,0 +1,43 @@
+#!/bin/sh
+# desk-parse-courier-run: ExecStart of desk-parse-courier.service, Courier's mail reader for deskd (ADR 0097's sandbox, a second
+# instance; draft ADR "Courier's store" section 4; docs/sub-status/mm-courier-parse.md, "The image change"). desk-parse-run's
+# container with these differences: its own name and journal tag, its own socket directory (/run/desk-parse-courier/sock), the
+# image's tracker list bound read-only over the release's empty placeholder (only when the image has one), and desk-svc serving
+# uid 1100 (deskd) alone, one at a time, killing the worker at 15 s (deskd gives up at 20, past it: Security CP-L1), the worker
+# being desk-agent's Courier mode (java @/app/courier-parse.options). A second instance and not desk-parse's, because that one
+# serves uid 1103 alone, one file at a time. Every other flag is desk-parse's: uid 1113, no network or IPC, no /data, no
+# capabilities, a read-only root with no writable scratch, 160 MiB, 64 tasks, +500, desk-svc -clean. The only input is the image
+# id from desk-agent's release (RELEASE_DIR, the unit's), so the reader is always desk-agent's own code: its update restarts this.
+# A worker's stdout is the connection and its stderr /dev/null, so no word of a message reaches the journal (verify-courier.sh).
+set -eu
+id=$(cat "${RELEASE_DIR:?RELEASE_DIR is not set}/image-id")
+case $id in
+  sha256:[0-9a-f]*) ;;
+  *) echo "desk-parse-courier-run: desk-agent's image-id isn't sha256:<64 hex>" >&2; exit 1 ;;
+esac
+[ "${#id}" -eq 71 ] && ! printf '%s' "${id#sha256:}" | grep -q '[^0-9a-f]' \
+  || { echo "desk-parse-courier-run: desk-agent's image-id isn't sha256:<64 hex>" >&2; exit 1; }
+LIST=/usr/share/ma/adblock/courier-trackers.txt
+set --
+[ -f "$LIST" ] && set -- -v "$LIST:/app/courier/trackers.txt:ro"
+exec /usr/bin/docker run --rm --name desk-parse-courier \
+  --network none \
+  --ipc none \
+  --user 1113:1113 \
+  --read-only \
+  --cap-drop ALL \
+  --security-opt no-new-privileges \
+  --log-driver journald --log-opt tag=desk-parse-courier \
+  --memory 160m --memory-swap 160m \
+  --pids-limit 64 \
+  --cpu-shares 256 \
+  --ulimit core=0 \
+  --oom-score-adj 500 \
+  -v /run/desk-parse-courier/sock:/run/desk-parse-courier/sock \
+  -v /usr/local/lib/ma/desk-svc:/desk-svc:ro \
+  "$@" \
+  --entrypoint /desk-svc \
+  "$id" \
+  -accept /run/desk-parse-courier/sock/parse.sock -accept-mode 0660 -peer-uid 1100 -max-conn 1 \
+  -deadline-sec 15 -conn-stdio -clean \
+  -- /opt/java/openjdk/bin/java @/app/courier-parse.options

@@ -481,6 +481,21 @@ const readListeners = new Set<() => void>();
  */
 export const layoutDocRead = (): boolean => !running || version !== null || routeMissing;
 
+/**
+ * Whose document `layoutDocRead` speaks for: the member whose token last read or saved it, null for a token with no `sub`,
+ * undefined until a token has been checked since sign-in or a change of member (`startOver`), or with no sync running (the
+ * fixtures). The office tour (`tour/door.ts`) waits for it to be the member `/v1/me` names before it reads a pref.
+ */
+export const layoutDocMember = (): string | null | undefined => (running ? member : undefined);
+
+/**
+ * Reads Platform's document now, as the next poll would. A change of member in this tab wants the new member's at once
+ * (the office tour decides on it): the read finds their token, starts over (`OtherMember`) and reads theirs.
+ */
+export function readLayoutNow(): void {
+  if (running) void fetchServer();
+}
+
 /** Each time a read of the document ends while it's been read: the setup circle's done steps go up then. */
 export function onLayoutDocRead(fn: () => void): () => void {
   readListeners.add(fn);

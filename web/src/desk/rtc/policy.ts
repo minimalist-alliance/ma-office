@@ -143,14 +143,6 @@ export function refusalOf(code: string | null | undefined, details: unknown, hos
   return { kind, billingUrl: siblingUrl(raw, hostname)?.href ?? null };
 }
 
-/**
- * Whether `GET /v1/me`'s `membership.status` says `connect` would no longer refuse for the membership: it refuses only
- * `suspended` and `ended` (desks.md, 0.3.11). Anything else unknown or missing waits for the next look.
- */
-export function membershipBack(status: unknown): boolean {
-  return status === 'active' || status === 'past_due' || status === 'canceling';
-}
-
 const MISSES_DOWN = 3;
 
 /** `ctl` liveness: three missed pongs mark the link down, unless the tab is hidden and timers lie. */

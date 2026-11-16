@@ -1,7 +1,7 @@
 // Small shared pieces: the provider badge, the status dot, the switch, the meter.
 import type { Agent, Badge } from '../client/types';
-import { iconById } from '../look/icons';
-import { monogram, STATUS_DOT, statusWord } from '../model/agents';
+import { HAT_ICON, iconById } from '../look/icons';
+import { monogram, statusDot, statusWord } from '../model/agents';
 import type { Level } from '../model/limits';
 
 export function ProviderBadge({ badge, compact = false }: { badge: Pick<Badge, 'providerName'> & { provider?: string; model?: string }; compact?: boolean }) {
@@ -17,10 +17,10 @@ export function ProviderBadge({ badge, compact = false }: { badge: Pick<Badge, '
   );
 }
 
-export function StatusWord({ agent }: { agent: Pick<Agent, 'status' | 'binding'> }) {
+export function StatusWord({ agent }: { agent: Pick<Agent, 'status' | 'binding' | 'setup' | 'statusDetail'> }) {
   return (
     <span className="ag-status" data-status={agent.status}>
-      <i className={`ag-dot ${STATUS_DOT[agent.status]}`} aria-hidden="true" />
+      <i className={`ag-dot ${statusDot(agent)}`} aria-hidden="true" />
       {statusWord(agent)}
     </span>
   );
@@ -48,13 +48,13 @@ export function Meter({ fraction, level, label }: { fraction: number; level: Lev
   );
 }
 
-/** The desk team's mark, the office's own Agent glyph (`nodes`): never a star or a sparkle, which the owner ruled out for AI. */
+/** The desk team's mark, the Agent app's own icon (the hat) in its line cut: never a star or a sparkle, which the owner ruled out for AI. */
 export function Avatar({ large = false }: { large?: boolean }) {
   const size = large ? 20 : 16;
   return (
     <span className={`ag-avatar${large ? ' lg' : ''}`} aria-hidden="true">
       <svg width={size} height={size} viewBox="0 0 24 24" fill="none" stroke="currentColor" strokeWidth={2} strokeLinecap="round" strokeLinejoin="round">
-        {iconById('nodes').paths.map((d) => (
+        {iconById(HAT_ICON).paths.map((d) => (
           <path key={d} d={d} />
         ))}
       </svg>

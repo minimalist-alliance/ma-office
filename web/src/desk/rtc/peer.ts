@@ -70,6 +70,7 @@ const INPUT_CALLS: ReadonlySet<string> = new Set([
   'browser.tab.open',
   'browser.tab.activate',
   'browser.tab.close',
+  'browser.zoom.set',
 ]);
 
 /** How often the picture hold looks at the sound (`pictureHold.ts`). */

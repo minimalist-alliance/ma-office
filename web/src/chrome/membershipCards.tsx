@@ -12,13 +12,17 @@ export interface CardLink {
 }
 
 export interface NoticeCard {
-  /** The proposal's letter for this card, for tests and screenshots. T and P are a teen's: welcome, and waiting on a parent. */
-  letter: 'A' | 'B' | 'C' | 'D' | 'E' | 'F' | 'T' | 'P';
+  /**
+   * The proposal's letter for this card, for tests and screenshots. T and P are a teen's: welcome, and waiting on a parent.
+   * X is a closed account's (`closedCard`).
+   */
+  letter: 'A' | 'B' | 'C' | 'D' | 'E' | 'F' | 'T' | 'P' | 'X';
   /** Two small desk tiles, etched "Personal" and "Work": A and E only. Decoration, so hidden from screen readers. */
   picture: boolean;
   /** "Personal" alone: the Alliance Member's one small desk. */
   oneDesk?: boolean;
   title: string;
+  /** Null: the title alone says it (X while its date isn't known). */
   body: ReactNode;
   /** The body as plain text, for the live region. */
   say: string;
@@ -30,6 +34,12 @@ export interface NoticeCard {
   link: CardLink | null;
   /** The Alliance line, information only, while that tier is on sale. */
   alliance: string | null;
+  /** Card D's "what changed" list, under the body (`endedCard.tsx`). */
+  list?: ReactNode;
+  /** A line under the list. */
+  after?: string;
+  /** More quiet links after `link`: D's "Download your data". */
+  more?: CardLink[];
 }
 
 const BLANK = { picture: false, action: null, soon: false, link: null, alliance: null } as const;
@@ -174,7 +184,10 @@ export function pausedCard(stoppedAt: string, dataDeleteAt: string, links: StopL
   };
 }
 
-/** D. Cancelled, desks still kept. Export is as easy to find as Rejoin. */
+/**
+ * D. Cancelled, desks still kept. Export is as easy to find as Rejoin. The proposal's words, kept only for a page whose card D
+ * chunk (`endedCard.tsx`, Sales' words, Nov 12) didn't load.
+ */
 export function keptCard(dataDeleteAt: string, links: StopLinks, now: number, timeZone?: string): NoticeCard {
   const kept = calendarDate(dataDeleteAt, now, timeZone);
   const restore = RESTORE_REHEARSAL_PASSED ? "Rejoin before then and we'll restore them, with your tabs and sign-ins." : "Rejoin before then and we'll restore them.";
@@ -222,5 +235,49 @@ export function welcomeBackCard(
     say: `Your earlier desks were deleted on ${deleted}, as our Terms say, so rejoining starts with fresh ones.`,
     action: open && links.account ? { label: 'See membership', href: links.account } : null,
     alliance: open && !opts.teen && offer.allianceMonthlyUsd !== null ? allianceLine(offer.allianceMonthlyUsd, opts.names?.alliance) : null,
+  };
+}
+
+/**
+ * X. An account the platform closed (ma-platform contract moderation.md section 8; S-152), in Sales' words (final, Nov 12):
+ * its one way in is this office, to download its data until `exportUntil`, the date from the API in the member's own
+ * calendar, never a number of days. No Rejoin, no Start and nothing to buy, for a teen as for anyone: nothing here says why.
+ * - Inside the window: the date, Download your data (the office's own export page, as D's export goes), and Write to us.
+ * - No date sent (`undefined`, a Platform from before `exportUntil`): signed in means inside the window, so the download
+ *   is offered with no line rather than a guessed date.
+ * - The window over, or the data held (`null`): only Sales' closed-account line, which says nothing of the data, so a held
+ *   account doesn't learn it's held.
+ */
+export function closedCard(exportUntil: string | null | undefined, links: StopLinks, now: number, timeZone?: string): NoticeCard {
+  const title = 'This account is closed';
+  const write = { label: 'Write to us', href: `mailto:${links.support}` };
+  const download = { label: 'Download your data', href: EXPORT_TARGET(links) };
+  if (exportUntil === undefined) return { ...BLANK, letter: 'X', title, body: null, say: '', action: download, link: write };
+  if (exportUntil === null || Date.parse(exportUntil) <= now) {
+    return {
+      ...BLANK,
+      letter: 'X',
+      title,
+      body: (
+        <>
+          If you have questions, write to <a href={`mailto:${links.support}`}>{links.support}</a>.
+        </>
+      ),
+      say: `If you have questions, write to ${links.support}.`,
+    };
+  }
+  const until = calendarDate(exportUntil, now, timeZone);
+  return {
+    ...BLANK,
+    letter: 'X',
+    title,
+    body: (
+      <>
+        You can download your data until <b>{until}</b>. After that we delete it, as our Terms say.
+      </>
+    ),
+    say: `You can download your data until ${until}. After that we delete it, as our Terms say.`,
+    action: download,
+    link: write,
   };
 }

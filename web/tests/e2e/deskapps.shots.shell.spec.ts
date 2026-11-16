@@ -26,7 +26,7 @@ const settle = async (page: Page): Promise<void> => {
 async function office(page: Page, theme: ThemeId, preinstalled: string[], widgetTile = false, tamper: Record<string, string> = {}): Promise<void> {
   if (widgetTile) {
     const items = [
-      { id: `${PERSONAL}:chat`, app: 'chat', x: 24, y: 24, w: 76, h: 76 },
+      { id: `${PERSONAL}:courier`, app: 'courier', x: 24, y: 24, w: 76, h: 76 },
       { id: `${PERSONAL}:notebook`, app: 'notebook', x: 116, y: 24, w: 76, h: 76 },
       { id: `${PERSONAL}:browser`, app: 'browser', x: 208, y: 24, w: 76, h: 76 },
       { id: `${PERSONAL}:agent`, app: 'agent', x: 300, y: 24, w: 76, h: 76 },

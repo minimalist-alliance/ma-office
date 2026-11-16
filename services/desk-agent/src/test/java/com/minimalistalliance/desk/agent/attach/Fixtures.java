@@ -64,6 +64,36 @@ public final class Fixtures {
         }
     }
 
+    /**
+     * A PDF whose one page draws a string that inflates past the worker's heap: its content stream is 200 MiB of text
+     * operators, deflated to a few hundred KiB. Reading it ends the worker out of memory (or at the deadline).
+     */
+    public static byte[] heavyPdf() {
+        try (PDDocument document = new PDDocument(); ByteArrayOutputStream out = new ByteArrayOutputStream()) {
+            PDPage page = new PDPage();
+            document.addPage(page);
+            org.apache.pdfbox.pdmodel.common.PDStream stream = new org.apache.pdfbox.pdmodel.common.PDStream(document);
+            try (java.io.OutputStream content = stream.createOutputStream(org.apache.pdfbox.cos.COSName.FLATE_DECODE)) {
+                content.write("BT /F1 12 Tf 72 700 Td (".getBytes(StandardCharsets.US_ASCII));
+                byte[] chunk = new byte[1 << 20];
+                java.util.Arrays.fill(chunk, (byte) 'A');
+                for (int i = 0; i < 200; i++) {
+                    content.write(chunk);
+                }
+                content.write(") Tj ET".getBytes(StandardCharsets.US_ASCII));
+            }
+            page.setContents(stream);
+            org.apache.pdfbox.pdmodel.PDResources resources = new org.apache.pdfbox.pdmodel.PDResources();
+            resources.put(org.apache.pdfbox.cos.COSName.getPDFName("F1"),
+                    new PDType1Font(Standard14Fonts.FontName.HELVETICA));
+            page.setResources(resources);
+            document.save(out);
+            return out.toByteArray();
+        } catch (IOException e) {
+            throw new IllegalStateException(e);
+        }
+    }
+
     public static byte[] pdfWithoutText() {
         try (PDDocument document = new PDDocument(); ByteArrayOutputStream out = new ByteArrayOutputStream()) {
             document.addPage(new PDPage());

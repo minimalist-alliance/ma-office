@@ -70,6 +70,19 @@ const drawnName = (page: Page, id: string): Promise<string> => page.evaluate((de
 
 /** axe at WCAG 2.2 AA and best practice on what's open, through devtools so the page's CSP doesn't apply. The ground's gradient is taken away while it runs, as in membership.shell.spec.ts, since axe can't measure past it. */
 async function axe(page: Page, include: string[]): Promise<{ violations: string[]; unsure: string[] }> {
+  // The top bar's controls and a desk's menu are the office's glass (`styles/glass.css`): gradients and two thin rings of light,
+  // which axe can't see through ("unsure"). It reads them as they are under reduced transparency, solid; the words' contrast on
+  // the glass itself is measured on the rendered surface (`officeglass.contrast.shell.spec.ts`).
+  const cdp = await page.context().newCDPSession(page);
+  await cdp.send('Emulation.setEmulatedMedia', { features: [{ name: 'prefers-reduced-transparency', value: 'reduce' }] });
+  try {
+    return await axeSolid(page, include);
+  } finally {
+    await cdp.send('Emulation.setEmulatedMedia', { features: [] });
+  }
+}
+
+async function axeSolid(page: Page, include: string[]): Promise<{ violations: string[]; unsure: string[] }> {
   await page.evaluate(AXE);
   return page.evaluate(async (inc) => {
     const w = window as unknown as { axe: { run: (ctx: unknown, opts: unknown) => Promise<{ violations: Rule[]; incomplete: Rule[] }> } };

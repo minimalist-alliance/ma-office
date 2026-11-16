@@ -1,0 +1,64 @@
+{
+  "id": "files-040",
+  "area": "files",
+  "title": "Pull action items into a new file",
+  "prompt": "Go through Harness/meetings/retro.md and save only the action items as Harness/meetings/retro-actions.md.",
+  "setup": {
+    "files": {
+      "Harness/meetings/retro.md": "# Retro\n\nWent well: the demo.\nAction: Sam updates the runbook.\nAction: Kai fixes the flaky test.\nAction: Mo books the next retro.\n"
+    }
+  },
+  "approve": "all",
+  "checks": [
+    {
+      "kind": "file",
+      "path": "Harness/meetings/retro-actions.md",
+      "contains": [
+        "runbook",
+        "flaky test",
+        "next retro"
+      ],
+      "notContains": [
+        "demo"
+      ]
+    },
+    {
+      "kind": "cards",
+      "tools": [
+        "files_write"
+      ]
+    }
+  ],
+  "policy": {
+    "tools": [
+      "files_read",
+      "files_write"
+    ]
+  },
+  "standIn": [
+    {
+      "calls": [
+        {
+          "name": "files_read",
+          "input": {
+            "path": "Harness/meetings/retro.md"
+          }
+        }
+      ]
+    },
+    {
+      "calls": [
+        {
+          "name": "files_write",
+          "input": {
+            "path": "Harness/meetings/retro-actions.md",
+            "text": "# Retro actions\n\n- Sam updates the runbook\n- Kai fixes the flaky test\n- Mo books the next retro\n"
+          }
+        }
+      ]
+    },
+    {
+      "text": "Saved the three action items to Harness/meetings/retro-actions.md."
+    }
+  ]
+}

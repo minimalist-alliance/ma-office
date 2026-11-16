@@ -3,13 +3,15 @@
 // a drawer with Usage, Keys and Activity. It talks to the desk only through `client`.
 import { useCallback, useEffect, useId, useMemo, useRef, useState, type FormEvent, type KeyboardEvent, type ReactNode } from 'react';
 import { AgentError, newIdem, type AgentClient } from '../client/agentClient';
-import type { Agent, AgentCaps, KeyMeta, LimitScope, Provider } from '../client/types';
+import type { Agent, AgentAccess, AgentCaps, KeyMeta, LimitScope, Provider } from '../client/types';
 import { AgentMark } from '../look/AgentMark';
+import { colorFor } from '../look/hat';
 import type { LookTheme } from '../look/tones';
 import { attachErrorText, BUSY_WITH_FILES, desksKeepsFiles } from '../model/attachments';
 import { onFreeModels } from '../connect/openrouter';
-import { badgeDismissable, badgeShown, errorText, isFreeLimit, keysLast, limitBannerText, pausedText, statusWord } from '../model/agents';
+import { badgeDismissable, badgeShown, defaultModel, errorText, isFreeLimit, keysLast, limitBannerText, pausedText, statusWord } from '../model/agents';
 import { approvalOpen, arrivedText, cardOf, countLabel, withApprovals } from '../model/approvals';
+import { autoRowsOf, isAuto, mayOfferDontAsk, type NotebookTab } from '../model/auto';
 import { streaming } from '../model/conversation';
 import { when } from '../model/format';
 import { browserZone, guildHeadline, headlineRow, needsZone, refusalText, type GuildCaps } from '../model/limits';
@@ -25,6 +27,10 @@ import { MemoryPanel } from './Memory';
 import type { ProposalContext } from './Proposals';
 import { RunningStrip, useRunningTools } from './Running';
 import { isLeadAgent, SettingsPanel } from './Settings';
+import { SetupScreen, type AccessPlaces } from './Setup';
+import { waitingLine, type OtherDesk } from '../model/access';
+import { isWaitingDesk, WAITING_DESK } from '../model/deskMessages';
+import { DeskOfferCards } from './DeskOffers';
 import { Composer, ThreadView, type SendResult } from './Thread';
 
 export interface AgentAppProps {
@@ -69,6 +75,20 @@ export interface AgentAppProps {
    * the Agent at all, so this is the second lock. Never offered on a Guild Desk either, whatever this says.
    */
   offerFree?: boolean;
+  /**
+   * The member's other desks an agent here may be let message (draft ADR section 14): never this one or a Guild Desk. The setup
+   * screen and the settings show the "Other desks" section only when there's one. Unset: none.
+   */
+  otherDesks?: readonly OtherDesk[];
+  /** Where a "without asking" switch's additions go: the office's Notebook tabs and Files. Unset: those two switches stay off. */
+  places?: AccessPlaces | null;
+  /**
+   * A question handed over from elsewhere in the host (the office's Documents: "Ask Lead about this"): words and files that wait
+   * in that agent's composer for the member to finish and send, never sent by themselves. A new `seq` is a new one.
+   */
+  handoff?: { agentId: string; text: string; files: readonly File[]; seq: number } | null;
+  /** The handoff with this `seq` is in its composer now. */
+  onHandoff?: (seq: number) => void;
 }
 
 /** What the Agent app says and shows on a Guild Desk. */
@@ -145,11 +165,20 @@ const tabName = (t: { title: string; label: string }, name: string): string => {
 /** An agent's mark, its uploaded picture included. Decorative beside its name. */
 function Mark({ client, agent, theme, size }: { client: AgentClient; agent: Agent; theme: LookTheme; size: number }) {
   const pngUrl = useMaskUrl(client, agent);
-  const look = agent.look ?? { icon: 'nodes', tone: 'graphite', png: null };
-  return <AgentMark icon={look.icon} tone={look.tone} theme={theme} pngUrl={pngUrl} size={size} />;
+  const look = agent.look ?? { icon: 'hat', tone: 'graphite', png: null };
+  // The lead wears the Agent app's own icon and accent, whatever is stored (its look isn't the member's to change, ADR 0047).
+  const lead = isLeadAgent(agent);
+  return <AgentMark icon={lead ? 'hat' : look.icon} color={colorFor(agent)} tone={look.tone} theme={theme} pngUrl={lead ? null : pngUrl} size={size} />;
 }
 
 type Notice = { kind: 'limit'; scope: LimitScope | null } | { kind: 'error'; text: string } | null;
+
+const NO_DESKS: readonly OtherDesk[] = [];
+const without = (record: Record<string, string>, key: string): Record<string, string> => {
+  const out = { ...record };
+  delete out[key];
+  return out;
+};
 
 function AddAgent({ client, keys, onAdded, onCancel }: { client: AgentClient; keys: KeyMeta[]; onAdded: (a: Agent) => void; onCancel: () => void }) {
   // `caps` decides whether this shows at all; a desk that's full by the time it answers says so here.
@@ -163,7 +192,11 @@ function AddAgent({ client, keys, onAdded, onCancel }: { client: AgentClient; ke
     setBusy(true);
     setError(null);
     try {
-      const a = await client.createAgent({ name: name.trim() || 'Assistant', ...(keyId ? { keyId } : {}) }, { idem: newIdem() });
+      // A key goes with a model, as the desk takes them: `agent.key.models`'s good default, listed first (API.md section 11;
+      // `defaultModel` passes over an unpriced one). Settings change it later. With none listed, the agent is made with no
+      // key, and its key screen asks.
+      const model = keyId ? defaultModel(await client.listModels(keyId))?.id : undefined;
+      const a = await client.createAgent({ name: name.trim() || 'Assistant', ...(keyId && model ? { keyId, model } : {}) }, { idem: newIdem() });
       onAdded(a);
     } catch (err) {
       setError(err instanceof AgentError && err.detail === 'name' && !err.reason ? 'A name is 1 to 24 characters.' : err instanceof AgentError ? errorText(err.reason, err.detail) : errorText(null));
@@ -197,7 +230,7 @@ function AddAgent({ client, keys, onAdded, onCancel }: { client: AgentClient; ke
           Add agent
         </button>
       </div>
-      <p className="ag-muted ag-small">It starts solo, with a look of its own. Its settings open next. Or ask the lead to set one up.</p>
+      <p className="ag-muted ag-small">It starts solo, with a look of its own. What it can use comes next. Or ask the lead to set one up.</p>
     </form>
   );
 }
@@ -228,7 +261,7 @@ function NewAgent({ caps, count, adding, onToggle }: { caps: AgentCaps | null; c
   );
 }
 
-export function AgentApp({ client, deskName, showBadges, onShowBadgesChange, offline = false, parked = false, suggestions = [], canAddAgents = true, focusAgentId = null, theme: themeProp, onOpenAgent, onUnsaved, guild = null, deskId, offerFree = true }: AgentAppProps) {
+export function AgentApp({ client, deskName, showBadges, onShowBadgesChange, offline = false, parked = false, suggestions = [], canAddAgents = true, focusAgentId = null, theme: themeProp, onOpenAgent, onUnsaved, guild = null, deskId, offerFree = true, otherDesks = NO_DESKS, places = null, handoff = null, onHandoff }: AgentAppProps) {
   // On a Guild Desk: no Keys tab and no desk limits form for anyone; the guild's limits, and Activity, for those who set them.
   // Task 49's settings and agent messages are a member's own desk's: a Guild Desk's agent is one seat on the guild's key.
   // Memory is every member's own, on a Guild Desk too: their agent's lines are their data (spec 3.1).
@@ -318,6 +351,10 @@ export function AgentApp({ client, deskName, showBadges, onShowBadgesChange, off
     };
   }, []);
   const unsure = useRef<{ agentId: string; text: string; idem: string } | null>(null);
+  // The setup screen (draft ADR section 16): its Back shows the thread with no composer, and a Save here closes it at once,
+  // before the desk's own word (`setup: null`) comes on `agent.state`. Each by the reason it showed for, so a later one shows.
+  const [setupBack, setSetupBack] = useState<Record<string, string>>({});
+  const [setupDone, setSetupDone] = useState<Record<string, string>>({});
 
   const focused = focusAgentId !== null;
   const agent = useMemo(
@@ -328,12 +365,41 @@ export function AgentApp({ client, deskName, showBadges, onShowBadgesChange, off
   const thread = useThread(client, agentId, parked);
   const live = streaming(thread);
   const waitingRun = live?.state === 'awaiting_approval';
-  const approvalCtx = useMemo<ApprovalContext | null>(() => (agents ? { client, agents, offline, announce: say } : null), [client, agents, offline, say]);
+  // "Don't ask again" (API.md section 18) needs the agent's switches, read only while one of its waiting cards could offer it,
+  // and again when the drawer closes (its settings may have changed them). Never on a Guild Desk: nothing runs unasked there.
+  const offerIds = guild ? '' : thread.approvals.filter((a) => mayOfferDontAsk(a)).map((a) => a.id).join();
+  const [accessTick, setAccessTick] = useState(0);
+  const access = useRead<{ agentId: string; access: AgentAccess } | null>(
+    () => (agentId && offerIds ? client.getAccess(agentId).then((x) => ({ agentId, access: x })) : Promise.resolve(null)),
+    [client, agentId, offerIds, accessTick],
+  );
+  // A drawer that closes may have changed the switches (Settings): read them again.
+  const drawerOpen = tab !== null;
+  const drawerWas = useRef(drawerOpen);
+  useEffect(() => {
+    if (drawerWas.current && !drawerOpen) setAccessTick((t) => t + 1);
+    drawerWas.current = drawerOpen;
+  }, [drawerOpen]);
+  const setAccessValue = access.set;
+  const onAccess = useCallback((id: string, next: AgentAccess) => setAccessValue({ agentId: id, access: next }), [setAccessValue]);
+  // The Notebook's tabs by name, for a card's tab and the line under a reply, read once something here could name one.
+  const wantsTabs =
+    !!places &&
+    (thread.approvals.some((a) => mayOfferDontAsk(a) === 'notebook') || thread.messages.some((m) => autoRowsOf(m).some((r) => r.group === 'notebook')));
+  const [tabsAsked, setTabsAsked] = useState(false);
+  useEffect(() => {
+    if (wantsTabs) setTabsAsked(true);
+  }, [wantsTabs]);
+  const notebookTabs = useRead<NotebookTab[] | null>(() => (places && tabsAsked ? places.notebookTabs() : Promise.resolve(null)), [places, tabsAsked, accessTick]);
+  const approvalCtx = useMemo<ApprovalContext | null>(
+    () => (agents ? { client, agents, offline, announce: say, access: access.value, tabs: notebookTabs.value, onAccess, desks: otherDesks } : null),
+    [client, agents, offline, say, access.value, notebookTabs.value, onAccess, otherDesks],
+  );
   // A card that arrives while the thread is open is announced, never focused (spec 1.8). Those already there when it opened aren't news.
   const knownCards = useRef<{ agentId: string | null; ids: Set<string> } | null>(null);
   useEffect(() => {
     if (!thread.loaded || !agent) return;
-    const pending = thread.approvals.filter((a) => approvalOpen(a, Date.now()));
+    const pending = thread.approvals.filter((a) => approvalOpen(a, Date.now()) && !isAuto(a));
     const known = knownCards.current;
     if (!known || known.agentId !== agent.id) {
       knownCards.current = { agentId: agent.id, ids: new Set(thread.approvals.map((a) => a.id)) };
@@ -342,7 +408,7 @@ export function AgentApp({ client, deskName, showBadges, onShowBadgesChange, off
     for (const a of pending) {
       if (known.ids.has(a.id)) continue;
       known.ids.add(a.id);
-      say(arrivedText(agent.name, cardOf(a, agents ?? []).asked));
+      say(arrivedText(agent.name, cardOf(a, agents ?? [], otherDesks).asked));
     }
     // eslint-disable-next-line react-hooks/exhaustive-deps
   }, [thread.approvals, thread.loaded, agent?.id]);
@@ -418,6 +484,23 @@ export function AgentApp({ client, deskName, showBadges, onShowBadgesChange, off
     setNotice(null);
     setRailOpen(false);
   }, []);
+  // A handoff (Documents' "Ask Lead"): that agent's thread, its words in the composer after anything already typed there, and its
+  // files staged beside them. Taken once its agent is known here; the composer starts afresh to take the files.
+  const [seed, setSeed] = useState<{ agentId: string; files: readonly File[]; seq: number } | null>(null);
+  const tookHandoff = useRef(0);
+  useEffect(() => {
+    if (!handoff || handoff.seq === tookHandoff.current || !agents) return;
+    const target = agents.find((a) => a.id === handoff.agentId);
+    if (!target || (focused && target.id !== focusAgentId)) return;
+    tookHandoff.current = handoff.seq;
+    if (!focused) select(target.id);
+    const had = (drafts.current.get(target.id) ?? '').trim();
+    const text = had ? `${had}\n\n${handoff.text}` : handoff.text;
+    drafts.current.set(target.id, text);
+    reportUnsaved(`draft:${target.id}`, text.trim() !== '');
+    setSeed({ agentId: target.id, files: handoff.files, seq: handoff.seq });
+    onHandoff?.(handoff.seq);
+  }, [handoff, agents, focused, focusAgentId, select, reportUnsaved, onHandoff]);
   // Where an agent opens: its own window where the host has one, else here.
   const openAgent = useCallback(
     (id: string) => {
@@ -496,6 +579,8 @@ export function AgentApp({ client, deskName, showBadges, onShowBadgesChange, off
   const head = guild?.caps ? guildHeadline(limits.value, guild.caps) : guild ? null : limits.value ? headlineRow(limits.value) : null;
   const teamName = guild ? 'Your agent' : 'Desk team';
   const isLead = isLeadAgent(agent);
+  // Why its setup screen shows (section 16), or null: a Save here counts until the desk says otherwise.
+  const setupReason = agent.setup && setupDone[agent.id] !== agent.setup ? agent.setup : null;
   const caps = team.caps;
   const free = onFreeModels(agent.binding);
   const freeKey = free ? (keys.value.find((k) => k.keyId === agent.binding?.keyId)?.free ?? null) : null;
@@ -520,7 +605,8 @@ export function AgentApp({ client, deskName, showBadges, onShowBadgesChange, off
             onAdded={(a) => {
               setAdding(false);
               select(a.id);
-              setTab('settings');
+              // With a key, its setup screen comes next, where the thread will be; with none, the key screen first.
+              if (!a.binding) setTab('settings');
             }}
           />
         )}
@@ -544,12 +630,14 @@ export function AgentApp({ client, deskName, showBadges, onShowBadgesChange, off
                 </span>
                 {badgeShown(a, showBadges) && a.binding && <ProviderBadge badge={a.binding} compact />}
                 {(() => {
-                  // Waiting cards count even on the agent being read; its unseen replies don't (spec 1.5).
+                  // Waiting cards count even on the agent being read; its unseen replies don't (spec 1.5), nor what a run the
+                  // member didn't start did without asking (`autoUnseen`, draft ADR section 15), which counts until it's seen.
                   const waiting = a.approvalsPending ?? 0;
                   const unseen = a.id !== agent.id ? a.unseen : 0;
-                  return waiting + unseen > 0 ? (
-                    <span className="ag-count" aria-label={waiting ? countLabel(waiting, unseen) : `${unseen} new`} data-testid="agent-count">
-                      {waiting + unseen}
+                  const unasked = a.id !== agent.id ? (a.autoUnseen ?? 0) : 0;
+                  return waiting + unseen + unasked > 0 ? (
+                    <span className="ag-count" aria-label={waiting || unasked ? countLabel(waiting, unseen, unasked) : `${unseen} new`} data-testid="agent-count">
+                      {waiting + unseen + unasked}
                     </span>
                   ) : null;
                 })()}
@@ -629,6 +717,12 @@ export function AgentApp({ client, deskName, showBadges, onShowBadgesChange, off
           )}
         </div>
 
+        {/* Offers from the member's other desks (W6), in the desk team's window: never on a Guild Desk, nor beside a setup screen,
+            which lists them itself. Read once as the window opens (a window that subscribes late hears no `agent.state` until the
+            next change, so its count is unknown, null), and again whenever the count changes; a count of none reads nothing. */}
+        {!focused && !guild && otherDesks.length > 0 && team.deskOffers !== 0 && !(agent.binding && agent.status !== 'no_key' && setupReason && setupBack[agent.id] !== setupReason) && (
+          <DeskOfferCards client={client} agents={agents} otherDesks={otherDesks} version={team.deskOffers} announce={say} />
+        )}
         {(agent.status === 'no_key' || !agent.binding) && guild && !guild.limits ? (
           <div className="ag-setup" data-testid="guild-no-key">
             <div className="ag-setup-card">
@@ -653,6 +747,19 @@ export function AgentApp({ client, deskName, showBadges, onShowBadgesChange, off
             offerFree={offered}
             announce={say}
           />
+        ) : setupReason && setupBack[agent.id] !== setupReason ? (
+          <SetupScreen
+            key={`${agent.id}:${setupReason}`}
+            client={client}
+            agent={agent}
+            otherDesks={otherDesks}
+            places={places}
+            guild={guild !== null}
+            onBack={() => setSetupBack((b) => ({ ...b, [agent.id]: setupReason }))}
+            onSaved={() => setSetupDone((d) => ({ ...d, [agent.id]: setupReason }))}
+            announce={say}
+            version={team.deskOffers}
+          />
         ) : (
           <>
             <ThreadView
@@ -667,6 +774,7 @@ export function AgentApp({ client, deskName, showBadges, onShowBadgesChange, off
               approvalCtx={approvalCtx}
               free={free}
               onPickModel={tabs.some((t) => t.id === 'keys') ? openKeys : null}
+              desks={otherDesks}
             />
             <RunningStrip
               client={client}
@@ -707,6 +815,11 @@ export function AgentApp({ client, deskName, showBadges, onShowBadgesChange, off
                 )}
               </div>
             )}
+            {isWaitingDesk(agent) && (
+              <div className="ag-banner calm" role="status" data-testid="waiting-desk">
+                <span>{WAITING_DESK}</span>
+              </div>
+            )}
             {agent.status === 'paused' && (
               <div className="ag-banner warn" role="status" data-testid="paused-banner">
                 <span>{pausedText(agent.statusDetail)}</span>
@@ -717,8 +830,16 @@ export function AgentApp({ client, deskName, showBadges, onShowBadgesChange, off
                 <span>{notice.text}</span>
               </div>
             )}
+            {setupReason ? (
+              <div className="ag-banner calm" role="status" data-testid="setup-waiting">
+                <span>{waitingLine(agent.name)}</span>
+                <button type="button" className="ag-btn sm" onClick={() => setSetupBack((b) => without(b, agent.id))} data-testid="setup-open">
+                  Set up {agent.name}
+                </button>
+              </div>
+            ) : (
             <Composer
-              key={agent.id}
+              key={seed?.agentId === agent.id ? `${agent.id}:${seed.seq}` : agent.id}
               client={client}
               agent={agent}
               busy={sending}
@@ -729,11 +850,13 @@ export function AgentApp({ client, deskName, showBadges, onShowBadgesChange, off
               disabled={offline}
               suggestions={suggestions}
               initialDraft={drafts.current.get(agent.id) ?? ''}
+              initialFiles={seed?.agentId === agent.id ? seed.files : undefined}
               onDraftChange={(t) => {
                 drafts.current.set(agent.id, t);
                 reportUnsaved(`draft:${agent.id}`, t.trim() !== '');
               }}
             />
+            )}
           </>
         )}
       </section>
@@ -756,6 +879,10 @@ export function AgentApp({ client, deskName, showBadges, onShowBadgesChange, off
                 keys={keys.value}
                 caps={caps}
                 theme={theme}
+                otherDesks={otherDesks}
+                places={places}
+                announce={say}
+                stateVersion={team.events}
                 onOpenUsage={() => setTab('usage')}
                 onDeleted={() => {
                   setTab(null);

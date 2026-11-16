@@ -3,6 +3,7 @@ package com.minimalistalliance.desk.agent.tool;
 import static org.assertj.core.api.Assertions.assertThat;
 
 import com.minimalistalliance.desk.agent.provider.ToolCall;
+import com.minimalistalliance.desk.agent.provider.ToolSpec;
 import com.minimalistalliance.desk.agent.service.Caller;
 import com.minimalistalliance.desk.agent.testing.MutableClock;
 import com.minimalistalliance.desk.agent.testing.Rig;
@@ -189,5 +190,66 @@ class RegistryPolicyTest {
         assertThat(c.risk()).isEqualTo(Risk.OWN);
         assertThat(c.decl().host()).isEqualTo(ToolDecl.Host.DESK_AGENT);
         assertThat(desk.calls).isEmpty();
+    }
+
+    /** {@code desk_answer} is no model's: named by one, it's refused before anything is asked (Security's DM-I1). */
+    @Test
+    void aToolNoModelIsOfferedRunsOnlyAsTheRunsOwnClosingCall() {
+        Map<String, Object> answer = Map.of("grantId", "dg-abcdefghijklmnopqrst", "replyTo", "env-1", "text", "hi");
+        Classified named = policy.classify(new ToolCall("toolu_1", "desk_answer", answer), run());
+        assertThat(named.refusal()).isEqualTo("scope");
+        assertThat(desk.calls).isEmpty();
+        policy.desks(new DeskHook() {
+            @Override
+            public Map<String, Object> args(String agentId, String tool, Map<String, Object> input) {
+                return input;
+            }
+
+            @Override
+            public Map<String, Object> target(String agentId, String tool, Map<String, Object> target) {
+                return target;
+            }
+
+            @Override
+            public com.minimalistalliance.desk.agent.provider.ToolResult after(ToolCall call, RunContext run, String key,
+                    Map<String, Object> made) {
+                return null;
+            }
+
+            @Override
+            public List<String> desks(String agentId) {
+                return List.of();
+            }
+
+            @Override
+            public boolean closing(ToolCall call) {
+                return "closing-1".equals(call.id());
+            }
+        });
+        assertThat(policy.classify(new ToolCall("toolu_2", "desk_answer", answer), run()).refusal()).isEqualTo("scope");
+        assertThat(policy.classify(new ToolCall("closing-1", "desk_answer", answer), run()).refusal())
+                .isNotEqualTo("scope");
+    }
+
+    @Test
+    void herBriefWithWhatSheExpectsBackPassesTheSchemaAnotherAgentsDoesNot() {
+        // The staging proof (Nov 15): checked against the bare declaration, every brief of hers that said what she expects
+        // back was refused as input, though expect is in the schema she's offered (MaiaTools.briefSpec).
+        Map<String, Object> expect = Map.of("fields", List.of("tips"), "then", "report", "urgentIf", "never");
+        RunContext maia = RunContext.of("run-1", "maia", Caller.OWNER, null, "m-1");
+        Classified hers = policy.classify(call("desk_message", "desk", "Work", "text", "Three tips, please.", "expect",
+                expect), maia);
+        assertThat(hers.refusal()).isNotEqualTo("input");
+        // What she's offered is what's accepted.
+        ToolSpec offered = com.minimalistalliance.desk.agent.maia.MaiaTools.briefSpec(registry.spec("desk_message"));
+        assertThat(offered.inputSchema()).isEqualTo(RegistryPolicy.schemaFor(registry.decl("desk_message"), maia));
+        // Still only its own shape: a wrong then, or a word beside expect, is input.
+        assertThat(policy.classify(call("desk_message", "desk", "Work", "text", "x", "expect", Map.of("then",
+                "later")), maia).refusal()).isEqualTo("input");
+        assertThat(policy.classify(call("desk_message", "desk", "Work", "text", "x", "expect", expect, "wake", true),
+                maia).refusal()).isEqualTo("input");
+        // Another agent isn't offered expect, and isn't given it.
+        assertThat(policy.classify(call("desk_message", "desk", "Work", "text", "x", "expect", expect), run())
+                .refusal()).isEqualTo("input");
     }
 }

@@ -136,6 +136,7 @@ public final class GatewayLink {
     private boolean closed;
     private long blockedSinceNanos;
     private volatile java.util.function.LongConsumer guildRoster = version -> {};
+    private volatile java.util.function.Consumer<String> relay = reason -> {};
     private volatile Connection current;
     private volatile boolean ready;
 
@@ -449,7 +450,16 @@ public final class GatewayLink {
         } else if ("guild.roster".equals(topic) && message.get("version") instanceof Number version) {
             // gateway.md 3.2 (0.3.30): read the roster and drop or update sessions at once. Only a guild desk listens.
             guildRoster.accept(version.longValue());
+        } else if ("relay".equals(topic)) {
+            // ma-platform contract 0.4.0, relay.md section 5: envelopes landed, or this desk's Courier address changed.
+            String reason = Json.string(message, "reason");
+            relay.accept("address".equals(reason) ? "address" : "envelopes");
         }
+    }
+
+    /** Hears {@code notify relay}'s reason ({@code envelopes} or {@code address}). Must not block: it runs on the link's reader. */
+    public void onRelay(java.util.function.Consumer<String> listener) {
+        relay = listener;
     }
 
     /** Hears {@code notify guild.roster}'s version. Must not block: it runs on the link's reader. */

@@ -15,7 +15,13 @@
 //   npm run build:release && flock ~/work/.test-desk.lock timeout 45m nice -n 15 node tests/real-desk/rt-one-live.mjs
 //   MA_EXPECT_VERSION=2026.11.07-abc1234 … node tests/real-desk/rt-one-live.mjs   # staging's own bundle, once it's promoted there
 import { existsSync, mkdirSync, readFileSync, writeFileSync } from 'node:fs';
-import { ALLOWED, events, getDesk, log, openSession, S, shot, shutdown, wait, waitPanel } from './rt-lib.mjs';
+import { ALLOWED, closeTour, events, getDesk, log, openSession, S, shot, shutdown, wait, waitPanel } from './rt-lib.mjs';
+
+/** All desks, as a mouse click on the mark does (a bare `click()` counts as the keyboard there, which opens the mark's menu). */
+const homeClick = (el) => {
+  el.dispatchEvent(new PointerEvent('pointerdown', { bubbles: true, pointerType: 'mouse' }));
+  el.dispatchEvent(new MouseEvent('click', { bubbles: true, detail: 1 }));
+};
 
 const DIST = new URL('../../dist/release/', import.meta.url).pathname;
 const OUT = new URL('../../test-results/real-desk/rt-one-live/', import.meta.url).pathname;
@@ -184,6 +190,8 @@ const refused = arrived?.answer === 'not_found';
 if (refused) log('NOTE: this deskd answers not_found to desk.attention.set: the office asks no more on this session, so the switches below time the picture only');
 
 // ----- looked at: the desk, its Browser, a picture
+// desk-1 is shared: the office tour may start by itself and take the keyboard (rt-lib closeTour; it writes nothing)
+await closeTour(15_000).catch(() => false);
 await btn.focus();
 await p.keyboard.press('Enter');
 step('2 the link is open', await waitPanel(/online/, 60_000));
@@ -298,7 +306,7 @@ async function timedSwitch(before) {
 const switches = [];
 for (let i = 1; i <= RUNS; i += 1) {
   const before = (await attention()).length;
-  await p.getByRole('button', { name: /show all desks/ }).evaluate((el) => el.click());
+  await p.locator('.home-mark-btn[data-home]').evaluate(homeClick);
   const away = refused ? null : await until(async () => (await attention()).slice(before).find((e) => e.seen === false && e.answer), 10_000);
   await wait(300);
   const parked = await p.evaluate(() => {
@@ -345,7 +353,7 @@ if (!refused && FROZEN_RUNS > 0) {
   for (let i = 1; i <= FROZEN_RUNS; i += 1) {
     const before = (await attention()).length;
     const leftAt = await p.evaluate(() => performance.now());
-    await p.getByRole('button', { name: /show all desks/ }).evaluate((el) => el.click());
+    await p.locator('.home-mark-btn[data-home]').evaluate(homeClick);
     const froze = await until(async () => (await live()).events.find((e) => e.at >= leftAt && e.frozen === true), FROZEN_WAIT_MS, 500);
     if (!froze) {
       log(`FROZEN ${i}: the desk didn't say frozen within ${FROZEN_WAIT_MS} ms (sound, a download, a load, or an image without the freeze)`);

@@ -239,4 +239,19 @@ class ApprovalRelayTest {
                 "working"))));
         await().atMost(5, TimeUnit.SECONDS).until(() -> "busy".equals(rig.module.heartbeatFields().get("status")));
     }
+
+    @Test
+    void anAgentWaitingOnAnotherDeskDoesntKeepTheDeskBusyEither() throws Exception {
+        rig.agent.drop();
+        await().until(() -> rig.agent.subscribers("agent.state") == 1);
+        // Durable runs' waits (statusDetail waiting_<kind>): the desk messages' 120 s wait is one.
+        rig.agent.publish("agent.state", "snapshot", Map.of("agents", List.of(Map.of("id", "manager", "status",
+                "working", "statusDetail", "waiting_desk"))));
+        await().atMost(5, TimeUnit.SECONDS).until(() -> "online".equals(rig.module.heartbeatFields().get("status")));
+        assertThat(rig.module.heartbeatFields()).containsEntry("activeTasks", 0).containsEntry("busyUntil", null);
+        assertThat(AgentModule.waits("waiting_desk")).isTrue();
+        assertThat(AgentModule.waits("awaiting_approval")).isTrue();
+        assertThat(AgentModule.waits("limit_reached")).isFalse();
+        assertThat(AgentModule.waits(null)).isFalse();
+    }
 }

@@ -1,0 +1,76 @@
+{
+  "id": "notebook-013",
+  "area": "notebook",
+  "title": "A page with a table",
+  "prompt": "Create a page Chore chart in my Harness tab with a table: Dishes is Ana, Laundry is Ben, Trash is Cy.",
+  "setup": {
+    "notebook": [
+      {
+        "tab": "Harness",
+        "title": "Inbox",
+        "markdown": "# Inbox\n\nThings to sort later.\n"
+      }
+    ]
+  },
+  "approve": "all",
+  "checks": [
+    {
+      "kind": "page",
+      "tab": "Harness",
+      "title": "Chore chart",
+      "contains": [
+        "Dishes",
+        "Ana",
+        "Laundry",
+        "Ben",
+        "Cy"
+      ]
+    },
+    {
+      "kind": "cards",
+      "tools": [
+        "notebook_write"
+      ]
+    }
+  ],
+  "policy": {
+    "tools": [
+      "notebook_list",
+      "notebook_write"
+    ]
+  },
+  "standIn": [
+    {
+      "calls": [
+        {
+          "name": "notebook_list",
+          "input": {}
+        }
+      ]
+    },
+    {
+      "calls": [
+        {
+          "name": "notebook_write",
+          "input": {
+            "op": "create",
+            "new": {
+              "tabId": {
+                "$re": {
+                  "step": 0,
+                  "call": 0,
+                  "pattern": "\"tabId\":\"([^\"]+)\",\"title\":\"Harness\""
+                }
+              },
+              "title": "Chore chart"
+            },
+            "markdown": "| Chore | Who |\n|---|---|\n| Dishes | Ana |\n| Laundry | Ben |\n| Trash | Cy |"
+          }
+        }
+      ]
+    },
+    {
+      "text": "Made Chore chart. The Notebook has no tables, so each row became a line of text."
+    }
+  ]
+}

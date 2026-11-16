@@ -1,8 +1,8 @@
 // The Agent app itself: its own lazy chunk, so none of it costs a member who hasn't opened the window. `web/agent` is a package
 // of its own, imported here as source. The one client over this desk's link is made here, and it talks to that desk alone.
 import { lazy, memo, Suspense, useCallback, useEffect, useId, useMemo } from 'react';
-import { AgentApp, RpcAgentClient, type DeskTransport, type GuildMode } from '../../agent/src/index';
-import { agentApp, agentIdOf, type AppId } from '../canvas/layout';
+import { AgentApp, otherDesksOf, RpcAgentClient, type DeskTransport, type GuildMode } from '../../agent/src/index';
+import { agentIdOf, type AppId } from '../canvas/layout';
 import type { DeskLink } from '../desk/deskLink';
 import { setGuildCaps, useGuildStore } from '../guild/guildStore';
 import { guildIdOfPanel, limitsOf, mayManageAgents } from '../guild/panel';
@@ -12,9 +12,29 @@ import { useDeskStore } from '../state/deskStore';
 import { holdClose } from '../shell/closeGuard';
 import { setLayoutPref } from '../shell/layoutSync';
 import { useLayoutPrefs } from '../shell/layoutPrefs';
-import { useLayoutStore } from '../state/layoutStore';
-import { openWindow } from '../state/windowStore';
-import { useRosterStore } from './roster';
+import { deskPlaces } from './places';
+import { openAgentWindow, takeAgentAsk, useAgentAsk } from './ask';
+import { noteFocusEvent } from '../state/focusItems';
+
+/**
+ * A message sent to an agent and an approval decided are completed actions, for Desk Maia's model of now (the focus shield's fine
+ * break, `state/focusItems.ts`): that they happened, never what was said or decided.
+ */
+function withFocusEvents(c: RpcAgentClient): RpcAgentClient {
+  const send = c.sendMessage.bind(c);
+  const decide = c.decideApproval.bind(c);
+  c.sendMessage = (...a: Parameters<RpcAgentClient['sendMessage']>) =>
+    send(...a).then((r) => {
+      noteFocusEvent('sent');
+      return r;
+    });
+  c.decideApproval = (...a: Parameters<RpcAgentClient['decideApproval']>) =>
+    decide(...a).then((r) => {
+      noteFocusEvent('approval_decided');
+      return r;
+    });
+  return c;
+}
 
 /** The link, untyped: `DeskRpc` and `LinkTopics` list what it's called with. */
 export function transportOf(link: DeskLink): DeskTransport {
@@ -26,18 +46,8 @@ export function transportOf(link: DeskLink): DeskTransport {
 
 const onShowBadgesChange = (showProviderBadges: boolean): void => setLayoutPref({ showProviderBadges });
 
-/**
- * An agent's own window on this desk (task 49): its tile's, or the `agent` tile's for the lead. False where it has none yet,
- * as just after it was made, and the app shows it where it is.
- */
-export function openAgentWindow(deskId: string, agentId: string): boolean {
-  const items = useLayoutStore.getState().desks[deskId]?.items ?? [];
-  const lead = useRosterStore.getState().desks[deskId]?.find((a) => a.id === agentId)?.lead === true;
-  const item = items.find((i) => i.app === (lead ? 'agent' : agentApp(agentId)));
-  if (!item) return false;
-  openWindow(deskId, item.app, item.id);
-  return true;
-}
+// An agent's own window: `ask.ts`, so Documents can open one without loading this chunk.
+export { openAgentWindow } from './ask';
 
 // The guild's limits panel is the guild sheet's own chunk, loaded only where a Founder or `manage_agents` opens it.
 const GuildLimitsPanel = lazy(() => import('../guild/GuildSheet').then((m) => ({ default: m.GuildLimitsPanel })));
@@ -112,10 +122,21 @@ export default memo(function AgentBody({ link, session, deskId, deskName, offlin
   app?: AppId;
 }) {
   // eslint-disable-next-line react-hooks/exhaustive-deps
-  const client = useMemo(() => new RpcAgentClient(transportOf(link)), [link, session]);
+  const client = useMemo(() => withFocusEvents(new RpcAgentClient(transportOf(link))), [link, session]);
   const showBadges = useLayoutPrefs((s) => s.showProviderBadges);
   const guild = useGuildMode(deskId, link, session);
+  // The setup screen's "Other desks": the member's own desks but this one and any Guild Desk (draft ADR section 14). A Guild Desk
+  // itself, a guild's panel or a list row of that kind, has none: it never takes part in messages between desks (W6), and the
+  // offers and threads that name another desk name it from this same list.
+  const desks = useDeskStore((s) => s.desks);
+  const guildDesk = guild !== null || desks.find((d) => d.id === deskId)?.kind === 'guild';
+  const otherDesks = useMemo(() => (guildDesk ? [] : otherDesksOf(desks, deskId)), [guildDesk, desks, deskId]);
+  // eslint-disable-next-line react-hooks/exhaustive-deps
+  const places = useMemo(() => (guild ? null : deskPlaces(link)), [guild, link, session]);
   const onOpenAgent = useCallback((agentId: string) => openAgentWindow(deskId, agentId), [deskId]);
+  // A question handed over from Documents (`ask.ts`) for an agent this window shows: it waits in that agent's composer.
+  const ask = useAgentAsk((s) => (s.ask && s.ask.deskId === deskId && s.ask.app === app ? s.ask : null));
+  const handoff = useMemo(() => (ask ? { agentId: ask.agentId, text: ask.text, files: ask.file ? [ask.file] : [], seq: ask.seq } : null), [ask]);
   // A draft with text or a settings form with changes holds the office's close guard, straight from the app's own report.
   const holdId = `agent:${useId()}`;
   const onUnsaved = useCallback((on: boolean) => holdClose(holdId, on), [holdId]);
@@ -133,8 +154,12 @@ export default memo(function AgentBody({ link, session, deskId, deskName, offlin
       guild={guild}
       focusAgentId={agentIdOf(app)}
       onOpenAgent={onOpenAgent}
+      handoff={handoff}
+      onHandoff={takeAgentAsk}
       onUnsaved={onUnsaved}
       deskId={deskId}
+      otherDesks={otherDesks}
+      places={places}
       // Free models through OpenRouter: never offered to a teen (Terms 2A), who has no Agent window anyway.
       offerFree={currentBand() !== 'teen'}
     />

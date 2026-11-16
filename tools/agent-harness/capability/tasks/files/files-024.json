@@ -1,0 +1,47 @@
+{
+  "id": "files-024",
+  "area": "files",
+  "title": "List a folder with a Unicode name",
+  "prompt": "What's in my folder Harness/Fotos de España?",
+  "setup": {
+    "files": {
+      "Harness/Fotos de España/Sevilla día 1.txt": "Catedral y Alcázar.\n",
+      "Harness/Fotos de España/Granada.txt": "La Alhambra.\n"
+    }
+  },
+  "approve": "all",
+  "checks": [
+    {
+      "kind": "reply",
+      "contains": [
+        "Granada.txt",
+        "Sevilla día 1.txt"
+      ],
+      "state": "done"
+    },
+    {
+      "kind": "cards",
+      "tools": []
+    }
+  ],
+  "policy": {
+    "tools": [
+      "files_list"
+    ]
+  },
+  "standIn": [
+    {
+      "calls": [
+        {
+          "name": "files_list",
+          "input": {
+            "path": "Harness/Fotos de España"
+          }
+        }
+      ]
+    },
+    {
+      "text": "It has two files: Granada.txt and Sevilla día 1.txt."
+    }
+  ]
+}

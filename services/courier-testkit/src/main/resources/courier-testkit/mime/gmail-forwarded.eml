@@ -1,0 +1,30 @@
+From: Dana <dana@example.com>
+To: me@desk.example
+Date: Fri, 13 Nov 2026 10:00:00 +0000
+Subject: Fwd: Your warranty registration
+Message-ID: <gmail-forwarded@corpus.example>
+MIME-Version: 1.0
+X-Corpus-Note: Gmail-style inline forward in multipart/alternative
+Content-Type: multipart/alternative; boundary="000000000000f0a1"
+
+--000000000000f0a1
+Content-Type: text/plain; charset="UTF-8"
+
+For the files.
+
+---------- Forwarded message ---------
+From: Store <orders@shop.example>
+Date: Wed, 11 Nov 2026 at 14:02
+Subject: Your warranty registration
+To: <dana@example.com>
+
+
+Your warranty registration for the kettle is complete.
+--000000000000f0a1
+Content-Type: text/html; charset="UTF-8"
+Content-Transfer-Encoding: quoted-printable
+
+<div dir=3D"ltr">For the files.<br><br><div class=3D"gmail_quote"><div dir=3D"ltr" class=3D"gmail_attr">---------- =
+Forwarded message ---------<br>From: <strong class=3D"gmail_sendername" dir=3D"auto">Store</strong> <span dir=3D"auto">&lt;=
+orders@shop.example&gt;</span><br></div><br><br>Your warranty registration for the kettle is complete.</div></div>
+--000000000000f0a1--

@@ -1,0 +1,27 @@
+From: Legal Office <legal@example.org>
+To: me@desk.example
+Date: Fri, 13 Nov 2026 10:00:00 +0000
+Subject: Sealed offer
+Message-ID: <pkcs7-mime-enveloped@corpus.example>
+MIME-Version: 1.0
+X-Corpus-Note: application/pkcs7-mime enveloped-data as the whole message (S/MIME encryption)
+Content-Type: application/pkcs7-mime; smime-type=enveloped-data; name="smime.p7m"
+Content-Disposition: attachment; filename="smime.p7m"
+Content-Transfer-Encoding: base64
+
+MIIDhDZ+ioKVJeab7svJPIZyobeFuExSjFQFIz6sDiqMaMPO4DA5ulww+WOK52/4kII0Pi2OjzwO
+UtI6L9n1VsXpnvjr39Uwg/LJeOb6Ikn6iOEJz9gKsbzxhraaYBXwgzDGMhFinwwAkLeAOhFKZQB1
+gIddf2qplbwQUWW7+8R9xqD5EH7b8K0thjRCZhtIbIT55UDCGjaDvNnWQeNxLktYSwhxtBfQ74jw
+pSe7HzEj2joaVyIAnBZFwkwC5u/9Cpcpin+QAHgDtzk/y8PklrGqDoFGkJ9u4g0j4K7E2IDWZg/A
+833GPXF4Y4Imfi7oGQ5hkNnrcyImXr7rZ8Q2uvJvsqr+nxlZ60SM85wYThwPnfi6l7xZQwxrIkN0
+ns7zs1qzfrSr3TgHFJyLV5llZjpzxpDiOcU54Cd7HmnAYylDuvQ8KS52czZE8vGixSG4Pq2LVOj3
+MrUU56IHH8BnfDW0VI/aGVsi2K/2YN9O15p8l25XPYJ8HmhJbcmBOXd1BWSeEY17cKpFdRqNXAHX
+jPnnexn9TehrhWacP/zPDvSm2aOUpSMHryB+UmDggOP9xsQBzHknki9q9tfoqbjD8ofGj7teCUCU
+Pvz5HHfxCxtG01lmWsUUa5dBFKemIGkJNisGcdFMGqur1tQI9QoaDDDbYgdANJqlChVi76Ref5GL
+89Rj+G5f/3eL9FIVKcer/Vxc3KGR2a8AGbYTfg4IH6gmU6v4w8NCqctiPkPBzGSZP7YinomS5H0V
+5DjHO8HHqjyqLJZzn242pPnqHI+VlkOvnYP1LTDl8YsAmcOPo0hPK4lVZftmzY7G06AyNPWkOHfU
+V87lD4C3n/HczI2G7spcl2vo0cLljF8U9JNCN3ARC1c+SD15+GpWbhPzpkAO0+U7VjH9c1VnoPWu
+U0O9h/uHct6WeoG0JhNh4cuRIgoI7/r3cGQnvtUGQKTNlZbdFgMexxAe4nwRSR2K7kuFP0yPNqV4
+lyZR1MroBpXbM5EhD1WtGeA30iROTNMgIxd3uXt2RSZ8cWhZrpH3a10YHcc1zI3vPcz556IKt3kT
+RbCjDdZqzwyPQxAdaXszMnNnpDuH53akbuAp7vY7JK44ADYEBA0Y8MFc9wLKUMZ0gVbi37eCPfMy
+pB9k37CnxW+v6QWUHTe9xjIsUJkq/S4JfaNd7br6buobxExGVpb0QtV9IVX48MuAYA==

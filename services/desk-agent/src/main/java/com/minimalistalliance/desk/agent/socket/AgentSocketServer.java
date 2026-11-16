@@ -52,8 +52,10 @@ import org.slf4j.LoggerFactory;
  *
  * <p><b>Tool calls the other way</b> (the tools and approvals draft, section 11): once deskd's hello
  * ({@value #TOOLS_HELLO}) has said which tools it runs, desk-agent may send {@code tcall}, which deskd answers
- * {@code tres} or {@code terr}. Before the hello nothing is sent, so an older deskd, which drops the link on a {@code t}
- * it doesn't know, never sees one. A call waiting when the connection goes gets {@link DeskLink.Reply#unavailable}.
+ * {@code tres} or {@code terr}. Before the hello nothing is sent, so an older deskd, which drops the link on a {@code
+ * t} it doesn't know, never sees one. A call not sent gets {@link DeskLink.Reply#unavailable}; one sent with no answer
+ * (the connection went, or the wait ran out) gets {@link DeskLink.Reply#noAnswer}, as it may have run. A hello with {@code
+ * keys} says deskd keeps each call's result by its key ({@link #keyed}), so such a call may be asked again.
  *
  * <p>Each request runs on a virtual thread of its own, so a slow provider call doesn't hold up the reader. Replies
  * and events go through one writer queue; if deskd stops reading and it passes 16 MiB, the connection is dropped,
@@ -72,6 +74,11 @@ public final class AgentSocketServer implements AutoCloseable, DeskLink {
     public static final String TOOLS_HELLO = "desk.tools.hello";
     /** Tool calls waiting at once, per connection. More are answered {@code unavailable} at once. */
     static final int MAX_TOOL_CALLS = 32;
+    /** Desk Maia's model through deskd (deskd {@code API.md} §23, "Her model"). */
+    static final String MAIA_MODEL = "maia_model";
+    /** Helpers on the member's MA credits: their model calls and the credits read (deskd API.md §24). */
+    static final String HELPERS_MODEL = "helpers_model";
+    static final String HELPERS_CREDITS = "helpers_credits";
 
     private final Path socket;
     private final PeerCheck peers;
@@ -115,9 +122,31 @@ public final class AgentSocketServer implements AutoCloseable, DeskLink {
     }
 
     @Override
+    public boolean keyed() {
+        Connection c = current;
+        return c != null && !c.closed && c.keyed;
+    }
+
+    @Override
+    public boolean maiaModel() {
+        Connection c = current;
+        return c != null && !c.closed && c.maiaModel;
+    }
+
+    @Override
+    public boolean helpersModel() {
+        Connection c = current;
+        return c != null && !c.closed && c.helpersModel;
+    }
+
+    @Override
     public DeskLink.Reply call(Map<String, Object> call, Duration wait) throws InterruptedException {
         Connection c = current;
-        if (c == null || c.closed || c.offered.isEmpty()) {
+        // Desk Maia's model goes only once deskd's hello offered it; any other tool once the hello named some.
+        boolean model = MAIA_MODEL.equals(call.get("tool"));
+        // Helpers on MA's credits, only once deskd's hello offered them (API.md §24).
+        boolean helpers = HELPERS_MODEL.equals(call.get("tool")) || HELPERS_CREDITS.equals(call.get("tool"));
+        if (c == null || c.closed || (model ? !c.maiaModel : helpers ? !c.helpersModel : c.offered.isEmpty())) {
             return DeskLink.Reply.unavailable();
         }
         return c.toolCall(call, wait);
@@ -187,6 +216,11 @@ public final class AgentSocketServer implements AutoCloseable, DeskLink {
         private final Map<Long, Long> subscriptions = new ConcurrentHashMap<>();
         /** The tools deskd said it runs on this connection: empty until its hello. */
         private volatile Set<String> offered = Set.of();
+        /** Whether deskd's hello on this connection said it keeps calls' results by their key. */
+        private volatile boolean keyed;
+        /** Whether deskd's hello on this connection offered Desk Maia's model ({@code maia: {model: true}}). */
+        private volatile boolean maiaModel;
+        private volatile boolean helpersModel;
         private final AtomicLong toolIds = new AtomicLong();
         private final Map<Long, CompletableFuture<Map<String, Object>>> toolCalls = new ConcurrentHashMap<>();
         /** Set as the connection starts to close, so nothing more is queued. */
@@ -372,13 +406,36 @@ public final class AgentSocketServer implements AutoCloseable, DeskLink {
                     reply(error(id, RpcError.of("forbidden", "reason", "permission")));
                     return;
                 }
+                keyed = p.get("keys") instanceof Map<?, ?>;
                 offered = toolNames(p.get("tools"));
+                maiaModel = p.get("maia") instanceof Map<?, ?> maia && Boolean.TRUE.equals(maia.get("model"));
+                helpersModel = p.get("helpers") instanceof Map<?, ?> h && Boolean.TRUE.equals(h.get("model"));
+                // A Guild Desk, by deskd's word: nothing is done without asking there (the draft ADR's §15 rule 8).
+                if (Boolean.TRUE.equals(p.get("guildDesk"))) {
+                    service.guildDesk();
+                }
+                // Which agents deskd holds the member's setup for (its own copy, API.md section 18): any set up here
+                // that it doesn't hold waits for the member to confirm. An older deskd says nothing, and checks none.
+                if (p.get("access") instanceof Map<?, ?> access && access.get("recorded") instanceof List<?> ids
+                        && ids.size() <= 10_000) {
+                    List<String> recorded = new ArrayList<>();
+                    for (Object agentId : ids) {
+                        if (agentId instanceof String s && s.length() <= 64) {
+                            recorded.add(s);
+                        }
+                    }
+                    Thread.ofVirtual().name("agent-access-hello").start(() -> service.deskdHoldsAccess(recorded));
+                }
                 reply(result(id, Map.of()));
                 return;
             }
             // deskd's own push carries no caller; every request it relays for a client carries one (ADR 0080's
             // addendum of 2026-11-10). deskd never relays this method, and this holds even if it did.
-            if (AgentService.MEMBER_PURGE.equals(method) && rawCaller != null) {
+            if ((AgentService.MEMBER_PURGE.equals(method)
+                    || com.minimalistalliance.desk.agent.desks.DeskMessages.DESKD_ONLY.contains(method)
+                    || com.minimalistalliance.desk.agent.maia.DocReader.METHOD.equals(method)
+                    || AgentService.DOCS_WRITEUPS.equals(method))
+                    && rawCaller != null) {
                 reply(error(id, RpcError.of("forbidden", "reason", "permission")));
                 return;
             }
@@ -493,12 +550,13 @@ public final class AgentSocketServer implements AutoCloseable, DeskLink {
                 message.put("id", id);
                 reply(message);
                 if (closed) {
-                    return DeskLink.Reply.unavailable();
+                    // It may have gone out before the connection did.
+                    return DeskLink.Reply.noAnswer();
                 }
                 Map<String, Object> m = answer.get(wait.toMillis(), TimeUnit.MILLISECONDS);
                 return replyOf(m);
             } catch (TimeoutException | ExecutionException e) {
-                return DeskLink.Reply.unavailable();
+                return DeskLink.Reply.noAnswer();
             } finally {
                 toolCalls.remove(id);
             }
@@ -510,8 +568,12 @@ public final class AgentSocketServer implements AutoCloseable, DeskLink {
             }
             closed = true;
             offered = Set.of();
+            keyed = false;
+            maiaModel = false;
+            helpersModel = false;
             for (CompletableFuture<Map<String, Object>> waiting : List.copyOf(toolCalls.values())) {
-                waiting.complete(Map.of("t", "terr", "code", "unavailable", "details", Map.of("reason", "unavailable")));
+                // Sent, and the connection went before an answer: it may have run.
+                waiting.complete(Map.of("t", LOST));
             }
             toolCalls.clear();
             for (Long key : subscriptions.values()) {
@@ -580,8 +642,14 @@ public final class AgentSocketServer implements AutoCloseable, DeskLink {
         return Set.copyOf(names);
     }
 
+    /** A waiting call's answer when its connection went: not a frame deskd can send, as deskd's {@code t} is checked. */
+    private static final String LOST = "lost";
+
     @SuppressWarnings("unchecked")
     static DeskLink.Reply replyOf(Map<String, Object> m) {
+        if (LOST.equals(m.get("t"))) {
+            return DeskLink.Reply.noAnswer();
+        }
         List<String> taint = new ArrayList<>();
         if (m.get("taint") instanceof List<?> list) {
             for (Object flag : list) {
@@ -598,7 +666,32 @@ public final class AgentSocketServer implements AutoCloseable, DeskLink {
         Object details = m.get("details");
         String reason = details instanceof Map<?, ?> d && d.get("reason") instanceof String r
                 && r.matches("[a-z_]{1,40}") ? r : code;
-        return new DeskLink.Reply(false, null, code, reason, taint);
+        return new DeskLink.Reply(false, null, code, reason, taint, false, moreDetails(details));
+    }
+
+    /** The {@code WINDOWS} a limit's {@code window} may name. */
+    private static final Set<String> WINDOWS = Set.of("day", "week", "month", "memberTrial");
+
+    /**
+     * A {@code terr}'s details beyond its reason, as Desk Maia's model's refusals carry them (deskd relays the service's):
+     * {@code resetsAt} (ISO 8601 UTC), {@code window} and {@code retryAfterSec}, each kept only in its shape.
+     */
+    static Map<String, Object> moreDetails(Object raw) {
+        Map<String, Object> out = new LinkedHashMap<>();
+        if (!(raw instanceof Map<?, ?> d)) {
+            return out;
+        }
+        if (d.get("resetsAt") instanceof String at
+                && at.matches("\\d{4}-\\d{2}-\\d{2}T\\d{2}:\\d{2}:\\d{2}(?:\\.\\d{1,9})?Z")) {
+            out.put("resetsAt", at);
+        }
+        if (d.get("window") instanceof String w && WINDOWS.contains(w)) {
+            out.put("window", w);
+        }
+        if (d.get("retryAfterSec") instanceof Number n && n.doubleValue() >= 0 && n.doubleValue() <= 86_400) {
+            out.put("retryAfterSec", (long) Math.ceil(n.doubleValue()));
+        }
+        return out;
     }
 
     /** For tests: subscriptions held by the current connection. */

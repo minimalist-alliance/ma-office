@@ -23,7 +23,7 @@ describe('reading order', () => {
 });
 
 describe('the order the keyboard meets a desk\'s apps', () => {
-  const app = (id: string, x: number, y: number) => ({ id, app: 'chat' as const, x, y, w: 76, h: 76 });
+  const app = (id: string, x: number, y: number) => ({ id, app: 'courier' as const, x, y, w: 76, h: 76 });
   const items = [app('top-left', 24, 24), app('over-it', 30, 30), app('far', 300, 24), app('below', 24, 300)];
 
   it('goes by where they are, never by how they\'re stacked', () => {

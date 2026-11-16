@@ -59,6 +59,7 @@ public final class BrowserModule implements SessionListener {
     private final DeskAttention attention;
     private final BrowserView view;
     private final FilteredSites filtered;
+    private final PortalRedirect portal = new PortalRedirect();
     private final RpcDispatcher dispatcher;
     private final EventHub hub;
     private MinifiedModule minified;
@@ -69,7 +70,10 @@ public final class BrowserModule implements SessionListener {
     private MinifiedSwitch minifiedFlags;
     private MinifiedModule.Timing minifiedTiming;
     /** The Agent's Browser, once enabled. */
-    private AgentBrowsing agent;
+    /** Read by the freeze's worker, so volatile. */
+    private volatile AgentBrowsing agent;
+    /** The Browser's zoom, once enabled. */
+    private BrowserZoom zoom;
     /** Signing in, once enabled: what it holds in memory is zeroed as deskd stops. */
     private SignIns signIns;
     private final SessionManager sessions;
@@ -178,7 +182,8 @@ public final class BrowserModule implements SessionListener {
         this.freeze = new BrowserFreeze(units, freezeTiming, new FreezeMarker(refusalMarker.resolveSibling(FREEZE_MARKER)));
         // Each needs the others only once running, and they're all made before anything can call.
         this.tabs = new BrowserTabs(
-                http, cdpPort, cdpListener, hub, this::hasViewer, this::browserLost, this::browserDisplaced, filtered, freeze, timing);
+                http, cdpPort, cdpListener, hub, this::hasViewer, this::browserLost, this::browserDisplaced, filtered, portal, freeze,
+                timing);
         this.stream = new BrowserStream(
                 units,
                 this::setVideo,
@@ -215,6 +220,12 @@ public final class BrowserModule implements SessionListener {
                     @Override
                     public boolean letGo(Duration wait) throws InterruptedException {
                         return tabs.letGo(wait);
+                    }
+
+                    @Override
+                    public boolean agentHolds() {
+                        AgentBrowsing browsing = agent;
+                        return browsing != null && browsing.holdsChromium();
                     }
                 },
                 attention::publish);
@@ -314,6 +325,9 @@ public final class BrowserModule implements SessionListener {
         if (signIns != null) {
             signIns.close();
         }
+        if (zoom != null) {
+            zoom.close();
+        }
         view.close();
         attention.close();
         freeze.close(BrowserFreeze.CLOSE_THAW_WAIT);
@@ -326,6 +340,40 @@ public final class BrowserModule implements SessionListener {
      */
     public MinifiedModule enableMinified(Path dataDirectory) {
         return enableMinified(dataDirectory, java.time.Clock.systemUTC(), MinifiedModule.Timing.DEFAULT, MinifiedSwitch.file(dataDirectory));
+    }
+
+    /**
+     * The Browser's zoom ({@link BrowserZoom}, API.md section 10, "Zoom"): {@code browser.zoom.get} and {@code set}, the
+     * level on {@code browser.view}, kept in {@code dataDirectory} (the data volume's {@code /data/desk}) and set as
+     * Chromium's own default zoom on every connection. Call once, before the lifecycle starts.
+     */
+    public void enableZoom(Path dataDirectory) {
+        enableZoom(dataDirectory, BrowserZoom.Timing.DEFAULT);
+    }
+
+    BrowserZoom enableZoom(Path dataDirectory, BrowserZoom.Timing timing) {
+        if (zoom != null) {
+            throw new IllegalStateException("the zoom is enabled already");
+        }
+        BrowserZoom made = new BrowserZoom(dataDirectory, tabs.zoomAccess(), freeze, timing);
+        tabs.listenForZoom(made);
+        made.phoneFrom(view::phoneInPlay);
+        made.onChange(view::zoomChanged);
+        view.zoomFrom(made::level, made::factor);
+        AgentBrowsing browsing = agent;
+        if (browsing != null) {
+            browsing.zoomChanged(made.factor());
+            made.agentFrom(browsing::zoomChanged);
+        }
+        made.register(dispatcher);
+        zoom = made;
+        made.start();
+        return made;
+    }
+
+    /** The Browser's zoom, if it's enabled, for tests. */
+    BrowserZoom zoom() {
+        return zoom;
     }
 
     /**
@@ -452,6 +500,11 @@ public final class BrowserModule implements SessionListener {
             throw new IllegalStateException("the agent's browser needs the simplified view");
         }
         agent = new AgentBrowsing(tabs, freeze, minifiedFlags, minifiedTiming, minified, freeDesk);
+        BrowserZoom level = zoom;
+        if (level != null) {
+            agent.zoomChanged(level.factor());
+            level.agentFrom(agent::zoomChanged);
+        }
         return agent;
     }
 
@@ -499,6 +552,18 @@ public final class BrowserModule implements SessionListener {
     }
 
     /**
+     * Where a visit to the office in the Browser goes ({@link PortalRedirect}): the portal, in every band and on every
+     * host. The image's policy still blocks the office, so with this never called, or off, the member sees Chromium's
+     * blocked page. Call before the lifecycle starts; a later call takes over from it.
+     *
+     * @param setting {@code DESKD_PORTAL_URL}: unset follows {@code env}, {@code off} turns it off, or the portal's URL
+     * @param env the desk's Env tag, or null until it's known. Must not block
+     */
+    public void redirectOfficeTo(String setting, Supplier<String> env) {
+        portal.portalFrom(PortalRedirect.portalFor(setting, env));
+    }
+
+    /**
      * Follows Browser time (ADR 0090): whether the Browser's video goes to any session goes to {@code live} as it changes,
      * under the stream's lock, so it must not block; while {@code usedUntil} says when, {@code live} is refused as during
      * the bandwidth pause, with {@code limit: browser_time}, and {@link #browserTimeUsed} ends what's open. Call once,
@@ -541,6 +606,11 @@ public final class BrowserModule implements SessionListener {
         return filtered.counts();
     }
 
+    /** {@link PortalRedirect#counts}, for tests. */
+    PortalRedirect.Counts portalCounts() {
+        return portal.counts();
+    }
+
     /** {@link BrowserStream#release}. Never blocks. */
     public void releaseBrowser() {
         stream.release();
@@ -581,6 +651,10 @@ public final class BrowserModule implements SessionListener {
         Map<String, Object> browserHealth = tabs.health();
         browserHealth.put("freeze", freeze.health());
         browserHealth.put("view", view.health());
+        BrowserZoom level = zoom;
+        if (level != null) {
+            browserHealth.put("zoom", level.health());
+        }
         if (stream.chromiumRefused()) {
             browserHealth.put("chromium", CHROMIUM_OLDER_THAN_PROFILE);
         }

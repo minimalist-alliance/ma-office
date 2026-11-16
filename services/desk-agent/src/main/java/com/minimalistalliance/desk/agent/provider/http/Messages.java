@@ -208,7 +208,7 @@ public final class Messages {
             List<ToolCall> calls = message.toolCalls();
             // The first call's reasoning came first, ahead of any text the step said.
             if (!calls.isEmpty()) {
-                out.addAll(calls.getFirst().reasoning());
+                out.addAll(responsesReasoning(calls.getFirst()));
             }
             if (!message.text().isBlank()) {
                 out.add(turn(message.role(), message.text()));
@@ -216,7 +216,7 @@ public final class Messages {
             for (int i = 0; i < calls.size(); i++) {
                 ToolCall call = calls.get(i);
                 if (i > 0) {
-                    out.addAll(call.reasoning());
+                    out.addAll(responsesReasoning(call));
                 }
                 Map<String, Object> item = new LinkedHashMap<>();
                 item.put("type", "function_call");
@@ -309,6 +309,21 @@ public final class Messages {
     }
 
     /** A JSON number as a long, or 0 when absent or not a number. */
+    /**
+     * A call's reasoning items as the Responses API takes them back (and Minimalist Alliance's service, which speaks it):
+     * without what a Chat Completions provider left on it for itself ({@code chat_extra}: Gemini's signature, Moonshot's
+     * reasoning), should a run change provider mid-way.
+     */
+    public static List<Map<String, Object>> responsesReasoning(ToolCall call) {
+        List<Map<String, Object>> out = new ArrayList<>();
+        for (Map<String, Object> item : call.reasoning()) {
+            if (!"chat_extra".equals(item.get("type"))) {
+                out.add(item);
+            }
+        }
+        return out;
+    }
+
     public static long number(Map<String, Object> object, String key) {
         return object != null && object.get(key) instanceof Number n ? n.longValue() : 0;
     }

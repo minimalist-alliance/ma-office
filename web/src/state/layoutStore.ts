@@ -5,10 +5,11 @@ import { create } from 'zustand';
 import { readJson, writeJson } from '../lib/util';
 import { fitDeskSize, isPlaced, levelSize, restacked, roundUnit, settleDesk, stackOrder, withStack, workArea, type DeskCarousel, type DetailLevel, type LayoutDesk, type Rect } from '../canvas/layout';
 import { createDeskPush, separateDesks, separation, type DeskAt } from '../canvas/deskPush';
-import { clearLayoutDoc, fitDeskToBand, fitDocToBand, freshDesk, LAYOUT_KEY, LAYOUT_KEY_V1, migrateLayoutV1, readLayoutDoc, type LayoutDoc } from '../canvas/layoutDoc';
+import { clearLayoutDoc, fitDeskToBand, fitDocToBand, freshDesk, LAYOUT_KEY, LAYOUT_KEY_V1, migrateLayoutV1, readLayoutDoc, storedLayoutDoc, type LayoutDoc } from '../canvas/layoutDoc';
 import { currentBand } from '../platform/age';
 import { MIRROR_KEY as BACKDROP_KEY } from '../theme/backdropMirror';
 import { defaultDeskStyleId } from '../theme/deskStyles';
+import { setDeviceOwner, stampsFollow, unstampDeviceKeys } from './deviceOwner';
 
 // ----- the mirror, and whose it is (ISS-67)
 //
@@ -22,8 +23,11 @@ import { defaultDeskStyleId } from '../theme/deskStyles';
 
 export const LAYOUT_SYNC_KEY = 'ma.layout.sync.v1';
 export const LAYOUT_OWNER_KEY = 'ma.layout.owner.v1';
-/** Every key of the mirror. `free/prefs.ts` and `setup/prefs.ts` are lazy chunks, so theirs are written out here; `layoutMirror.test.ts` holds them to it. */
-export const LAYOUT_MIRROR_KEYS: readonly string[] = [LAYOUT_KEY, LAYOUT_KEY_V1, LAYOUT_SYNC_KEY, 'ma.free.prefs.v1', 'ma.setup.prefs.v1', BACKDROP_KEY, LAYOUT_OWNER_KEY];
+/**
+ * Every key of the mirror. `free/prefs.ts` and `setup/prefs.ts` are lazy chunks, and `tour/door.ts` (the office tour's
+ * setting, ADR 0056) imports this file, so theirs are written out here; `layoutMirror.test.ts` holds them to it.
+ */
+export const LAYOUT_MIRROR_KEYS: readonly string[] = [LAYOUT_KEY, LAYOUT_KEY_V1, LAYOUT_SYNC_KEY, 'ma.free.prefs.v1', 'ma.setup.prefs.v1', 'ma.tour.v1', 'ma.maiaMode.v1', 'ma.appearance.v1', BACKDROP_KEY, LAYOUT_OWNER_KEY, 'ma.welcome.v1'];
 
 // ----- the member's other caches (ISS-89)
 //
@@ -34,9 +38,9 @@ export const LAYOUT_MIRROR_KEYS: readonly string[] = [LAYOUT_KEY, LAYOUT_KEY_V1,
  * localStorage: stream quality and its desk levels (`quality/store.ts`), the boots told (`platform/bootNotice.ts`), the
  * bandwidth heads-up seen (`bandwidth/BandwidthCircle.tsx`), the Guild Desk's privacy line seen (`guild/GuildLayer.tsx`),
  * the members shown the touch hint (`browser/touchInput.ts`), the connect-time report's cap (`desk/rtc/connectRtt.ts`),
- * and the owner's About disclosure (`chrome/AccountPanel.tsx`).
+ * the owner's About disclosure (`chrome/AccountPanel.tsx`), and each app's zoom (`zoom/store.ts`, ADR 0055).
  */
-export const MEMBER_CACHE_KEYS: readonly string[] = ['ma.streamQuality.v1', 'ma.streamQuality.desks.v1', 'ma.boots.seen.v1', 'ma.bandwidth.notice.v1', 'ma.guild.privacy.v1', 'ma.browser.touchHint.v1', 'ma.rttCapped.v1', 'ma.menu.about.v1'];
+export const MEMBER_CACHE_KEYS: readonly string[] = ['ma.streamQuality.v1', 'ma.streamQuality.desks.v1', 'ma.boots.seen.v1', 'ma.bandwidth.notice.v1', 'ma.guild.privacy.v1', 'ma.browser.touchHint.v1', 'ma.rttCapped.v1', 'ma.menu.about.v1', 'ma.appZoom.v1'];
 /**
  * This tab's sessionStorage: Maia's conversation and whether her panel was open (`maia/`), and whose they are (the owner
  * key again), since a tab's own storage can outlast its member in localStorage (a reload after a sign-in elsewhere).
@@ -66,13 +70,13 @@ function load(): LayoutDoc {
   const doc = readLayoutDoc(readJson(LAYOUT_KEY));
   if (doc) {
     const clear = clearLayoutDoc(doc);
-    if (clear !== doc) writeJson(LAYOUT_KEY, clear);
+    if (clear !== doc) writeJson(LAYOUT_KEY, storedLayoutDoc(clear));
     return clear;
   }
   const old = migrateLayoutV1(readJson(LAYOUT_KEY_V1));
   if (!old) return { desks: {}, z: [] };
   const clear = clearLayoutDoc(old);
-  writeJson(LAYOUT_KEY, clear);
+  writeJson(LAYOUT_KEY, storedLayoutDoc(clear));
   return clear;
 }
 
@@ -80,6 +84,7 @@ export const useLayoutStore = create<LayoutDoc>(load);
 
 /** Whose the layout in memory is: the owner it was loaded with, then each token's `sub`. Null while nobody has said. */
 let owner: string | null = storedOwner();
+setDeviceOwner(owner); // the camera and the view are stamped with the same member (`deviceOwner.ts`, ADR 0057)
 /** This page reached a signed-out state: nothing more of the mirror is written from it, nor saved to Platform. */
 let held = false;
 /** A layout put in memory that isn't the member's change and needn't be written: another account's going. */
@@ -103,6 +108,8 @@ export const layoutMirrorWritable = (): boolean => {
   const stored = storedOwner();
   return owner === null || stored === null || stored === owner;
 };
+// The camera and the view carry the member's id only while this guard allows it (`deviceOwner.ts`, ISS-89).
+stampsFollow(layoutMirrorWritable);
 /** This page has signed out: `shell/layoutSync.ts` saves nothing more, the keepalive save as it goes included. */
 export const layoutMirrorHeld = (): boolean => held;
 
@@ -114,7 +121,8 @@ function writeMirror(s: LayoutDoc): void {
   } catch {
     /* storage refused: the layout below is refused too */
   }
-  writeJson(LAYOUT_KEY, s);
+  // As every build reads it: Courier's ids as `canvas/storedIds.ts` stores them.
+  writeJson(LAYOUT_KEY, storedLayoutDoc(s));
 }
 
 let persist = true;
@@ -151,6 +159,8 @@ export function forgetLayoutMirror(hold = true): void {
   timer = 0;
   drop(() => window.localStorage, [...LAYOUT_MIRROR_KEYS, ...MEMBER_CACHE_KEYS]);
   drop(() => sessionStorage, MEMBER_TAB_KEYS);
+  // The camera and the view stay, as the device's own, with no member's id in them (`deviceOwner.ts`, ADR 0057).
+  unstampDeviceKeys();
 }
 
 /**
@@ -169,6 +179,7 @@ export function layoutMirrorFor(sub: string, listed: readonly string[] = []): bo
   if (!fits) forgetLayoutMirror(false);
   const mine = owner === null || owner === sub;
   owner = sub;
+  setDeviceOwner(sub);
   // This tab's own keys (ISS-89): another account's go, and they're named for `sub`. None named, from a build before
   // this one, are `sub`'s, as the mirror's are.
   try {

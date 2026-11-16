@@ -12,6 +12,13 @@ public interface ToolPolicy {
 
     Classified classify(ToolCall call, RunContext run);
 
+    /**
+     * A step picked up after a restart (durable runs): its calls as they were classified before it, never classified
+     * again. The policy takes back what its classify left for the calls' sending, so a call asked again by its key
+     * binds exactly what its first sending bound (deskd's {@code ToolHost.fingerprint}). Nothing by default.
+     */
+    default void resumed(RunContext run, java.util.List<Classified> step) {}
+
     /** The memory runner's save: {@code own}, so a memory under U asks even under the stand-in. */
     String MEMORY_SAVE = "memory_save";
 

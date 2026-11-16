@@ -1,0 +1,92 @@
+{
+  "id": "notebook-042",
+  "area": "notebook",
+  "title": "Create a page, then add to it",
+  "prompt": "Create a page Daily log in my Harness tab with the line Started the fence repair, then add Fixed the gate latch to it as a second edit.",
+  "setup": {
+    "notebook": [
+      {
+        "tab": "Harness",
+        "title": "Inbox",
+        "markdown": "# Inbox\n\nThings to sort later.\n"
+      }
+    ]
+  },
+  "approve": "all",
+  "checks": [
+    {
+      "kind": "page",
+      "tab": "Harness",
+      "title": "Daily log",
+      "contains": [
+        "Started the fence repair",
+        "Fixed the gate latch"
+      ]
+    },
+    {
+      "kind": "cards",
+      "tools": [
+        "notebook_write",
+        "notebook_write"
+      ]
+    }
+  ],
+  "policy": {
+    "tools": [
+      "notebook_list",
+      "notebook_write"
+    ]
+  },
+  "standIn": [
+    {
+      "calls": [
+        {
+          "name": "notebook_list",
+          "input": {}
+        }
+      ]
+    },
+    {
+      "calls": [
+        {
+          "name": "notebook_write",
+          "input": {
+            "op": "create",
+            "new": {
+              "tabId": {
+                "$re": {
+                  "step": 0,
+                  "call": 0,
+                  "pattern": "\"tabId\":\"([^\"]+)\",\"title\":\"Harness\""
+                }
+              },
+              "title": "Daily log"
+            },
+            "markdown": "Started the fence repair"
+          }
+        }
+      ]
+    },
+    {
+      "calls": [
+        {
+          "name": "notebook_write",
+          "input": {
+            "pageId": {
+              "$re": {
+                "step": 1,
+                "call": 0,
+                "pattern": "\"pageId\":\"([^\"]+)\""
+              }
+            },
+            "op": "append",
+            "markdown": "Fixed the gate latch"
+          }
+        }
+      ]
+    },
+    {
+      "text": "Made Daily log and added the second line."
+    }
+  ]
+}

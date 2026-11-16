@@ -52,22 +52,27 @@ describe('agent tiles follow agent.state', () => {
     let quiet: boolean[] = [];
     const off = useLayoutStore.subscribe(() => quiet.push(isQuietChange()));
     noteAgents('d1', [agent('manager'), agent('ag-scout000001', { name: 'Scout', look: { icon: 'compass', tone: 'teal', png: null } })]);
-    expect(apps('d1')).toEqual(['chat', 'notebook', 'browser', 'agent', 'agent:ag-scout000001']);
-    expect(apps('d2')).toEqual(['chat', 'notebook', 'browser', 'agent']);
+    expect(apps('d1')).toEqual(['courier', 'notebook', 'browser', 'agent', 'agent:ag-scout000001']);
+    expect(apps('d2')).toEqual(['courier', 'notebook', 'browser', 'agent']);
     expect(quiet).toEqual([true]);
     expect(agentAppName('agent:ag-scout000001', 'd1')).toBe('Scout');
     // The look's drawing is its own chunk: blank until it's here, then the tile's own. It lands when its import resolves, which
     // no clock promises, so this waits for `lookReady` itself.
     expect(glyphOf('d1', 'agent:ag-scout000001')).toBe('look:');
     await rosterSays((s) => s.lookReady);
-    expect(glyphOf('d1', 'agent:ag-scout000001')).toBe('look:compass:teal:');
-    expect(glyphOf('d2', 'agent:ag-gone')).toBe('look:nodes:graphite:');
+    expect(glyphOf('d1', 'agent:ag-scout000001')).toBe('look:compass::teal:');
+    // An agent its desk hasn't told of wears the hat, grey (the owner, Nov 15), with no chunk to wait for.
+    expect(glyphOf('d2', 'agent:ag-gone')).toBe('look:hat::graphite:');
+    // A hat in its colour: the office's own drawing, so its key is ready at once.
+    noteAgents('d1', [agent('manager'), agent('ag-scout000001', { name: 'Scout', look: { icon: 'compass', tone: 'teal', png: null } }), agent('ag-pen00000001', { name: 'Pen', look: { icon: 'nodes', color: 'sage', tone: 'iris', png: null } })]);
+    expect(glyphOf('d1', 'agent:ag-pen00000001')).toBe('look:hat:sage:iris:');
+    noteAgents('d1', [agent('manager'), agent('ag-scout000001', { name: 'Scout', look: { icon: 'compass', tone: 'teal', png: null } })]);
 
     openWindow('d1', 'agent:ag-scout000001', 'd1:agent:ag-scout000001');
     expect(Object.keys(useWindowStore.getState().windows)).toEqual(['d1:agent:ag-scout000001']);
     quiet = [];
     noteAgents('d1', [agent('manager')]);
-    expect(apps('d1')).toEqual(['chat', 'notebook', 'browser', 'agent']);
+    expect(apps('d1')).toEqual(['courier', 'notebook', 'browser', 'agent']);
     expect(useWindowStore.getState().windows).toEqual({});
     expect(quiet).toEqual([true]);
     off();
@@ -85,13 +90,20 @@ describe('agent tiles follow agent.state', () => {
   it('a Guild Desk\'s panel gets none: its Agent is the member\'s one seat there', () => {
     useLayoutStore.setState({ desks: { ...useLayoutStore.getState().desks, 'guild-g1': defaultDesk('guild-g1', 0, 400) } });
     noteAgents('guild-g1', [agent('manager'), agent('ag-scout000001')]);
-    expect(apps('guild-g1')).toEqual(['chat', 'notebook', 'browser', 'agent']);
+    expect(apps('guild-g1')).toEqual(['courier', 'notebook', 'browser', 'agent']);
   });
 
   it('a teen\'s desks get none', () => {
     setCurrentBand('teen');
     noteAgents('d1', [agent('manager'), agent('ag-scout000001')]);
-    expect(apps('d1')).toEqual(['chat', 'notebook', 'browser', 'agent']);
+    expect(apps('d1')).toEqual(['courier', 'notebook', 'browser', 'agent']);
+  });
+
+  it('a tile counts unseen replies, waiting requests and what a run the member didn’t start did without asking', () => {
+    noteAgents('d1', [agent('manager'), agent('ag-scout000001', { unseen: 1, approvalsPending: 1, autoUnseen: 2 })]);
+    const scout = useRosterStore.getState().desks['d1']!.find((a) => a.id === 'ag-scout000001')!;
+    expect(scout.unseen).toBe(4);
+    expect(scout.waiting).toBe(1);
   });
 
   it('the roster is memory only, and says nothing until a desk does', () => {

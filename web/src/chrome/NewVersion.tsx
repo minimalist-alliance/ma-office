@@ -4,8 +4,13 @@
 //
 // It's said once, through the polite live region that's always there. The notice itself isn't live, or a screen
 // reader would say it twice, and a live region that arrives with its text isn't reliably read.
+//
+// This and the watch (`startVersionWatch`) are a chunk of their own, out of the first load since `sub/mm-js-budget`:
+// `Shell.tsx` fetches it as the office mounts, and the first ask is a turn (15 minutes) away.
 import { useEffect, useId } from 'react';
 import { dismissNewVersion, useNewVersion } from '../platform/newVersion';
+
+export { startVersionWatch } from '../platform/newVersion';
 import { announce } from '../shell/announce';
 import { Icon } from './icons';
 
@@ -25,7 +30,7 @@ export function NewVersion() {
 
   if (!show) return null;
   return (
-    <div className="notice new-version" role="group" aria-labelledby={textId} data-testid="new-version">
+    <div className="notice new-version ma-glass" role="group" aria-labelledby={textId} data-testid="new-version">
       <p className="new-version-text" id={textId}>
         A new version is ready<span className="new-version-tail">, reload when you like</span>
       </p>

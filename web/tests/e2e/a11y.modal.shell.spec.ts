@@ -38,7 +38,8 @@ const where = (page: Page) =>
   });
 
 /** The shell's own children that are inert now. */
-const inert = (page: Page) => page.evaluate(() => Array.from(document.querySelectorAll('.ma-shell > [inert]')).map((el) => el.className || el.tagName));
+/** What's out of reach, by each one's first class (the top bar's others, such as `has-scope`, come and go). */
+const inert = (page: Page) => page.evaluate(() => Array.from(document.querySelectorAll('.ma-shell > [inert]')).map((el) => el.classList[0] || el.tagName));
 
 async function axe(page: Page): Promise<string[]> {
   await page.evaluate(AXE);

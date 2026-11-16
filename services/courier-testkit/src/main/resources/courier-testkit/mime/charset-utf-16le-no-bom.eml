@@ -1,0 +1,13 @@
+From: =?utf-8?B?0KHQutC70LDQtA==?= <sklad@example.org>
+To: me@desk.example
+Date: Fri, 13 Nov 2026 10:00:00 +0000
+Subject: =?utf-8?B?0JjQvdCy0LXQvdGC0LDRgNC40LfQsNGG0LjRjw==?=
+Message-ID: <charset-utf-16le-no-bom@corpus.example>
+MIME-Version: 1.0
+X-Corpus-Note: text/plain in utf-16le without a byte-order mark, base64
+Content-Type: text/plain; charset=utf-16le
+Content-Transfer-Encoding: base64
+
+FAQ+BDEEQARLBDkEIAA0BDUEPQRMBCwADQAKAA0ACgA4BD0EMgQ1BD0EQgQwBEAEOAQ3BDAERgQ4
+BE8EIABBBDoEOwQwBDQEMAQgAD0EMARHBD0EUQRCBEEETwQgADIEIAA/BD4EPQQ1BDQENQQ7BEwE
+PQQ4BDoELgANAAoA

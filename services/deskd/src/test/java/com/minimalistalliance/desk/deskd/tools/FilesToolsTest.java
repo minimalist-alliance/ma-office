@@ -468,9 +468,13 @@ class FilesToolsTest {
         assertThat(page).containsEntry("text", "short").containsEntry("offset", 0L).containsEntry("next", null);
         put("empty.txt", "");
         assertThat(run("files_read", "path", "empty.txt")).containsEntry("text", "").containsEntry("next", null);
-        assertThat(runFails("files_read", "path", "s.txt", "offset", 6).reason()).isEqualTo("path");
+        // An offset the file doesn't have (past its end, or inside a character) is the offset's fault, never the path's
+        // (release 3's proof: the model read "path" for a path that was right).
+        assertThat(runFails("files_read", "path", "s.txt", "offset", 6).reason()).isEqualTo("offset");
+        assertThat(runFails("files_read", "path", "s.txt", "offset", 6).code()).isEqualTo("bad_request");
+        assertThat(run("files_read", "path", "s.txt", "offset", 5)).containsEntry("text", "").containsEntry("next", null);
         put("two.txt", "aé");
-        assertThat(runFails("files_read", "path", "two.txt", "offset", 2).reason()).isEqualTo("path");
+        assertThat(runFails("files_read", "path", "two.txt", "offset", 2).reason()).isEqualTo("offset");
         assertThat(runFails("files_read", "path", "nope.txt").reason()).isEqualTo("not_found");
         Files.createDirectories(root.resolve("dir"));
         assertThat(runFails("files_read", "path", "dir").reason()).isEqualTo("is_folder");

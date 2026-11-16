@@ -82,18 +82,33 @@ export function keyFormatProblem(secret: KeySecret, prefix: string): KeyFormatPr
 }
 
 /**
- * Whose key this is, by the longest `keyPrefix` it starts with, as desk-agent decides it (deskd API.md §11): `sk-ant-…` is
- * Anthropic's though it starts with OpenAI's `sk-`. Null for a key with no known prefix.
+ * Whose key this could be: the providers with the longest `keyPrefix` it starts with, as desk-agent decides it (deskd
+ * API.md §11): `sk-ant-…` is Anthropic's though it starts with OpenAI's `sk-`. More than one when they share that prefix
+ * (OpenAI's and Moonshot AI's `sk-`), and the desk takes the key for any of them. Empty for a key with no known prefix.
  */
-export function keyOwner<P extends { keyPrefix: string }>(secret: KeySecret, providers: readonly P[]): P | null {
+export function keyOwners<P extends { keyPrefix: string }>(secret: KeySecret, providers: readonly P[]): P[] {
   return secret.withPlaintext((key) => {
-    let best: P | null = null;
-    for (const p of providers) if (p.keyPrefix && key.startsWith(p.keyPrefix) && p.keyPrefix.length > (best?.keyPrefix.length ?? 0)) best = p;
+    let best: P[] = [];
+    for (const p of providers) {
+      if (!p.keyPrefix || !key.startsWith(p.keyPrefix)) continue;
+      const longest = best[0]?.keyPrefix.length ?? 0;
+      if (p.keyPrefix.length > longest) best = [p];
+      else if (p.keyPrefix.length === longest && !best.includes(p)) best.push(p);
+    }
     return best;
   });
 }
 
-/** A key that belongs to another provider than the one picked, here or as the desk's `provider_mismatch`. */
+/** The one provider a key is, or null: none fits, or two share the prefix that fits (see `keyOwners`). */
+export function keyOwner<P extends { keyPrefix: string }>(secret: KeySecret, providers: readonly P[]): P | null {
+  const owners = keyOwners(secret, providers);
+  return owners.length === 1 ? (owners[0] ?? null) : null;
+}
+
+/**
+ * A key that belongs to another provider than the one picked, here or as the desk's `provider_mismatch`. Two providers
+ * that share a prefix are named together: "OpenAI or Moonshot AI".
+ */
 export function providerMismatchMessage(ownerName: string | null): string {
   return ownerName
     ? `That’s a key from ${ownerName}. Pick ${ownerName} above and paste it again.`

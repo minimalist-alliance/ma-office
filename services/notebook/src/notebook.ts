@@ -505,6 +505,8 @@ export class Notebook {
     this.db.run('DELETE FROM page_activity WHERE page_id = ?', pageId);
     this.db.run('DELETE FROM page_clients WHERE page_id = ?', pageId);
     this.db.run('DELETE FROM page_credits WHERE page_id = ?', pageId);
+    this.db.run('DELETE FROM agent_edits WHERE page_id = ?', pageId);
+    this.db.run('DELETE FROM agent_marks WHERE page_id = ?', pageId);
     this.db.run('DELETE FROM pages WHERE pk = ?', row.pk);
   }
 

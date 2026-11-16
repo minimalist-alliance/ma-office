@@ -1,0 +1,11 @@
+From: Archive <archive@example.org>
+To: me@desk.example
+Date: Fri, 13 Nov 2026 10:00:00 +0000
+Subject: Unknown encoding
+Message-ID: <cte-unknown-token@corpus.example>
+MIME-Version: 1.0
+X-Corpus-Note: Content-Transfer-Encoding: x-gzip64, which no parser knows (RFC 2045 says treat the part as opaque)
+Content-Type: text/plain; charset=us-ascii
+Content-Transfer-Encoding: x-gzip64
+
+This text claims an encoding nobody implements.

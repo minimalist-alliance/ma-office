@@ -19,7 +19,8 @@ class ParsersTest {
 
     @BeforeAll
     static void start() {
-        parsers = new Parsers(30);
+        // A directory that never exists, so these always test the in-container child; ParsersSidecarTest has the rest.
+        parsers = new Parsers(30, java.nio.file.Path.of("/nonexistent/desk-parse-for-tests"));
         preparer = new Preparer(parsers);
     }
 
@@ -136,6 +137,23 @@ class ParsersTest {
         exe[1] = 'Z';
         assertThatThrownBy(() -> read("run.exe", exe)).isInstanceOfSatisfying(AttachException.class,
                 e -> assertThat(e.reason()).isEqualTo("unsupported_type"));
+    }
+
+    /**
+     * A 20 MiB text file and a 20 MiB PDF, the ceiling a desk owner may set, read through the in-container child at its
+     * 72 MiB heap with the ceiling's caps (worker/Input; before, both ended out of memory as {@code too_complex}).
+     */
+    @Test
+    void theCeilingsLargestTextAndPdfAreRead() throws Exception {
+        int size = (int) Caps.CEILING.maxFileBytes();
+        var text = preparer.prepare(List.of(new Staging.Staged("big.txt", SizedFixtures.text(size))), Caps.CEILING,
+                ProviderId.OPENAI, "gpt-6-sol");
+        assertThat(text.getFirst().text()).hasSizeGreaterThan(Caps.CEILING.maxFileChars() - 100);
+        assertThat(text.getFirst().note()).isEqualTo("cut");
+        var pdf = preparer.prepare(List.of(new Staging.Staged("big.pdf", SizedFixtures.textPdf(size))), Caps.CEILING,
+                ProviderId.OPENAI, "gpt-6-sol");
+        assertThat(pdf.getFirst().text()).startsWith("Page 1").hasSizeGreaterThan(Caps.CEILING.maxFileChars() - 100);
+        assertThat(pdf.getFirst().note()).isEqualTo("cut");
     }
 
     @Test

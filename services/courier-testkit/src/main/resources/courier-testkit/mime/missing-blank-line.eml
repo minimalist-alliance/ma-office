@@ -1,0 +1,9 @@
+From: Office <office@example.com>
+To: me@desk.example
+Date: Fri, 13 Nov 2026 10:00:00 +0000
+Subject: No blank line
+Message-ID: <missing-blank-line@corpus.example>
+X-Corpus-Note: the body starts with no blank line after the headers
+Content-Type: text/plain; charset=utf-8
+The agenda is short this week
+and the room is booked.

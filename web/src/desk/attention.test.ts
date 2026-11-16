@@ -1,6 +1,7 @@
 // Task 46, lever 2: which desk is looked at, and when `desk.attention.set` goes. A fake clock and a fake send.
 import { afterEach, beforeEach, describe, expect, it, vi } from 'vitest';
-import { AttentionSignal, lookedAtDesk, shownDesk } from './attention';
+import { lookedAtDesk, shownDesk } from './attention';
+import { AttentionSignal } from './rtc/attentionSignal';
 import { DeskNotConnected } from './deskLink';
 
 describe('"looked at", the one rule', () => {

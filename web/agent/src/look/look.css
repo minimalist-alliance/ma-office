@@ -9,6 +9,45 @@
 .ag-look-png {
   display: block;
 }
+/* The hat on its tile. In the office it's the office's glass (`AgentMark`: the class `ma-glass`, its own colour's egg as the body;
+   `web/src/styles/glass.css`). Its solid look (the egg, the tile's own hairline so a white tile still has an edge on a white
+   window, the bevel and the lift: APP-TILES) is this, of no weight, so the glass wins wherever the office's stylesheet is, and
+   it's what shows without it (this package's demo) and under reduced transparency or more contrast. */
+:where(.ag-look-mark.hat) {
+  position: relative;
+  background: var(--ma-glass-solid-bg);
+  box-shadow: var(--ma-glass-solid-shadow, inset 0 0 0 1px var(--ma-border-hairline));
+}
+.ag-look-hat {
+  display: block;
+}
+/* The colour choice: a row of swatches, each the colour as it shows on the hat's band. */
+.ag-look-colors {
+  display: flex;
+  flex-wrap: wrap;
+  gap: 8px;
+}
+.ag-look-color {
+  display: inline-flex;
+  align-items: center;
+  justify-content: center;
+  width: 28px;
+  height: 28px;
+  padding: 0;
+  border: 0;
+  border-radius: 50%;
+  cursor: pointer;
+}
+.ag-look-color[aria-checked='true'] {
+  box-shadow: 0 0 0 2px var(--ma-surface-window), 0 0 0 4px var(--ma-text-primary);
+}
+.ag-look-color:focus-visible {
+  outline: 2px solid var(--ma-focus-ring);
+  outline-offset: 4px;
+}
+.ag-look-color svg {
+  color: var(--ma-surface-window);
+}
 .ag-look-icons {
   display: grid;
   grid-template-columns: repeat(auto-fill, minmax(40px, 1fr));

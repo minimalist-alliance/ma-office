@@ -1,6 +1,6 @@
 import { describe, expect, it } from 'vitest';
 import { acceptAttr, capLine, encodeFile, formatSize, parseAttachedLine, planAdd, readCaps, splitAttached, toBase64, FALLBACK_ACCEPT, type AttachCaps } from './attachments';
-import { readState } from './gate';
+import { readState } from './state';
 
 const CAPS: AttachCaps = { enabled: true, maxFiles: 3, maxFileBytes: 2_000_000, maxTotalBytes: 4_000_000, accept: ['png', 'pdf', 'txt', 'csv'], freeImages: false };
 const f = (name: string, size: number, type = '') => ({ name, size, type });

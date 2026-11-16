@@ -1,6 +1,6 @@
 import { inspect } from 'node:util';
 import { describe, expect, it } from 'vitest';
-import { KeySecret, keyFormatMessage, keyFormatProblem, keyOwner, providerMismatchMessage, REDACTED } from './keySecret';
+import { KeySecret, keyFormatMessage, keyFormatProblem, keyOwner, keyOwners, providerMismatchMessage, REDACTED } from './keySecret';
 
 const KEY = 'sk-ant-TEST-not-a-real-key-0000-UNIT';
 
@@ -81,6 +81,27 @@ describe('whose key it is (deskd API.md §11, `provider_mismatch`)', () => {
     expect(owner('xai-0000000000')).toBe('xai');
     // The order the desk lists them in doesn't matter.
     expect(owner(KEY, [...PROVIDERS].reverse())).toBe('anthropic');
+  });
+  it('a prefix two providers share says nothing: Moonshot AI\'s `sk-` is OpenAI\'s too, so either may be picked', () => {
+    // As desk-agent lists them since Nov 15: Google's `AIza`, and Moonshot AI's `sk-`, the same as OpenAI's.
+    const six = [
+      ...PROVIDERS,
+      { id: 'openrouter', name: 'OpenRouter', keyPrefix: 'sk-or-' },
+      { id: 'google', name: 'Google', keyPrefix: 'AIza' },
+      { id: 'moonshot', name: 'Moonshot AI', keyPrefix: 'sk-' },
+    ];
+    expect(owner('sk-moonshot0000000000', six)).toBeNull();
+    expect(owner('sk-moonshot0000000000', [...six].reverse())).toBeNull();
+    // Both are named, so a form can say whose it could be.
+    expect(keyOwners(KeySecret.fromText('sk-proj-0000000000'), six).map((p) => p.id)).toEqual(['openai', 'moonshot']);
+    expect(keyOwners(KeySecret.fromText('gsk_0000000000'), six)).toEqual([]);
+    expect(providerMismatchMessage('OpenAI or Moonshot AI')).toBe('That’s a key from OpenAI or Moonshot AI. Pick OpenAI or Moonshot AI above and paste it again.');
+    // A longer prefix still decides: Anthropic's and OpenRouter's keys are theirs, and Google's is Google's.
+    expect(owner(KEY, six)).toBe('anthropic');
+    expect(owner('sk-or-v1-0000000000', six)).toBe('openrouter');
+    expect(owner('AIzaSy0000000000', six)).toBe('google');
+    // Picked as Moonshot AI's, such a key is no other provider's, so the form sends it.
+    expect(keyFormatProblem(KeySecret.fromText('sk-moonshot0000000000'), 'sk-')).toBeNull();
   });
   it('a key with no known prefix belongs to nobody, and an empty prefix never claims one', () => {
     expect(owner('gsk_0000000000')).toBeNull();

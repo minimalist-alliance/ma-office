@@ -5,6 +5,11 @@ import 'fake-indexeddb/auto';
 import { afterEach, beforeEach, describe, expect, it, vi } from 'vitest';
 
 const { clearLastScreens, keepLastScreens, loadLastScreen, MAX_AGE_MS, saveLastScreen } = await import('./lastScreen');
+const { dropDeskList, setDeskListDirect } = await import('../state/deskStore');
+
+/** The office's list: a picture is kept only of a desk it names now. */
+const list = (...ids: string[]): void =>
+  setDeskListDirect(ids.map((id) => ({ id, name: id, kind: 'personal', vm: 'running', phase: null, queuePosition: null, stopAt: null, givebackUntil: null, badges: {} })));
 
 /** A frame to keep. Its JPEG arrives a turn later, as a real `toBlob` does, which is the gap the race lived in. */
 class FakeCanvas {
@@ -42,6 +47,7 @@ beforeEach(async () => {
   vi.stubGlobal('document', { createElement: () => new FakeCanvas() });
   await clearLastScreens();
   keepLastScreens();
+  list('d-a', 'd-b', 'd-old', 'd-new', 'd-edge');
 });
 
 afterEach(() => {
@@ -119,5 +125,20 @@ describe("a stale tab (ISS-89): another tab's sign-out left no token here", () =
     } finally {
       layout.mirrorFollowsToken(() => true);
     }
+  });
+});
+
+describe("a change of account in this tab (ISS-89's follow-up): the last member's list is dropped", () => {
+  it("keeps no picture of the last member's desk, a save already on its way included, and keeps the new member's", async () => {
+    const saving = saveLastScreen('d-a', frame());
+    dropDeskList(); // the session's own drop, in the same moment as the windows close
+    await saving;
+    await saveLastScreen('d-a', frame()); // their Browser window's unmount, or their desk's session ending, after it
+    await settle();
+    expect(await keys()).toEqual([]);
+    list('d-b');
+    await saveLastScreen('d-a', frame());
+    await saveLastScreen('d-b', frame());
+    expect(await keys()).toEqual(['d-b']);
   });
 });

@@ -19,11 +19,35 @@ import java.util.Map;
  */
 public final class ApprovalStore {
 
-    /** One approval as stored. JSON columns stay text here. */
+    /**
+     * One approval as stored. JSON columns stay text here.
+     *
+     * @param autoGroup for a call done without asking under the member's switch (the draft ADR's §15), its group; null
+     *     for a card
+     * @param autoPlace that switch's place then, as JSON ({@code {tabId}} or {@code {folder}}), or null
+     * @param undoneAt when the member undid a call done without asking, or null
+     * @param undoneBy who: {@code owner} or the guild member's id
+     */
     record Row(String id, String agentId, String runId, String messageId, String tool, String risk, String title,
             String context, String target, String payload, String before, String sha256, boolean untrusted,
             String origin, String state, String detail, long createdAt, long expiresAt, Long decidedAt,
-            String decidedBy, String note, Long startedAt, String result) {
+            String decidedBy, String note, Long startedAt, String result, String autoGroup, String autoPlace,
+            Long undoneAt, String undoneBy) {
+
+        /** A card's row. */
+        Row(String id, String agentId, String runId, String messageId, String tool, String risk, String title,
+                String context, String target, String payload, String before, String sha256, boolean untrusted,
+                String origin, String state, String detail, long createdAt, long expiresAt, Long decidedAt,
+                String decidedBy, String note, Long startedAt, String result) {
+            this(id, agentId, runId, messageId, tool, risk, title, context, target, payload, before, sha256, untrusted,
+                    origin, state, detail, createdAt, expiresAt, decidedAt, decidedBy, note, startedAt, result, null,
+                    null, null, null);
+        }
+
+        /** Whether this is a call done without asking. */
+        boolean auto() {
+            return autoGroup != null;
+        }
 
         /** No content in logs. */
         @Override
@@ -39,7 +63,7 @@ public final class ApprovalStore {
 
     private static final String COLUMNS = "id, agent_id, run_id, message_id, tool, risk, title, context, target,"
             + " payload, before_json, sha256, untrusted, origin, state, detail, created_at, expires_at, decided_at,"
-            + " decided_by, note, started_at, result";
+            + " decided_by, note, started_at, result, auto_group, auto_place, undone_at, undone_by";
 
     private final AgentStore store;
 
@@ -54,7 +78,7 @@ public final class ApprovalStore {
     void insert(List<Row> rows) throws SQLException {
         db().transaction(connection -> {
             try (PreparedStatement insert = connection.prepareStatement("INSERT INTO approvals (" + COLUMNS
-                    + ") VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)")) {
+                    + ") VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)")) {
                 for (Row row : rows) {
                     insert.setString(1, row.id());
                     insert.setString(2, row.agentId());
@@ -79,6 +103,10 @@ public final class ApprovalStore {
                     insert.setString(21, row.note());
                     setLong(insert, 22, row.startedAt());
                     insert.setString(23, row.result());
+                    insert.setString(24, row.autoGroup());
+                    insert.setString(25, row.autoPlace());
+                    setLong(insert, 26, row.undoneAt());
+                    insert.setString(27, row.undoneBy());
                     insert.addBatch();
                 }
                 insert.executeBatch();
@@ -140,30 +168,128 @@ public final class ApprovalStore {
     }
 
     /**
+     * A call done without asking, undone by the member: stamped once. @return whether this call stamped it
+     */
+    boolean undone(String id, long at, String by) throws SQLException {
+        return update("UPDATE approvals SET undone_at = ?, undone_by = ? WHERE id = ? AND auto_group IS NOT NULL"
+                + " AND undone_at IS NULL", s -> {
+                    s.setLong(1, at);
+                    s.setString(2, by);
+                    s.setString(3, id);
+                });
+    }
+
+    /** Calls done without asking in a run the member didn't start: unseen until they look at the thread. */
+    void markUnseen(List<String> ids) throws SQLException {
+        db().transaction(connection -> {
+            try (PreparedStatement update = connection.prepareStatement(
+                    "UPDATE approvals SET auto_seen = 0 WHERE id = ? AND auto_group IS NOT NULL")) {
+                for (String id : ids) {
+                    update.setString(1, id);
+                    update.addBatch();
+                }
+                update.executeBatch();
+            }
+            return null;
+        });
+    }
+
+    /** The member has seen the agent's thread. */
+    void markSeen(String agentId) throws SQLException {
+        update("UPDATE approvals SET auto_seen = 1 WHERE agent_id = ? AND auto_seen = 0", s -> s.setString(1, agentId));
+    }
+
+    /**
+     * Calls done without asking in runs the member didn't start that they haven't seen, done and not undone, by agent
+     * (one agent's when {@code agentId} is given).
+     */
+    Map<String, Integer> autoUnseen(String agentId) throws SQLException {
+        return db().call(connection -> {
+            Map<String, Integer> out = new HashMap<>();
+            try (PreparedStatement select = connection.prepareStatement("SELECT agent_id, COUNT(*) FROM approvals"
+                    + " WHERE auto_group IS NOT NULL AND auto_seen = 0 AND state = 'done' AND undone_at IS NULL"
+                    + (agentId == null ? "" : " AND agent_id = ?") + " GROUP BY agent_id")) {
+                if (agentId != null) {
+                    select.setString(1, agentId);
+                }
+                try (ResultSet r = select.executeQuery()) {
+                    while (r.next()) {
+                        out.put(r.getString(1), r.getInt(2));
+                    }
+                }
+            }
+            return out;
+        });
+    }
+
+    /** How many calls each agent did without asking from {@code since}, by agent: the day's count after a restart. */
+    Map<String, Integer> autoCountsSince(long since) throws SQLException {
+        return db().call(connection -> {
+            Map<String, Integer> out = new HashMap<>();
+            try (PreparedStatement select = connection.prepareStatement("SELECT agent_id, COUNT(*) FROM approvals"
+                    + " WHERE auto_group IS NOT NULL AND created_at >= ? GROUP BY agent_id")) {
+                select.setLong(1, since);
+                try (ResultSet r = select.executeQuery()) {
+                    while (r.next()) {
+                        out.put(r.getString(1), r.getInt(2));
+                    }
+                }
+            }
+            return out;
+        });
+    }
+
+    /**
      * At open, with no run going: every {@code pending} approval, and every {@code approved} one whose tool never
      * started, becomes {@code expired} with {@code detail: "restart"}; an approved one whose tool had started becomes
-     * {@code interrupted}. Nothing re-runs. @return the rows as they were, for the audit
+     * {@code interrupted}. Nothing re-runs. The approvals of runs that resume ({@code resuming}) are left as they are.
+     * @return the rows as they were, for the audit
      */
-    List<Row> sweepAtOpen(long at) throws SQLException {
+    List<Row> sweepAtOpen(long at, java.util.Set<String> resuming) throws SQLException {
         return db().transaction(connection -> {
             List<Row> rows = new ArrayList<>();
             try (PreparedStatement select = connection.prepareStatement(
                     "SELECT " + COLUMNS + " FROM approvals WHERE state IN ('pending', 'approved')");
                     ResultSet r = select.executeQuery()) {
                 while (r.next()) {
-                    rows.add(row(r));
+                    Row row = row(r);
+                    // A run that resumes keeps its approvals as they are (durable runs).
+                    if (!resuming.contains(row.runId())) {
+                        rows.add(row);
+                    }
                 }
             }
             try (PreparedStatement expire = connection.prepareStatement("UPDATE approvals SET state = 'expired',"
-                    + " detail = 'restart', decided_at = COALESCE(decided_at, ?) WHERE state = 'pending'"
-                    + " OR (state = 'approved' AND started_at IS NULL)");
+                    + " detail = 'restart', decided_at = COALESCE(decided_at, ?) WHERE id = ? AND (state = 'pending'"
+                    + " OR (state = 'approved' AND started_at IS NULL))");
                     PreparedStatement interrupt = connection.prepareStatement("UPDATE approvals SET state ="
-                            + " 'interrupted' WHERE state = 'approved' AND started_at IS NOT NULL")) {
-                expire.setLong(1, at);
-                expire.executeUpdate();
-                interrupt.executeUpdate();
+                            + " 'interrupted' WHERE id = ? AND state = 'approved' AND started_at IS NOT NULL")) {
+                for (Row row : rows) {
+                    expire.setLong(1, at);
+                    expire.setString(2, row.id());
+                    expire.executeUpdate();
+                    interrupt.setString(1, row.id());
+                    interrupt.executeUpdate();
+                }
             }
             return rows;
+        });
+    }
+
+    /** A run's approvals, oldest first. */
+    List<Row> ofRun(String runId) throws SQLException {
+        return db().call(connection -> {
+            try (PreparedStatement select = connection.prepareStatement(
+                    "SELECT " + COLUMNS + " FROM approvals WHERE run_id = ? ORDER BY created_at, id")) {
+                select.setString(1, runId);
+                List<Row> rows = new ArrayList<>();
+                try (ResultSet r = select.executeQuery()) {
+                    while (r.next()) {
+                        rows.add(row(r));
+                    }
+                }
+                return rows;
+            }
         });
     }
 
@@ -336,6 +462,8 @@ public final class ApprovalStore {
                 r.getString("target"), r.getString("payload"), r.getString("before_json"), r.getString("sha256"),
                 r.getInt("untrusted") != 0, r.getString("origin"), r.getString("state"), r.getString("detail"),
                 r.getLong("created_at"), r.getLong("expires_at"), longOrNull(r, "decided_at"),
-                r.getString("decided_by"), r.getString("note"), longOrNull(r, "started_at"), r.getString("result"));
+                r.getString("decided_by"), r.getString("note"), longOrNull(r, "started_at"), r.getString("result"),
+                r.getString("auto_group"), r.getString("auto_place"), longOrNull(r, "undone_at"),
+                r.getString("undone_by"));
     }
 }

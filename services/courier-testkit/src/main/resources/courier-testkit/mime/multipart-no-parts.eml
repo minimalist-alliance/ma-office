@@ -1,0 +1,11 @@
+From: Office <office@example.com>
+To: me@desk.example
+Date: Fri, 13 Nov 2026 10:00:00 +0000
+Subject: Empty multipart
+Message-ID: <multipart-no-parts@corpus.example>
+MIME-Version: 1.0
+X-Corpus-Note: a multipart with a preamble and a closing boundary but no parts
+Content-Type: multipart/mixed; boundary="np-1"
+
+Only a preamble here.
+--np-1--

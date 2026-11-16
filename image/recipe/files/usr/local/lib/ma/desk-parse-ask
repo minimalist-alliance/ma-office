@@ -1,0 +1,59 @@
+#!/usr/bin/python3 -I
+"""desk-parse-ask <kind> <maxChars> <maxPages> [<socket>] < file: one parse through desk-parse's socket as desk-agent asks for
+it (ADR 0097 section 2): the "parse1 <kind> <maxChars> <maxPages>" line, the file's bytes, a half-close, then the answer, at most
+maxChars * 4 + 1024 bytes, to stdout. For the image's smoke test and verify.sh, run as uid 1103 (setpriv); desk-agent has its own
+client. The socket defaults to /run/desk-parse/sock/parse.sock. Exit: 0 an answer whose first line is "OK..." or "ERR ...";
+3 "err busy" or "err denied" from desk-svc; 4 no socket, or it refused the connection; 5 the stream ended before a line (the
+worker died: out of memory, or killed); 6 anything else; 2 usage."""
+import socket
+import sys
+
+KINDS = ("text", "pdf", "docx", "xlsx", "pptx")
+
+
+def main(argv):
+    if len(argv) not in (4, 5) or argv[1] not in KINDS or not argv[2].isdigit() or not argv[3].isdigit():
+        print(__doc__.split("\n")[0], file=sys.stderr)
+        return 2
+    kind, max_chars, max_pages = argv[1], int(argv[2]), int(argv[3])
+    path = argv[4] if len(argv) == 5 else "/run/desk-parse/sock/parse.sock"
+    data = sys.stdin.buffer.read(20 << 20)
+    s = socket.socket(socket.AF_UNIX, socket.SOCK_STREAM)
+    s.settimeout(45)
+    try:
+        s.connect(path)
+    except OSError as e:
+        print(f"desk-parse-ask: {path}: {e.strerror or e}", file=sys.stderr)
+        return 4
+    out = b""
+    try:
+        try:
+            s.sendall(f"parse1 {kind} {max_chars} {max_pages}\n".encode() + data)
+            s.shutdown(socket.SHUT_WR)
+        except OSError:
+            pass   # the other end ended first: its answer, or none, says why
+        limit = max_chars * 4 + 1024
+        while len(out) <= limit:
+            b = s.recv(65536)
+            if not b:
+                break
+            out += b
+    except socket.timeout:
+        print("desk-parse-ask: no answer in 45 s", file=sys.stderr)
+        return 6
+    except OSError as e:
+        print(f"desk-parse-ask: {e.strerror or e}", file=sys.stderr)
+    finally:
+        s.close()
+    sys.stdout.buffer.write(out[:limit])
+    sys.stdout.flush()
+    head = out.split(b"\n", 1)[0] if b"\n" in out[:64] else None
+    if head is None:
+        return 5
+    if head in (b"err busy", b"err denied"):
+        return 3
+    return 0 if head.startswith(b"OK") or head.startswith(b"ERR ") else 6
+
+
+if __name__ == "__main__":
+    sys.exit(main(sys.argv))

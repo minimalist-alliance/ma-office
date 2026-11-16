@@ -13,6 +13,8 @@ import { LinksEditor } from './Links';
 import { LookEditor } from './Look';
 import { TimersSection } from './Timers';
 import { WorkspaceSection } from './Workspace';
+import { AccessSection, type AccessPlaces } from './Setup';
+import type { OtherDesk } from '../model/access';
 
 const PURPOSE_MAX = 4000;
 export const isLeadAgent = (a: Pick<Agent, 'lead' | 'role'>): boolean => a.lead === true || a.role === 'manager';
@@ -134,7 +136,7 @@ function Remove({ client, agent, onDeleted }: { client: AgentClient; agent: Agen
   );
 }
 
-export function SettingsPanel({ client, agent, agents, keys, caps, theme, onOpenUsage, onDeleted }: {
+export function SettingsPanel({ client, agent, agents, keys, caps, theme, onOpenUsage, onDeleted, otherDesks = [], places = null, announce, stateVersion }: {
   client: AgentClient;
   /** As `agent.state` has it. */
   agent: Agent;
@@ -144,6 +146,12 @@ export function SettingsPanel({ client, agent, agents, keys, caps, theme, onOpen
   theme: LookTheme;
   onOpenUsage: () => void;
   onDeleted: () => void;
+  /** The member's other desks, for "Other desks" (draft ADR section 14). */
+  otherDesks?: readonly OtherDesk[];
+  places?: AccessPlaces | null;
+  announce?: (text: string) => void;
+  /** Goes up with each `agent.state` event: "What it can use" reads its access again, as another desk's answer can change it (W6). */
+  stateVersion?: unknown;
 }) {
   // Read again whenever the agent changes on the desk, by anyone: the member here, another window, or a confirmed proposal.
   const version = JSON.stringify(agent);
@@ -167,6 +175,13 @@ export function SettingsPanel({ client, agent, agents, keys, caps, theme, onOpen
         <h4>Key and model</h4>
         {keys.length ? <BindingPicker key={`${a.id}:${a.binding?.keyId}:${a.binding?.model}`} client={client} agent={a} keys={keys} compact /> : <p className="ag-muted ag-small">Add a key in Keys first.</p>}
       </section>
+      {/* What it may use, as its setup screen chose (section 16): every choice there can be changed here. Not on a desk before it. */}
+      {a.setup !== undefined && (
+        <section aria-label="What it can use" data-testid="settings-access">
+          <h4>What it can use</h4>
+          <AccessSection key={a.id} client={client} agent={a} otherDesks={otherDesks} places={places} version={stateVersion} {...(announce ? { announce } : {})} />
+        </section>
+      )}
       {/* The lead's tile stays the Agent app's own tile (a white tile that opens the whole desk team), so it has no look to set. */}
       {!lead && (
         <section aria-label="Look">
@@ -208,6 +223,7 @@ export function SettingsPanel({ client, agent, agents, keys, caps, theme, onOpen
 /** What `agent.state` says now wins over a read that may be a moment older: status, look, solo and counts. */
 function pickLive(a: Agent): Partial<Agent> {
   const out: Partial<Agent> = { status: a.status, binding: a.binding, unseen: a.unseen, name: a.name };
+  if (a.setup !== undefined) out.setup = a.setup;
   if (a.look) out.look = a.look;
   if (a.solo !== undefined) out.solo = a.solo;
   if (a.timers !== undefined) out.timers = a.timers;

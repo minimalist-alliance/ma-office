@@ -191,6 +191,8 @@ export function lastStateText(state: string | null): string {
       return 'Missed while the desk was off';
     case 'failed':
       return 'Didn’t finish. Its thread says why.';
+    case 'interrupted':
+      return 'Didn’t finish: the desk restarted. Its thread shows how far it got.';
     case 'paused':
       return 'Paused: agents can’t run on this account right now.';
     case 'over_cap':

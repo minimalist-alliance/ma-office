@@ -131,6 +131,7 @@ class AgentServiceConcurrencyTest {
         Map<?, ?> key = (Map<?, ?>) service.keyAdd(Map.of("provider", FakeProvider.ID.id(), "label", "Main"), secret)
                 .get("key");
         service.call("agent.bind", Map.of("agentId", AgentStore.MANAGER, "keyId", key.get("keyId"), "model", Rig.MODEL));
+        com.minimalistalliance.desk.agent.testing.Setups.setUp(service, AgentStore.MANAGER);
     }
 
     @AfterEach

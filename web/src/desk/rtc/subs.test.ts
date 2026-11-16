@@ -256,6 +256,43 @@ describe('Subscriptions', () => {
     expect(got).toEqual([]);
   });
 
+  /**
+   * Release 3's proof (bug B): after deskd restarted, the window's new client subscribed while the old one's SUB, sent as the new
+   * session opened, was still on its way. deskd gives a second SUB of the same topic the same subId (API.md section 5), so the
+   * late UNSUB for the first took the live one away, and the window heard nothing until it was opened again.
+   */
+  it('a listener that comes back while the SUB is on its way keeps that subscription, and is sent a fresh snapshot', async () => {
+    const off = listen();
+    subs.attach(wire, false);
+    off(); // the old client goes
+    const later: SubEvent[] = [];
+    subs.subscribe('summary', {}, { event: (e) => later.push(e) }); // and the new one comes
+    expect(wire.subs).toHaveLength(1);
+    await wire.answer(9);
+    await flush();
+    expect(wire.unsubs).toEqual([]);
+    // Asked again, for the snapshot the new listener needs: deskd answers with the same subscription.
+    expect(wire.subs.map((x) => x.body)).toEqual([{ topic: 'summary', params: {} }, { topic: 'summary', params: {} }]);
+    await wire.answer(9);
+    await flush();
+    subs.onEvent(9, 1, snapshot(1));
+    subs.onEvent(9, 2, { type: 'patch', data: {} });
+    expect(later.map((e) => [e.type, e.seq])).toEqual([['snapshot', 1], ['patch', 2]]);
+    expect(got).toEqual([]);
+    expect(wire.unsubs).toEqual([]);
+  });
+
+  it('one that leaves for good while its SUB is on its way is let go once the reply lands, and a session that ends forgets it', async () => {
+    const off = listen();
+    subs.attach(wire, false);
+    off();
+    subs.detach();
+    const next = new FakeWire();
+    subs.attach(next, false);
+    expect(next.subs).toHaveLength(0);
+    expect(wire.unsubs).toEqual([]);
+  });
+
   it('a detach cancels a retry that was waiting', async () => {
     listen();
     subs.attach(wire, false);

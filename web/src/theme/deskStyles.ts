@@ -53,13 +53,14 @@ function style(id: string, name: string, textures: Textures = NO_TEXTURE): DeskS
   return { id, name, looks: looksOf(id, inks, textures) };
 }
 
-// In the order members see them: the Product Designer's four (`assets/desk-styles/desk-styles.json`), then Plain, today's
-// flat surface. One 1024 px tile covers 512 desk units (density 2).
+// In the order members see them: the Product Designer's five (`assets/desk-styles/desk-styles.json`; White oak since Nov 15),
+// then Plain, today's flat surface. One 1024 px tile covers 512 desk units (density 2).
 const tile = (src: string): DeskTexture => ({ src, width: 1024, height: 1024, density: 2 });
 // A built-in tile's `src` is its key in `deskStyleFiles.ts` (`oak-light`), turned into a URL only when the image is fetched.
 const textured = (id: string, name: string): DeskStyle => style(id, name, { light: tile(`${id}-light`), dusk: tile(`${id}-dusk`), dark: tile(`${id}-dark`) });
 const BUILT_IN: readonly DeskStyle[] = [
   textured('oak', 'Light oak'),
+  textured('white-oak', 'White oak'),
   textured('ash', 'White ash'),
   textured('walnut', 'Walnut'),
   textured('linoleum', 'Linoleum'),
@@ -112,6 +113,23 @@ export const deskStyleOf = (id: string | undefined): DeskStyle => (id && BY_ID.g
  * `prefers-contrast: more`, where the name is plain text and a texture would only stand between it and the surface.
  */
 const FLAT = looksOf('flat', Object.fromEntries(THEME_IDS.map((theme) => [theme, { base: THEMES[theme].surface.panel, etch: THEMES[theme].etch, deskText: THEMES[theme].text.secondary }])) as Record<ThemeId, DeskStyleInk>, NO_TEXTURE);
+
+/**
+ * Plain and the flat look are the theme's own surface, text and etch: the theme sliders (`tune/apply.ts`) call this each
+ * time they lay new colours into the tokens, and these looks take them, in place (a draw then reads the new values; the
+ * wood styles keep their own inks, as the sheet says).
+ */
+export function followThemeTokens(): void {
+  for (const theme of THEME_IDS) {
+    const t = THEMES[theme];
+    for (const look of [BY_ID.get('plain')?.looks[theme], FLAT[theme]]) {
+      if (!look) continue;
+      look.base = t.surface.panel;
+      look.deskText = t.text.secondary;
+      look.etch = t.etch;
+    }
+  }
+}
 
 /** How a desk looks in this theme. The same object every time, so a draw compares it and builds nothing. */
 export const deskLook = (id: string | undefined, theme: ThemeId, moreContrast: boolean): DeskStyleLook => (moreContrast ? FLAT[theme] : deskStyleOf(id).looks[theme]);

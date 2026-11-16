@@ -3,10 +3,11 @@
 import { afterEach, beforeEach, describe, expect, it, vi } from 'vitest';
 import { DeskNotConnected, type BrowserMedia, type BrowserViewMessage, type DeskLink, type PhoneDevice } from '../desk/deskLink';
 import { SOUND_QUIET_MS } from '../desk/sound';
-import { BrowserDriver, HIDDEN_LIVE_MS } from './driver';
+import { BrowserDriver, HIDDEN_LIVE_MS, ZOOM_RETRY_MS, zoomOffered } from './driver';
+import { NO_PHONE_VIEW } from './phoneView';
 
 class FakeLink {
-  calls: { method: string; state?: string; url?: string; text?: string; tabId?: string; deadlineMs?: number; idem?: string }[] = [];
+  calls: { method: string; state?: string; url?: string; text?: string; tabId?: string; level?: number; deadlineMs?: number; idem?: string }[] = [];
   /** Everything in the order it went out. */
   order: string[] = [];
   currentMedia: BrowserMedia | null = null;
@@ -18,6 +19,10 @@ class FakeLink {
   clipboardListeners = new Set<(m: { seq: number; type: string }) => void>();
   clipboardRefusals = new Set<(code: string) => void>();
   viewListeners = new Set<(m: BrowserViewMessage) => void>();
+  /** The desk Browser's zoom (ADR 0055): null is a deskd before it, which says `not_found`. */
+  zoomLevel: number | null = null;
+  /** `browser.zoom.set`'s answers wait here when set, so a test sees what's in flight. */
+  zoomHolds: (() => void)[] | null = null;
   devices: (PhoneDevice | null)[] = [];
   setDevice(d: PhoneDevice | null): void {
     this.devices.push(d);
@@ -82,12 +87,22 @@ class FakeLink {
     for (const fn of this.tabListeners) fn({ seq: 1, tabs });
   }
 
-  call(method: string, params: { state?: string; url?: string; text?: string; tabId?: string } = {}, options: { deadlineMs?: number; idem?: string } = {}): Promise<unknown> {
+  call(method: string, params: { state?: string; url?: string; text?: string; tabId?: string; level?: number } = {}, options: { deadlineMs?: number; idem?: string } = {}): Promise<unknown> {
     this.order.push(method);
     this.calls.push({ method, ...params, ...options });
     const refusal = this.refuse[method];
     if (refusal) return Promise.reject(refusal instanceof Error ? refusal : Object.assign(new Error(refusal.code), refusal));
     if (method === 'browser.tab.list') return new Promise((resolve) => this.listHolds.push(resolve));
+    if (method.startsWith('browser.zoom.')) {
+      if (this.zoomLevel === null) return Promise.reject(Object.assign(new Error('not_found'), { code: 'not_found', details: {} }));
+      if (method === 'browser.zoom.get') return Promise.resolve({ level: this.zoomLevel });
+      const answer = (): { level: number } => {
+        this.zoomLevel = params.level ?? this.zoomLevel!;
+        return { level: this.zoomLevel };
+      };
+      const holds = this.zoomHolds;
+      return holds ? new Promise((resolve) => holds.push(() => resolve(answer()))) : Promise.resolve(answer());
+    }
     return Promise.resolve({ state: params.state });
   }
 }
@@ -359,10 +374,10 @@ describe('BrowserDriver', () => {
     expect(other.order.slice(0, 2)).toEqual(['browser.stream.set', 'sub browser.tabs']);
   });
 
-  it('once live, it reads the list unless browser.tabs has already spoken', async () => {
+  it('once live, it reads the list unless browser.tabs has already spoken, and then asks the desk\'s zoom', async () => {
     link.setMedia(session());
     await flush();
-    expect(link.calls.map((c) => c.method)).toEqual(['browser.stream.set', 'browser.tab.list']);
+    expect(link.calls.map((c) => c.method)).toEqual(['browser.stream.set', 'browser.tab.list', 'browser.zoom.get']);
     const tabs = [{ tabId: 't1', url: 'https://a.example/', title: 'A', loading: false, active: true, canGoBack: false, canGoForward: false }];
     link.listHolds[0]?.({ tabs });
     await flush();
@@ -421,6 +436,150 @@ describe('BrowserDriver', () => {
     expect(driver.getView().notice).toBe('This desk blocks that address.');
     await flush(5_000);
     expect(driver.getView().notice).toBeNull();
+  });
+
+  describe('the desk\'s own zoom (ADR 0055; deskd\'s browser.zoom.get and .set, browser.view\'s zoom)', () => {
+    const zoomCalls = (): { method: string; level?: number; idem?: string }[] => link.calls.filter((c) => c.method.startsWith('browser.zoom.'));
+    const say = (zoom: number): void => {
+      for (const fn of link.viewListeners) fn({ mode: 'desktop', field: null, zoom });
+    };
+
+    it('a deskd before it: asked once as the stream comes up, and the window has no zoom', async () => {
+      expect(zoomCalls()).toEqual([]);
+      link.setMedia(session());
+      await flush();
+      expect(zoomCalls().map((c) => c.method)).toEqual(['browser.zoom.get']);
+      expect(driver.getView().deskZoom).toBeNull();
+      await flush(10_000);
+      expect(zoomCalls()).toHaveLength(1);
+    });
+
+    it('a desk that zooms says its level once per session, and its topic\'s changes show', async () => {
+      link.zoomLevel = 125;
+      say(150); // before the desk said it zooms: nothing
+      link.setMedia(session());
+      await flush();
+      expect(driver.getView().deskZoom).toBe(125);
+      say(150);
+      expect(driver.getView().deskZoom).toBe(150);
+      link.setMedia(session());
+      await flush();
+      expect(zoomCalls().map((c) => c.method)).toEqual(['browser.zoom.get', 'browser.zoom.get']);
+    });
+
+    it('the member\'s level shows at once and goes at most every 100 ms, the newest winning, with an idem', async () => {
+      link.zoomLevel = 100;
+      link.setMedia(session());
+      await flush();
+      driver.setDeskZoom(110);
+      driver.setDeskZoom(120);
+      expect(driver.getView().deskZoom).toBe(120);
+      await flush(0);
+      expect(zoomCalls().filter((c) => c.method === 'browser.zoom.set').map((c) => c.level)).toEqual([120]);
+      driver.setDeskZoom(130);
+      driver.setDeskZoom(140);
+      await flush(50);
+      expect(zoomCalls().filter((c) => c.method === 'browser.zoom.set')).toHaveLength(1);
+      await flush(60);
+      const sets = zoomCalls().filter((c) => c.method === 'browser.zoom.set');
+      expect(sets.map((c) => c.level)).toEqual([120, 140]);
+      expect(sets.every((c) => typeof c.idem === 'string' && c.idem.length > 0)).toBe(true);
+      expect(driver.getView().deskZoom).toBe(140);
+    });
+
+    it('while a set is out, the topic doesn\'t move the slider back; the answer stands', async () => {
+      link.zoomLevel = 100;
+      link.setMedia(session());
+      await flush();
+      link.zoomHolds = [];
+      driver.setDeskZoom(150);
+      await flush(0);
+      say(100);
+      expect(driver.getView().deskZoom).toBe(150);
+      link.zoomHolds.shift()?.();
+      await flush(0);
+      expect(driver.getView().deskZoom).toBe(150);
+    });
+
+    it('a refused set puts back what the desk has', async () => {
+      link.zoomLevel = 110;
+      link.setMedia(session());
+      await flush();
+      link.refuse['browser.zoom.set'] = { code: 'bad_request', details: {} };
+      driver.setDeskZoom(160);
+      expect(driver.getView().deskZoom).toBe(160);
+      await flush(0);
+      await flush(0);
+      expect(driver.getView().deskZoom).toBe(110);
+    });
+
+    it('nothing is set on a desk with no zoom', async () => {
+      link.setMedia(session());
+      await flush();
+      driver.setDeskZoom(150);
+      await flush(200);
+      expect(zoomCalls().map((c) => c.method)).toEqual(['browser.zoom.get']);
+      expect(driver.getView().deskZoom).toBeNull();
+    });
+
+    it('a get with no answer (unavailable, a deadline) is asked once more after a while, once a session, never in a loop', async () => {
+      const gets = (): number => zoomCalls().filter((c) => c.method === 'browser.zoom.get').length;
+      link.zoomLevel = 130;
+      link.refuse['browser.zoom.get'] = { code: 'unavailable', details: {} };
+      link.setMedia(session());
+      await flush();
+      expect(gets()).toBe(1);
+      expect(driver.getView().deskZoom).toBeNull();
+      await flush(ZOOM_RETRY_MS - 1);
+      expect(gets()).toBe(1);
+      await flush(1);
+      expect(gets()).toBe(2);
+      // Still no answer: that was its one more try.
+      await flush(ZOOM_RETRY_MS * 3);
+      expect(gets()).toBe(2);
+      expect(driver.getView().deskZoom).toBeNull();
+      // A new session asks afresh, and has its own one more try, which the desk now answers.
+      link.refuse['browser.zoom.get'] = { code: 'deadline_exceeded' };
+      link.setMedia(session());
+      await flush();
+      expect(gets()).toBe(3);
+      delete link.refuse['browser.zoom.get'];
+      await flush(ZOOM_RETRY_MS);
+      expect(gets()).toBe(4);
+      expect(driver.getView().deskZoom).toBe(130);
+      await flush(ZOOM_RETRY_MS * 3);
+      expect(gets()).toBe(4);
+    });
+
+    it('a retry still waiting when the window closes never goes', async () => {
+      link.zoomLevel = 130;
+      link.refuse['browser.zoom.get'] = { code: 'unavailable', details: {} };
+      link.setMedia(session());
+      await flush();
+      driver.unmount();
+      await flush(ZOOM_RETRY_MS * 2);
+      expect(zoomCalls().filter((c) => c.method === 'browser.zoom.get')).toHaveLength(1);
+    });
+
+    it('no zoom is offered while the desk\'s phone view is in play, this session\'s or another\'s (Chromium suspends page zoom there)', () => {
+      expect(zoomOffered({ deskZoom: 120, phone: NO_PHONE_VIEW })).toBe(120);
+      expect(zoomOffered({ deskZoom: null, phone: NO_PHONE_VIEW })).toBeNull();
+      expect(zoomOffered({ deskZoom: 120, phone: { ...NO_PHONE_VIEW, served: true, mine: true } })).toBeNull();
+      expect(zoomOffered({ deskZoom: 120, phone: { ...NO_PHONE_VIEW, served: true, other: true } })).toBeNull();
+      expect(zoomOffered({ deskZoom: 120, phone: { ...NO_PHONE_VIEW, served: true } })).toBe(120);
+    });
+
+    it('a level chosen just before the window closes still goes', async () => {
+      link.zoomLevel = 100;
+      link.setMedia(session());
+      await flush();
+      driver.setDeskZoom(120);
+      await flush(0);
+      driver.setDeskZoom(130);
+      driver.unmount();
+      await flush(0);
+      expect(zoomCalls().filter((c) => c.method === 'browser.zoom.set').map((c) => c.level)).toEqual([120, 130]);
+    });
   });
 
   describe('the touch hint', () => {

@@ -20,7 +20,8 @@ die() { echo "build.sh: ERROR: $*" >&2; exit 1; }
 
 step "users (fixed uids, section 1)"
 # commons (1110) runs commons-server on a Guild Desk. 1107 to 1109 are ADR 0072's (desk-x, desk-snd, desk-dns on a shared host).
-for spec in desk:1100 rtc:1101 kiosk:1102 agent:1103 stream:1104 notebook:1105 agent-filter:1106 commons:1110; do
+# parse (1113) runs the Agent's attachment reader, desk-parse (ADR 0097); a shared host's templates have it from here.
+for spec in desk:1100 rtc:1101 kiosk:1102 agent:1103 stream:1104 notebook:1105 agent-filter:1106 commons:1110 parse:1113; do
   n=${spec%%:*}; u=${spec##*:}
   getent group "$n" >/dev/null || groupadd -g "$u" "$n"
   id "$n" >/dev/null 2>&1 || useradd -u "$u" -g "$u" -M -d /nonexistent -s /usr/sbin/nologin "$n"
@@ -77,7 +78,14 @@ chmod 0644 /etc/nftables.conf /etc/ma/agent-egress.conf; chmod 0755 /opt/ma/smok
   /usr/local/lib/ma/desk-browser-start /usr/local/lib/ma/desk-xorg-ready /usr/local/lib/ma/desk-preread \
   /usr/local/lib/ma/desk-browser-close /usr/local/lib/ma/desk-browser-policy /usr/local/lib/ma/desk-xauth \
   /usr/local/lib/ma/desk-browser-quit /usr/local/lib/ma/desk-adblock /usr/local/lib/ma/desk-kind /usr/local/lib/ma/desk-guild-net /usr/local/lib/ma/desk-guild-rtc \
-  /usr/local/lib/ma/desk-browser-prewarm
+  /usr/local/lib/ma/desk-browser-prewarm /usr/local/lib/ma/desk-parse-run /usr/local/lib/ma/desk-parse-ask \
+  /usr/local/lib/ma/desk-parse-courier-run
+# desk-svc (image/host/desk-svc): process 1 of desk-parse's container (ADR 0097), built by bake.sh with the pinned Go, static,
+# and staged beside this script with its sha256, as the shared host's is. Mounted read-only into the container; root's.
+[ -f "$HERE/desk-svc/desk-svc" ] || die "no desk-svc beside build.sh: bake.sh builds it from image/host/desk-svc"
+[ "$(sha256sum "$HERE/desk-svc/desk-svc" | cut -d' ' -f1)" = "$(cut -d' ' -f1 "$HERE/desk-svc/desk-svc.sha256")" ] || die "desk-svc isn't the binary bake.sh built"
+install -o root -g root -m 0755 "$HERE/desk-svc/desk-svc" /usr/local/lib/ma/desk-svc
+cut -d' ' -f1 "$HERE/desk-svc/desk-svc.sha256" > /usr/local/lib/ma/desk-svc.sha256; chmod 0644 /usr/local/lib/ma/desk-svc.sha256
 # A teen's Browser lock (image/README.md), an adult's password managers (image/README.md, "Sign-in extensions") and the ad
 # blocker's template (ADR 0076): root's alone, and no key in two of the four managed files, since Chromium doesn't define
 # which of two wins. The helpers refuse a file anyone else can write.
@@ -96,8 +104,19 @@ for f in xdg-open xdg-email; do dpkg-divert --local --rename --divert /usr/share
 # The ad blocker (ADR 0076): built here from uBlock Origin Lite's pinned release (adblock/blocker.pin, its sha256 checked),
 # block and allow rules only, signed with a key made and destroyed in this step, so each build has its own id. Chromium
 # installs it from file:///usr/share/ma/adblock/update.xml and updates only from there: a new version is a new image.
+# Courier's tracker list (docs/sub-status/mm-courier-parse.md, "The image change" 3) comes from the same release: fetched once here
+# and checked against the pin, then read by both. courier-trackers.py (services/courier-parse/scripts, copied into adblock/ by
+# bake.sh, which refuses a copy that differs) keeps only EasyPrivacy's whole-host and host-and-path block rules, one a line, after
+# a first line naming the release's version and sha256 (verify-courier.sh holds it to blocker.pin). Built here, never committed
+# (EasyPrivacy is GPLv3 or CC BY-SA 3.0), as the Browser's lists are; desk-parse-courier binds it read-only.
 install -d -m 0755 /usr/share/ma/adblock
-python3 -I "$HERE/adblock/build-blocker.py" build /usr/share/ma/adblock || die "the blocker didn't build"
+BLOCKER_ZIP=$(mktemp /tmp/ma-blocker.XXXXXX.zip); BLOCKER_SHA=$(sed -n 's/^sha256=//p' "$HERE/adblock/blocker.pin")
+curl -fsSL --proto =https --proto-redir =https --retry 5 --retry-all-errors -o "$BLOCKER_ZIP" "$(sed -n 's/^url=//p' "$HERE/adblock/blocker.pin")" \
+  || die "couldn't fetch the blocker's release"
+echo "$BLOCKER_SHA  $BLOCKER_ZIP" | sha256sum -c --status || die "the blocker's release doesn't hash to blocker.pin's sha256"
+python3 -I "$HERE/adblock/build-blocker.py" build /usr/share/ma/adblock --zip "$BLOCKER_ZIP" || die "the blocker didn't build"
+python3 -I "$HERE/adblock/courier-trackers.py" "$BLOCKER_ZIP" /usr/share/ma/adblock/courier-trackers.txt || die "Courier's tracker list didn't build"
+rm -f "$BLOCKER_ZIP"
 chown -R root:root /usr/share/ma/adblock; chmod 0644 /usr/share/ma/adblock/*
 BLOCKER_ID=$(cat /usr/share/ma/adblock/blocker-id); [[ $BLOCKER_ID =~ ^[a-p]{32}$ ]] || die "the blocker's id: $BLOCKER_ID"
 sed -i "s/__BLOCKER_ID__/$BLOCKER_ID/g" /etc/ma/chromium-adblock.json
@@ -445,6 +464,34 @@ chk nft -c -f /etc/nftables.conf
 chk test -x /usr/local/lib/ma/desk-xauth   # DA-1: Xorg's cookie
 chk grep -q -- '-nolisten local -auth /run/desk-xorg/auth' /etc/systemd/system/desk-xorg.service
 chk grep -q '^Requires=nftables.service' /etc/systemd/system/desk-agent.service   # DA-2
+# The Agent's attachment reader (ADR 0097): its user, desk-svc as bake.sh built it, the unit desk-agent wants, its directories'
+# lines, and the firewall's line for its uid. It never runs here: its first start is a desk's (desk-agent pulls it in).
+chk test "$(id -u parse 2>/dev/null):$(id -g parse 2>/dev/null):$(id -nG parse 2>/dev/null)" = "1113:1113:parse"
+chk test "$(getent group agent | cut -d: -f4)" = ""   # group agent has no member: only uid 1103 enters /run/desk-parse
+chk test "$(sha256sum /usr/local/lib/ma/desk-svc | cut -d' ' -f1)" = "$(cat /usr/local/lib/ma/desk-svc.sha256)"
+chk test "$(stat -c '%U:%G %a' /usr/local/lib/ma/desk-svc)" = "root:root 755"
+chk test -z "$(find / -xdev -user parse 2>/dev/null)"   # uid 1113 owns nothing on the root
+chk grep -qx 'd /run/desk-parse 0750 root agent -' /etc/tmpfiles.d/desk-parse.conf
+chk grep -qx 'f /run/desk-parse/required 0444 root root - 1' /etc/tmpfiles.d/desk-parse.conf
+chk grep -qx 'd /run/desk-parse/sock 2750 parse agent -' /etc/tmpfiles.d/desk-parse.conf
+chk grep -qx 'Wants=desk-parse.service' /etc/systemd/system/desk-agent.service
+chk grep -qx 'PartOf=desk-agent.service' /etc/systemd/system/desk-parse.service
+chk test "$(systemctl show -p ActiveEnterTimestampMonotonic --value desk-parse.service)" = 0   # never started here
+chk grep -qx '    meta skuid 1113 reject' /etc/nftables.conf
+# Courier's mail reader (desk-parse-courier, the same sandbox for deskd; docs/sub-status/mm-courier-parse.md): its runner, unit,
+# directories' lines, deskd's and desk-agent's Wants=, and the tracker list built above. Never started here; /data/courier is made
+# on the volume at boot (desk-datadirs).
+chk test "$(stat -c '%U:%G %a' /usr/local/lib/ma/desk-parse-courier-run)" = "root:root 755"
+chk grep -qx 'd /run/desk-parse-courier 0750 root desk -' /etc/tmpfiles.d/desk-parse-courier.conf
+chk grep -qx 'd /run/desk-parse-courier/sock 2750 parse desk -' /etc/tmpfiles.d/desk-parse-courier.conf
+chk grep -qx 'Wants=desk-parse-courier.service' /etc/systemd/system/deskd.service
+chk grep -qx 'Wants=desk-parse-courier.service' /etc/systemd/system/desk-agent.service
+chk grep -qx 'PartOf=desk-agent.service' /etc/systemd/system/desk-parse-courier.service
+chk test "$(systemctl show -p ActiveEnterTimestampMonotonic --value desk-parse-courier.service)" = 0   # never started here
+chk grep -q '^mk /data/courier desk   desk   0700$' /usr/local/lib/ma/desk-datadirs
+chk test "$(stat -c '%U:%G %a' /usr/share/ma/adblock/courier-trackers.txt)" = "root:root 644"
+chk grep -q "^# ADR 0076: uBlock Origin Lite .*, sha256 $BLOCKER_SHA; easyprivacy: " /usr/share/ma/adblock/courier-trackers.txt
+chk test "$(grep -vc '^#' /usr/share/ma/adblock/courier-trackers.txt)" -gt 10000
 [ "$bad" = 0 ] || die "final assertions failed"
 df -h / | sed "s/^/DISK: /"
 echo "CHROMIUM_VERSION: $chromium_version"

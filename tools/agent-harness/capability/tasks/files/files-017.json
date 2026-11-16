@@ -1,0 +1,57 @@
+{
+  "id": "files-017",
+  "area": "files",
+  "title": "A move onto a name that is taken",
+  "prompt": "Move Harness/drafts/report.md to Harness/final/report.md.",
+  "setup": {
+    "files": {
+      "Harness/drafts/report.md": "Draft report v3\n",
+      "Harness/final/report.md": "Final report v2\n"
+    }
+  },
+  "approve": "all",
+  "checks": [
+    {
+      "kind": "file",
+      "path": "Harness/drafts/report.md",
+      "equals": "Draft report v3\n"
+    },
+    {
+      "kind": "file",
+      "path": "Harness/final/report.md",
+      "equals": "Final report v2\n"
+    },
+    {
+      "kind": "reply",
+      "contains": [
+        "already"
+      ],
+      "state": "done"
+    },
+    {
+      "kind": "cards",
+      "tools": []
+    }
+  ],
+  "policy": {
+    "tools": [
+      "files_move"
+    ]
+  },
+  "standIn": [
+    {
+      "calls": [
+        {
+          "name": "files_move",
+          "input": {
+            "from": "Harness/drafts/report.md",
+            "to": "Harness/final/report.md"
+          }
+        }
+      ]
+    },
+    {
+      "text": "There's already a report.md in Harness/final, so I didn't move anything. Tell me a new name, or whether the old one should go to the trash first."
+    }
+  ]
+}

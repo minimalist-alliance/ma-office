@@ -43,6 +43,11 @@ export interface StreamInputOptions {
   onTouchControl?(control: TouchControl | null): void;
   /** The phone view's region of the picture while it's this phone's (`phoneView.ts`), or null. */
   region?(): { x: number; y: number; width: number; height: number; screenWidth: number; screenHeight: number } | null;
+  /**
+   * The desk zooms its Browser (ADR 0055): Ctrl or Cmd with the wheel, and a trackpad's pinch, over the picture are the
+   * app's zoom (`canvas/pinch.ts`), not input for the page. False, they go to the desk as before.
+   */
+  zoomsOwnPage?(): boolean;
   /** The phone keyboard's handle for the page row, and null as it goes. */
   onSoftKeyboard?(keyboard: SoftKeyboard | null): void;
   onSoftState?(state: SoftState): void;
@@ -204,6 +209,7 @@ export function bindStreamInput(o: StreamInputOptions): () => void {
   };
 
   const onWheel = (e: WheelEvent): void => {
+    if ((e.ctrlKey || e.metaKey) && o.zoomsOwnPage?.()) return; // the window's zoom, on the page (`canvas/pinch.ts`)
     e.preventDefault(); // so the app doesn't zoom or swipe
     lastX = e.clientX;
     lastY = e.clientY;

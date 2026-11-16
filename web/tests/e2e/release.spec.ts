@@ -59,7 +59,7 @@ test('the layout reaches Platform from the shipping bundle: a real GET and If-Ma
   expect(errors).toEqual([]);
 });
 
-test('desk styles as they ship: Light oak by default, the chooser lists the five, and only the images a desk wears are fetched, as files of their own', async ({ page }) => {
+test('desk styles as they ship: Light oak by default, the chooser lists the six, and only the images a desk wears are fetched, as files of their own', async ({ page }) => {
   const errors = watchConsole(page);
   const images: { url: string; status: number }[] = [];
   page.on('response', (r) => {
@@ -74,7 +74,7 @@ test('desk styles as they ship: Light oak by default, the chooser lists the five
   await expect(menu.getByRole('menuitem', { name: 'Resize' })).toBeVisible();
   const group = menu.getByRole('group', { name: 'Desk style' });
   await expect(group).toBeVisible();
-  expect(await group.getByRole('menuitemradio').evaluateAll((els) => els.map((e) => e.getAttribute('aria-label')))).toEqual(['Light oak', 'White ash', 'Walnut', 'Linoleum', 'Plain']);
+  expect(await group.getByRole('menuitemradio').evaluateAll((els) => els.map((e) => e.getAttribute('aria-label')))).toEqual(['Light oak', 'White oak', 'White ash', 'Walnut', 'Linoleum', 'Plain']);
   await expect(group.getByRole('menuitemradio', { name: 'Light oak' })).toHaveAttribute('aria-checked', 'true');
   await expect(menu.getByTestId('desk-style-name')).toHaveText('Light oak');
   await page.keyboard.press('Escape');
@@ -84,7 +84,7 @@ test('desk styles as they ship: Light oak by default, the chooser lists the five
   expect(mine.length).toBeGreaterThanOrEqual(1);
   expect(images.every((i) => i.status === 200)).toBe(true);
   // Only the style a desk wears is fetched for the canvas; the swatches may show the others in the current theme.
-  expect(images.filter((i) => /\/(ash|walnut|linoleum)-(dusk|dark)-/.test(i.url))).toEqual([]);
+  expect(images.filter((i) => /\/(white-oak|ash|walnut|linoleum)-(dusk|dark)-/.test(i.url))).toEqual([]);
   expect(errors).toEqual([]);
 });
 
@@ -151,7 +151,7 @@ test('a refused account gets the calm screen on a 403, after sign-in', async ({ 
 test('the top-left mark loads in every theme from the shipping bundle', async ({ page, request }) => {
   await harness(request, { desks: 'empty' });
   await signIn(page);
-  await expect(page.getByRole('img', { name: 'Minimalist Alliance' })).toBeVisible();
+  await expect(page.getByRole('button', { name: 'Minimalist Alliance', exact: true })).toBeVisible();
   for (const theme of ['light', 'dusk', 'dark']) {
     await page.evaluate((t) => { document.documentElement.dataset['theme'] = t; }, theme);
     const shown = page.locator('.home-mark-img:visible');
@@ -477,7 +477,9 @@ test('sign-out revokes, logs out and lands on the signed-out screen', async ({ p
   await page.getByRole('button', { name: 'Account' }).click();
   await page.getByRole('button', { name: 'Sign out', exact: true }).click();
   await expect(page.getByTestId('sign-in')).toContainText("You're signed out.");
-  const log = (await (await request.get('/__harness')).json()).log as string[];
+  const { log, signOuts } = (await (await request.get('/__harness')).json()) as { log: string[]; signOuts: unknown[] };
+  // This browser only: Sign out everywhere is the account's own, in Account settings (release 6.11).
+  expect(signOuts).toEqual([{ everywhere: false }]);
   expect(log).toContain('POST /v1/me/sign-out');
   expect(log).toContain('POST /fake-auth/oauth2/revoke');
   expect(log).toContain('GET /fake-auth/logout');
@@ -1441,27 +1443,11 @@ test('ma-release.json is what the Platform loader needs', () => {
   expect(rel.version).toMatch(/^\d{4}\.\d{2}\.\d{2}-[0-9a-f]+(-dirty)?$/);
   expect(rel.entry).toMatch(/^assets\/.+\.js$/);
   expect(rel.css.length).toBeGreaterThan(0);
+  // Stylesheets fetched with their own chunks, or loaded only inside a frame, never go to every member (release 4's B4).
+  expect(rel.css.filter((f) => /\/(simple|tour|room|shield|welcome|courier-frame)-[\w-]+\.css$/.test(f))).toEqual([]);
   const entry = readFileSync(`dist/release/${rel.entry}`, 'utf8');
   expect(entry).not.toContain('MockDeskLink');
-  const css = readFileSync(`dist/release/${rel.css[0]}`, 'utf8');
+  // The office's own stylesheet carries the fonts; the welcome's first-load stylesheet may come before it in the list.
+  const css = rel.css.map((f: string) => readFileSync(`dist/release/${f}`, 'utf8')).join('\n');
   expect(css).toContain(`/v/${rel.version}/assets/inter-latin`);
-});
-
-test('Sign out everywhere from the shipping bundle under the default CSP: Platform hears everywhere, then this browser signs out as Sign out does', async ({ page, request }) => {
-  const errors = watchConsole(page);
-  await signIn(page);
-  await canvasPainted(page);
-  const token = await storedRefreshToken(page);
-  await page.getByRole('button', { name: 'Account', exact: true }).click();
-  await page.getByTestId('sign-out-everywhere').click();
-  await expect(page.getByTestId('sign-in')).toContainText("You're signed out.");
-  const { log, signOuts, revoked } = (await (await request.get('/__harness')).json()) as { log: string[]; signOuts: unknown[]; revoked: string[] };
-  expect(signOuts).toEqual([{ everywhere: true }]);
-  const at = (line: string): number => log.indexOf(line);
-  expect(at('POST /v1/me/sign-out')).toBeGreaterThan(-1);
-  expect(at('POST /fake-auth/oauth2/revoke')).toBeGreaterThan(at('POST /v1/me/sign-out'));
-  expect(at('GET /fake-auth/logout')).toBeGreaterThan(at('POST /fake-auth/oauth2/revoke'));
-  expect(revoked).toEqual([token]);
-  expect(await storedRefreshToken(page)).toBeNull();
-  expect(errors).toEqual([]);
 });

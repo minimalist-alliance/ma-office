@@ -1,0 +1,10 @@
+From: Café Terrace <terrace@example.org>
+To: me@desk.example
+Date: Fri, 13 Nov 2026 10:00:00 +0000
+Subject: Lunch 🍕 on Friday — café terrace
+Message-ID: <subject-raw-utf8@corpus.example>
+MIME-Version: 1.0
+X-Corpus-Note: raw UTF-8 in headers (RFC 6532), emoji included
+Content-Type: text/plain; charset=utf-8
+
+Lunch on the terrace at noon.

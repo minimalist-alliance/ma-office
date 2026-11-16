@@ -1,0 +1,46 @@
+<?xml version="1.0" encoding="UTF-8"?>
+<project xmlns="http://maven.apache.org/POM/4.0.0"
+         xmlns:xsi="http://www.w3.org/2001/XMLSchema-instance"
+         xsi:schemaLocation="http://maven.apache.org/POM/4.0.0 https://maven.apache.org/xsd/maven-4.0.0.xsd">
+  <modelVersion>4.0.0</modelVersion>
+
+  <!--
+    Courier's envelope library (the launch plan's Wave 1.4; draft ADR "Courier's envelopes"): the desk's identity and box
+    keys, the sealed and signed envelope every desk-to-desk message and every mail-door delivery travels in, padding,
+    key bundles, pinning and safety numbers. HPKE (RFC 9180) and Ed25519 come from Bouncy Castle's lightweight API; nothing
+    here builds a primitive of its own. deskd ships it; courier-testkit's fake relay and peer desks use it.
+  -->
+  <parent>
+    <groupId>com.minimalistalliance.desk</groupId>
+    <artifactId>desk-services</artifactId>
+    <version>0.1.0-SNAPSHOT</version>
+  </parent>
+
+  <artifactId>courier-envelope</artifactId>
+  <name>courier-envelope</name>
+  <description>Courier's envelopes: HPKE sealing, Ed25519 signing, desk key bundles, pinning and safety numbers.</description>
+
+  <dependencies>
+    <dependency>
+      <groupId>org.bouncycastle</groupId>
+      <artifactId>bcprov-jdk18on</artifactId>
+      <version>${bouncycastle.version}</version>
+    </dependency>
+
+    <!-- The signed header's JSON (maps and lists only), as deskd's. -->
+    <dependency>
+      <groupId>tools.jackson.jr</groupId>
+      <artifactId>jackson-jr-objects</artifactId>
+    </dependency>
+
+    <dependency>
+      <groupId>org.springframework.boot</groupId>
+      <artifactId>spring-boot-starter-test</artifactId>
+      <scope>test</scope>
+    </dependency>
+  </dependencies>
+
+  <build>
+    <finalName>courier-envelope</finalName>
+  </build>
+</project>

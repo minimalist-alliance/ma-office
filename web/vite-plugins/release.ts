@@ -15,11 +15,16 @@ export function releasePlugin(version: string): Plugin {
       const files = Object.values(bundle);
       const entry = files.find((f) => f.type === 'chunk' && f.isEntry);
       if (!entry) throw new Error('ma-release: no entry chunk');
-      // The app's stylesheet only. The simplified view's is a `?url` asset the Browser window fetches with the view's chunk
-      // (`simple/SimpleLayer.tsx`), so the loader must not inject it for every member.
-      const css = files.filter((f) => f.type === 'asset' && f.fileName.endsWith('.css') && !/\/simple-[\w-]+\.css$/.test(f.fileName)).map((f) => f.fileName);
+      // The app's stylesheet only. The simplified view's, the office tour's and Maia Mode's room's are `?url` assets fetched with
+      // their own chunks (`simple/SimpleLayer.tsx`, `tour/TourLayer.tsx`, `maiamode/chunk.ts`, the held line's `maiamode/shield/chunk.ts`, Maia's welcome's `welcome/WelcomeLayer.tsx`),
+      // so the loader must not inject them
+      // for every member (release 4's B4: the room's was fetched by members Maia Mode doesn't list). Courier's message frame's
+      // is loaded inside its sandboxed frame only (`apps/courier/frame.ts`): on the office's page its `html` and `body` rules
+      // would restyle the whole office.
+      const css = files.filter((f) => f.type === 'asset' && f.fileName.endsWith('.css') && !/\/(simple|tour|room|shield|welcome|courier-frame)-[\w-]+\.css$/.test(f.fileName)).map((f) => f.fileName);
       if (!css.length) throw new Error('ma-release: no stylesheet in the bundle');
-      const manifest = { app: 'desk-web', version, deskApiRange: DESK_API_RANGE, entry: entry.fileName, css };
+      // `loadingOverlay`: this bundle takes the loader's overlay away itself (ADR 0058); without it the loader does, at the entry's load.
+      const manifest = { app: 'desk-web', version, deskApiRange: DESK_API_RANGE, entry: entry.fileName, css, loadingOverlay: 1 };
       writeFileSync(join(options.dir ?? 'dist', 'ma-release.json'), `${JSON.stringify(manifest, null, 2)}\n`);
     },
   };

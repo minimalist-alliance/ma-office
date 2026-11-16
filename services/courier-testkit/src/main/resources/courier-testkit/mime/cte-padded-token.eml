@@ -1,0 +1,11 @@
+From: Meadow <meadow@example.net>
+To: me@desk.example
+Date: Fri, 13 Nov 2026 10:00:00 +0000
+Subject: Padded token
+Message-ID: <cte-padded-token@corpus.example>
+MIME-Version: 1.0
+X-Corpus-Note: Content-Transfer-Encoding with spaces around the token
+Content-Type: text/plain; charset=utf-8
+Content-Transfer-Encoding:   base64  
+
+VGhlIG1lYWRvdyB3YXMgbW93biBvbiBUdWVzZGF5Lg0K

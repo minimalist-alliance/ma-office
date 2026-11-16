@@ -133,7 +133,7 @@ try {
   // Park on the Browser, reload, remembered.
   for (let i = 0; i < 8 && !/^Browser/.test(await label()); i += 1) {
     await p.locator('[data-testid="carousel-stage"]').focus();
-    await p.keyboard.press(/^Notebook|^Chat/.test(await label()) ? 'ArrowRight' : 'ArrowLeft');
+    await p.keyboard.press(/^Notebook|^Courier/.test(await label()) ? 'ArrowRight' : 'ArrowLeft');
     await wait(600);
   }
   const before = await label();

@@ -1,13 +1,13 @@
 // The top bar's account menu: its button, the member's avatar with their tier's badge (task 45), and the menu's state. The
-// panel itself (the member, theme, background, plain background, About this desk, keyboard shortcuts, Account settings, sign
-// out and sign out everywhere) is `AccountPanel.tsx`, in the popovers chunk, since it draws nothing until it's opened.
+// panel itself (the member, theme, Appearance, Maia, keyboard shortcuts, About this desk, Account settings and Sign out;
+// never over 60 % of the page) is `AccountPanel.tsx`, in the popovers chunk, since it
+// draws nothing until it's opened. Both are glass, as the top bar's other rounds and the office's other menus (release 6.10).
 import { useEffect, useRef, useState } from 'react';
 import { useFree } from '../free/door';
 import { useOnDemand } from '../lib/onDemand';
 import { useSession } from '../platform/session';
 import { useMyBadge, useMyTier, useTierNames } from '../platform/useTiers';
 import { SetupMenuSlot } from '../setup/door';
-import { isFlatGround } from '../theme/ground';
 import { Avatar } from './Avatar';
 import { builtRecipeOf, pictureOf } from './avatar';
 import { Icon } from './icons';
@@ -15,10 +15,8 @@ import { popovers } from './popoversChunk';
 
 export function AccountMenu() {
   const [open, setOpen] = useState(false);
-  const [flat, setFlat] = useState(isFlatGround);
-  /** Which sign-out is on its way. Either one holds the other back; a failed "everywhere" puts it back to null. */
-  const [leaving, setLeaving] = useState<'here' | 'everywhere' | null>(null);
-  const [everywhereFailed, setEverywhereFailed] = useState(false);
+  /** Sign out is on its way: its row says "Signing out…", and a second press does nothing. */
+  const [leaving, setLeaving] = useState(false);
   const ref = useRef<HTMLDivElement>(null);
   const btnRef = useRef<HTMLButtonElement>(null);
   const me = useSession((s) => s.me);
@@ -66,7 +64,7 @@ export function AccountMenu() {
       <button
         ref={btnRef}
         type="button"
-        className={`icon-btn chrome account-btn${open ? ' on' : ''}`}
+        className={`icon-btn chrome ma-glass account-btn${open ? ' on' : ''}`}
         aria-expanded={open}
         aria-controls="account-panel"
         aria-label="Account"
@@ -86,12 +84,8 @@ export function AccountMenu() {
           badge={badge}
           FreeTier={FreeTier}
           SetupMenuSlot={SetupMenuSlot}
-          flat={flat}
-          setFlat={setFlat}
           leaving={leaving}
           setLeaving={setLeaving}
-          everywhereFailed={everywhereFailed}
-          setEverywhereFailed={setEverywhereFailed}
           setOpen={setOpen}
           leave={leave}
           btnRef={btnRef}

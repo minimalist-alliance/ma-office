@@ -79,6 +79,7 @@ test('the office, its desks, Notebook and Files', async ({ page }) => {
   const pageBtn = await resolves(nb, 'notebook.page', { many: true });
   await resolves(pageBtn.first(), 'notebook.page.title');
   await resolves(nb, 'notebook.tab', { many: true });
+  await resolves(nb, 'notebook.side');
 
   // Files: the top folder of the mock desk's drive, a row selected, the New folder dialog with a name it refuses.
   await press(personal.locator(selOf('files.tile')));

@@ -9,7 +9,8 @@
 // isn't @test.minimalistalliance.com. Addresses are compared, never printed.
 import { execFileSync } from 'node:child_process';
 import { randomBytes } from 'node:crypto';
-import { mkdirSync, writeFileSync } from 'node:fs';
+import { mkdirSync, readFileSync, writeFileSync } from 'node:fs';
+import { join } from 'node:path';
 import { test, expect, type BrowserContext, type Page } from '@playwright/test';
 import { generate } from 'otplib';
 
@@ -406,6 +407,19 @@ test('a self-hosted desk: paired from the Platform, opened from the office, stre
     for (const kv of (process.env.SELFHOST_EXPECT ?? '').split(',').filter(Boolean)) {
       const [k, v] = kv.split('=');
       expect(versions[k], `the desk's ${k}`).toBe(v);
+    }
+  });
+
+  await test.step('2a the Agent reads attachments in desk-parse, as a cloud desk does (ADR 0097; image/verify-parse.sh)', async () => {
+    // image/verify-parse.sh's parts, piped to the desk as root, the way image/verify.sh section 3p runs them. A bundle whose desk-agent
+    // is from before ADR 0097 (its health names no reader) gets the image's parts only: the container, its socket and its rules.
+    const script = readFileSync(join(__dirname, '..', '..', 'image', 'verify-parse.sh'), 'utf8');
+    const way = onDesk("sudo curl -s --max-time 5 --unix-socket /run/desk-agent/agent-admin.sock http://localhost/health | python3 -I -c 'import json, sys; print(json.load(sys.stdin).get(\"parse\") or \"none\")' || true").trim();
+    const parts = way === 'sidecar' ? ['static', 'wall', 'socket', 'parse', 'agent', 'clean', 'limits'] : ['static', 'wall', 'socket'];
+    for (const part of parts) {
+      const out = execFileSync(SSH, [`sudo bash -s -- ${part}`], { input: script, encoding: 'utf8', timeout: 180_000, maxBuffer: 8 << 20 });
+      expect(out, `verify-parse.sh ${part}:\n${out}`).toContain('ran to the end');
+      expect(out.split('\n'), `verify-parse.sh ${part}:\n${out}`).not.toContain('FAILED');
     }
   });
 

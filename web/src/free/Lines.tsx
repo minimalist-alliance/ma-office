@@ -18,7 +18,7 @@ export function FreeNotices() {
   if (!notice) return null;
   // Not live itself: one added with its words may not be heard, so the shell's region says it (`announce`).
   return (
-    <div className="notice free-notice" data-testid="free-notice">
+    <div className="notice free-notice ma-glass" data-testid="free-notice">
       <Words text={notice.text} />
     </div>
   );

@@ -35,7 +35,7 @@ const deskOf = (x: number, items: Item[]): Desk => {
 const personal = (x = 0): Desk => deskOf(x, [
   item(PERSONAL, 'notebook', 24, 24, OPEN),
   item(PERSONAL, 'browser', 24 + OPEN.w + 16, 24, BROWSER),
-  item(PERSONAL, 'chat', 24, 24 + OPEN.h + 16),
+  item(PERSONAL, 'courier', 24, 24 + OPEN.h + 16),
   item(PERSONAL, 'files', 116, 24 + OPEN.h + 16),
   item(PERSONAL, 'agent', 208, 24 + OPEN.h + 16),
 ]);
@@ -43,13 +43,13 @@ const personal = (x = 0): Desk => deskOf(x, [
 const work = (x: number): Desk => deskOf(x, [
   item(WORK, 'files', 24, 24, OPEN),
   item(WORK, 'agent', 24 + OPEN.w + 16, 24, OPEN),
-  item(WORK, 'chat', 24, 24 + OPEN.h + 16),
+  item(WORK, 'courier', 24, 24 + OPEN.h + 16),
   item(WORK, 'notebook', 116, 24 + OPEN.h + 16),
   item(WORK, 'browser', 208, 24 + OPEN.h + 16),
 ]);
-/** The Studio desk: Chat open, with the Notebook beside it. */
+/** The Studio desk: Courier open, with the Notebook beside it. */
 const studio = (x: number): Desk => deskOf(x, [
-  item(STUDIO, 'chat', 24, 24, OPEN),
+  item(STUDIO, 'courier', 24, 24, OPEN),
   item(STUDIO, 'notebook', 24 + OPEN.w + 16, 24, OPEN),
   item(STUDIO, 'browser', 24, 24 + OPEN.h + 16),
   item(STUDIO, 'files', 116, 24 + OPEN.h + 16),
@@ -65,12 +65,15 @@ const head = (page: Page, app: string): Locator => tile(page, app).locator('.ope
 /** An app's proxy on the desk: its stop for the keyboard, live or not. */
 const proxy = (page: Page, app: string, deskId = PERSONAL): Locator => page.locator(`[id="proxy-${deskId}:${app}"]`);
 const inApp = (page: Page): Promise<boolean> => page.evaluate(() => !!document.activeElement?.closest('.open-tile-app'));
-/** Every live tile's ground is opaque and the canvas paints nothing under it. */
+/**
+ * Every live tile's app is on an opaque ground and the canvas paints nothing under it. Its frame is the office's glass (its
+ * dense body, `styles/glass.css`), or under reduced transparency the window's surface.
+ */
 async function nothingUnder(page: Page): Promise<void> {
-  const tiles = await page.locator('.open-tile').evaluateAll((els) => els.map((e) => ({ id: (e as HTMLElement).dataset['item']!, bg: getComputedStyle(e).backgroundColor, app: getComputedStyle(e.querySelector('.open-tile-app')!).backgroundColor })));
+  const tiles = await page.locator('.open-tile').evaluateAll((els) => els.map((e) => ({ id: (e as HTMLElement).dataset['item']!, bg: getComputedStyle(e).backgroundColor, image: getComputedStyle(e).backgroundImage, app: getComputedStyle(e.querySelector('.open-tile-app')!).backgroundColor })));
   expect(tiles.length).toBeGreaterThan(0);
   for (const t of tiles) {
-    expect(t.bg, t.id).toMatch(/^rgb\(/);
+    expect(/^rgb\(/.test(t.bg) || /radial-gradient/.test(t.image), `${t.id}: ${t.bg} ${t.image}`).toBe(true);
     expect(t.app, t.id).toMatch(/^rgb\(/);
     expect((await canvasTile(page, t.id)).visible, t.id).toBe(false);
   }
@@ -138,6 +141,34 @@ test.beforeEach(async ({ request }) => {
   await harness(request, { reset: true });
 });
 
+test('To-do\'s tile, on a desk an open Notebook fills across, goes in a free spot beside it: the desk keeps its size and the Notebook stays live at 1280 x 720 (E2E-RED)', async ({ page, request }) => {
+  // staging's fleet-officer desk (MP `docs/sub-status/e2e-red.md`): six columns, the Notebook open across them. To-do's tile
+  // went to a new row, the desk grew to 604 and the Notebook fell to 450 px, under the 480 a live tile needs.
+  await page.setViewportSize({ width: 1280, height: 720 });
+  const desk: Desk = { x: 0, y: 0, w: 664, h: 512, items: [
+    item(PERSONAL, 'notebook', 8, 24, { w: 540, h: 444 }),
+    item(PERSONAL, 'courier', 564, 24),
+    item(PERSONAL, 'browser', 564, 116),
+    item(PERSONAL, 'agent', 564, 208),
+  ] };
+  const errors = watchConsole(page);
+  await harness(request, { fleet: fleetOf([PERSONAL]), todo: null, layoutDocs: { [ME]: docOf({ [PERSONAL]: desk }) } });
+  await signIn(page);
+  await canvasPainted(page);
+  await focusCanvas(page);
+  await page.keyboard.press('1');
+  await settled(page);
+  const todo = page.getByRole('group', { name: 'Personal desk' }).getByRole('button', { name: /^To-do/ });
+  await expect(todo).toHaveCount(1);
+  const { x, y, s } = await cam(page);
+  const b = (await todo.boundingBox())!;
+  expect(Math.abs(b.x - (564 * s + x))).toBeLessThan(2);
+  expect(Math.abs(b.y - (300 * s + y))).toBeLessThan(2);
+  await expect(tile(page, 'notebook')).toBeVisible();
+  expect((await tile(page, 'notebook').boundingBox())!.width).toBeGreaterThanOrEqual(480);
+  expect(errors).toEqual([]);
+});
+
 test('an enlarged tile is its app, live on the desk: the Notebook takes typing in place, and the canvas draws nothing under it', async ({ page, request }) => {
   const errors = await arrive(page, request);
   await expect(tile(page, 'notebook')).toBeVisible();
@@ -149,7 +180,7 @@ test('an enlarged tile is its app, live on the desk: the Notebook takes typing i
   expect(Math.abs(box.y - (24 * s + y))).toBeLessThan(1.5);
   expect(Math.abs(box.width - OPEN.w * s)).toBeLessThan(1.5);
   expect((await canvasTile(page, `${PERSONAL}:notebook`)).visible).toBe(false);
-  expect((await canvasTile(page, `${PERSONAL}:chat`)).visible).toBe(true);
+  expect((await canvasTile(page, `${PERSONAL}:courier`)).visible).toBe(true);
   // The Notebook, in place: a page to write on.
   const editor = tile(page, 'notebook').getByTestId('note-editor');
   await expect(editor).toBeVisible();
@@ -310,9 +341,9 @@ test('Files opens a folder in place, and the Agent takes a key and a message', a
   expect(errors).toEqual([]);
 });
 
-test('Chat, live in its tile as its window shows it (an honest empty state, nothing to send yet), beside the Notebook', async ({ page, request }) => {
+test('Courier, live in its tile as its window shows it (an honest empty state, nothing to send yet), beside the Notebook', async ({ page, request }) => {
   const errors = await arrive(page, request, { desks: { [STUDIO]: studio(0) } });
-  await expect(tile(page, 'chat').getByTestId('empty-chat')).toBeVisible();
+  await expect(tile(page, 'courier').getByTestId('empty-courier')).toBeVisible();
   await expect(tile(page, 'notebook').getByTestId('note-editor')).toBeVisible();
   expect(errors).toEqual([]);
 });
@@ -447,7 +478,7 @@ test('Commons on a Guild Desk, open on its desk: a message sent in place', async
 });
 
 for (const theme of THEMES) {
-  test(`${theme}: a desk at 1280 x 800 with the Notebook and the Browser open side by side, Files and the Agent, Chat; the note; axe`, async ({ page, request }) => {
+  test(`${theme}: a desk at 1280 x 800 with the Notebook and the Browser open side by side, Files and the Agent, Courier; the note; axe`, async ({ page, request }) => {
     await page.setViewportSize({ width: 1280, height: 800 });
     const name = theme === 'dusk' ? 'zen' : theme;
     const errors = await arrive(page, request, { theme, desks: { [PERSONAL]: personal(), [WORK]: work(1400), [STUDIO]: studio(2800) } });
@@ -472,9 +503,9 @@ for (const theme of THEMES) {
     await focusCanvas(page);
     await page.keyboard.press('3');
     await settled(page);
-    await expect(tile(page, 'chat').getByTestId('empty-chat')).toBeVisible();
+    await expect(tile(page, 'courier').getByTestId('empty-courier')).toBeVisible();
     await nothingUnder(page);
-    await shot(page, `${name}-chat-notebook-1280`);
+    await shot(page, `${name}-courier-notebook-1280`);
     // Back on the first desk, the Notebook as a window: its tile is its widget with the note.
     await focusCanvas(page);
     await page.keyboard.press('1');
@@ -499,6 +530,9 @@ for (const theme of THEMES) {
     await expect(tile(page, 'notebook').getByTestId('note-editor')).toBeVisible();
     await tile(page, 'notebook').getByRole('button', { name: 'Open in its window' }).click();
     await expect(page.getByRole('dialog', { name: /Notebook/ })).toBeVisible();
+    // The window opens with a FLIP from its tile (`AppWindow`), and axe weighs a target against what's near it: run mid-flight,
+    // it caught the Browser tile's Address field (22 px tall) beside the moving window 1 run in 3 to 7, on `main` too.
+    await expect.poll(() => page.evaluate(() => document.getAnimations().filter((a) => a.playState === 'running' && ((a.effect as KeyframeEffect | null)?.target as Element | null)?.closest?.('.window-layer')).length)).toBe(0);
     expect(await axe(page, ['.open-layer', '.proxy-layer', '.window-layer'])).toEqual([]);
     // Esc closes the window, and the keyboard is back on the tile's stop on the desk.
     await page.keyboard.press('Escape');
@@ -631,15 +665,15 @@ test('from the overview, a press on an open tile brings its desk in and opens it
   // A note's link, an agent, the hidden list: opening an app that's live in its tile goes to the tile.
   await expect(tile(page, 'agent')).toBeVisible();
   await focusCanvas(page);
-  await desk(page, 'Work').getByRole('button', { name: /^Chat/ }).evaluate((el) => (el as HTMLButtonElement).click());
-  await expect(page.getByRole('dialog', { name: /Chat/ })).toBeVisible(); // an icon still opens its window
+  await desk(page, 'Work').getByRole('button', { name: /^Courier/ }).evaluate((el) => (el as HTMLButtonElement).click());
+  await expect(page.getByRole('dialog', { name: /Courier/ })).toBeVisible(); // an icon still opens its window
   expect(errors).toEqual([]);
 });
 
 test('a tile with another app over it stays a drawing; a press brings it to the front, live, and opens no window', async ({ page, request }) => {
   const covered = deskOf(0, [
     item(PERSONAL, 'notebook', 24, 24, OPEN),
-    item(PERSONAL, 'chat', 120, 120),
+    item(PERSONAL, 'courier', 120, 120),
     item(PERSONAL, 'browser', 24, 24 + OPEN.h + 16),
     item(PERSONAL, 'files', 116, 24 + OPEN.h + 16),
     item(PERSONAL, 'agent', 208, 24 + OPEN.h + 16),

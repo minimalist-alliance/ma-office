@@ -3,10 +3,11 @@
 // data is topic `agent.tools` (the spec's 2.8), which no desk serves yet: there, the strip simply never shows.
 import { useEffect, useRef, useState } from 'react';
 import { AgentError, newIdem, type AgentClient } from '../client/agentClient';
-import type { Agent, RunningCall, ToolChip, ToolsEvent } from '../client/types';
+import type { Agent, Message, RunningCall, ToolsEvent } from '../client/types';
 import { LEVEL_ICON } from '../model/approvals';
 import { when } from '../model/format';
 import { alsoText, callWords, chipOf, elapsed, runningFor, stripOf, toolsRunningText } from '../model/tools';
+import { AutoChip, autoRowFor } from './Auto';
 import { Icon } from './icons';
 
 /** Every call running on the desk, from `agent.tools`, and the desk's clock against this page's. */
@@ -192,21 +193,41 @@ export function RunningStrip({ client, calls, offset, agent, agents, onOpenAgent
   );
 }
 
-/** A reply's calls, once they've run: a chip each (spec 2.5). Declined and unanswered calls have none: their card says so. */
-export function ToolChips({ tools }: { tools?: readonly ToolChip[] | null }) {
-  const chips = (tools ?? []).map((t) => chipOf(t)).filter((c): c is NonNullable<ReturnType<typeof chipOf>> => c !== null);
+/**
+ * A reply's calls, once they've run: a chip each (spec 2.5). Declined and unanswered calls have none: their card says so. A call
+ * done without asking says so, with its Undo (API.md section 18, "Done without asking"). A call a restart cut off,
+ * with no card, gets its line under the chips: it may have happened.
+ */
+export function ToolChips({ m }: { m: Pick<Message, 'id' | 'tools' | 'auto'> }) {
+  const chips = (m.tools ?? []).flatMap((t) => {
+    const c = chipOf(t);
+    return c ? [{ c, t, row: autoRowFor(m, t) }] : [];
+  });
   if (!chips.length) return null;
   return (
-    <ul className="ag-tools-done" aria-label="Tools used" data-testid="tool-chips">
-      {chips.map((c, i) => (
-        <li key={i} className="ag-tool-chip" data-result={c.result} data-level={c.level} title={c.why ?? undefined} data-testid="tool-chip">
-          <Icon name={LEVEL_ICON[c.level]} size={14} />
-          <span className="ag-tool-word">{c.word}</span>
-          {c.target && <span className="ag-tool-target">{c.target}</span>}
-          {c.time && <span className="ag-tool-time">{c.time}</span>}
-          {c.why && <span className="ag-sr">: {c.why}</span>}
-        </li>
-      ))}
-    </ul>
+    <>
+      <ul className="ag-tools-done" aria-label="Tools used" data-testid="tool-chips">
+        {chips.map(({ c, t, row }, i) =>
+          row ? (
+            <AutoChip key={i} chip={t} row={row} messageId={m.id} time={c.time} />
+          ) : (
+          <li key={i} className="ag-tool-chip" data-result={c.result} data-level={c.level} title={c.why ?? undefined} data-testid="tool-chip">
+            <Icon name={LEVEL_ICON[c.level]} size={14} />
+            <span className="ag-tool-word">{c.word}</span>
+            {c.target && <span className="ag-tool-target">{c.target}</span>}
+            {c.time && <span className="ag-tool-time">{c.time}</span>}
+            {c.why && !c.note && <span className="ag-sr">: {c.why}</span>}
+          </li>
+          ),
+        )}
+      </ul>
+      {chips.map(({ c }, i) =>
+        c.note ? (
+          <p key={i} className="ag-chip-note" data-testid="tool-chip-interrupted">
+            {c.note}
+          </p>
+        ) : null,
+      )}
+    </>
   );
 }

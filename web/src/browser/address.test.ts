@@ -1,5 +1,6 @@
 import { describe, expect, it } from 'vitest';
-import { addressShown, addressToUrl, displayText, SEARCH_URL } from './address';
+import { addressShown, displayText } from './address';
+import { addressToUrl, SEARCH_URL } from './typedAddress';
 
 const search = (q: string): string => SEARCH_URL + encodeURIComponent(q);
 

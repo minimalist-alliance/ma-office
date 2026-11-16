@@ -1,0 +1,50 @@
+{
+  "id": "notebook-018",
+  "area": "notebook",
+  "title": "A search with no hits",
+  "prompt": "Do I have any notes about sailing?",
+  "setup": {
+    "notebook": [
+      {
+        "tab": "Harness",
+        "title": "Inbox",
+        "markdown": "# Inbox\n\nThings to sort later.\n"
+      }
+    ]
+  },
+  "approve": "all",
+  "checks": [
+    {
+      "kind": "reply",
+      "contains": [
+        "sailing"
+      ],
+      "state": "done"
+    },
+    {
+      "kind": "cards",
+      "tools": []
+    }
+  ],
+  "policy": {
+    "tools": [
+      "notebook_search"
+    ]
+  },
+  "standIn": [
+    {
+      "calls": [
+        {
+          "name": "notebook_search",
+          "input": {
+            "query": "sailing",
+            "limit": 5
+          }
+        }
+      ]
+    },
+    {
+      "text": "I couldn't find any notes about sailing."
+    }
+  ]
+}

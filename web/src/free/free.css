@@ -129,3 +129,43 @@
   outline: 2px solid var(--ma-focus-ring);
   outline-offset: 2px;
 }
+
+/* "You're on {Free} now" (freeNow.tsx): card D's panel and list (app.css `.desk-notice`, `.ended-list`), as wide as D, with a
+   close button in its corner where the office still has a desk to open behind it. */
+.desk-notice[data-card='1A'] {
+  width: min(480px, calc(100% - 32px));
+}
+.desk-notice[data-closable] {
+  padding-top: 36px;
+}
+.free-now-close {
+  position: absolute;
+  top: 8px;
+  right: 8px;
+  display: grid;
+  place-items: center;
+  width: 32px;
+  height: 32px;
+  padding: 0;
+  border: 0;
+  border-radius: 999px;
+  background: transparent;
+  color: var(--ma-text-secondary);
+  cursor: pointer;
+}
+.free-now-close:hover {
+  background: var(--ma-surface-fill);
+  color: var(--ma-text-primary);
+}
+.free-now-close:focus-visible {
+  outline: 2px solid var(--ma-focus-ring);
+  outline-offset: 2px;
+}
+@media (pointer: coarse) {
+  .free-now-close {
+    width: 44px;
+    height: 44px;
+    top: 4px;
+    right: 4px;
+  }
+}

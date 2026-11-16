@@ -72,11 +72,11 @@ class ProposalApplyTest {
     @Test
     void aCreatesTimerWithAnIdOrALinkGivenTwiceIsRefusedWhenProposed() throws Exception {
         List<Map<String, Object>> cards = propose(
-                call("t1", "propose_agent", "name", "Planner", "purpose", "x", "icon", "pen", "tone", "teal",
+                call("t1", "propose_agent", "name", "Planner", "purpose", "x", "icon", "pen", "tone", "harbor",
                         "timers", List.of(m("label", "Digest", "kind", "repeat", "everyMinutes", 60, "prompt", "Go."),
                                 m("id", "tm-aaaaaaaaaaaa", "label", "x", "kind", "once", "inMinutes", 5, "prompt",
                                         "Go."))),
-                call("t2", "propose_agent", "name", "Planner", "purpose", "x", "icon", "pen", "tone", "teal",
+                call("t2", "propose_agent", "name", "Planner", "purpose", "x", "icon", "pen", "tone", "harbor",
                         "links", List.of(m("to", "Researcher", "rules", "Ask."), m("to", researcher, "rules",
                                 "Ask again."))));
 
@@ -90,7 +90,7 @@ class ProposalApplyTest {
     @Test
     void aCreateWithLinksAndTimersAppliesWhole() throws Exception {
         Map<String, Object> card = propose(call("t1", "propose_agent", "name", "Planner", "purpose", "Plan.",
-                "icon", "pen", "tone", "teal", "links", List.of(m("to", researcher, "rules", "Ask for sources.")),
+                "icon", "pen", "tone", "harbor", "links", List.of(m("to", researcher, "rules", "Ask for sources.")),
                 "timers", List.of(m("label", "Digest", "kind", "repeat", "days", List.of(1, 2, 3, 4, 5), "time",
                         "08:00", "prompt", "Plan the day."), m("label", "Once", "kind", "once", "inMinutes", 60,
                         "prompt", "Check in.")))).getFirst();
@@ -110,7 +110,7 @@ class ProposalApplyTest {
         String at = LocalDateTime.ofInstant(desk.clock.instant().plus(Duration.ofMinutes(30)), ZoneOffset.UTC)
                 .withNano(0).toString();
         Map<String, Object> card = propose(call("t1", "propose_agent", "name", "Planner", "purpose", "x", "icon",
-                "pen", "tone", "teal", "links", List.of(m("to", researcher, "rules", "Ask.")), "timers",
+                "pen", "tone", "harbor", "links", List.of(m("to", researcher, "rules", "Ask.")), "timers",
                 List.of(m("label", "Soon", "kind", "once", "at", at, "prompt", "Go.")))).getFirst();
         int before = agentCount();
 
@@ -129,7 +129,7 @@ class ProposalApplyTest {
     void aLinkTargetDeletedBeforeTheYesFailsTheCreateWhole() throws Exception {
         String other = desk.agent("Other");
         Map<String, Object> card = propose(call("t1", "propose_agent", "name", "Planner", "purpose", "x", "icon",
-                "pen", "tone", "teal", "links", List.of(m("to", other, "rules", "Ask.")))).getFirst();
+                "pen", "tone", "harbor", "links", List.of(m("to", other, "rules", "Ask.")))).getFirst();
         desk.call("agent.delete", "agentId", other);
         int before = agentCount();
 
@@ -140,7 +140,7 @@ class ProposalApplyTest {
     @Test
     void aKeyDeletedBeforeTheYesFailsTheCreateAndTheChangeAndChangesNothing() throws Exception {
         List<Map<String, Object>> cards = propose(
-                call("t1", "propose_agent", "name", "Planner", "purpose", "x", "icon", "pen", "tone", "teal"),
+                call("t1", "propose_agent", "name", "Planner", "purpose", "x", "icon", "pen", "tone", "harbor"),
                 call("t2", "propose_agent_change", "agent", researcher, "purpose", "New.", "model",
                         "fake-unpriced"));
         int before = agentCount();

@@ -21,6 +21,8 @@ import java.util.Set;
 import java.util.concurrent.locks.Condition;
 import java.util.concurrent.locks.ReentrantLock;
 import java.util.function.BooleanSupplier;
+import java.util.function.DoubleSupplier;
+import java.util.function.IntSupplier;
 import java.util.function.Supplier;
 import org.slf4j.Logger;
 import org.slf4j.LoggerFactory;
@@ -200,6 +202,9 @@ final class BrowserView implements Topic, BrowserTabs.ViewHooks {
     private int[] screen;
     private Thread worker;
     private Map<String, Object> lastPublished;
+    /** The Browser's zoom ({@link BrowserZoom}): its level for the topic, and its factor for a client's point on the desk's own view. */
+    private volatile IntSupplier zoomLevel;
+    private volatile DoubleSupplier zoomFactor = () -> 1;
 
     /**
      * @param liveSessions the sessions that want {@code live}. Takes the stream's lock, so it's never asked under this one
@@ -229,6 +234,42 @@ final class BrowserView implements Topic, BrowserTabs.ViewHooks {
         dispatcher.register(FIELD_AT, BrowserMethods.working(freeze, this::fieldAt));
         hub.topics().register(TOPIC, this);
         tabs.listenForView(this);
+    }
+
+    /**
+     * Follows the Browser's zoom: {@code browser.view} says its level, and on the desk's own view a client's point is divided
+     * by its factor, as CDP's input and a page's coordinates are CSS pixels at the page's zoom. A phone's view needs nothing:
+     * mobile emulation sets page zoom aside. Call once, before anything can happen.
+     */
+    void zoomFrom(IntSupplier level, DoubleSupplier factor) {
+        this.zoomLevel = level;
+        this.zoomFactor = factor;
+    }
+
+    /** The zoom's level changed: the topic says so. */
+    void zoomChanged() {
+        publish();
+    }
+
+    /**
+     * A phone's view is wanted or shown, a flip to or from one is due, or a tab still has a phone's emulation (one whose
+     * clear didn't go through): the tabs' page zoom isn't the desk's to read, as mobile emulation reads 1.
+     */
+    boolean phoneInPlay() {
+        lock.lock();
+        try {
+            if (wanted != null || shownTarget != null || shown != null) {
+                return true;
+            }
+            for (TabState state : tabStates.values()) {
+                if (state.applied != null) {
+                    return true;
+                }
+            }
+            return false;
+        } finally {
+            lock.unlock();
+        }
     }
 
     void start() {
@@ -849,7 +890,10 @@ final class BrowserView implements Topic, BrowserTabs.ViewHooks {
         return result == null ? null : result.get("value");
     }
 
-    /** A client's normalized point, as the view's own pixels in this tab: its CSS pixels at the page's zoom of 1. */
+    /**
+     * A client's normalized point, as the view's own pixels in this tab: its CSS pixels at a pinch's scale of 1, which on the
+     * desk's own view is the screen's over the Browser's zoom.
+     */
     private double[] inView(BrowserTabs.ViewTab tab, int x, int y) throws RpcException, InterruptedException {
         Shown applied;
         int[] size;
@@ -883,7 +927,12 @@ final class BrowserView implements Topic, BrowserTabs.ViewHooks {
                 lock.unlock();
             }
         }
-        return new double[] {(double) x / NORMALIZED * size[0], (double) y / NORMALIZED * size[1]};
+        // The desk's own view is at the Browser's zoom: screen pixels over it are the page's CSS pixels.
+        double zoom = zoomFactor.getAsDouble();
+        if (!(zoom > 0)) {
+            zoom = 1;
+        }
+        return new double[] {(double) x / NORMALIZED * size[0] / zoom, (double) y / NORMALIZED * size[1] / zoom};
     }
 
     private static int coordinate(Map<String, Object> params, String name) throws RpcException {
@@ -917,7 +966,7 @@ final class BrowserView implements Topic, BrowserTabs.ViewHooks {
         }
     }
 
-    /** The topic's snapshot: API.md section 10, "On a phone". */
+    /** The topic's snapshot: API.md section 10, "On a phone", and {@code zoom}, the Browser's ("Zoom"). */
     Map<String, Object> state() {
         Shown view;
         Field focused;
@@ -932,6 +981,7 @@ final class BrowserView implements Topic, BrowserTabs.ViewHooks {
         if (view == null) {
             state.put("mode", "desktop");
             state.put("field", null);
+            putZoom(state);
             return state;
         }
         state.put("mode", "phone");
@@ -951,7 +1001,16 @@ final class BrowserView implements Topic, BrowserTabs.ViewHooks {
             described.put("box", Map.of("x", focused.x(), "y", focused.y(), "width", focused.width(), "height", focused.height()));
             state.put("field", described);
         }
+        putZoom(state);
         return state;
+    }
+
+    /** {@code zoom}, the Browser's level, once its zoom is enabled: a deskd without it says nothing of one. */
+    private void putZoom(Map<String, Object> state) {
+        IntSupplier level = zoomLevel;
+        if (level != null) {
+            state.put("zoom", level.getAsInt());
+        }
     }
 
     /** What /health says: which view the tabs have, and nothing of whose. */

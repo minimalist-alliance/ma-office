@@ -16,7 +16,7 @@ mkdirSync(SHOTS, { recursive: true });
 const EDGE = 8;
 const STRIP = 44;
 const MIN = 56;
-const APPS = ['chat', 'notebook', 'browser', 'agent'];
+const APPS = ['courier', 'notebook', 'browser', 'agent'];
 const VP = { w: 1440, h: 900 };
 
 const watchdog = setTimeout(() => void shutdown(1, 'watchdog'), 8 * 60 * 1000);
@@ -139,7 +139,9 @@ const p = S.page;
 const btn = p.locator(`#proxy-${ALLOWED}`);
 const proxyOf = (app) => p.locator(`[id="proxy-${ALLOWED}:${app}"]`);
 const storage = (k) => p.evaluate((key) => localStorage.getItem(key), k);
-const savedDoc = async () => JSON.parse((await storage('ma.layout.v2')) ?? 'null');
+// Courier's id in the stored layout: `chat` until the flip (src/canvas/storedIds.ts), read as `courier` here as the office does.
+const inMemory = (s) => (s == null ? s : s.replaceAll('"chat"', '"courier"').replaceAll(':chat"', ':courier"'));
+const savedDoc = async () => JSON.parse(inMemory(await storage('ma.layout.v2')) ?? 'null');
 const read = () => p.evaluate((id) => window.__rtRead(id), ALLOWED);
 const sample = () => p.evaluate((id) => window.__rtSample(id), ALLOWED);
 
@@ -423,23 +425,23 @@ function frameCheck(frames, app, others, size) {
 }
 const othersOf = (d, app) => APPS.filter((a) => a !== app).map((a) => d.items[a]);
 {
-  // Fast, straight through: Chat at Notebook, the pointer far past it in one move.
+  // Fast, straight through: Courier at Notebook, the pointer far past it in one move.
   let f = await read();
-  let b = doc.items.chat;
+  let b = doc.items.courier;
   let c = screenOf(b, f);
-  const wantChat = doc.items.notebook.x - b.w;
+  const wantCourier = doc.items.notebook.x - b.w;
   await press({ x: c.cx, y: c.cy });
   await p.evaluate((id) => window.__rtRecord(id), ALLOWED);
   await p.mouse.move(c.cx + 600, c.cy);
   await wait(450);
-  const fastChat = frameCheck(await p.evaluate(() => window.__rtRecordStop()), 'chat', othersOf(doc, 'chat'), b);
-  const liveChat = (await read()).items.chat;
-  log(`fast: chat flung +600 px at notebook: frames ${JSON.stringify(fastChat)}; held at ${liveChat.x},${liveChat.y} with the pointer far past; contact is x ${wantChat}`);
+  const fastCourier = frameCheck(await p.evaluate(() => window.__rtRecordStop()), 'courier', othersOf(doc, 'courier'), b);
+  const liveCourier = (await read()).items.courier;
+  log(`fast: courier flung +600 px at notebook: frames ${JSON.stringify(fastCourier)}; held at ${liveCourier.x},${liveCourier.y} with the pointer far past; contact is x ${wantCourier}`);
   await shot(SHOTS, 'step2-fast-contact');
   await cropTo('step2-fast-contact-crop', screenOf({ x: b.x, y: b.y - 16, w: 260, h: 108 }, await read()));
   await p.mouse.up();
   doc = await docAfter();
-  const chatOk = fastChat.overlapFrames === 0 && near(doc.items.chat.x, wantChat) && near(doc.items.chat.y, b.y);
+  const courierOk = fastCourier.overlapFrames === 0 && near(doc.items.courier.x, wantCourier) && near(doc.items.courier.y, b.y);
 
   // And the other way: Browser flung left into Notebook.
   f = await read();
@@ -494,7 +496,7 @@ const othersOf = (d, app) => APPS.filter((a) => a !== app).map((a) => d.items[a]
   await wait(200);
   await shot(SHOTS, 'step2-end');
   const clearedLeft = near(doc.items.agent.x, n2(contactX - 40), 0.6);
-  result(2, chatOk && browserOk && overlapLeft === 0 && near(atContact.x, contactX) && pinnedOk && slideFrames.overlapFrames === 0 && pairs.length === 0 && clearedLeft, `fast: chat stopped at x ${doc.items.chat.x} (contact ${wantChat}), browser at x ${doc.items.browser.x} (contact ${wantBrowser}), ${fastChat.overlapFrames + fastBrowser.overlapFrames} overlapping frames in ${fastChat.frames + fastBrowser.frames}; small steps: stopped at x ${atContact.x}, ${overlapLeft} overlapping samples; slide: x pinned for ${pinned.length} steps, then cleared and caught up to x ${doc.items.agent.x}, ${slideFrames.overlapFrames} overlapping frames in ${slideFrames.frames}, largest frame move ${slideFrames.maxDeltaPerFrame} units; overlaps in the doc: ${pairs.length}`);
+  result(2, courierOk && browserOk && overlapLeft === 0 && near(atContact.x, contactX) && pinnedOk && slideFrames.overlapFrames === 0 && pairs.length === 0 && clearedLeft, `fast: courier stopped at x ${doc.items.courier.x} (contact ${wantCourier}), browser at x ${doc.items.browser.x} (contact ${wantBrowser}), ${fastCourier.overlapFrames + fastBrowser.overlapFrames} overlapping frames in ${fastCourier.frames + fastBrowser.frames}; small steps: stopped at x ${atContact.x}, ${overlapLeft} overlapping samples; slide: x pinned for ${pinned.length} steps, then cleared and caught up to x ${doc.items.agent.x}, ${slideFrames.overlapFrames} overlapping frames in ${slideFrames.frames}, largest frame move ${slideFrames.maxDeltaPerFrame} units; overlaps in the doc: ${pairs.length}`);
 }
 
 // ----- 3. The desk's edges, and the strip
@@ -534,28 +536,28 @@ const othersOf = (d, app) => APPS.filter((a) => a !== app).map((a) => d.items[a]
   const outside = [...right, ...down, ...up].filter((q) => !inside({ ...b, x: q.f.items.agent.x, y: q.f.items.agent.y }, doc)).length;
   log(`agent limits: right x ${atRight.x} (max ${maxX}), bottom y ${atBottom.y} (max ${maxY}, app's bottom ${n2(atBottom.y + b.h)}, strip starts ${n2(doc.h - STRIP)}), top y ${atTop.y} (min ${EDGE}); samples outside ${outside}`);
 
-  // Chat: left and up.
+  // Courier: left and up.
   f = await read();
-  const ch = doc.items.chat;
+  const ch = doc.items.courier;
   const cc = screenOf(ch, f);
   let fromC = { x: cc.cx, y: cc.cy };
   await press(fromC);
   let toC = { x: Math.max(120, pl - 85), y: fromC.y };
-  const left = await stepTo(fromC, toC.x - fromC.x, 0, 25, 'chat left');
-  const atLeft = left.at(-1).f.items.chat;
+  const left = await stepTo(fromC, toC.x - fromC.x, 0, 25, 'courier left');
+  const atLeft = left.at(-1).f.items.courier;
   fromC = toC;
   toC = { x: fromC.x, y: Math.max(70, pt - 110) };
-  const upC = await stepTo(fromC, 0, toC.y - fromC.y, 20, 'chat up');
-  const atTopC = upC.at(-1).f.items.chat;
+  const upC = await stepTo(fromC, 0, toC.y - fromC.y, 20, 'courier up');
+  const atTopC = upC.at(-1).f.items.courier;
   await p.mouse.up();
   doc = await docAfter();
   await p.mouse.move(40, 760);
   await wait(200);
   await shot(SHOTS, 'step3-end');
-  const outsideC = [...left, ...upC].filter((q) => !inside({ ...ch, x: q.f.items.chat.x, y: q.f.items.chat.y }, doc)).length;
+  const outsideC = [...left, ...upC].filter((q) => !inside({ ...ch, x: q.f.items.courier.x, y: q.f.items.courier.y }, doc)).length;
   const allInside = APPS.every((a) => inside(doc.items[a], doc));
   const pairs = overlapsIn(doc.items);
-  log(`chat limits: left x ${atLeft.x} (min ${EDGE}), top y ${atTopC.y} (min ${EDGE}); samples outside ${outsideC}; every app inside ${allInside}; overlaps ${pairs.length}`);
+  log(`courier limits: left x ${atLeft.x} (min ${EDGE}), top y ${atTopC.y} (min ${EDGE}); samples outside ${outsideC}; every app inside ${allInside}; overlaps ${pairs.length}`);
   result(3, near(atRight.x, maxX) && near(atBottom.y, maxY) && near(atTop.y, EDGE) && near(atLeft.x, EDGE) && near(atTopC.y, EDGE) && outside === 0 && outsideC === 0 && allInside && pairs.length === 0, `right x ${atRight.x} (limit ${maxX}), bottom y ${atBottom.y} so its bottom is ${n2(atBottom.y + b.h)} and the strip starts at ${n2(doc.h - STRIP)}, top y ${atTop.y}, left x ${atLeft.x}; ${outside + outsideC} samples outside in ${right.length + down.length + up.length + left.length + upC.length}; overlaps ${pairs.length}`);
 }
 

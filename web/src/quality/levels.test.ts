@@ -40,7 +40,7 @@ describe('the four levels', () => {
 
   it('only the Browser streams today', () => {
     expect(STREAMING_APPS).toEqual(['browser']);
-    expect(['browser', 'notebook', 'chat', 'agent'].map(streams)).toEqual([true, false, false, false]);
+    expect(['browser', 'notebook', 'courier', 'agent'].map(streams)).toEqual([true, false, false, false]);
   });
 });
 
@@ -78,8 +78,8 @@ describe('parseStreamQuality', () => {
   });
 
   it('an unknown level is High, a null override is none, and a bad app id is dropped', () => {
-    const doc = parseStreamQuality({ default: 'ultra', apps: { browser: 'ultra', claude: null, 'Bad Id': 'low', __proto__x: 'low', ['a'.repeat(33)]: 'low', chat: 'max' }, updatedAt: 5 });
-    expect(doc).toEqual({ default: 'high', apps: { browser: 'high', chat: 'max' }, desks: {}, updatedAt: null });
+    const doc = parseStreamQuality({ default: 'ultra', apps: { browser: 'ultra', claude: null, 'Bad Id': 'low', __proto__x: 'low', ['a'.repeat(33)]: 'low', courier: 'max' }, updatedAt: 5 });
+    expect(doc).toEqual({ default: 'high', apps: { browser: 'high', courier: 'max' }, desks: {}, updatedAt: null });
   });
 
   it('apps that is not an object is no overrides', () => {

@@ -1,6 +1,6 @@
 import { describe, expect, it } from 'vitest';
-import type { Agent, KeyMeta, Message } from '../client/types';
-import { badgeDismissable, badgeShown, errorText, isFreeLimit, KEY_RESTART_LINE, keyLost, keysLast, limitBannerText, monogram, offersOtherModel, retryDelayMs, STATUS_DOT, STATUS_LABEL, statusWord } from './agents';
+import type { Agent, KeyMeta, Message, ModelInfo } from '../client/types';
+import { badgeDismissable, badgeShown, defaultModel, errorText, isFreeLimit, KEY_RESTART_LINE, keyLost, keysLast, limitBannerText, monogram, offersOtherModel, retryDelayMs, STATUS_DOT, STATUS_LABEL, statusWord } from './agents';
 import { applyEvent, applyEvents, EMPTY_THREAD, streaming } from './conversation';
 
 const bound = { keyId: 'k', provider: 'anthropic', providerName: 'Anthropic', model: 'm' };
@@ -179,5 +179,27 @@ describe('a thread’s approvals (API.md section 18)', () => {
     let t = applyEvent(EMPTY_THREAD, { type: 'snapshot', seq: 1, messages: [], approvals: [ap('a', 1, { payload: { text: 'big' } })] });
     t = applyEvent(t, { type: 'approval', seq: 2, approval: ap('a', 1, { payload: null, payloadOmitted: true }) });
     expect((t.approvals[0] as unknown as { payload: unknown }).payload).toEqual({ text: 'big' });
+  });
+});
+
+describe('defaultModel: what a new agent gets unless the member picks', () => {
+  const M = 1_000_000;
+  const priced = (id: string, input = 2 * M, output = 10 * M): ModelInfo => ({ id, label: id, inputMicroUsdPerMTok: input, outputMicroUsdPerMTok: output });
+  const unpriced = (id: string): ModelInfo => ({ id, label: id, inputMicroUsdPerMTok: null, outputMicroUsdPerMTok: null });
+
+  it('takes the first the desk lists: desk-agent puts its default (Sonnet 5.5) first', () => {
+    expect(defaultModel([priced('claude-sonnet-5-5'), unpriced('claude-fable-5-2'), priced('claude-haiku-5-5', 0.1 * M, 0.5 * M)])?.id).toBe('claude-sonnet-5-5');
+  });
+
+  it('passes over an unpriced first model, as an older desk-agent listed Fable 5.2 first', () => {
+    // The order a staging lab key listed on Nov 15 before desk-agent put its default first.
+    const nov15 = [unpriced('claude-fable-5-2'), priced('claude-haiku-5-5', 0.1 * M, 0.5 * M), priced('claude-sonnet-5-5'), priced('claude-opus-5-5', 4 * M, 20 * M)];
+    expect(defaultModel(nov15)?.id).toBe('claude-haiku-5-5');
+  });
+
+  it('a free model counts as priced; with nothing priced, the first; with none, nothing', () => {
+    expect(defaultModel([unpriced('x'), { ...unpriced('y:free'), free: true }])?.id).toBe('y:free');
+    expect(defaultModel([unpriced('a'), unpriced('b')])?.id).toBe('a');
+    expect(defaultModel([])).toBeUndefined();
   });
 });

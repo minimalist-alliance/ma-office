@@ -1,0 +1,64 @@
+{
+  "id": "files-022",
+  "area": "files",
+  "title": "A save onto a file that exists, then a replace",
+  "prompt": "Overwrite Harness/work/standup.md with today's notes: shipped the export fix, next up is the search page.",
+  "setup": {
+    "files": {
+      "Harness/work/standup.md": "Yesterday: fixed the login bug.\n"
+    }
+  },
+  "approve": "all",
+  "checks": [
+    {
+      "kind": "file",
+      "path": "Harness/work/standup.md",
+      "contains": [
+        "export fix",
+        "search page"
+      ],
+      "notContains": [
+        "login bug"
+      ]
+    },
+    {
+      "kind": "cards",
+      "tools": [
+        "files_write"
+      ]
+    }
+  ],
+  "policy": {
+    "tools": [
+      "files_write"
+    ]
+  },
+  "standIn": [
+    {
+      "calls": [
+        {
+          "name": "files_write",
+          "input": {
+            "path": "Harness/work/standup.md",
+            "text": "# Standup\n\n- Shipped the export fix.\n- Next up: the search page.\n"
+          }
+        }
+      ]
+    },
+    {
+      "calls": [
+        {
+          "name": "files_write",
+          "input": {
+            "path": "Harness/work/standup.md",
+            "text": "# Standup\n\n- Shipped the export fix.\n- Next up: the search page.\n",
+            "replace": true
+          }
+        }
+      ]
+    },
+    {
+      "text": "Overwrote Harness/work/standup.md with today's notes."
+    }
+  ]
+}

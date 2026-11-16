@@ -1,0 +1,66 @@
+{
+  "id": "files-049",
+  "area": "files",
+  "title": "Find a folder by name, then list it",
+  "prompt": "I have a folder somewhere under Harness called 'tax receipts'. What's in it?",
+  "setup": {
+    "files": {
+      "Harness/money/tax receipts/donation.pdf.txt": "Donation receipt.\n",
+      "Harness/money/tax receipts/childcare.txt": "Childcare receipt.\n",
+      "Harness/money/bank.txt": "Bank notes.\n"
+    }
+  },
+  "approve": "all",
+  "checks": [
+    {
+      "kind": "reply",
+      "contains": [
+        "childcare.txt",
+        "donation.pdf.txt"
+      ],
+      "state": "done"
+    },
+    {
+      "kind": "cards",
+      "tools": []
+    }
+  ],
+  "policy": {
+    "tools": [
+      "files_search",
+      "files_list"
+    ]
+  },
+  "standIn": [
+    {
+      "calls": [
+        {
+          "name": "files_search",
+          "input": {
+            "q": "tax receipts",
+            "under": "Harness"
+          }
+        }
+      ]
+    },
+    {
+      "calls": [
+        {
+          "name": "files_list",
+          "input": {
+            "path": {
+              "$re": {
+                "step": 0,
+                "call": 0,
+                "pattern": "\"path\":\"([^\"]*tax receipts)\",\"kind\":\"folder\""
+              }
+            }
+          }
+        }
+      ]
+    },
+    {
+      "text": "Harness/money/tax receipts has childcare.txt and donation.pdf.txt."
+    }
+  ]
+}

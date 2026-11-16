@@ -1,0 +1,18 @@
+[Unit]
+Description=desk-host-warm: a new host's slot store read once at its first boot, in parallel, so the first prepare doesn't wait on the snapshot's lazy loading (host 0.1.16)
+# After the store is mounted and its serial known; beside the link, never before it: the link's hello doesn't wait for this.
+Requires=desk-host-boot.service
+After=desk-host-boot.service
+# Every boot: the script reads only on a store no prepare has read (its serial not in the marker, no slot with a record or a
+# root) and says why it doesn't otherwise.
+
+[Service]
+Type=exec
+ExecStart=/usr/local/lib/desk-host/desk-host-warm
+Nice=10
+# Reads only: no write but its marker (/var/lib/desk-host/warmed). A stop (a shutdown) just ends the read.
+TimeoutStopSec=10
+KillMode=control-group
+
+[Install]
+WantedBy=multi-user.target

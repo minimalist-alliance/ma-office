@@ -1,0 +1,76 @@
+{
+  "id": "notebook-036",
+  "area": "notebook",
+  "title": "Replace text on a page in another tab",
+  "prompt": "In my Harness Work tab, on the Standup page, change blocked to unblocked.",
+  "setup": {
+    "notebook": [
+      {
+        "tab": "Harness Work",
+        "title": "Standup",
+        "markdown": "# Standup\n\nStatus: blocked on review.\n\nNext: the search page.\n"
+      }
+    ]
+  },
+  "approve": "all",
+  "checks": [
+    {
+      "kind": "page",
+      "tab": "Harness Work",
+      "title": "Standup",
+      "contains": [
+        "unblocked",
+        "search page"
+      ],
+      "notContains": [
+        "blocked on review"
+      ]
+    },
+    {
+      "kind": "cards",
+      "tools": [
+        "notebook_write"
+      ]
+    }
+  ],
+  "policy": {
+    "tools": [
+      "notebook_search",
+      "notebook_write"
+    ]
+  },
+  "standIn": [
+    {
+      "calls": [
+        {
+          "name": "notebook_search",
+          "input": {
+            "query": "Standup"
+          }
+        }
+      ]
+    },
+    {
+      "calls": [
+        {
+          "name": "notebook_write",
+          "input": {
+            "pageId": {
+              "$re": {
+                "step": 0,
+                "call": 0,
+                "pattern": "\"pageId\":\"([^\"]+)\",\"title\":\"Standup\""
+              }
+            },
+            "op": "replace_text",
+            "find": "blocked on review",
+            "markdown": "unblocked"
+          }
+        }
+      ]
+    },
+    {
+      "text": "Changed the status to unblocked."
+    }
+  ]
+}

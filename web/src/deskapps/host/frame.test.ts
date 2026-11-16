@@ -1,5 +1,5 @@
 import { describe, expect, it } from 'vitest';
-import { FRAME_ALLOW, SANDBOX, viewPolicy, viewSrcdoc } from './frame';
+import { FRAME_ALLOW, frameNonce, SANDBOX, viewPolicy, viewSrcdoc } from './frame';
 
 const BOOT = 'https://office.minimalistalliance.com/v/2026.11.11-abc/assets/boot-Ab12_x.js';
 const files = { html: '<main><p id="count">0</p></main>', script: 'console.log(1)', style: 'body{margin:0}', scriptHash: 'abc+/DEF=', styleHash: 'xyz0=' };
@@ -58,6 +58,19 @@ describe('the srcdoc document', () => {
     const d = viewSrcdoc({ ...files, script: 'x = "</script><script>alert(1)</script>"' }, { bootUrl: BOOT });
     expect(unblock(d, 'ma-view')).toContain('</script>');
     expect(d.match(/<script/g)?.length).toBe(3);
+  });
+
+  it('holds the frame\'s nonce as a data block before the boot, for the boot alone; an odd one is left out', () => {
+    const nonce = frameNonce();
+    expect(nonce).toMatch(/^[0-9a-f]{32}$/);
+    expect(frameNonce()).not.toBe(nonce);
+    const d = viewSrcdoc(files, { bootUrl: BOOT, nonce });
+    const head = d.slice(0, d.indexOf('</head>'));
+    expect(head).toContain(`<script type="text/plain" id="ma-nonce">${nonce}</script>`);
+    expect(head.indexOf('id="ma-nonce"')).toBeLessThan(head.indexOf(`<script src="${BOOT}"`));
+    for (const odd of ['short', 'x'.repeat(65), 'a"><script>alert(1)</script>xxxxxxxx', 'abcdefghijklmnop q']) {
+      expect(viewSrcdoc(files, { bootUrl: BOOT, nonce: odd })).not.toContain('ma-nonce');
+    }
   });
 
   it('leaves out a font with an odd family name, and an odd lang', () => {

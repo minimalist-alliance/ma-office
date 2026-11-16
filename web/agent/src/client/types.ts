@@ -66,11 +66,111 @@ export interface Agent {
   // ----- S-14 (deskd API.md section 18). Absent from a desk before approvals.
   /** Its approvals waiting for the member. While above 0 the desk says `working` with `statusDetail: "awaiting_approval"`. */
   approvalsPending?: number;
+  // ----- the setup screen (draft ADR "the Agent's tools and approvals", section 16). Absent from a desk before it.
+  /**
+   * Why its setup screen shows, or null once the member has saved it: `new` (never set up), `upgrade` (made before the screen),
+   * `confirm` (the desk lost its own copy, or the record didn't read back whole). No run starts while it's set.
+   */
+  setup?: SetupReason | null;
+  // ----- auto-approve (API.md section 18, "Done without asking"). Absent from a desk before it.
+  /**
+   * Things it did without asking, under the member's setting, in runs the member didn't start (a timer's, another agent's
+   * message), since the member last saw its thread. The rail counts them until then (draft ADR section 15).
+   */
+  autoUnseen?: number;
 }
 
-/** An agent's tile: a library icon's id (or `png`), a tone's id, and the upload's version (`web/agent/src/look/`). */
+/** Why an agent's setup screen shows (section 16). */
+export type SetupReason = 'new' | 'upgrade' | 'confirm';
+
+/** The apps an agent may use, as the setup screen and its settings switch them (section 16). */
+export interface AccessApps {
+  notebook: boolean;
+  files: boolean;
+  browser: boolean;
+  /** Courier's read tools: off until the member switches it on. */
+  courier: boolean;
+  todos: boolean;
+}
+
+/** The "without asking" switches (section 15), each off by default and each needing its app. */
+export interface AccessAuto {
+  /** Additions in this Notebook tab, by id, or null for off. */
+  notebook: { tabId: string } | null;
+  /** New files in this folder of Files, or null for off. */
+  files: { folder: string } | null;
+  /** Adding to-dos, and ticking off the ones it added. */
+  todos: boolean;
+}
+
+/** One grant to another of the member's desks, this desk's half (section 14): offered until that desk allows it. */
+export interface DeskGrantHalf {
+  grantId: string;
+  agentId: string;
+  toDeskId: string;
+  toDeskName: string;
+  toKey: string | null;
+  state: 'offered' | 'active' | 'revoked';
+  /** The agent that answers on the other desk, once it allowed this (W6). The other desk's text: show it through `plainName`. */
+  toAgentName?: string | null;
+  createdAt: number;
+  lastUsedAt: number | null;
+  count: number;
+}
+
+/**
+ * Another desk's side of a grant, as this desk holds it (W6; deskd API.md section 18, "Messages between the member's desks"): an
+ * offer waiting here (`offered`, or `declined` after Not now, with no `agentId`), or an answer half (`active`, with the agent that
+ * answers). `fromAgentName` is the other desk's text: show it through `plainName`, and name the desk from the member's own desk
+ * list by `fromDeskId`, never from anything the other desk said.
+ */
+export interface DeskIncomingHalf {
+  grantId: string;
+  fromDeskId: string;
+  fromAgentId: string;
+  fromAgentName: string;
+  /** The agent here that answers; null for an offer. */
+  agentId: string | null;
+  state: 'offered' | 'declined' | 'active' | 'revoked';
+  createdAt: number;
+  lastUsedAt: number | null;
+  count: number;
+}
+
+/** `agent.desks.list`: other desks' offers waiting here, and this desk's answer halves. */
+export interface DeskHalves {
+  offers: DeskIncomingHalf[];
+  answers: DeskIncomingHalf[];
+}
+
+/** `agent.access.get`'s `access` (section 16). */
+export interface AgentAccess {
+  chosen: boolean;
+  setup: SetupReason | null;
+  apps: AccessApps;
+  auto: AccessAuto;
+  /** The send halves the member hasn't stopped. */
+  desks: DeskGrantHalf[];
+  /** The answer halves this agent answers, and the offers from the member's other desks waiting here (W6). */
+  incoming: DeskIncomingHalf[];
+  updatedAt: number | null;
+}
+
+/** `agent.access.set`'s change. The first save sends every app and every switch; later ones only what changed. */
+export interface AccessChange {
+  apps?: Partial<AccessApps>;
+  auto?: Partial<AccessAuto>;
+  desks?: { deskId: string; deskName?: string; on: boolean }[];
+}
+
+/**
+ * An agent's tile: a library icon's id (or `png`), its colour, a tone's id, and the upload's version (`web/agent/src/look/`).
+ * Every agent wears the hat (`hat`) unless the member picked another; `color` tints it (absent from a desk-agent before
+ * Nov 15: the tile is grey until it says). `tone` is kept for older clients and no longer drawn.
+ */
 export interface AgentLook {
   icon: string;
+  color?: string;
   tone: string;
   /** The uploaded mask's version, a counter, or null. A client refetches `agent.icon.get` when it changes. */
   png: number | null;
@@ -125,11 +225,14 @@ export interface AgentCreate {
   name: string;
   purpose?: string;
   icon?: string;
+  color?: string;
   tone?: string;
   keyId?: string;
   model?: string;
   solo?: boolean;
   workspaceMb?: number;
+  /** Make it only if it can run now: a key given, or the member's MA credits usable; else `precondition_failed` `cant_run`. */
+  ifRunnable?: boolean;
 }
 
 /** What `agent.update` takes: any of these. */
@@ -137,6 +240,8 @@ export interface AgentPatch {
   name?: string;
   purpose?: string;
   icon?: string;
+  /** Not the lead's: it keeps the Agent app's own. */
+  color?: string;
   tone?: string;
   solo?: boolean;
   workspaceMb?: number;
@@ -186,7 +291,29 @@ export interface Proposal {
 /** Where a thread message came from when the member didn't write it: another agent (with the rules of that pairing) or a timer. */
 export type MessageOrigin =
   | { kind: 'agent'; agentId: string; rules?: string | null; chainId?: string | null; depth?: number | null }
-  | { kind: 'timer'; timerId: string; label?: string | null };
+  | { kind: 'timer'; timerId: string; label?: string | null }
+  | DeskOrigin;
+
+/**
+ * A message from another of the member's desks (W6; deskd API.md section 18, "In the threads"). `deskId` and `agentId` are the other
+ * desk's and its agent's; `agentName` is that desk's text (`plainName`). `message` is X's message in Y's thread on B, `answer` Y's
+ * answer in X's thread on A, untrusted, and `notice` a line in X's thread about a message that didn't get an answer.
+ */
+export interface DeskOrigin {
+  kind: 'desk';
+  deskId: string;
+  agentId: string;
+  agentName: string;
+  grantId: string;
+  envelopeId: string;
+  replyTo?: string | null;
+  role: 'message' | 'answer' | 'notice';
+  /** An answer from a run that read the other desk's private data. */
+  private?: boolean;
+  notice?: 'not_delivered' | 'refused' | 'failed' | null;
+  /** With `refused` and `failed`: the other desk's word for why. */
+  reason?: string | null;
+}
 
 // ----- messages between agents (multi-agent.md section 4)
 
@@ -318,6 +445,8 @@ export interface Message {
   costMicroUsd?: number | null;
   stopReason?: string | null;
   state?: MessageState;
+  /** How many times its run picked up again after the desk restarted (a kill, a rollout, a stop). Absent or 0 when never. */
+  resumed?: number;
   /** Why a reply failed: an `AgentErrorReason`, never the provider's own message. */
   error?: AgentErrorReason | null;
   errorDetail?: string | null;
@@ -342,6 +471,16 @@ export interface Message {
   untrusted?: boolean;
   /** How many `egress` calls its run made, approved and run. Absent for none. */
   egressCount?: number;
+  /** The agent's checklist for this run (`plan_update`), live while it streams, kept with the reply. Absent for none. */
+  plan?: PlanStep[] | null;
+  /** Its run's calls done without asking, in order (API.md section 18, "Done without asking"). Not in its cards. Absent for none. */
+  auto?: AutoDone[] | null;
+}
+
+/** One step of a reply's plan (API.md section 18, "plan"). The text is the agent's own words: untrusted, text only. */
+export interface PlanStep {
+  text: string;
+  state: 'todo' | 'doing' | 'done' | 'skipped';
 }
 
 // ----- S-14: tools, approvals, running tools and memory (deskd API.md section 18, desk-agent README "Memory")
@@ -358,11 +497,16 @@ export type ApprovalState = 'pending' | 'approved' | 'done' | 'failed' | 'declin
 /** What a call acts on, read by the desk. Not hashed: a card shows it as context, never as what runs. */
 export type ApprovalTarget =
   | { kind: 'file'; path: string; to?: string }
-  | { kind: 'page'; pageId: string; title: string }
+  /** `pageId` is null for a page a call makes; `tabId` is the page's tab, which deskd's look adds (a new page's is its payload's). */
+  | { kind: 'page'; pageId: string | null; title: string; tabId?: string | null }
   | { kind: 'element'; origin: string; pageTitle: string; label: string; role: string }
   | { kind: 'site'; site?: string; origin?: string }
   | { kind: 'timer'; at: number }
-  | { kind: 'memory' };
+  | { kind: 'memory' }
+  /** `desk_message` and `desk_answer` (W6): the other desk, and its agent's name, which is that desk's text. */
+  | { kind: 'desk'; deskId: string; deskName?: string | null; agentName?: string | null }
+  /** A to-do (deskd API.md §22): its title is the desk's; `mergeInto` is the open item a `todo_add` with `same_as` merges into. */
+  | { kind: 'todo'; id?: string; title?: string; mergeInto?: { id?: string; title?: string } | null };
 
 /**
  * One request for the member's yes (API.md section 18, "The approval"). Every string in it came from a model, a page or a file
@@ -397,7 +541,7 @@ export interface Approval {
   createdAt: number;
   expiresAt: number;
   decidedAt: number | null;
-  /** `owner`, or a guild member's id. */
+  /** `owner`, a guild member's id, or `auto`: done without asking, under the member's setting. Never a card then. */
   decidedBy: string | null;
   note: string | null;
   /** After the tool ran: `{ok: true}` or `{ok: false, error}`, `error` a word such as `changed`, `gone`, `off_site`. Never content. */
@@ -407,6 +551,33 @@ export interface Approval {
   reason?: string | null;
   /** Spend only: what it costs, estimated. */
   cost?: { microUsd: number } | null;
+  // ----- auto-approve (API.md section 18, "Done without asking"): only on a call done without asking.
+  /** The switch it ran under and its place then. */
+  auto?: ApprovalAuto | null;
+  /** When the member undid it (`agent.approval.undo`), and who: `owner` or a guild member's id. Null before. */
+  undoneAt?: number | null;
+  undoneBy?: string | null;
+}
+
+/** A "without asking" switch's group (draft ADR section 15): `notebook`, `files` or `todos`, a string so a later one is one more value. */
+export type AutoGroup = string;
+
+/** An unasked call's switch and its place when it ran: a Notebook tab by id, or a folder of Files. */
+export interface ApprovalAuto {
+  group: AutoGroup;
+  tabId?: string | null;
+  folder?: string | null;
+}
+
+/** One call a reply's run made without asking (a reply's `auto`, in order): what the run summary counts and Undo all undoes. */
+export interface AutoDone {
+  approvalId: string;
+  tool: string;
+  target: ApprovalTarget | null;
+  group: AutoGroup;
+  /** As the approval's: `approved` while it runs, then `done` or `failed`. Only `done` counts. */
+  state: ApprovalState;
+  undoneAt: number | null;
 }
 
 /** A tool chip on a reply (API.md section 18, "Tool chips"). */
@@ -416,15 +587,19 @@ export interface ToolChip {
   /** A few words the desk writes, never content. */
   summary: string;
   ok: boolean;
+  /** A restart or a lost link cut it off: unknown whether it happened (`ok` false; `target`, when sent, is what it acted on). */
+  interrupted?: boolean;
   path?: string | null;
   reason?: string | null;
   risk?: Risk;
-  /** When the call asked. */
-  approval?: { id: string; decision: 'approved' | 'declined' | 'expired' | 'interrupted' } | null;
+  /** When the call asked; for a call done without asking, its own approval id with `decision: "auto"`, for its Undo. */
+  approval?: { id: string; decision: 'approved' | 'declined' | 'expired' | 'interrupted' | 'auto' } | null;
   target?: ApprovalTarget | null;
   untrusted?: boolean;
   /** Browser calls: the agent's own context or the member's session. */
   session?: 'agent' | 'member';
+  /** Done without asking, under the member's setting for this agent: the switch's group (`notebook`, `files`, `todos`; draft ADR §15). */
+  auto?: string | null;
   // ----- the spec's section 2.8, not in section 18 yet
   durationMs?: number | null;
   /** The member stopped it. */
@@ -558,7 +733,16 @@ export interface KeyMeta {
    * epoch ms. Not served yet; without it, no numbers show.
    */
   free?: { perDay: number; leftToday: number; resetsAt: number } | null;
+  /**
+   * The member's MA credits (deskd API.md §24): this row is Minimalist Alliance as the provider, keyId `ma-credits`, with no key
+   * of the member's behind it, so it has no last four and no delete. Whole credits, never money; null while unread.
+   */
+  credits?: { left: number; starting: number; topUp: number; lighter: boolean; lighterLeft?: number } | null;
 }
+
+/** The member's MA credits' row in the Keys list (deskd API.md §24). */
+export const CREDITS_KEY = 'ma-credits';
+export const isCreditsKey = (k: Pick<KeyMeta, 'keyId'>): boolean => k.keyId === CREDITS_KEY;
 
 export interface ModelInfo {
   id: string;
@@ -720,6 +904,8 @@ export type AgentErrorReason =
   | 'key_refused'
   | 'key_malformed'
   | 'agent_cap'
+  // an `agent.create` with `ifRunnable` that couldn't run now: no key given, and the member's MA credits not usable
+  | 'cant_run'
   | 'storage'
   | 'time_zone'
   // task 49
@@ -760,4 +946,35 @@ export type AgentErrorReason =
   | 'staging_full'
   // S-14: a message to an agent whose run waits on the member; a call that can't be stopped once it began.
   | 'awaiting_approval'
-  | 'not_stoppable';
+  | 'not_stoppable'
+  // The setup screen (section 16): a run before it's saved; a switch whose app is off; a guild member's agent past Notebook; a
+  // grant to this desk itself; a field the first save must have.
+  | 'setup'
+  | 'app_off'
+  | 'guild'
+  | 'self'
+  | 'required'
+  | 'folder'
+  | 'name'
+  // Messages between the member's desks (W6): no active grant for that desk, past 20 a grant a day, a half that was stopped, and
+  // what a desk refuses an envelope for (the carrier reports them; the threads' notices name them).
+  | 'no_grant'
+  | 'rate'
+  | 'revoked'
+  | 'stale'
+  | 'not_for_me'
+  | 'account'
+  | 'cannot_open'
+  | 'bad_signature'
+  | 'envelope'
+  | 'input'
+  | 'permission'
+  | 'scope'
+  // Undo of a call done without asking (`agent.approval.undo`): changed since, undone already, it didn't run, the page is in
+  // the Trash already, a newer agent edit of the page goes first, cut off with no end recorded (it may have happened).
+  | 'changed'
+  | 'undone'
+  | 'not_done'
+  | 'trashed'
+  | 'newer'
+  | 'unknown';

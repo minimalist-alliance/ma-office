@@ -111,6 +111,12 @@ public final class FakeCdp implements AutoCloseable {
     private final Map<String, String> navigateErrors = new ConcurrentHashMap<>();
     private final Map<String, Integer> forcedErrors = new ConcurrentHashMap<>();
     private final Map<String, Runnable> afterReply = new ConcurrentHashMap<>();
+    /** Commits a script started, such as a {@code location.replace}, made just after its reply, as Chromium's navigation is. */
+    private final java.util.Queue<Runnable> commitsAfterReply = new java.util.concurrent.ConcurrentLinkedQueue<>();
+    /** Where a {@code location.replace} to a URL really lands: {unreachableUrl, errorCode}, as a page that redirects. */
+    private final Map<String, String[]> replaceLandings = new ConcurrentHashMap<>();
+    /** Where a Page.navigate to a URL really lands: {unreachableUrl, errorCode}, as a server's redirect makes it. */
+    private final Map<String, String[]> navigateLandings = new ConcurrentHashMap<>();
     private final Map<String, Integer> splitReplies = new ConcurrentHashMap<>();
     private final Map<String, java.util.function.Function<Command, Object>> answers = new ConcurrentHashMap<>();
     /** Runtime.evaluate's scripted answers, by a piece of the expression, ahead of the three scripts below. */
@@ -305,6 +311,74 @@ public final class FakeCdp implements AutoCloseable {
         failingNavigations.put(url, errorCode);
     }
 
+    /**
+     * A {@code location.replace} to {@code url} from the policy's blocked page ends on Chromium's error page for
+     * {@code unreachableUrl} with this net error, as a server that redirects there would make it: the portal sending the tab
+     * back to the office, say.
+     */
+    public void replaceLandsOn(String url, String unreachableUrl, String errorCode) {
+        replaceLandings.put(url, new String[] {unreachableUrl, errorCode});
+    }
+
+    /**
+     * Page.navigate to {@code url} is redirected to {@code unreachableUrl}, which fails with this net error: the reply has it,
+     * and the error page commits for the URL the redirect went to just after the reply, as Chromium 156's does.
+     */
+    public void navigateLandsOn(String url, String unreachableUrl, String errorCode) {
+        navigateLandings.put(url, new String[] {unreachableUrl, errorCode});
+    }
+
+    /** As the same commit of the main frame told of again, with the loader it already has: a duplicate event. */
+    public void repeatCommit(String id) {
+        Target target = find(id);
+        Map<String, Object> frame;
+        lock.lock();
+        try {
+            frame = frame(id, target.url, target.loader, target.errorCode != null);
+        } finally {
+            lock.unlock();
+        }
+        event("Page.frameNavigated", Map.of("frame", frame), sessionOf(id));
+    }
+
+    /** The tab's history, oldest first, as Page.getNavigationHistory would give its URLs. */
+    public List<String> history(String id) {
+        Target target = find(id);
+        lock.lock();
+        try {
+            return List.copyOf(target.history);
+        } finally {
+            lock.unlock();
+        }
+    }
+
+    /** The policy's blocked page as a page's own {@code location.replace} leaves it: in place of the current entry. */
+    private void replaceCommit(String id, String url) {
+        Target target = find(id);
+        String[] landing = replaceLandings.get(url);
+        String committed = landing == null ? url : landing[0];
+        String errorCode = landing == null ? failingNavigations.get(url) : landing[1];
+        long loader = nextLoader.incrementAndGet();
+        lock.lock();
+        try {
+            target.history.set(target.index, committed);
+            target.url = committed;
+            target.title = committed;
+            target.loader = loader;
+            target.errorCode = errorCode;
+            target.written = null;
+        } finally {
+            lock.unlock();
+        }
+        String session = sessionOf(id);
+        event("Page.frameStartedLoading", Map.of("frameId", id), session);
+        event("Page.frameNavigated", Map.of("frame", frame(id, committed, loader, errorCode != null)), session);
+        if (!target.hidden) {
+            event("Target.targetInfoChanged", Map.of("targetInfo", target.info()), null);
+        }
+        event("Page.frameStoppedLoading", Map.of("frameId", id), session);
+    }
+
     /** What a script wrote over this tab's error page, or null if nothing has. */
     public String written(String id) {
         Target target = find(id);
@@ -317,8 +391,11 @@ public final class FakeCdp implements AutoCloseable {
     }
 
     private void commit(String id, String url, String title, String errorCode) {
+        commit(id, url, title, errorCode, nextLoader.incrementAndGet());
+    }
+
+    private void commit(String id, String url, String title, String errorCode, long loader) {
         Target target = find(id);
-        long loader = nextLoader.incrementAndGet();
         lock.lock();
         try {
             target.history.subList(target.index + 1, target.history.size()).clear();
@@ -837,6 +914,9 @@ public final class FakeCdp implements AutoCloseable {
             if (after != null) {
                 after.run();
             }
+            for (Runnable commit = commitsAfterReply.poll(); commit != null; commit = commitsAfterReply.poll()) {
+                commit.run();
+            }
         }
 
         private void sendReply(long id, String method, String sessionId, Map<String, Object> params) {
@@ -1023,9 +1103,17 @@ public final class FakeCdp implements AutoCloseable {
                     String url = Json.string(params, "url");
                     String error = navigateErrors.get(url);
                     String failing = failingNavigations.get(url);
+                    String[] landing = navigateLandings.get(url);
                     Map<String, Object> result = new LinkedHashMap<>();
                     result.put("frameId", onSession.id);
-                    if (error != null) {
+                    if (landing != null) {
+                        // As Chromium 156 does: the reply, with the navigation's loader, and then the error page's commit.
+                        long loader = nextLoader.incrementAndGet();
+                        result.put("loaderId", Long.toHexString(loader).toUpperCase(Locale.ROOT));
+                        result.put("errorText", "net::" + landing[1]);
+                        String target = onSession.id;
+                        commitsAfterReply.add(() -> commit(target, landing[0], java.net.URI.create(landing[0]).getHost(), landing[1], loader));
+                    } else if (error != null) {
                         result.put("errorText", error);
                     } else if (failing != null) {
                         result.put("errorText", "net::" + failing);
@@ -1097,6 +1185,24 @@ public final class FakeCdp implements AutoCloseable {
             String value;
             if (expression.contains("visibilityState")) {
                 value = world == null || onSession.id.equals(visible) ? "visible" : "hidden";
+            } else if (expression.contains("location.replace(")) {
+                // Only on the policy's blocked page, as the script checks first, and only once: the page goes with it.
+                if ("ERR_BLOCKED_BY_ADMINISTRATOR".equals(onSession.errorCode) && onSession.written == null) {
+                    int start = expression.indexOf("location.replace(") + "location.replace(".length();
+                    String json = expression.substring(start, expression.indexOf(')', start));
+                    String url;
+                    try {
+                        url = (String) Json.parseObject(("{\"u\":" + json + "}").getBytes(StandardCharsets.UTF_8)).get("u");
+                    } catch (JsonFormatException e) {
+                        throw new IllegalStateException(e);
+                    }
+                    String target = onSession.id;
+                    onSession.written = "replaced";
+                    commitsAfterReply.add(() -> replaceCommit(target, url));
+                    value = "left";
+                } else {
+                    value = "";
+                }
             } else if (expression.contains(".error-code")) {
                 value = onSession.errorCode != null && onSession.written == null ? onSession.errorCode : "";
             } else if (expression.contains("document.write(") && onSession.errorCode != null && onSession.written == null) {

@@ -365,10 +365,11 @@
 .files-xfer-words a {
   color: var(--ma-text-link);
 }
+/* Over the window's lit edge (z-index 5, the window lift), so the edge dims with the rest of the window under a dialog. */
 .files-scrim {
   position: absolute;
   inset: 0;
-  z-index: 5;
+  z-index: 6;
   display: grid;
   place-items: center;
   padding: 16px;

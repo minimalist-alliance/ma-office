@@ -4,6 +4,7 @@
 // takes its window with it. A teen's desks hold no agent tiles (`fitDeskToBand`), and no roster ever comes for them. A Guild
 // Desk's panel gets none either: its Agent is each member's one seat on the guild's key.
 import { fitDeskToAgents } from '../canvas/agentTiles';
+import { placeScale } from '../canvas/placeScale';
 import { isAgentApp, type LayoutDesk } from '../canvas/layout';
 import { clearLayoutDoc } from '../canvas/layoutDoc';
 import { isGuildPanel } from '../guild/panel';
@@ -23,7 +24,7 @@ export function syncAgentTiles(): void {
     if (isGuildPanel(id)) continue;
     const roster = rosters[id];
     if (!roster) continue;
-    const fit = fitDeskToAgents(desk, roster);
+    const fit = fitDeskToAgents(desk, roster, placeScale);
     if (fit === desk) continue;
     if (desks === doc.desks) desks = { ...doc.desks };
     desks[id] = fit;

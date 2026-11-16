@@ -11,15 +11,14 @@ import { stopsOnLine } from '../platform/billingNote';
 import { deskStyles } from '../theme/deskStyles';
 import { DeskStylePicker } from './DeskStylePicker';
 import { useMyTier } from '../platform/useTiers';
-import { openGuildSheet, useGuildStore } from '../guild/guildStore';
+import { openGuildSheet, putAway, useGuildStore } from '../guild/guildStore';
 import { useDoor } from '../deskapps/door';
-import { putAway } from '../guild/GuildWindow';
 import { guildIdOfPanel, mayManageAgents, maySeeUsage } from '../guild/panel';
 import { useDeskStore } from '../state/deskStore';
 import { useLayoutStore } from '../state/layoutStore';
 import { setView, useViewStore, type DeskMenuAt } from '../state/viewStore';
 
-const WIDTH = 220; // matches .desk-menu; wide enough for five swatches on one row
+const WIDTH = 236; // matches .desk-menu; wide enough for six swatches on one row (26 px, 8 px apart)
 const ITEM_H = 40;
 const HEAD_H = 28; // .desk-menu-head
 const STOPS_H = 24; // .desk-menu-stops
@@ -143,7 +142,7 @@ function MenuBody({ at }: { at: DeskMenuAt }) {
       {/* A click away only dismisses: this takes it, so the canvas and the chrome under it never hear of it.
           It closes on the click, not the press, or the rest of the click would land on what's underneath. */}
       <div className="desk-menu-away" onClick={dismiss} onWheel={dismiss} onContextMenu={(e) => { e.preventDefault(); dismiss(); }} />
-      <div ref={ref} className="menu desk-menu" role="menu" tabIndex={-1} aria-label={at.itemId ? 'App' : 'Desk'} {...(described ? { 'aria-describedby': described } : {})} style={style}>
+      <div ref={ref} className="menu desk-menu ma-glass" role="menu" tabIndex={-1} aria-label={at.itemId ? 'App' : 'Desk'} {...(described ? { 'aria-describedby': described } : {})} style={style}>
         {/* Said as the menu's description, so it isn't a stray item among the menu's own. */}
         {kind && <p id={headId} className="desk-menu-head" aria-hidden="true" title={kind}>{kind}</p>}
         {stops && <p id={stopsId} className="desk-menu-stops" aria-hidden="true" data-testid="desk-menu-stops">{stops}</p>}

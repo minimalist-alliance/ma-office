@@ -516,19 +516,61 @@ class ApprovalsTest {
     }
 
     @Test
-    void aRestartWhileWaitingExpiresTheCardAndNothingRuns() throws Exception {
+    void aRestartWhileWaitingKeepsTheCardAnswerableAndTheRunPicksUp() throws Exception {
         desk.provider.then(Step.calls(USAGE, List.of(write("c1", "plans/a.md"))));
         send(a, "Save.");
         Map<String, Object> card = awaitPending(a, 1).get(0);
         desk.close();
         open();
-        assertThat(get(card.get("id"))).containsEntry("state", "expired").containsEntry("detail", "restart");
-        RpcError late = desk.refused("agent.approval.decide", "approvalId", card.get("id"), "approve", true,
-                "sha256", sha(card));
-        assertThat(late.details()).containsEntry("reason", "expired");
-        List<Map<String, Object>> thread = desk.thread(a);
-        assertThat(thread.get(thread.size() - 1).get("state")).isIn("stopped", "failed");
+        desk.provider.then(Step.answer(USAGE, "Saved."));
+        desk.resume();
+        // Durable runs: the card is still pending and answerable after the restart, and nothing ran meanwhile.
+        assertThat(get(card.get("id"))).containsEntry("state", "pending");
+        assertThat(agentState(a).get("approvalsPending")).isEqualTo(1);
         assertThat(workspaceFiles(a)).isEmpty();
+        decide(card, true);
+        Map<String, Object> reply = ended(a);
+        assertThat(reply).containsEntry("state", "done").containsEntry("resumed", 1);
+        assertThat(get(card.get("id"))).containsEntry("state", "done");
+        assertThat(workspaceFiles(a)).containsExactly("plans");
+        assertThat(desk.audit.verify().intact()).isTrue();
+    }
+
+    /**
+     * Release 2's proof: after a reload, or a restart while a card waits, the Agent app draws its cards from the
+     * snapshot's and {@code agent.thread.get}'s own {@code approvals} (API.md §18, "Events and new fields"), which desk-agent
+     * didn't send: it only put each in its reply. Both carry them now, beside the reply's own, before and after a restart.
+     */
+    @Test
+    void aWaitingCardIsInTheSnapshotAndTheThreadPageBeforeAndAfterARestart() throws Exception {
+        desk.provider.then(Step.calls(USAGE, List.of(write("c1", "plans/a.md"))));
+        send(a, "Save.");
+        Map<String, Object> card = awaitPending(a, 1).get(0);
+        assertCardCarried(card);
+        desk.close();
+        open();
+        desk.provider.then(Step.answer(USAGE, "Saved."));
+        desk.resume();
+        assertCardCarried(card);
+        decide(card, true);
+        assertThat(ended(a)).containsEntry("state", "done");
+        assertThat(map(list(desk.service.conversationSnapshot(a).get("approvals")).get(0))).containsEntry("id",
+                card.get("id")).containsEntry("state", "done");
+    }
+
+    private void assertCardCarried(Map<String, Object> card) throws Exception {
+        for (Map<String, Object> page : List.of(desk.service.conversationSnapshot(a),
+                desk.call("agent.thread.get", "agentId", a))) {
+            List<Map<String, Object>> approvals = list(page.get("approvals"));
+            assertThat(approvals).singleElement().satisfies(x -> assertThat(x).containsEntry("id", card.get("id"))
+                    .containsEntry("state", "pending").containsEntry("sha256", card.get("sha256"))
+                    .containsEntry("messageId", card.get("messageId")));
+            // The reply's own list (§18's "A reply lists these in its approvals too") stays.
+            Map<String, Object> reply = list(page.get("messages")).stream()
+                    .filter(m -> card.get("messageId").equals(m.get("id"))).findFirst().orElseThrow();
+            assertThat(list(reply.get("approvals"))).singleElement().satisfies(x -> assertThat(x)
+                    .containsEntry("id", card.get("id")));
+        }
     }
 
     @Test
@@ -549,7 +591,14 @@ class ApprovalsTest {
         desk.close();
         never.countDown();
         open();
+        desk.provider.then(Step.answer(USAGE, "Done.")).then(Step.answer(USAGE, "Done."));
+        desk.resume();
+        // Alice's run picks up; her message to Bob ran in desk-agent with no key to confirm it, so it may have happened:
+        // interrupted, never sent again.
+        ended(a);
         assertThat(get(card.get("id")).get("state")).isEqualTo("interrupted");
+        assertThat(TeamDesk.allText(desk.requests().stream().filter(r -> TeamDesk.allText(r).contains("Say hi"))
+                .findFirst().orElseThrow())).contains("Interrupted: restart.");
     }
 
     // ---------------------------------------------------------------- who may see and decide

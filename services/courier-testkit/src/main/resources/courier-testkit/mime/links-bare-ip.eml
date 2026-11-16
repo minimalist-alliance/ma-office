@@ -1,0 +1,10 @@
+From: Invoices <invoices@billing.example>
+To: me@desk.example
+Date: Fri, 13 Nov 2026 10:00:00 +0000
+Subject: Invoice overdue
+Message-ID: <links-bare-ip@corpus.example>
+MIME-Version: 1.0
+X-Corpus-Note: links to bare IP hosts: dotted, with a port, HTTPS, decimal and hex forms (documentation ranges only)
+Content-Type: text/html; charset=utf-8
+
+<html><body><p>Your invoice is overdue.</p><a href="http://192.0.2.10/login">Pay</a> <a href="http://198.51.100.7:8080/invoice.zip">Download</a> <a href="https://203.0.113.5/">Portal</a> <a href="http://3221225994/">Decimal</a> <a href="http://0xC000020A/">Hex</a></body></html>

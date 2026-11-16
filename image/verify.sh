@@ -107,6 +107,9 @@ echo "--- /data/files: $(stat -c '%u:%g %a %F' /data/files 2>&1)"
 # itself 1100:1100 0700, and nothing in it owned by anyone but 1100.
 [ "$(stat -c '%u:%g %a %F' /data/files 2>&1)" = "1100:1100 700 directory" ] && [ -z "$(find /data/files -mindepth 1 ! -uid 1100 2>&1)" ] || { echo "BAD: /data/files should be a 1100:1100 0700 directory holding nothing but uid 1100's: $(find /data/files -mindepth 1 -printf '%u:%g %m %P\n' 2>&1 | head -5)"; bad=1; }
 echo "    inside: $(find /data/files -mindepth 1 -printf '%P ' 2>&1 | head -c 200)"
+# The desk's Courier keys (draft ADR "Courier's envelopes"): deskd (uid 1100) alone, 0700; what deskd makes inside is 0600.
+echo "--- /data/keys: $(stat -c '%u:%g %a %F' /data/keys 2>&1)"
+[ "$(stat -c '%u:%g %a %F' /data/keys 2>&1)" = "1100:1100 700 directory" ] && [ -z "$(find /data/keys -mindepth 1 \( ! -uid 1100 -o -perm /077 \) 2>&1)" ] || { echo "BAD: /data/keys should be a 1100:1100 0700 directory holding only uid 1100's 0600 files: $(find /data/keys -mindepth 1 -printf '%u:%g %m %P\n' 2>&1 | head -5)"; bad=1; }
 echo "--- ordering: deskd and desk-rtc start after the mount and directory setup"
 for u in deskd desk-rtc; do echo "$u After: $(systemctl show -p After --value $u | tr ' ' '\n' | grep -E '^(data.mount|desk-datadirs.service)$' | paste -sd' ')  Requires: $(systemctl show -p Requires --value $u | tr ' ' '\n' | grep -E '^(data.mount|desk-datadirs.service)$' | paste -sd' ')"
   systemctl show -p After --value $u | grep -q desk-datadirs.service && systemctl show -p Requires --value $u | grep -q desk-datadirs.service || { echo "$u ORDER BAD"; bad=1; }; done
@@ -123,13 +126,28 @@ mountpoint -q /data || bad=1
 exit ${bad:-0}
 X
 UUID1=$(grep '^UUID1=' $WORKDIR/o | cut -d= -f2); MARK=$(R 'cat /data/marker')
-result "data volume formatted once on blank volume, label ma-data, dirs created (/data/files 1100:1100 0700)" $rc < $WORKDIR/o
+result "data volume formatted once on blank volume, label ma-data, dirs created (/data/files and /data/keys 1100:1100 0700)" $rc < $WORKDIR/o
 
 # ---- 1a. The baked releases on this first boot, with a blank /data and nothing rolled on (runtime spec section 6).
 # The versions come from the AMI's tags, which bake.sh set from what build.sh installed. An image without them fails here.
 RELEASE_BUCKET=${RELEASE_BUCKET:-ma-lambda-artifacts-$(aws sts get-caller-identity --query Account --output text)}
+# The release bucket lives in us-east-1. A run in another region (AWS_REGION=us-west-2, ADR 0112) must still sign for the
+# bucket's own region, or a presigned URL answers 301 (S-120 west, Nov 14).
+RELEASE_REGION=${RELEASE_REGION:-us-east-1}
 read -r T_RTC T_STREAM T_DESKD T_AGENT T_FILTER T_NOTEBOOK T_COMMONS SRC_ID < <(aws ec2 describe-images --image-ids "$AMI" --output text --query \
   "Images[0].[Tags[?Key=='DeskRtcVersion']|[0].Value,Tags[?Key=='DeskStreamVersion']|[0].Value,Tags[?Key=='DeskdVersion']|[0].Value,Tags[?Key=='DeskAgentVersion']|[0].Value,Tags[?Key=='DeskAgentFilterVersion']|[0].Value,Tags[?Key=='DeskNotebookVersion']|[0].Value,Tags[?Key=='CommonsServerVersion']|[0].Value,SourceInstanceId]")
+# A copy made in another region by scripts/image-copy.sh (ADR 0112) has no SourceInstanceId and its own description. Its
+# builder and recipe commit are the image it was copied from, read in that image's region; the version tags must still be the
+# copy's own. ORIGIN names where the builder and the commit are read (section 1a1 uses it too).
+ORIGIN=(--image-ids "$AMI")
+if [ "$SRC_ID" = None ]; then
+  read -r SRC_AMI SRC_REGION < <(aws ec2 describe-images --image-ids "$AMI" --output text --query 'Images[0].[SourceImageId,SourceImageRegion]')
+  if [[ ${SRC_AMI:-} =~ ^ami-[0-9a-f]+$ ]] && [[ ${SRC_REGION:-} =~ ^[a-z]{2}-[a-z]+-[0-9]$ ]]; then
+    ORIGIN=(--region "$SRC_REGION" --image-ids "$SRC_AMI")
+    SRC_ID=$(aws ec2 describe-images "${ORIGIN[@]}" --query 'Images[0].SourceInstanceId' --output text)
+    say "copy of $SRC_AMI ($SRC_REGION): builder instance ${SRC_ID} and recipe commit read from it"
+  fi
+fi
 WANT="desk-rtc=$T_RTC desk-stream=$T_STREAM deskd=$T_DESKD desk-agent=$T_AGENT desk-agent-filter=$T_FILTER"
 # desk-notebook is the one optional pin: with no tag it's not baked and section 3n expects its unit skipped. With a tag it
 # joins WANT, so everything that goes through WANT holds it to what the other five are held to.
@@ -202,7 +220,7 @@ result "baked releases on first boot, blank /data, nothing rolled on: desk-rtc, 
 # AMI's description names (bake.sh writes "ma-desk@<sha>"), so an older AMI is held to its own; a +dirty or unknown commit
 # falls back to this tree's releases.pin, and the evidence says which.
 rc=0; EXPECT=
-{ src=$(aws ec2 describe-images --image-ids "$AMI" --query 'Images[0].Description' --output text 2>&1 | grep -o 'ma-desk@[0-9a-f+dirty]*' | cut -d@ -f2)
+{ src=$(aws ec2 describe-images "${ORIGIN[@]}" --query 'Images[0].Description' --output text 2>&1 | grep -o 'ma-desk@[0-9a-f+dirty]*' | cut -d@ -f2)
   if [[ $src =~ ^[0-9a-f]{7,40}$ ]] && pin=$(git -C "$HERE/.." show "$src:image/recipe/releases.pin" 2>/dev/null); then
     echo "releases.pin at ma-desk@$src, the AMI's own commit"
   else
@@ -1766,8 +1784,8 @@ R "sudo bash -s -- leave-off" < "$HERE/verify-adblock.sh" >> "$EV" 2>&1
 # part puts back the band and the Browser as it found them, and has been seen to fail with what it guards broken
 # (evidence/img035-2026-11-11/mutations.txt). links and click need a deskd with links out (3c132d94 and later).
 if [ -n "${VERIFY_DESKD:-}" ]; then   # LAB ONLY (above)
-  D_SHA=$(aws s3 cp --only-show-errors "s3://$RELEASE_BUCKET/desk/deskd/$VERIFY_DESKD/meta.json" - | jq -r .sha256)
-  D_URL=$(aws s3 presign "s3://$RELEASE_BUCKET/desk/deskd/$VERIFY_DESKD/deskd-$VERIFY_DESKD.tgz" --expires-in 900)
+  D_SHA=$(aws s3 cp --region "$RELEASE_REGION" --only-show-errors "s3://$RELEASE_BUCKET/desk/deskd/$VERIFY_DESKD/meta.json" - | jq -r .sha256)
+  D_URL=$(aws s3 presign --region "$RELEASE_REGION" "s3://$RELEASE_BUCKET/desk/deskd/$VERIFY_DESKD/deskd-$VERIFY_DESKD.tgz" --expires-in 900)
   printf '%s\n' "$D_URL" | R "sudo bash -c 'read -r u; /opt/ma/bin/ma-update deskd \"\$u\" $D_SHA 2>&1 | tail -2; cat /opt/ma/deskd/current/VERSION'" > $WORKDIR/o 2>&1
   unset D_URL; say "VERIFY_DESKD (lab only): deskd rolled forward for 3b6's links parts: $(tail -1 $WORKDIR/o)"
 fi
@@ -2243,7 +2261,7 @@ result "desk-agent needs the ruleset (DA-2): Requires and After nftables.service
 RS < "$HERE/verify-agent-filter.sh" > $WORKDIR/o 2>&1; rc=0
 grep -q -e '^FAILED$' $WORKDIR/o && rc=1
 grep -q '^ran to the end$' $WORKDIR/o || rc=1
-result "desk-agent-filter: uid 1103 reaches the four providers (OpenRouter from 0.3.5) with their certificates, by name, by placeholder and aimed anywhere, and agent-egress.conf names exactly those four; a Cloudflare site that isn't listed is refused on the listed names' own addresses (with a control); no SNI, ECH, by IP, UDP 443, other ports, unlisted names and TXT are refused, on the host and in a container; only uid 1103 reaches its ports; uid 1106 reaches only TCP 443 and the stub; with it stopped uid 1103 has no way out and nothing can stand in; it comes back by itself; its traffic is in class 1:20" $rc < $WORKDIR/o
+result "desk-agent-filter: uid 1103 reaches the six providers (OpenRouter from 0.3.5, Google and Moonshot AI from 2026-11-15) with their certificates, by name, by placeholder and aimed anywhere, and agent-egress.conf names exactly those six; a Cloudflare site, and a Google site, that isn't listed is refused on the listed names' own addresses (with a control); no SNI, ECH, by IP, UDP 443, other ports, unlisted names and TXT are refused, on the host and in a container; only uid 1103 reaches its ports; uid 1106 reaches only TCP 443 and the stub; with it stopped uid 1103 has no way out and nothing can stand in; it comes back by itself; its traffic is in class 1:20" $rc < $WORKDIR/o
 # ---- 3f. A stop, then a start, of deskd, desk-agent and desk-notebook leaves none of them failed. On docker stop the JVMs
 # exit 143, which the docker client passes on, so before 0.2.9's SuccessExitStatus=143 each stop of deskd or desk-agent
 # ended its unit as failed (0.2.8's note in RELEASES.md). desk-notebook's Node exits 0. Seen to fail on 0.2.8 (RELEASES.md,
@@ -2294,6 +2312,50 @@ R "sudo env RESTART_FAST=1 bash -s -- backoff" < "$HERE/verify-restart.sh" > $WO
 grep -q -e '^FAILED$' $WORKDIR/o && grep -q "no back-off" $WORKDIR/o && rc=0
 R 'sudo rm -r /etc/systemd/system/deskd.service.d && sudo systemctl daemon-reload && sudo systemctl restart deskd.service'
 result "restart and memory pressure, the back-off check fails with the back-off off (deskd's RestartSteps=0 flat, three kills): it says no back-off" $rc < $WORKDIR/o
+# ---- 3p. The Agent's attachment reader, desk-parse (ADR 0097; image/README.md, "desk-parse"; verify-parse.sh, which also runs alone on
+# a lab box, lab/desk-parse/lab.sh). The image must pin a desk-agent from release N (ADR 0097 section 4), whose health names the reader.
+# Every part but static, follow and agent has its mutation in "mutations", each of which must fail its check; measure is a record.
+for p in static wall socket parse agent follow clean limits mutations; do
+  case $p in
+    static) what="user parse 1113 (nologin, group agent with no members), desk-svc the baked one, the unit PartOf desk-agent with the back-off and +500, desk-agent Wants (not Requires) it, the tmpfiles lines, desk-parse-run's flags, the firewall's uid 1113 line" ;;
+    wall) what="the container: mounts exactly the socket's folder and desk-svc (read-only), network and IPC none, 1113:1113, CapEff 0, read-only, no-new-privileges, 160 MiB, 64 tasks, +500; inside no /data or /run/desk*, only lo; uid 1113 can't list /data/agent or reach the network from the host and owns nothing outside its socket's folder; desk-agent's /run/desk-parse read-only" ;;
+    socket) what="/run/desk-parse root:agent 0750, required root's 0444 holding 1, sock parse:agent 2750, parse.sock parse:agent 0660; uid 1100 refused at the folder, root answered err denied" ;;
+    parse) what="as uid 1103 a text file and a PDF answer OK with their words; then only desk-svc runs as uid 1113 and the journal's desk-parse lines hold no word of either; a request that isn't parse1 answers ERR bad_request" ;;
+    agent) what="desk-agent's health says parse sidecar, and the smoke test passes its desk-parse check" ;;
+    follow) what="desk-parse runs desk-agent's current image, and a restart of desk-agent restarts it on that image" ;;
+    clean) what="a worker that leaves a process behind: after its answer only desk-svc is left (-clean)" ;;
+    limits) what="a worker past 35 s is killed and its stream ends with no line; one that fills 256 MiB is killed by the kernel, desk-svc staying up" ;;
+    mutations) what="each check fails with what it guards broken: -v /data/agent, --network host, --user 1103:1103, the firewall line deleted, parse.sock 0666, desk-parse stopped, the clean copy without -clean; put back, they pass" ;;
+  esac
+  R "sudo bash -s -- $p" < "$HERE/verify-parse.sh" > $WORKDIR/o 2>&1; rc=0
+  grep -q -e '^FAILED$' $WORKDIR/o && rc=1
+  grep -q '^ran to the end$' $WORKDIR/o || rc=1
+  result "desk-parse, $p: $what" $rc < $WORKDIR/o
+done
+R "sudo bash -s -- measure" < "$HERE/verify-parse.sh" > $WORKDIR/o 2>&1
+info "desk-parse, measure: a parse's time here (p50 of 10, 1 KiB text, 100-page PDF) and the sandbox's memory.peak over those and 16 and 18 MiB of text" < $WORKDIR/o
+# ---- 3c. Courier's mail reader, desk-parse-courier (the same sandbox for deskd; docs/sub-status/mm-courier-parse.md, "The image
+# change"; image/README.md, "desk-parse-courier"; verify-courier.sh, which also runs alone on a box), Courier's directories and
+# deskd's way out for linked mailboxes. The image must pin a desk-agent with /app/courier-parse.options and a deskd whose run mounts
+# /data/courier, /data/keys and /run/desk-parse-courier. Every part but static and follow has its mutation in "mutations".
+BLOCKER_SHA=$(sed -n 's/^sha256=//p' "$HERE/recipe/adblock/blocker.pin")
+for p in static wall socket parse list follow dirs egress mutations; do
+  case $p in
+    static) what="the unit PartOf desk-agent with desk-agent's image-id, the back-off and +500, deskd and desk-agent Want (not Require) it, the two tmpfiles lines, desk-parse-courier-run's flags (peer uid 1100, 15 s, courier-parse.options) and the tracker list's bind only where it exists, the firewall's uid 1113 line" ;;
+    wall) what="the container: mounts exactly the socket's folder, desk-svc and the tracker list (both read-only), network and IPC none, 1113:1113, CapEff 0, read-only, no-new-privileges, 160 MiB, 64 tasks, +500, non-dumpable; inside no /data or other /run/desk*, only lo; deskd's /run/desk-parse-courier read-only" ;;
+    socket) what="/run/desk-parse-courier root:desk 0750, sock parse:desk 2750, parse.sock parse:desk 0660; uid 1103 refused at the folder, root answered err denied" ;;
+    parse) what="as uid 1100 a courier1 message answers OK with its word; then only desk-svc runs in it, and the journal's desk-parse-courier lines hold no word of it" ;;
+    list) what="the reader's /app/courier/trackers.txt is the image's, over 10,000 entries, its first line naming blocker.pin's sha256" ;;
+    follow) what="desk-parse-courier runs desk-agent's current image, and a restart of desk-agent restarts it on that image, serving" ;;
+    dirs) what="/data/courier 1100:1100 0700 holding only uid 1100's; deskd mounts /data/courier and /data/keys read-write" ;;
+    egress) what="as uid 1100 (deskd's network, the host's), an MX lookup of gmail.com through deskd's resolver and TCP to imap.gmail.com:993, smtp.gmail.com:465 and :587" ;;
+    mutations) what="each check fails with what it guards broken: -v /data/courier, --network host, --user 1100:1100, a list naming another sha256, parse.sock 0666, the unit stopped, /data/courier 0755, DNS and 465/587/993 dropped for uid 1100; put back, they pass" ;;
+  esac
+  R "sudo bash -s -- $p $BLOCKER_SHA" < "$HERE/verify-courier.sh" > $WORKDIR/o 2>&1; rc=0
+  grep -q -e '^FAILED$' $WORKDIR/o && rc=1
+  grep -q '^ran to the end$' $WORKDIR/o || rc=1
+  result "desk-parse-courier, $p: $what" $rc < $WORKDIR/o
+done
 # ---- 3s. Kernel hardening (ISS-20; image/recipe/files/etc/sysctl.d/91-ma-hardening.conf; docs/interfaces/desk-runtime.md, "Kernel settings").
 # Its own file, so it can run alone on a lab box (lab/sysctl036/). The mutation changes one value at runtime and puts it back.
 for p in values mutation works; do
@@ -2386,8 +2448,8 @@ result "ma-update with image.tar: docker load, image-id written, image.tar delet
 # ---- 4a. ma-update on top of the baked releases: each one forward and back, the baked artifact again, and one left
 # forward for the root replacement at the end. A copy of the current release under another VERSION stands in for a new
 # one; deskd's copy keeps its image-id, so it needs no image.tar. desk-stream's real artifact comes from the release bucket.
-DS_SHA=$(aws s3 cp --only-show-errors "s3://$RELEASE_BUCKET/desk/desk-stream/$T_STREAM/meta.json" - | jq -r .sha256)
-DS_URL=$(aws s3 presign "s3://$RELEASE_BUCKET/desk/desk-stream/$T_STREAM/desk-stream-$T_STREAM.tgz" --expires-in 900)
+DS_SHA=$(aws s3 cp --region "$RELEASE_REGION" --only-show-errors "s3://$RELEASE_BUCKET/desk/desk-stream/$T_STREAM/meta.json" - | jq -r .sha256)
+DS_URL=$(aws s3 presign --region "$RELEASE_REGION" "s3://$RELEASE_BUCKET/desk/desk-stream/$T_STREAM/desk-stream-$T_STREAM.tgz" --expires-in 900)
 { printf 'WANT=%q; DS_SHA=%q; DS_URL=%q\n' "$WANT" "$DS_SHA" "$DS_URL"; cat <<'X'
 rc=0; bad() { echo "BAD: $*"; rc=1; }
 st() { local d=/opt/ma/$1; echo "   $1: current $(readlink $d/current | xargs -r basename), previous $(readlink $d/previous | xargs -r basename), unit $(systemctl is-active $1)"; }

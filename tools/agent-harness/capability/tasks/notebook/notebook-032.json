@@ -1,0 +1,74 @@
+{
+  "id": "notebook-032",
+  "area": "notebook",
+  "title": "A numbered list",
+  "prompt": "Make a page Morning routine in my Harness tab: 1 stretch, 2 coffee, 3 journal.",
+  "setup": {
+    "notebook": [
+      {
+        "tab": "Harness",
+        "title": "Inbox",
+        "markdown": "# Inbox\n\nThings to sort later.\n"
+      }
+    ]
+  },
+  "approve": "all",
+  "checks": [
+    {
+      "kind": "page",
+      "tab": "Harness",
+      "title": "Morning routine",
+      "contains": [
+        "stretch",
+        "coffee",
+        "journal"
+      ]
+    },
+    {
+      "kind": "cards",
+      "tools": [
+        "notebook_write"
+      ]
+    }
+  ],
+  "policy": {
+    "tools": [
+      "notebook_list",
+      "notebook_write"
+    ]
+  },
+  "standIn": [
+    {
+      "calls": [
+        {
+          "name": "notebook_list",
+          "input": {}
+        }
+      ]
+    },
+    {
+      "calls": [
+        {
+          "name": "notebook_write",
+          "input": {
+            "op": "create",
+            "new": {
+              "tabId": {
+                "$re": {
+                  "step": 0,
+                  "call": 0,
+                  "pattern": "\"tabId\":\"([^\"]+)\",\"title\":\"Harness\""
+                }
+              },
+              "title": "Morning routine"
+            },
+            "markdown": "1. Stretch\n2. Coffee\n3. Journal"
+          }
+        }
+      ]
+    },
+    {
+      "text": "Made Morning routine."
+    }
+  ]
+}

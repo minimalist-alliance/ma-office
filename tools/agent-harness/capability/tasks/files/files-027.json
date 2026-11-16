@@ -1,0 +1,64 @@
+{
+  "id": "files-027",
+  "area": "files",
+  "title": "Search, then read",
+  "prompt": "Somewhere under Harness there's a file about my dentist. What time is the appointment?",
+  "setup": {
+    "files": {
+      "Harness/health/dentist-appointment.txt": "Dr. Okafor, Thursday 20 November at 3:40 pm. Bring the insurance card.\n",
+      "Harness/health/vaccines.txt": "Flu shot done in October.\n"
+    }
+  },
+  "approve": "all",
+  "checks": [
+    {
+      "kind": "reply",
+      "contains": [
+        "3:40"
+      ],
+      "state": "done"
+    },
+    {
+      "kind": "cards",
+      "tools": []
+    }
+  ],
+  "policy": {
+    "tools": [
+      "files_search",
+      "files_read"
+    ]
+  },
+  "standIn": [
+    {
+      "calls": [
+        {
+          "name": "files_search",
+          "input": {
+            "q": "dentist",
+            "under": "Harness"
+          }
+        }
+      ]
+    },
+    {
+      "calls": [
+        {
+          "name": "files_read",
+          "input": {
+            "path": {
+              "$re": {
+                "step": 0,
+                "call": 0,
+                "pattern": "\"path\":\"([^\"]*dentist[^\"]*)\""
+              }
+            }
+          }
+        }
+      ]
+    },
+    {
+      "text": "It's on Thursday 20 November at 3:40 pm with Dr. Okafor."
+    }
+  ]
+}
